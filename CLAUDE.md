@@ -33,6 +33,18 @@ and action layer that works across phone, computers, and future Agent hosts.
   mobile dependency because it can conflict with the user's existing VPN use.
 - The first accounting fact source remains Feishu Bitable. Do not migrate it to
   a self-hosted database during the MVP.
+- Finance has separate annual expense and income tables. `finance.log_income`
+  writes only income amount, name, date, and the `工资` / `其他` category. The
+  user does not provide the income category: explicit salary wording maps to
+  category/name `工资`; all other clear income maps to `其他` and retains its
+  extracted subject (for example `公积金入账 -> 公积金`). It must not infer a
+  family attribute or reuse expense refund/AA semantics.
+- `finance.update_family_fund` is a separate R2 ledger-write tool. It may write
+  a positive recharge amount directly, or reconcile a user-provided target
+  balance by writing half the positive difference because the verified table
+  formula doubles recharge. It never transfers bank money, writes formula or
+  initial-balance fields, writes a negative top-up, or re-applies a failed
+  reconciliation automatically.
 - Finance MCP uses one self-built Feishu app and fixed, minimal OpenAPI access
   to the active annual ledger. Do not expose generic Feishu tools, arbitrary
   HTTP, SQL, shell, or filesystem access to the model.
@@ -44,21 +56,29 @@ and action layer that works across phone, computers, and future Agent hosts.
 
 P0 is the shared Agent/MCP/security foundation plus:
 
-1. Natural-language expense logging, transaction lookup, period analysis, and
+1. The approved Finance surface: expense, income, family fund, query, and
    daily human review.
-2. Knowledge-base retrieval and safe capture to `raw/inbox/`.
-3. Chat, device permissions, audit, confirmation cards, and scheduled jobs.
+2. Chat, device permissions, audit, confirmation cards, and scheduled jobs.
 
-HealthKit incremental ingestion is P1. Wardrobe/OOTD is P1 but blocked until
-the iCloud wardrobe source can be accessed from the home development machine.
-Asset data is high-sensitive, read-only later work; it is not MVP scope.
+Knowledge Base, HealthKit, and Wardrobe/OOTD are later-phase directions. Their
+detailed product contracts belong to their own later PRDs, not the current PRD
+1.0 gate. Wardrobe also remains blocked until the iCloud wardrobe source can be
+accessed from the home development machine. Asset data is high-sensitive,
+read-only later work; it is not MVP scope.
 
 ## 4. Finance MCP decisions that override older drafts
 
-The active working specification is `docs/Finance MCP工具设计草案_v0.1.md`.
-It overrides older conflicting finance language in the PRD and `MCP工具IR_v0.1`.
-The Finance document is still a discussion draft: do not present unresolved
-items as frozen production rules.
+`docs/Finance MCP工具设计草案_v0.1.md` is the canonical detailed Finance
+contract. Its approved product semantics have been reconciled into the PRD and
+`MCP工具IR_v0.1`; only its explicitly implementation-level parameters remain
+for Phase 1 technical design. Do not reintroduce superseded Finance rules.
+
+## 4.1 Current phase gate
+
+PRD v1.0 is published. Do not proactively build its MCP server, Feishu
+application, iOS screens, or write against personal records merely because the
+requirements exist; wait for explicit user approval before entering Phase 1
+technical design or development.
 
 Already confirmed:
 
@@ -86,11 +106,19 @@ Already confirmed:
   use the sole matching root, create the basic root if none exists, and ask if
   multiple same-destination trip instances exist. Never guess an abbreviation
   or numbered trip.
-- Foreign currency must be converted to CNY using a historical rate for the
-  occurrence date. Do not guess a rate. The original currency expression is
-  temporarily appended to the displayed name and may later be manually removed.
+- Foreign currency is converted to CNY using the current Frankfurter `ECB`
+  reference rate at entry time, not a historical occurrence-date rate. Do not
+  guess a rate. The original currency expression is temporarily appended to the
+  displayed name; Henson may later replace the estimated CNY amount in Feishu
+  with the actual settlement amount, and the Agent must not overwrite it.
 - The agent writes directly for this R2 action and returns the external Feishu
-  `record_id`; daily review detects duplicates and family/personal mistakes.
+  `record_id`; daily review only presents that day's writes for human field
+  inspection and performs neither duplicate detection nor data mutation.
+- `finance.log_expense` is the frozen single-entry business tool. When one
+  message contains two or more fully resolved entries, use
+  `finance.log_expense_batch`: it is all-or-none, returns every `record_id`,
+  and must refuse before writing if source-side batch atomicity cannot be
+  proven.
 - Category mapping is evidence-based and conservative. Travel tags override
   item keywords; activity contexts (Disney/F1/concert etc.) can override food
   keywords to `玩乐`. Confirmed rules include `搓澡 -> 玩乐`, `网球场地` and
@@ -152,11 +180,11 @@ conflict instead of silently choosing an old default.
 
 ## 8. Canonical project documents
 
-- `个人Agent_PRD_v0.4.md` — product scope and requirements.
+- `个人Agent_PRD_v1.0.md` — released Phase 1 product scope and requirements.
 - `docs/Agent框架Spike初步结果_2026-07-23.md` — evidence for ADK-first choice.
-- `docs/MCP工具IR_v0.1.md` — cross-domain IR baseline; finance sections have
-  known older assumptions and must defer to the Finance draft.
-- `docs/Finance MCP工具设计草案_v0.1.md` — active Finance design discussion.
+- `docs/MCP工具IR_v0.1.md` — cross-domain IR baseline; archived Finance text is
+  non-normative, while its Finance contract summary is current.
+- `docs/Finance MCP工具设计草案_v0.1.md` — canonical detailed Finance contract.
 - `ECS安全加固实施记录_2026-07-23.md` — security, encryption, snapshot, and
   rollback record.
 - `PROJECT_STATUS.md` — exact handoff point and ordered next work.
