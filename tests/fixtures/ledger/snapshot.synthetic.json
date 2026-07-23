@@ -15,5 +15,21 @@
       {"name": "房租", "id": "opt8"}
     ]}},
     {"field_id": "fldSYNPERSONAL", "field_name": "个人支出", "type": 20}
+  ],
+  "income": [
+    {"field_id": "fldSYNINCAMOUNT", "field_name": "金额", "type": 2},
+    {"field_id": "fldSYNINCNAME", "field_name": "名称", "type": 1},
+    {"field_id": "fldSYNINCDATE", "field_name": "日期", "type": 5},
+    {"field_id": "fldSYNINCCATEGORY", "field_name": "分类", "type": 3, "property": {"options": [
+      {"name": "工资", "id": "optSalary"},
+      {"name": "其他", "id": "optOther"}
+    ]}}
+  ],
+  "family_fund": [
+    {"field_id": "fldSYNFUNDAMOUNT", "field_name": "充值金额", "type": 2},
+    {"field_id": "fldSYNFUNDDATE", "field_name": "日期", "type": 5},
+    {"field_id": "fldSYNFUNDNOTE", "field_name": "备注", "type": 1},
+    {"field_id": "fldSYNFUNDCREDIT", "field_name": "实际入账", "type": 20},
+    {"field_id": "fldSYNFUNDBALANCE", "field_name": "家庭基金余额", "type": 20}
   ]
 }

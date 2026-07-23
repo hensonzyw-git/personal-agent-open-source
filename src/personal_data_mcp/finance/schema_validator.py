@@ -99,6 +99,8 @@ def observed_field_from_feishu(field: dict[str, Any]) -> ObservedField:
     is_formula = code == _FORMULA_CODE
     is_auto_number = code == _AUTO_NUMBER_CODE
     mapped = _FEISHU_TYPE_CODES.get(code) if isinstance(code, int) else None
+    if is_formula:
+        mapped = FieldType.FORMULA
 
     options: tuple[str, ...] | None = None
     if mapped is FieldType.SINGLE_SELECT:
@@ -140,7 +142,9 @@ def validate_table(
 
         # A writable field must not be a formula or auto-number field: writing
         # one is rejected by Feishu, and the design forbids ever attempting it.
-        if observed.is_formula or observed.is_auto_number:
+        if spec.writable and (
+            observed.is_formula or observed.is_auto_number
+        ):
             drifts.append(
                 Drift(
                     table_name,

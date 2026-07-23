@@ -28,6 +28,7 @@ from personal_data_mcp.finance.schema_validator import (
 def base_config() -> dict:
     return {
         "ledger_year": 2026,
+        "ledger_kind": "synthetic_test",
         "config_version": "2026.1",
         "base_token": "bascnPLACEHOLDER0001",
         "effective_from": "2026-01-01",
@@ -63,7 +64,65 @@ def base_config() -> dict:
                         "options": list(EXPECTED_EXPENSE_CATEGORIES),
                     },
                 },
-            }
+            },
+            "income": {
+                "table_id": "tblPLACEHOLDERINC",
+                "fields": {
+                    "amount": {
+                        "id": "fldINCAMOUNT",
+                        "expected_name": "金额",
+                        "type": "number",
+                    },
+                    "name": {
+                        "id": "fldINCNAME",
+                        "expected_name": "名称",
+                        "type": "text",
+                    },
+                    "occurred_on": {
+                        "id": "fldINCDATE",
+                        "expected_name": "日期",
+                        "type": "datetime",
+                    },
+                    "category": {
+                        "id": "fldINCCATEGORY",
+                        "expected_name": "分类",
+                        "type": "single_select",
+                        "options": ["工资", "其他"],
+                    },
+                },
+            },
+            "family_fund": {
+                "table_id": "tblPLACEHOLDERFUND",
+                "fields": {
+                    "recharge_amount": {
+                        "id": "fldFUNDAMOUNT",
+                        "expected_name": "充值金额",
+                        "type": "number",
+                    },
+                    "occurred_on": {
+                        "id": "fldFUNDDATE",
+                        "expected_name": "日期",
+                        "type": "datetime",
+                    },
+                    "note": {
+                        "id": "fldFUNDNOTE",
+                        "expected_name": "备注",
+                        "type": "text",
+                    },
+                    "actual_credit": {
+                        "id": "fldFUNDCREDIT",
+                        "expected_name": "实际入账",
+                        "type": "formula",
+                        "writable": False,
+                    },
+                    "balance": {
+                        "id": "fldFUNDBALANCE",
+                        "expected_name": "家庭基金余额",
+                        "type": "formula",
+                        "writable": False,
+                    },
+                },
+            },
         },
     }
 
@@ -81,7 +140,35 @@ def matching_observed() -> dict[str, list[ObservedField]]:
                 FieldType.SINGLE_SELECT,
                 options=tuple(ALLOWED_EXPENSE_CATEGORIES),
             ),
-        ]
+        ],
+        "income": [
+            ObservedField("fldINCAMOUNT", "金额", FieldType.NUMBER),
+            ObservedField("fldINCNAME", "名称", FieldType.TEXT),
+            ObservedField("fldINCDATE", "日期", FieldType.DATETIME),
+            ObservedField(
+                "fldINCCATEGORY",
+                "分类",
+                FieldType.SINGLE_SELECT,
+                options=("工资", "其他"),
+            ),
+        ],
+        "family_fund": [
+            ObservedField("fldFUNDAMOUNT", "充值金额", FieldType.NUMBER),
+            ObservedField("fldFUNDDATE", "日期", FieldType.DATETIME),
+            ObservedField("fldFUNDNOTE", "备注", FieldType.TEXT),
+            ObservedField(
+                "fldFUNDCREDIT",
+                "实际入账",
+                FieldType.FORMULA,
+                is_formula=True,
+            ),
+            ObservedField(
+                "fldFUNDBALANCE",
+                "家庭基金余额",
+                FieldType.FORMULA,
+                is_formula=True,
+            ),
+        ],
     }
 
 
@@ -96,6 +183,27 @@ def test_the_config_categories_match_the_frozen_contract() -> None:
 def test_a_single_select_without_options_is_rejected() -> None:
     data = base_config()
     del data["tables"]["expense"]["fields"]["category"]["options"]
+    with pytest.raises(ValueError):
+        load_ledger_config(data)
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda data: data.update(tables={}),
+        lambda data: data["tables"].pop("income"),
+        lambda data: data.update(effective_from="not-a-date"),
+        lambda data: data["tables"]["income"].update(
+            table_id=data["tables"]["expense"]["table_id"]
+        ),
+        lambda data: data["tables"]["expense"]["fields"]["category"].update(
+            options=["餐饮"]
+        ),
+    ],
+)
+def test_an_incomplete_or_drifted_config_is_rejected(mutate) -> None:
+    data = base_config()
+    mutate(data)
     with pytest.raises(ValueError):
         load_ledger_config(data)
 
@@ -174,7 +282,7 @@ def test_an_empty_snapshot_fails_closed() -> None:
     assert not result.is_valid
     # Every configured field is reported missing, not vacuously valid.
     assert all(d.kind is DriftKind.MISSING_FIELD for d in result.drifts)
-    assert len(result.drifts) == 5
+    assert len(result.drifts) == 14
 
 
 # --- Feishu normalisation ---------------------------------------------------
@@ -201,7 +309,7 @@ def test_feishu_formula_and_auto_number_are_flagged() -> None:
     auto = observed_field_from_feishu(
         {"field_id": "f2", "field_name": "编号", "type": 1005}
     )
-    assert formula.is_formula and formula.type is None
+    assert formula.is_formula and formula.type is FieldType.FORMULA
     assert auto.is_auto_number and auto.type is None
 
 
@@ -226,6 +334,7 @@ def test_the_redacted_report_hides_ids_but_keeps_shape() -> None:
     assert "fldAMOUNT" not in serialised
     # The shape a reviewer needs is present.
     assert report["status"] == "valid"
+    assert report["ledger_kind"] == "synthetic_test"
     assert report["base_token_hash"].startswith("h:")
     amount = report["tables"]["expense"]["fields"]["amount"]
     assert amount["type"] == "number"

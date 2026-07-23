@@ -1,5 +1,6 @@
 {
   "ledger_year": 2026,
+  "ledger_kind": "synthetic_test",
   "config_version": "2026.1",
   "base_token": "bascnSYNTHETIC000001",
   "effective_from": "2026-01-01",
@@ -17,6 +18,40 @@
           "expected_name": "分类",
           "type": "single_select",
           "options": ["出行", "餐饮", "游戏", "日常生活", "玩乐", "购物", "旅行", "房租"]
+        }
+      }
+    },
+    "income": {
+      "table_id": "tblSYNTHETICINC01",
+      "fields": {
+        "amount": {"id": "fldSYNINCAMOUNT", "expected_name": "金额", "type": "number"},
+        "name": {"id": "fldSYNINCNAME", "expected_name": "名称", "type": "text"},
+        "occurred_on": {"id": "fldSYNINCDATE", "expected_name": "日期", "type": "datetime"},
+        "category": {
+          "id": "fldSYNINCCATEGORY",
+          "expected_name": "分类",
+          "type": "single_select",
+          "options": ["工资", "其他"]
+        }
+      }
+    },
+    "family_fund": {
+      "table_id": "tblSYNTHETICFUND01",
+      "fields": {
+        "recharge_amount": {"id": "fldSYNFUNDAMOUNT", "expected_name": "充值金额", "type": "number"},
+        "occurred_on": {"id": "fldSYNFUNDDATE", "expected_name": "日期", "type": "datetime"},
+        "note": {"id": "fldSYNFUNDNOTE", "expected_name": "备注", "type": "text"},
+        "actual_credit": {
+          "id": "fldSYNFUNDCREDIT",
+          "expected_name": "实际入账",
+          "type": "formula",
+          "writable": false
+        },
+        "balance": {
+          "id": "fldSYNFUNDBALANCE",
+          "expected_name": "家庭基金余额",
+          "type": "formula",
+          "writable": false
         }
       }
     }

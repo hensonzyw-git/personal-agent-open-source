@@ -107,7 +107,12 @@ class FeishuAdapter:
         )
         token = envelope.get("tenant_access_token")
         expire = envelope.get("expire")
-        if not isinstance(token, str) or not isinstance(expire, int):
+        if (
+            not isinstance(token, str)
+            or not token
+            or type(expire) is not int
+            or expire <= 0
+        ):
             raise AppError(
                 ErrorCode.SOURCE_UNAVAILABLE,
                 internal_detail="tenant token response missing token or expire",
@@ -130,6 +135,7 @@ class FeishuAdapter:
         """
         items: list[dict[str, Any]] = []
         page_token: str | None = None
+        seen_page_tokens: set[str] = set()
         for _ in range(1000):  # a table cannot plausibly have this many fields
             query = {"page_size": str(page_size)}
             if page_token:
@@ -139,12 +145,39 @@ class FeishuAdapter:
                 params={"app_token": app_token, "table_id": table_id},
                 query=query,
             )
-            items.extend(data.get("items") or [])
-            if not data.get("has_more"):
+            page_items = data.get("items")
+            if page_items is None:
+                page_items = []
+            if not isinstance(page_items, list) or not all(
+                isinstance(item, dict) for item in page_items
+            ):
+                raise AppError(
+                    ErrorCode.SOURCE_UNAVAILABLE,
+                    internal_detail="list_fields returned malformed items",
+                )
+            items.extend(page_items)
+            has_more = data.get("has_more", False)
+            if not isinstance(has_more, bool):
+                raise AppError(
+                    ErrorCode.SOURCE_UNAVAILABLE,
+                    internal_detail="list_fields returned malformed has_more",
+                )
+            if not has_more:
                 return items
             page_token = data.get("page_token")
-            if not page_token:
-                return items
+            if not isinstance(page_token, str) or not page_token:
+                raise AppError(
+                    ErrorCode.SOURCE_UNAVAILABLE,
+                    internal_detail=(
+                        "list_fields reported more pages without a page_token"
+                    ),
+                )
+            if page_token in seen_page_tokens:
+                raise AppError(
+                    ErrorCode.SOURCE_UNAVAILABLE,
+                    internal_detail="list_fields repeated a pagination cursor",
+                )
+            seen_page_tokens.add(page_token)
         raise AppError(
             ErrorCode.SOURCE_UNAVAILABLE,
             internal_detail="list_fields did not terminate its pagination",

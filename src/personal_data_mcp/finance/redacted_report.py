@@ -76,6 +76,7 @@ def redacted_schema_report(
 
     return {
         "ledger_year": config.ledger_year,
+        "ledger_kind": config.ledger_kind,
         "config_version": config.config_version,
         "config_checksum": config.checksum(),
         "base_token_hash": _hash_id(config.base_token),

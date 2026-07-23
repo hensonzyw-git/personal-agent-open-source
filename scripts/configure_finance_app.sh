@@ -44,8 +44,10 @@ IFS= read -r income_table
 printf "家庭基金 table_id: " >&2
 IFS= read -r family_fund_table
 
-if [ -z "$app_id" ] || [ -z "$app_secret" ] || [ -z "$base_token" ]; then
-  printf "\n未写入：App ID、App Secret 和 Base app_token 都不能为空。\n" >&2
+if [ -z "$app_id" ] || [ -z "$app_secret" ] || [ -z "$base_token" ] ||
+  [ -z "$expense_table" ] || [ -z "$income_table" ] ||
+  [ -z "$family_fund_table" ]; then
+  printf "\n未写入：App ID、App Secret、Base app_token 和三张 table_id 都不能为空。\n" >&2
   exit 1
 fi
 
