@@ -45,8 +45,11 @@ and action layer that works across phone, computers, and future Agent hosts.
   formula doubles recharge. It never transfers bank money, writes formula or
   initial-balance fields, writes a negative top-up, or re-applies a failed
   reconciliation automatically.
-- Finance MCP uses one self-built Feishu app and fixed, minimal OpenAPI access
-  to the active annual ledger. Do not expose generic Feishu tools, arbitrary
+- Finance MCP uses one dedicated self-built Feishu app and fixed, minimal
+  OpenAPI access to the active annual ledger. The existing broad-permission bot
+  app may be used only for early connectivity checks against a synthetic test
+  Base; it must not be the production Finance credential or access the personal
+  ledger through this project. Do not expose generic Feishu tools, arbitrary
   HTTP, SQL, shell, or filesystem access to the model.
 - Each annual ledger is a protected server-side configuration change (Base,
   table, field IDs, allowed categories), not a new application or a prompt
@@ -76,12 +79,13 @@ for Phase 1 technical design. Do not reintroduce superseded Finance rules.
 
 ## 4.1 Current phase gate
 
-PRD v1.0.1 has passed product review. Do not proactively build its MCP server, Feishu
-application, iOS screens, or write against personal records merely because the
-requirements exist; wait for explicit user approval before entering Phase 1
-technical design or development. Once technical-design authorization is given,
-start with `docs/Phase1技术方案设计计划_v0.1.md`; it defines the sequence and
-the gate between design and implementation.
+PRD v1.0.1 has passed product review. Henson authorized Phase 1 technical design
+on 2026-07-23. The technical design and development breakdown have passed final
+review and the project is stopped at the development authorization gate.
+Development remains unauthorized: do not start `DEV-001`, build the MCP server,
+create the Feishu application, implement iOS screens, deploy services, or write
+against personal records until Henson explicitly authorizes development in a
+later instruction.
 
 Already confirmed:
 
@@ -116,8 +120,15 @@ Already confirmed:
   displayed name; Henson may later replace the estimated CNY amount in Feishu
   with the actual settlement amount, and the Agent must not overwrite it.
 - The agent writes directly for this R2 action and returns the external Feishu
-  `record_id`; daily review only presents that day's writes for human field
-  inspection and performs neither duplicate detection nor data mutation.
+  `record_id`. Before expense and income writes, an exact same-day duplicate
+  check compares the final stored amount, name and category. Expense family
+  scope is displayed for judgment but does not decide whether to prompt. A
+  match causes zero writes and asks Henson whether to continue;
+  only Host-bound confirmation can override it. This heuristic does not replace
+  request idempotency or unknown-commit recovery. Daily review itself only
+  presents that day's writes for human field inspection and performs neither
+  duplicate detection nor data mutation; final corrections remain available in
+  Feishu on the computer.
 - `finance.log_expense` is the frozen single-entry business tool. When one
   message contains two or more fully resolved entries, use
   `finance.log_expense_batch`: it is all-or-none, returns every `record_id`,
@@ -133,6 +144,13 @@ Already confirmed:
 The finance mapping derived from the current ledger is approved but remains
 conservative; it is not permission to invent new mappings. Add representative
 redacted evaluations before implementation.
+
+Phase 1 does not implement automated lost-device recovery, remote-wipe
+integration, or recovery codes. Henson owns lost-device handling through
+existing wipe mechanisms and manual ECS administration. Encrypted conversation
+events are retained permanently by default as a potential future long-term
+memory source, with explicit export/delete support; permanent retention does not
+authorize automatically injecting the full archive into model context.
 
 ## 5. Engineering and safety rules
 
@@ -191,6 +209,13 @@ conflict instead of silently choosing an old default.
 - `docs/Finance MCP工具设计草案_v0.1.md` — canonical detailed Finance contract.
 - `docs/Phase1技术方案设计计划_v0.1.md` — next-stage work order and the gate
   before implementation.
+- `docs/Phase1技术方案_v0.1.md` — current Phase 1 technical design;
+  final review passed, but it does not authorize development.
+- `docs/Phase1技术方案评审结论_2026-07-23.md` — initial findings, resolved
+  P0 contracts, and final design Go decision.
+- `docs/Phase1开发拆解_v0.1.md` — executable development tasks, dependencies,
+  gates, external inputs and completion definition; DEV-001 still requires
+  explicit development authorization.
 - `ECS安全加固实施记录_2026-07-23.md` — security, encryption, snapshot, and
   rollback record.
 - `PROJECT_STATUS.md` — exact handoff point and ordered next work.
