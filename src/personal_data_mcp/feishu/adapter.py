@@ -33,6 +33,7 @@ from personal_agent_core.errors import AppError, ErrorCode
 from personal_data_mcp.feishu.credentials import FeishuCredentials
 from personal_data_mcp.feishu.endpoints import (
     ALLOWLIST,
+    LIST_FIELDS,
     TENANT_TOKEN,
     Endpoint,
     EndpointNotAllowed,
@@ -115,6 +116,39 @@ class FeishuAdapter:
 
     async def tenant_token(self) -> str:
         return await self._token_cache.get()
+
+    # --- read: list a table's fields, following pagination -------------------
+
+    async def list_fields(
+        self, app_token: str, table_id: str, *, page_size: int = 100
+    ) -> list[dict[str, Any]]:
+        """Every field of one table, following `page_token` to exhaustion.
+
+        A read must never call the first page "all of it" (engineering rule 5).
+        The loop stops only when Feishu reports `has_more=false`, and a bounded
+        page count guards against a provider that never sets it.
+        """
+        items: list[dict[str, Any]] = []
+        page_token: str | None = None
+        for _ in range(1000):  # a table cannot plausibly have this many fields
+            query = {"page_size": str(page_size)}
+            if page_token:
+                query["page_token"] = page_token
+            data = await self.request(
+                LIST_FIELDS,
+                params={"app_token": app_token, "table_id": table_id},
+                query=query,
+            )
+            items.extend(data.get("items") or [])
+            if not data.get("has_more"):
+                return items
+            page_token = data.get("page_token")
+            if not page_token:
+                return items
+        raise AppError(
+            ErrorCode.SOURCE_UNAVAILABLE,
+            internal_detail="list_fields did not terminate its pagination",
+        )
 
     # --- the one request path -------------------------------------------------
 

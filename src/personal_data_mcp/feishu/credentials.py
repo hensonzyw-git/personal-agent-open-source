@@ -18,8 +18,11 @@ from dataclasses import dataclass
 from typing import Final
 
 
-APP_ID_ENV: Final[str] = "PERSONAL_DATA_MCP_FEISHU_APP_ID"
-APP_SECRET_ENV: Final[str] = "PERSONAL_DATA_MCP_FEISHU_APP_SECRET"
+# These match the names `scripts/configure_finance_app.sh` writes into
+# `.env.finance.local`, which the shell loads into the environment. The code
+# never opens that file.
+APP_ID_ENV: Final[str] = "FEISHU_FINANCE_APP_ID"
+APP_SECRET_ENV: Final[str] = "FEISHU_FINANCE_APP_SECRET"
 
 
 class MissingCredentialError(RuntimeError):

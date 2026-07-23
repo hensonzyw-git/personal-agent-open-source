@@ -90,8 +90,8 @@ def test_missing_credentials_are_an_error() -> None:
 def test_credentials_never_appear_in_repr() -> None:
     creds = load_credentials(
         env={
-            "PERSONAL_DATA_MCP_FEISHU_APP_ID": "cli_x",
-            "PERSONAL_DATA_MCP_FEISHU_APP_SECRET": "topsecret",
+            "FEISHU_FINANCE_APP_ID": "cli_x",
+            "FEISHU_FINANCE_APP_SECRET": "topsecret",
         }
     )
     assert "topsecret" not in repr(creds)
