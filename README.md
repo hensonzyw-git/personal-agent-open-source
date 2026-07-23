@@ -26,6 +26,7 @@ PRD v1.0.1、Phase 1 技术方案 v0.1 和开发拆解 v0.1 均已通过评审�
 
 - [当前状态与交接清单](./PROJECT_STATUS.md)
 - [项目协作与开发约定](./AGENTS.md)（与 `CLAUDE.md` 相同）
+- [新 session 启动提示](./docs/新session启动提示.md)
 - [个人 Agent iOS App PRD v1.0.1](./个人Agent_PRD_v1.0.1.md)
 - [PRD v1.0.1 评审结论](./docs/PRD评审结论_2026-07-23.md)
 - [Phase 1 技术方案设计计划](./docs/Phase1技术方案设计计划_v0.1.md)
