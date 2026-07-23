@@ -2,6 +2,11 @@
 .DS_Store
 .idea/
 .vscode/
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
 
 # Secrets and certificates
 .env

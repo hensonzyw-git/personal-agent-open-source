@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "personal-agent-spike"
+version = "0.1.0"
+description = "Offline-first MCP and agent framework spike for Henson's Personal Agent"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "mcp>=1.27,<2",
+  "pydantic>=2.11,<3",
+]
+
+[project.optional-dependencies]
+adk = [
+  "google-adk",
+  "litellm>=1.83,<1.92",
+]
+claude = [
+  "claude-agent-sdk",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4,<9",
+]
+
+[project.scripts]
+personal-agent-offline-eval = "personal_agent_spike.offline_eval:main"
+personal-agent-mcp-probe = "personal_agent_spike.client_probe:main"
+personal-agent-framework-probe = "personal_agent_spike.framework_probe:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/personal_agent_spike"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["src"]
+testpaths = ["tests"]
