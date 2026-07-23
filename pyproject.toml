@@ -3,14 +3,21 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "personal-agent-spike"
+name = "personal-agent"
 version = "0.1.0"
-description = "Offline-first MCP and agent framework spike for Henson's Personal Agent"
+description = "Henson's single-user Personal Agent backend and Personal Data MCP server"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "mcp>=1.27,<2",
   "pydantic>=2.11,<3",
+  "fastapi>=0.139,<1",
+  "uvicorn>=0.51,<1",
+  "sqlalchemy>=2.0,<3",
+  "alembic>=1.18,<2",
+  "httpx>=0.28,<1",
+  "cryptography>=49,<50",
+  "pyjwt>=2.13,<3",
 ]
 
 [project.optional-dependencies]
@@ -28,13 +35,19 @@ dev = [
 ]
 
 [project.scripts]
+personal-agent-api = "personal_agent.cli:main"
+personal-data-mcp = "personal_data_mcp.cli:main"
 personal-agent-offline-eval = "personal_agent_spike.offline_eval:main"
 personal-agent-mcp-probe = "personal_agent_spike.client_probe:main"
 personal-agent-framework-probe = "personal_agent_spike.framework_probe:main"
 personal-agent-online-eval = "personal_agent_spike.online_eval:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/personal_agent_spike"]
+packages = [
+  "src/personal_agent",
+  "src/personal_data_mcp",
+  "src/personal_agent_spike",
+]
 
 [tool.pytest.ini_options]
 addopts = "-q"
