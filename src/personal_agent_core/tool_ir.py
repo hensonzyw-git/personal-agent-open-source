@@ -158,13 +158,32 @@ HOST_CONTEXT_SCHEMA: Final[dict[str, Any]] = {
 }
 
 
-def _nullable_amount(description: str) -> dict[str, Any]:
-    return {
-        "type": ["string", "null"],
+ZERO_AMOUNT_TEXTS: Final[tuple[str, ...]] = ("0", "0.0", "0.00")
+
+
+def _amount_schema(
+    description: str, *, nullable: bool, positive: bool
+) -> dict[str, Any]:
+    schema: dict[str, Any] = {
+        "type": ["string", "null"] if nullable else "string",
         "pattern": AMOUNT_PATTERN,
-        "default": None,
         "description": description,
     }
+    if nullable:
+        schema["default"] = None
+    if positive:
+        schema["not"] = {"enum": list(ZERO_AMOUNT_TEXTS)}
+    return schema
+
+
+def _nullable_amount(
+    description: str, *, positive: bool = True
+) -> dict[str, Any]:
+    return _amount_schema(description, nullable=True, positive=positive)
+
+
+def _positive_amount(description: str) -> dict[str, Any]:
+    return _amount_schema(description, nullable=False, positive=True)
 
 
 _EXPENSE_ENTRY_SCHEMA: Final[dict[str, Any]] = {
@@ -188,14 +207,12 @@ _EXPENSE_ENTRY_SCHEMA: Final[dict[str, Any]] = {
                 "旅行场次和外币后缀由服务端追加，不要自己拼进来。"
             ),
         },
-        "input_amount": {
-            "type": "string",
-            "pattern": AMOUNT_PATTERN,
-            "description": (
+        "input_amount": _positive_amount(
+            (
                 "原始输入金额的非零绝对值，最多两位小数。不要输入负号："
                 "账务符号完全由 entry_kind 决定。"
-            ),
-        },
+            )
+        ),
         "input_currency": {
             "type": "string",
             "pattern": CURRENCY_PATTERN,
@@ -254,6 +271,23 @@ _EXPENSE_ENTRY_SCHEMA: Final[dict[str, Any]] = {
             ),
         },
     },
+    "allOf": [
+        {
+            "if": {
+                "properties": {"entry_kind": {"const": "expense"}},
+                "required": ["entry_kind"],
+            },
+            "then": {
+                "required": ["category"],
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": list(ALLOWED_EXPENSE_CATEGORIES),
+                    }
+                },
+            },
+        }
+    ],
 }
 
 
@@ -482,14 +516,12 @@ LOG_INCOME = ToolContract(
                     "服务端的封闭 Income Policy 决定写工资还是其他。"
                 ),
             },
-            "input_amount": {
-                "type": "string",
-                "pattern": AMOUNT_PATTERN,
-                "description": (
+            "input_amount": _positive_amount(
+                (
                     "非零正数金额，最多两位小数。收入拒绝负数；"
                     "退款和 AA 收款属于支出冲减，不是收入。"
-                ),
-            },
+                )
+            ),
             "input_currency": {
                 "type": "string",
                 "pattern": CURRENCY_PATTERN,
@@ -553,7 +585,8 @@ UPDATE_FAMILY_FUND = ToolContract(
                 "top_up 模式的充值金额，必须为正数。"
             ),
             "target_balance_cny": _nullable_amount(
-                "interest_reconcile 模式的目标余额。低于或等于当前余额时不写入。"
+                "interest_reconcile 模式的目标余额。低于或等于当前余额时不写入。",
+                positive=False,
             ),
             "note": {
                 "type": ["string", "null"],
@@ -562,14 +595,48 @@ UPDATE_FAMILY_FUND = ToolContract(
                 "description": "备注；利息补齐的备注由服务端固定写入，不由模型提供。",
             },
         },
-        "oneOf": [
+        # Dispatched with if/then on `mode` rather than oneOf. Under oneOf every
+        # failure reports the branch that was not taken, so a bad top_up amount
+        # came back as "'interest_reconcile' was expected" and that text would
+        # have travelled into clarification prompts and alerts.
+        #
+        # The unused mode's fields are excluded by value, not by presence: a
+        # caller that spells "not applicable" as an explicit null means the same
+        # thing as omitting the key, and the two tools must not disagree about
+        # that.
+        "allOf": [
             {
-                "properties": {"mode": {"const": "top_up"}},
-                "required": ["mode", "recharge_amount_cny"],
+                "if": {
+                    "properties": {"mode": {"const": "top_up"}},
+                    "required": ["mode"],
+                },
+                "then": {
+                    "required": ["recharge_amount_cny"],
+                    "properties": {
+                        "recharge_amount_cny": _positive_amount(
+                            "top_up 模式的充值金额，必须为正数。"
+                        ),
+                        "target_balance_cny": {"const": None},
+                    },
+                },
             },
             {
-                "properties": {"mode": {"const": "interest_reconcile"}},
-                "required": ["mode", "target_balance_cny"],
+                "if": {
+                    "properties": {"mode": {"const": "interest_reconcile"}},
+                    "required": ["mode"],
+                },
+                "then": {
+                    "required": ["target_balance_cny"],
+                    "properties": {
+                        "target_balance_cny": {
+                            "type": "string",
+                            "pattern": AMOUNT_PATTERN,
+                        },
+                        "recharge_amount_cny": {"const": None},
+                        # The 利息补齐 note is fixed server side.
+                        "note": {"const": None},
+                    },
+                },
             },
         ],
     },

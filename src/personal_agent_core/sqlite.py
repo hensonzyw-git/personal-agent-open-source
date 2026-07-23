@@ -13,6 +13,8 @@ database gets it without a manual step.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from datetime import datetime
 from pathlib import Path
@@ -80,29 +82,70 @@ class EncryptedEnvelope(TypeDecorator[dict[str, Any]]):
 
     REQUIRED_KEYS = frozenset({"v", "kid", "nonce", "ciphertext", "tag"})
 
+    @classmethod
+    def _decode_base64url(cls, field: str, value: object) -> bytes:
+        if not isinstance(value, str):
+            raise ValueError(f"envelope {field} must be a base64url string")
+        padding = "=" * (-len(value) % 4)
+        try:
+            return base64.b64decode(
+                value + padding, altchars=b"-_", validate=True
+            )
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError(
+                f"envelope {field} must be valid unpadded base64url"
+            ) from exc
+
+    @classmethod
+    def _validate(cls, value: object) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise ValueError(
+                "encrypted columns take a sealed envelope, not a plain value"
+            )
+        keys = frozenset(value)
+        missing = cls.REQUIRED_KEYS - keys
+        extra = keys - cls.REQUIRED_KEYS
+        if missing or extra:
+            details = []
+            if missing:
+                details.append(f"missing {sorted(missing)}")
+            if extra:
+                details.append(f"unexpected {sorted(extra)}")
+            raise ValueError(
+                f"invalid encrypted envelope ({'; '.join(details)}); "
+                "refusing to store anything outside the sealed shape"
+            )
+
+        version = value["v"]
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            raise ValueError("envelope v must be a positive integer")
+        kid = value["kid"]
+        if not isinstance(kid, str) or not kid:
+            raise ValueError("envelope kid must be a non-empty string")
+
+        nonce = cls._decode_base64url("nonce", value["nonce"])
+        cls._decode_base64url("ciphertext", value["ciphertext"])
+        tag = cls._decode_base64url("tag", value["tag"])
+        if len(nonce) != 12:
+            raise ValueError("envelope nonce must decode to 12 bytes")
+        if len(tag) != 16:
+            raise ValueError("envelope tag must decode to 16 bytes")
+        return value
+
     def process_bind_param(
         self, value: dict[str, Any] | None, dialect: Any
     ) -> str | None:
         if value is None:
             return None
-        if not isinstance(value, dict):
-            raise ValueError(
-                "encrypted columns take a sealed envelope, not a plain value"
-            )
-        missing = self.REQUIRED_KEYS.difference(value)
-        if missing:
-            raise ValueError(
-                f"envelope is missing {sorted(missing)}; "
-                "refusing to store an unsealed value"
-            )
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        validated = self._validate(value)
+        return json.dumps(validated, ensure_ascii=False, sort_keys=True)
 
     def process_result_value(
         self, value: str | None, dialect: Any
     ) -> dict[str, Any] | None:
         if value is None:
             return None
-        return json.loads(value)
+        return self._validate(json.loads(value))
 
 
 def _configure_connection(dbapi_connection: Any, _record: Any) -> None:

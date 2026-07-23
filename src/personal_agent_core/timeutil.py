@@ -49,7 +49,10 @@ def to_utc(moment: datetime) -> datetime:
 
 def to_rfc3339(moment: datetime) -> str:
     """Serialise an aware instant as RFC 3339 UTC with a `Z` suffix."""
-    return to_utc(moment).isoformat(timespec="seconds").replace("+00:00", "Z")
+    # Fixed-width microseconds preserve both lexical ordering and lease expiry
+    # precision. Mixing second-only and fractional timestamps would not sort
+    # chronologically as text because "." sorts before "Z".
+    return to_utc(moment).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def parse_rfc3339(text: str) -> datetime:

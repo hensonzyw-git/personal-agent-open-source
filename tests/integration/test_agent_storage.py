@@ -275,7 +275,7 @@ def test_timestamps_round_trip_as_utc(engine) -> None:
         raw = connection.execute(
             text("SELECT created_at FROM devices")
         ).scalar_one()
-    assert raw == "2026-07-23T07:00:00Z"
+    assert raw == "2026-07-23T07:00:00.000000Z"
 
 
 def test_encrypted_columns_refuse_plaintext(session) -> None:
@@ -306,6 +306,25 @@ def test_encrypted_columns_refuse_an_incomplete_envelope(session) -> None:
     )
     with pytest.raises((StatementError, ValueError)):
         session.commit()
+
+
+def test_encrypted_columns_refuse_plaintext_hidden_in_an_extra_field(engine) -> None:
+    with session_factory(engine)() as session:
+        session.add(Conversation(conversation_id="conv-1", created_at=NOW))
+        session.add(
+            ConversationEvent(
+                event_id="ev-extra",
+                conversation_id="conv-1",
+                event_type="user_message",
+                encrypted_content={
+                    **SEALED,
+                    "plaintext": "午饭45，个人支出",
+                },
+                created_at=NOW,
+            )
+        )
+        with pytest.raises((StatementError, ValueError)):
+            session.commit()
 
 
 def test_a_sealed_envelope_is_accepted_and_round_trips(engine) -> None:

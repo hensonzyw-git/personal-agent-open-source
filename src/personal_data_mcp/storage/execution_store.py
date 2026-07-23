@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from typing import Any, Final
 
 from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
 from personal_agent_core.errors import AppError, ErrorCode
@@ -36,6 +37,10 @@ from personal_data_mcp.storage.state_machine import (
 
 
 DEFAULT_LEASE_SECONDS: Final[int] = 30
+
+
+class UnverifiedReceiptError(RuntimeError):
+    """An execution tried to report success without verified external proof."""
 
 
 def prepare_execution(
@@ -99,6 +104,20 @@ def transition(
     with a compare-and-swap on `(state, state_version)`.
     """
     assert_transition(current_state, target_state)
+
+    if target_state == "succeeded":
+        receipts = list(
+            session.scalars(
+                select(ExternalReceipt).where(
+                    ExternalReceipt.idempotency_key == idempotency_key
+                )
+            )
+        )
+        if len(receipts) != 1 or receipts[0].verified_at is None:
+            raise UnverifiedReceiptError(
+                f"{idempotency_key} cannot succeed without exactly one "
+                "verified external receipt"
+            )
 
     values: dict[str, Any] = {
         "state": target_state,
@@ -289,24 +308,45 @@ def acquire_resource_lock(
     does its network work. Holding a SQLite write transaction across an HTTP
     round trip would block every other writer for its duration.
     """
-    existing = session.get(ResourceLock, lock_key)
     lease_until = now + timedelta(seconds=seconds)
-    if existing is None:
-        session.add(
-            ResourceLock(
-                lock_key=lock_key,
-                owner=owner,
-                lease_until=lease_until,
-                acquired_at=now,
-            )
+    inserted = session.execute(
+        insert(ResourceLock)
+        .values(
+            lock_key=lock_key,
+            owner=owner,
+            lease_until=lease_until,
+            acquired_at=now,
         )
-        session.flush()
+        .on_conflict_do_nothing(index_elements=[ResourceLock.lock_key])
+    )
+    if inserted.rowcount == 1:
         return True
 
     result = session.execute(
         update(ResourceLock)
         .where(ResourceLock.lock_key == lock_key, ResourceLock.lease_until <= now)
         .values(owner=owner, lease_until=lease_until, acquired_at=now)
+    )
+    return result.rowcount == 1
+
+
+def renew_resource_lock(
+    session: Session,
+    *,
+    lock_key: str,
+    owner: str,
+    now: datetime,
+    seconds: int = DEFAULT_LEASE_SECONDS,
+) -> bool:
+    """Extend a live resource lease without allowing an owner change."""
+    result = session.execute(
+        update(ResourceLock)
+        .where(
+            ResourceLock.lock_key == lock_key,
+            ResourceLock.owner == owner,
+            ResourceLock.lease_until > now,
+        )
+        .values(lease_until=now + timedelta(seconds=seconds))
     )
     return result.rowcount == 1
 
@@ -362,7 +402,7 @@ def append_audit_event(
     so explicitly, so it is not treated as one.
     """
     previous = session.scalars(
-        select(AuditEvent).order_by(AuditEvent.created_at.desc(), AuditEvent.event_id.desc()).limit(1)
+        select(AuditEvent).order_by(AuditEvent.sequence.desc()).limit(1)
     ).first()
     prev_hash = previous.event_hash if previous else None
     event = AuditEvent(
@@ -390,7 +430,7 @@ def verify_audit_chain(session: Session) -> list[str]:
     broken: list[str] = []
     prev_hash: str | None = None
     events = session.scalars(
-        select(AuditEvent).order_by(AuditEvent.created_at, AuditEvent.event_id)
+        select(AuditEvent).order_by(AuditEvent.sequence)
     ).all()
     for event in events:
         expected = compute_event_hash(

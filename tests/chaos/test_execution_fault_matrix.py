@@ -23,10 +23,14 @@ from personal_data_mcp.storage.engine import (
     session_factory,
 )
 from personal_data_mcp.storage.execution_store import (
+    UnverifiedReceiptError,
     acquire_recovery_lease,
+    acquire_resource_lock,
     append_audit_event,
     prepare_execution,
     record_receipt,
+    release_resource_lock,
+    renew_resource_lock,
     resume_after_restart,
     transition,
     verify_audit_chain,
@@ -243,6 +247,31 @@ def test_a_verified_read_back_is_the_only_route_to_success(node: Node) -> None:
     assert receipts(restarted) == ["rec_1"]
 
 
+def test_success_without_a_verified_receipt_is_rejected(node: Node) -> None:
+    prepare(node)
+    advance(node, "submitting")
+    advance(node, "committed_unverified")
+
+    with pytest.raises(UnverifiedReceiptError):
+        advance(node, "succeeded")
+    assert state_of(node) == "committed_unverified"
+
+    with node.session() as session:
+        record_receipt(
+            session,
+            receipt_id="rc-unverified",
+            idempotency_key=KEY,
+            table_kind="expense",
+            record_id="rec_unverified",
+            now=T0,
+        )
+        session.commit()
+
+    with pytest.raises(UnverifiedReceiptError):
+        advance(node, "succeeded")
+    assert state_of(node) == "committed_unverified"
+
+
 def test_cancelling_after_submit_cannot_produce_a_cancelled_outcome(
     node: Node,
 ) -> None:
@@ -284,6 +313,44 @@ def test_only_one_worker_can_hold_a_recovery_lease(node: Node) -> None:
             idempotency_key=KEY,
             owner="worker-2",
             now=T0 + timedelta(seconds=31),
+        )
+        session.commit()
+
+
+def test_resource_lock_can_only_be_renewed_by_its_live_owner(node: Node) -> None:
+    with node.session() as session:
+        assert acquire_resource_lock(
+            session,
+            lock_key="family-fund-2026",
+            owner="worker-1",
+            now=T0,
+        )
+        session.commit()
+
+    with node.session() as session:
+        assert not renew_resource_lock(
+            session,
+            lock_key="family-fund-2026",
+            owner="worker-2",
+            now=T0 + timedelta(seconds=10),
+        )
+        assert renew_resource_lock(
+            session,
+            lock_key="family-fund-2026",
+            owner="worker-1",
+            now=T0 + timedelta(seconds=10),
+        )
+        session.commit()
+
+    with node.session() as session:
+        assert not acquire_resource_lock(
+            session,
+            lock_key="family-fund-2026",
+            owner="worker-2",
+            now=T0 + timedelta(seconds=31),
+        )
+        assert release_resource_lock(
+            session, lock_key="family-fund-2026", owner="worker-1"
         )
         session.commit()
 
@@ -371,7 +438,7 @@ def test_the_audit_chain_detects_an_edited_event(node: Node) -> None:
     with node.session() as session:
         from personal_data_mcp.storage.models import AuditEvent
 
-        event = session.get(AuditEvent, "ev-1")
+        event = session.query(AuditEvent).filter_by(event_id="ev-1").one()
         assert event is not None
         event.redacted_summary = "step 1 (edited)"
         session.commit()
@@ -379,3 +446,27 @@ def test_the_audit_chain_detects_an_edited_event(node: Node) -> None:
     with node.session() as session:
         broken = verify_audit_chain(session)
         assert "ev-1" in broken
+
+
+def test_same_second_audit_events_follow_append_order_not_uuid_order(
+    node: Node,
+) -> None:
+    with node.session() as session:
+        append_audit_event(
+            session,
+            event_id="ev-z",
+            trace_id="tr-1",
+            event_type="tool_execution",
+            redacted_summary="first",
+            now=T0,
+        )
+        append_audit_event(
+            session,
+            event_id="ev-a",
+            trace_id="tr-1",
+            event_type="tool_execution",
+            redacted_summary="second",
+            now=T0,
+        )
+        session.commit()
+        assert verify_audit_chain(session) == []

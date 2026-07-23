@@ -280,7 +280,12 @@ class AuditEvent(Base):
 
     __tablename__ = "audit_events"
 
-    event_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    #: Database-assigned append order. Timestamps and UUIDs can collide or sort
+    #: differently from insertion order, so neither is safe as a chain position.
+    sequence: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    event_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     trace_id: Mapped[str] = mapped_column(Text, nullable=False)
     event_type: Mapped[str] = mapped_column(Text, nullable=False)
     redacted_summary: Mapped[str] = mapped_column(Text, nullable=False)

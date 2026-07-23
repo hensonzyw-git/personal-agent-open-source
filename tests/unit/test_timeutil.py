@@ -71,8 +71,15 @@ def test_epoch_millis_round_trip_to_the_same_ledger_date() -> None:
 def test_rfc3339_round_trip_is_utc_normalised() -> None:
     shanghai_noon = datetime(2026, 7, 23, 12, 10, tzinfo=LEDGER_TIMEZONE)
     text = to_rfc3339(shanghai_noon)
-    assert text == "2026-07-23T04:10:00Z"
+    assert text == "2026-07-23T04:10:00.000000Z"
     assert parse_rfc3339(text) == shanghai_noon
+
+
+def test_rfc3339_preserves_subsecond_lease_precision() -> None:
+    moment = datetime(2026, 7, 23, 4, 10, 0, 987654, tzinfo=timezone.utc)
+    text = to_rfc3339(moment)
+    assert text == "2026-07-23T04:10:00.987654Z"
+    assert parse_rfc3339(text) == moment
 
 
 def test_ledger_date_strings_are_strict() -> None:

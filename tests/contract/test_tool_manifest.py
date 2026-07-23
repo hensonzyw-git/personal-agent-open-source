@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import jsonschema
 import pytest
 
 from personal_agent_core import manifest as manifest_module
@@ -197,6 +198,101 @@ def test_amount_patterns_come_from_the_shared_money_module() -> None:
     assert amount_range["min"]["pattern"] == SIGNED_AMOUNT_PATTERN
     assert amount_range["max"]["pattern"] == SIGNED_AMOUNT_PATTERN
     assert AMOUNT_PATTERN != SIGNED_AMOUNT_PATTERN
+
+
+def test_normal_expense_requires_a_category_and_nonzero_amount() -> None:
+    schema = tool("finance.log_expense")["model_input_schema"]
+    valid = {
+        "name": "午饭",
+        "input_amount": "45.00",
+        "input_currency": "CNY",
+        "occurred_on": "2026-07-23",
+        "is_family_expense": False,
+        "entry_kind": "expense",
+        "category": "餐饮",
+    }
+    jsonschema.validate(valid, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            {
+                key: value
+                for key, value in valid.items()
+                if key != "category"
+            },
+            schema,
+        )
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**valid, "input_amount": "0.00"}, schema)
+
+    # Refund and AA category may remain absent until the server finds a unique
+    # original transaction; only ordinary expense requires it at the boundary.
+    jsonschema.validate(
+        {
+            **{key: value for key, value in valid.items() if key != "category"},
+            "entry_kind": "refund",
+        },
+        schema,
+    )
+
+
+def test_family_fund_modes_are_dispatched_on_mode() -> None:
+    schema = tool("finance.update_family_fund")["model_input_schema"]
+
+    # "Not applicable" may be spelled either way. Omitting the other mode's
+    # field and sending it as an explicit null mean the same thing, and
+    # finance.log_expense already accepts explicit nulls, so both tools have to
+    # agree about it.
+    for valid in (
+        {"mode": "top_up", "recharge_amount_cny": "10000.00"},
+        {
+            "mode": "top_up",
+            "recharge_amount_cny": "10000.00",
+            "target_balance_cny": None,
+        },
+        {"mode": "top_up", "recharge_amount_cny": "10000.00", "note": "年终"},
+        {"mode": "interest_reconcile", "target_balance_cny": "30000.00"},
+        {
+            "mode": "interest_reconcile",
+            "target_balance_cny": "30000.00",
+            "recharge_amount_cny": None,
+            "note": None,
+        },
+    ):
+        jsonschema.validate(valid, schema)
+
+    for invalid in (
+        # The mode's own field is genuinely missing.
+        {"mode": "top_up"},
+        {"mode": "top_up", "recharge_amount_cny": None},
+        {"mode": "top_up", "recharge_amount_cny": "0"},
+        # Both modes' fields carry real values.
+        {
+            "mode": "top_up",
+            "recharge_amount_cny": "10000.00",
+            "target_balance_cny": "30000.00",
+        },
+        # The 利息补齐 note is fixed server side, so the model may not write one.
+        {
+            "mode": "interest_reconcile",
+            "target_balance_cny": "30000.00",
+            "note": "模型不应覆盖固定备注",
+        },
+    ):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(invalid, schema)
+
+
+def test_a_bad_amount_reports_the_amount_not_the_other_mode() -> None:
+    # Under oneOf every failure surfaced as "'interest_reconcile' was expected",
+    # including a plain bad amount. That text would have reached clarification
+    # prompts and alerts, where it says nothing true about the problem.
+    schema = tool("finance.update_family_fund")["model_input_schema"]
+    with pytest.raises(jsonschema.ValidationError) as excinfo:
+        jsonschema.validate(
+            {"mode": "top_up", "recharge_amount_cny": "0.00"}, schema
+        )
+    assert "interest_reconcile" not in excinfo.value.message
+    assert "0.00" in excinfo.value.message
 
 
 def test_batch_requires_at_least_two_entries() -> None:

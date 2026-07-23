@@ -66,7 +66,7 @@
   "disabled_tools": [
     "finance.log_expense_batch"
   ],
-  "allowed_tools_version": "edc5ce3ab8e244aa7ca6c54bba2cb1c3333b72a830150911c66bd06d377852c0",
+  "allowed_tools_version": "7f478c0a59c3269af9592ff324bc6da47bae1455aa3857937e864ca06d6fde09",
   "tools": [
     {
       "name": "finance.log_expense",
@@ -100,7 +100,14 @@
           "input_amount": {
             "type": "string",
             "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$",
-            "description": "原始输入金额的非零绝对值，最多两位小数。不要输入负号：账务符号完全由 entry_kind 决定。"
+            "description": "原始输入金额的非零绝对值，最多两位小数。不要输入负号：账务符号完全由 entry_kind 决定。",
+            "not": {
+              "enum": [
+                "0",
+                "0.0",
+                "0.00"
+              ]
+            }
           },
           "input_currency": {
             "type": "string",
@@ -114,8 +121,15 @@
               "null"
             ],
             "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$",
+            "description": "用户明确给出的实际人民币结算金额。存在时优先于参考汇率。",
             "default": null,
-            "description": "用户明确给出的实际人民币结算金额。存在时优先于参考汇率。"
+            "not": {
+              "enum": [
+                "0",
+                "0.0",
+                "0.00"
+              ]
+            }
           },
           "category": {
             "type": [
@@ -166,7 +180,41 @@
             ],
             "description": "expense 为正数普通支出；refund 和 aa_reimbursement 归一化为负数冲减。仅有负号而没有退款或 AA 语义时必须追问。"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "entry_kind": {
+                  "const": "expense"
+                }
+              },
+              "required": [
+                "entry_kind"
+              ]
+            },
+            "then": {
+              "required": [
+                "category"
+              ],
+              "properties": {
+                "category": {
+                  "type": "string",
+                  "enum": [
+                    "出行",
+                    "餐饮",
+                    "游戏",
+                    "日常生活",
+                    "玩乐",
+                    "购物",
+                    "旅行",
+                    "房租"
+                  ]
+                }
+              }
+            }
+          }
+        ]
       },
       "output_schema": {
         "type": "object",
@@ -281,8 +329,8 @@
         "SOURCE_COMMIT_UNKNOWN",
         "SOURCE_COMMITTED_MISMATCH"
       ],
-      "input_schema_hash": "125beb8f979cafc49aa44dbecc1d747cb3331a8beff731919b4b267c9aca554d",
-      "contract_hash": "a7f7b8ccf1d03d97145ee5d11bd19321a5cfb37cf8dc314341c03fa10ad1e50c"
+      "input_schema_hash": "58b2dcc62272f953373def75845868a91bf06083eb28410656e1cf55fa84f8c8",
+      "contract_hash": "d4ae2dded5cf62a04a92ddbd0dd9f141cac688e72a21e1ebf1ff8c1c3fb78e91"
     },
     {
       "name": "finance.log_expense_batch",
@@ -327,7 +375,14 @@
                 "input_amount": {
                   "type": "string",
                   "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$",
-                  "description": "原始输入金额的非零绝对值，最多两位小数。不要输入负号：账务符号完全由 entry_kind 决定。"
+                  "description": "原始输入金额的非零绝对值，最多两位小数。不要输入负号：账务符号完全由 entry_kind 决定。",
+                  "not": {
+                    "enum": [
+                      "0",
+                      "0.0",
+                      "0.00"
+                    ]
+                  }
                 },
                 "input_currency": {
                   "type": "string",
@@ -341,8 +396,15 @@
                     "null"
                   ],
                   "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$",
+                  "description": "用户明确给出的实际人民币结算金额。存在时优先于参考汇率。",
                   "default": null,
-                  "description": "用户明确给出的实际人民币结算金额。存在时优先于参考汇率。"
+                  "not": {
+                    "enum": [
+                      "0",
+                      "0.0",
+                      "0.00"
+                    ]
+                  }
                 },
                 "category": {
                   "type": [
@@ -393,7 +455,41 @@
                   ],
                   "description": "expense 为正数普通支出；refund 和 aa_reimbursement 归一化为负数冲减。仅有负号而没有退款或 AA 语义时必须追问。"
                 }
-              }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "entry_kind": {
+                        "const": "expense"
+                      }
+                    },
+                    "required": [
+                      "entry_kind"
+                    ]
+                  },
+                  "then": {
+                    "required": [
+                      "category"
+                    ],
+                    "properties": {
+                      "category": {
+                        "type": "string",
+                        "enum": [
+                          "出行",
+                          "餐饮",
+                          "游戏",
+                          "日常生活",
+                          "玩乐",
+                          "购物",
+                          "旅行",
+                          "房租"
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
             },
             "description": "每一笔都必须独立完整。任一笔缺字段、场次歧义、退款无法匹配分类或汇率不可得时，整批先追问或失败，一笔也不写。"
           }
@@ -534,8 +630,8 @@
         "SOURCE_COMMIT_UNKNOWN",
         "SOURCE_COMMITTED_MISMATCH"
       ],
-      "input_schema_hash": "3ec11cf672dac951f4bda5fc3ef2c2b29a46c4cf1c94e0855596f4a65d996ea4",
-      "contract_hash": "64710ae2031263ab0507f38c51d7b395f8a49f1640a9b406bac8fd9559dbcb2d"
+      "input_schema_hash": "11af0d4a7c77b491004f98d9ba944c40fcdaea45ccebeb743a9d0947c35ffd43",
+      "contract_hash": "a67e78c71c7479da89285874867b832b2606e31a38cd741b1e8b7577af82f6ad"
     },
     {
       "name": "finance.log_income",
@@ -567,7 +663,14 @@
           "input_amount": {
             "type": "string",
             "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$",
-            "description": "非零正数金额，最多两位小数。收入拒绝负数；退款和 AA 收款属于支出冲减，不是收入。"
+            "description": "非零正数金额，最多两位小数。收入拒绝负数；退款和 AA 收款属于支出冲减，不是收入。",
+            "not": {
+              "enum": [
+                "0",
+                "0.0",
+                "0.00"
+              ]
+            }
           },
           "input_currency": {
             "type": "string",
@@ -581,8 +684,15 @@
               "null"
             ],
             "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$",
+            "description": "用户明确给出的实际人民币结算额，存在时优先。",
             "default": null,
-            "description": "用户明确给出的实际人民币结算额，存在时优先。"
+            "not": {
+              "enum": [
+                "0",
+                "0.0",
+                "0.00"
+              ]
+            }
           },
           "occurred_on": {
             "type": "string",
@@ -704,8 +814,8 @@
         "SOURCE_COMMIT_UNKNOWN",
         "SOURCE_COMMITTED_MISMATCH"
       ],
-      "input_schema_hash": "a5780fe28c26f5c5f27f7101af0f965828230bea0ce6bb22b55b5716b1d1fb98",
-      "contract_hash": "a992d6d44ac483b959f37fdd2e867d53cba0c19f2ad11309157645b513e97850"
+      "input_schema_hash": "b67f4f0f1cd6c6455fcf8d6f613c34fd9e283c8838f8e4134cb76dd297e18e8f",
+      "contract_hash": "8819afc0e82731875b5353011da1de14e3d67281442119770111686c2e83313a"
     },
     {
       "name": "finance.update_family_fund",
@@ -739,8 +849,15 @@
               "null"
             ],
             "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$",
+            "description": "top_up 模式的充值金额，必须为正数。",
             "default": null,
-            "description": "top_up 模式的充值金额，必须为正数。"
+            "not": {
+              "enum": [
+                "0",
+                "0.0",
+                "0.00"
+              ]
+            }
           },
           "target_balance_cny": {
             "type": [
@@ -748,8 +865,8 @@
               "null"
             ],
             "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$",
-            "default": null,
-            "description": "interest_reconcile 模式的目标余额。低于或等于当前余额时不写入。"
+            "description": "interest_reconcile 模式的目标余额。低于或等于当前余额时不写入。",
+            "default": null
           },
           "note": {
             "type": [
@@ -761,28 +878,69 @@
             "description": "备注；利息补齐的备注由服务端固定写入，不由模型提供。"
           }
         },
-        "oneOf": [
+        "allOf": [
           {
-            "properties": {
-              "mode": {
-                "const": "top_up"
-              }
+            "if": {
+              "properties": {
+                "mode": {
+                  "const": "top_up"
+                }
+              },
+              "required": [
+                "mode"
+              ]
             },
-            "required": [
-              "mode",
-              "recharge_amount_cny"
-            ]
+            "then": {
+              "required": [
+                "recharge_amount_cny"
+              ],
+              "properties": {
+                "recharge_amount_cny": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$",
+                  "description": "top_up 模式的充值金额，必须为正数。",
+                  "not": {
+                    "enum": [
+                      "0",
+                      "0.0",
+                      "0.00"
+                    ]
+                  }
+                },
+                "target_balance_cny": {
+                  "const": null
+                }
+              }
+            }
           },
           {
-            "properties": {
-              "mode": {
-                "const": "interest_reconcile"
-              }
+            "if": {
+              "properties": {
+                "mode": {
+                  "const": "interest_reconcile"
+                }
+              },
+              "required": [
+                "mode"
+              ]
             },
-            "required": [
-              "mode",
-              "target_balance_cny"
-            ]
+            "then": {
+              "required": [
+                "target_balance_cny"
+              ],
+              "properties": {
+                "target_balance_cny": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$"
+                },
+                "recharge_amount_cny": {
+                  "const": null
+                },
+                "note": {
+                  "const": null
+                }
+              }
+            }
           }
         ]
       },
@@ -904,8 +1062,8 @@
         "SOURCE_COMMIT_UNKNOWN",
         "SOURCE_COMMITTED_MISMATCH"
       ],
-      "input_schema_hash": "1e79315f96faaf559acaaf56f6bc9a424f4724ea692925f7951e6477aaa7d144",
-      "contract_hash": "791e0ae961704a55489149bbd6d047dc9c8a1213f4414814232b3281a24cfec5"
+      "input_schema_hash": "d2067ac7ebc9cc96cdc64a52e4b079079405a249603dc8ce02e2710697e3e7df",
+      "contract_hash": "12df071cc849be95eb79da224e7cffd675d7dd6130aa0fc9ac4ddc51d68c7985"
     },
     {
       "name": "finance.query_expenses",
