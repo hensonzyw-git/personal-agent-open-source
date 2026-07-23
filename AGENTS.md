@@ -79,7 +79,9 @@ for Phase 1 technical design. Do not reintroduce superseded Finance rules.
 PRD v1.0.1 has passed product review. Do not proactively build its MCP server, Feishu
 application, iOS screens, or write against personal records merely because the
 requirements exist; wait for explicit user approval before entering Phase 1
-technical design or development.
+technical design or development. Once technical-design authorization is given,
+start with `docs/Phase1技术方案设计计划_v0.1.md`; it defines the sequence and
+the gate between design and implementation.
 
 Already confirmed:
 
@@ -187,6 +189,8 @@ conflict instead of silently choosing an old default.
 - `docs/MCP工具IR_v0.1.md` — cross-domain IR baseline; archived Finance text is
   non-normative, while its Finance contract summary is current.
 - `docs/Finance MCP工具设计草案_v0.1.md` — canonical detailed Finance contract.
+- `docs/Phase1技术方案设计计划_v0.1.md` — next-stage work order and the gate
+  before implementation.
 - `ECS安全加固实施记录_2026-07-23.md` — security, encryption, snapshot, and
   rollback record.
 - `PROJECT_STATUS.md` — exact handoff point and ordered next work.

@@ -22,6 +22,7 @@ PRD v1.0.1 已通过产品评审，当前在等待明确的 Phase 1 技术设计
 - [项目协作与开发约定](./AGENTS.md)（与 `CLAUDE.md` 相同）
 - [个人 Agent iOS App PRD v1.0.1](./个人Agent_PRD_v1.0.1.md)
 - [PRD v1.0.1 评审结论](./docs/PRD评审结论_2026-07-23.md)
+- [Phase 1 技术方案设计计划](./docs/Phase1技术方案设计计划_v0.1.md)
 - [ECS 安全加固实施记录](./ECS安全加固实施记录_2026-07-23.md)
 - [MCP 工具 IR v0.1](./docs/MCP工具IR_v0.1.md)
 - [Agent 框架与 GLM Spike 计划 v0.1](./docs/Agent框架Spike计划_v0.1.md)
@@ -69,12 +70,12 @@ uv run personal-agent-online-eval --framework claude --case-id FIN-021
 
 ## 下一步
 
-收到用户明确的 Phase 1 授权后，按以下顺序开始：
+收到用户明确的 Phase 1 技术方案设计授权后，按以下顺序开始：
 
-1. 输出 Phase 1 技术方案、数据模型和开发任务拆解。
+1. 按 [Phase 1 技术方案设计计划](./docs/Phase1技术方案设计计划_v0.1.md) 输出技术方案、数据模型和开发任务拆解；此时不开始实现。
 2. 以 ADK 为主框架验证 Streamable HTTP、超时、重连、服务端允许工具集合和审计 trace。
 3. 增加 10–20 条经用户复核的脱敏真实表达；只有 ADK 触发选型门时，才为 Claude 跑同批完整回归。
-4. 补充异机加密备份和真实恢复演练。
+4. 补充异机加密备份和真实恢复演练；技术方案评审通过并获得开发授权后，才进入实施。
 
 ## 安全约定
 
