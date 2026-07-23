@@ -32,6 +32,7 @@ from starlette.applications import Starlette
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_data_mcp.server.authz import Authorizer
 from personal_data_mcp.server.config import ServerConfig
 from personal_data_mcp.server.errors import (
     error_result,
@@ -39,6 +40,7 @@ from personal_data_mcp.server.errors import (
     success_result,
 )
 from personal_data_mcp.server.handlers import ToolInvocation, ToolRegistry
+from personal_data_mcp.server.keys import load_verification_ring
 from personal_data_mcp.server import meta
 
 
@@ -98,27 +100,47 @@ class LoopbackHttpGuard:
 
 async def dispatch(
     registry: ToolRegistry,
+    authorizer: Authorizer,
     name: str,
     arguments: dict[str, Any],
+    headers: dict[str, str],
 ) -> CallToolResult:
     """Resolve one `tools/call` to a result, with no path that raises.
 
-    Every branch leaves through the error envelope, including an unexpected
-    exception, so the wire can only ever carry a stable code.
+    The order is deliberate and load-bearing: the handler runs only after the
+    Host Context is verified. A handler is the only thing that creates an
+    execution record, so a rejected call cannot leave one behind. Every branch,
+    including an unexpected exception, leaves through the error envelope, so the
+    wire can only ever carry a stable code.
     """
     try:
+        contract = registry.contract(name)
         handler = registry.handler(name)
-        if handler is None:
+        if handler is None or contract is None:
             # Not discoverable, so reaching here means the caller guessed a
             # name. It is refused identically whether the tool is unknown,
             # disabled or simply not built yet: a caller must not be able to
             # map this server's surface by comparing error codes.
+            #
+            # Authorisation is not attempted for an unknown tool: there is no
+            # contract to state its required scopes, and the binding would have
+            # nothing meaningful to check the tool name against.
             return error_result(
                 AppError(
                     ErrorCode.TOOL_NOT_ALLOWLISTED,
                     internal_detail=f"no handler registered for {name!r}",
                 )
             )
+
+        # Verify before the handler. Nothing below this line may run for a
+        # call that fails here.
+        authorizer.authorize(
+            tool=name,
+            arguments=arguments,
+            headers=headers,
+            required_scopes=tuple(contract["required_scopes"]),
+        )
+
         payload = await handler(ToolInvocation(tool=name, arguments=arguments))
         return success_result(payload)
     except AppError as error:
@@ -137,9 +159,12 @@ def build_registry() -> ToolRegistry:
 def build_server(
     config: ServerConfig | None = None,
     registry: ToolRegistry | None = None,
+    authorizer: Authorizer | None = None,
 ) -> FastMCP:
     config = config or ServerConfig()
     registry = registry if registry is not None else build_registry()
+    if authorizer is None:
+        authorizer = Authorizer(load_verification_ring())
 
     server = FastMCP(
         SERVER_NAME,
@@ -166,7 +191,9 @@ def build_server(
     # dispatch path instead, so every rejection has the same shape.
     @server._mcp_server.call_tool(validate_input=False)
     async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
-        return await dispatch(registry, name, arguments)
+        return await dispatch(
+            registry, authorizer, name, arguments, current_request_headers()
+        )
 
     return server
 
@@ -174,10 +201,11 @@ def build_server(
 def build_app(
     config: ServerConfig | None = None,
     registry: ToolRegistry | None = None,
+    authorizer: Authorizer | None = None,
 ) -> Starlette:
     """The ASGI application, guard included."""
     config = config or ServerConfig()
-    server = build_server(config, registry)
+    server = build_server(config, registry, authorizer)
     app = server.streamable_http_app()
     app.add_middleware(LoopbackHttpGuard, mcp_path=config.mcp_path)
     return app

@@ -16,12 +16,13 @@ import time
 import httpx
 import pytest
 
+from fixtures.service_keys import SignedCaller
 from personal_agent.mcp_client.core import McpClientCore, StreamableHttpTransport
 from personal_agent_core.manifest import load_manifest
 
 
 PROD_MODULE = "fixtures.production_mcp_server"
-ENV = {"PYTHONPATH": "src:tests", "PATH": "/usr/bin:/bin"}
+BASE_ENV = {"PYTHONPATH": "src:tests", "PATH": "/usr/bin:/bin"}
 
 
 def free_port() -> int:
@@ -31,11 +32,11 @@ def free_port() -> int:
 
 
 class ProdServer:
-    def __init__(self) -> None:
+    def __init__(self, key_env: dict[str, str]) -> None:
         self.port = free_port()
         self.process = subprocess.Popen(
             [sys.executable, "-m", PROD_MODULE, str(self.port)],
-            env=ENV,
+            env={**BASE_ENV, **key_env},
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -63,8 +64,18 @@ class ProdServer:
 
 
 @pytest.fixture(scope="module")
-def prod_server():
-    server = ProdServer()
+def caller(tmp_path_factory) -> SignedCaller:
+    # A caller that carries both Finance and meta scopes, so a single instance
+    # can sign every call in this module.
+    return SignedCaller(
+        scopes=("meta.capabilities.read", "finance.expense.write"),
+    )
+
+
+@pytest.fixture(scope="module")
+def prod_server(caller, tmp_path_factory):
+    key_dir = tmp_path_factory.mktemp("service_key")
+    server = ProdServer(caller.env(key_dir))
     yield server
     server.stop()
 
@@ -107,12 +118,16 @@ def test_disabled_batch_tool_is_not_discoverable(prod_server) -> None:
     assert "finance.log_expense_batch" in disabled
 
 
-def test_meta_capabilities_reports_the_built_surface(prod_server) -> None:
+def test_meta_capabilities_reports_the_built_surface(prod_server, caller) -> None:
     async def scenario():
         async with McpClientCore(
             "finance", StreamableHttpTransport(url=prod_server.url)
         ) as client:
-            return await client.call_tool("meta.capabilities", {})
+            return await client.call_tool(
+                "meta.capabilities",
+                {},
+                host_context=caller.headers("meta.capabilities", {}),
+            )
 
     result = run(scenario())
     assert result["status"] == "ok"
@@ -167,8 +182,27 @@ def test_delete_on_the_mcp_path_is_refused(prod_server) -> None:
     assert deleted.status_code == 405
 
 
-def test_post_still_works_after_the_guard(prod_server) -> None:
+def test_post_still_works_after_the_guard(prod_server, caller) -> None:
     """The guard refuses GET without breaking the POST path it wraps."""
+
+    async def scenario():
+        async with McpClientCore(
+            "finance", StreamableHttpTransport(url=prod_server.url)
+        ) as client:
+            return await client.call_tool(
+                "meta.capabilities",
+                {},
+                host_context=caller.headers("meta.capabilities", {}),
+            )
+
+    assert run(scenario())["status"] == "ok"
+
+
+# --- the gate over the real transport ---------------------------------------
+
+
+def test_a_call_without_a_host_context_is_refused(prod_server) -> None:
+    """No signed context, no execution: loopback is not an auth boundary."""
 
     async def scenario():
         async with McpClientCore(
@@ -176,4 +210,51 @@ def test_post_still_works_after_the_guard(prod_server) -> None:
         ) as client:
             return await client.call_tool("meta.capabilities", {})
 
-    assert run(scenario())["status"] == "ok"
+    from personal_agent_core.errors import AppError, ErrorCode
+
+    with pytest.raises(AppError) as caught:
+        run(scenario())
+    assert caught.value.code == ErrorCode.HOST_CONTEXT_MISMATCH
+
+
+def test_tampering_with_an_argument_after_signing_is_refused(
+    prod_server, caller
+) -> None:
+    """Headers signed for one argument set cannot authorise another."""
+    signed_for = caller.headers("meta.capabilities", {})
+
+    async def scenario():
+        async with McpClientCore(
+            "finance", StreamableHttpTransport(url=prod_server.url)
+        ) as client:
+            # meta.capabilities takes no arguments, so any argument is already a
+            # divergence from what was signed; the recomputed hash will not match.
+            return await client.call_tool(
+                "meta.capabilities", {"injected": 1}, host_context=signed_for
+            )
+
+    from personal_agent_core.errors import AppError, ErrorCode
+
+    with pytest.raises(AppError) as caught:
+        run(scenario())
+    assert caught.value.code == ErrorCode.HOST_CONTEXT_MISMATCH
+
+
+def test_a_token_from_an_untrusted_signer_is_refused(prod_server) -> None:
+    """A well-formed token the server has no public key for is rejected."""
+
+    async def scenario(headers):
+        async with McpClientCore(
+            "finance", StreamableHttpTransport(url=prod_server.url)
+        ) as client:
+            return await client.call_tool(
+                "meta.capabilities", {}, host_context=headers
+            )
+
+    from personal_agent_core.errors import AppError, ErrorCode
+
+    # A different key entirely; its kid is not in the server's ring.
+    stranger = SignedCaller(kid="not-the-servers-key")
+    with pytest.raises(AppError) as caught:
+        run(scenario(stranger.headers("meta.capabilities", {})))
+    assert caught.value.code == ErrorCode.HOST_CONTEXT_MISMATCH

@@ -111,6 +111,8 @@ def test_error_result_carries_only_the_stable_code_and_fixed_message() -> None:
 
 def test_an_unexpected_handler_exception_becomes_internal_error() -> None:
     """A raise inside a handler must not put its text on the wire."""
+    from fixtures.service_keys import SignedCaller
+
     registry = build_registry()
 
     async def explode(_: ToolInvocation) -> dict:
@@ -118,7 +120,13 @@ def test_an_unexpected_handler_exception_becomes_internal_error() -> None:
 
     # Replace the meta handler with one that raises a revealing message.
     registry._handlers["meta.capabilities"] = explode  # type: ignore[attr-defined]
-    result = run(dispatch(registry, "meta.capabilities", {}))
+    caller = SignedCaller(scopes=("meta.capabilities.read",))
+    headers = {
+        k.lower(): v for k, v in caller.headers("meta.capabilities", {}).items()
+    }
+    result = run(
+        dispatch(registry, caller.authorizer(), "meta.capabilities", {}, headers)
+    )
     assert result.isError is True
     body = json.loads(result.content[0].text)
     assert body["error"]["code"] == "INTERNAL_ERROR"
@@ -126,10 +134,45 @@ def test_an_unexpected_handler_exception_becomes_internal_error() -> None:
 
 
 def test_an_unknown_tool_is_not_allowlisted() -> None:
+    from fixtures.service_keys import SignedCaller
+
     registry = build_registry()
-    result = run(dispatch(registry, "finance.made_up", {}))
+    # An unknown tool is refused before authorisation, so no context is needed.
+    caller = SignedCaller()
+    result = run(
+        dispatch(registry, caller.authorizer(), "finance.made_up", {}, {})
+    )
     body = json.loads(result.content[0].text)
     assert body["error"]["code"] == "TOOL_NOT_ALLOWLISTED"
+
+
+def test_the_server_refuses_to_build_without_a_verification_key() -> None:
+    """Fail closed: a server that cannot verify must not start."""
+    from personal_data_mcp.server.app import build_app
+    from personal_data_mcp.server.keys import (
+        ServiceKeyConfigError,
+        load_verification_ring,
+    )
+
+    with pytest.raises(ServiceKeyConfigError):
+        # Empty environment: no active kid, no key path.
+        load_verification_ring(env={})
+
+    # And the app build surfaces it rather than starting keyless. Passing an
+    # env-free loader path through build_app's default is what a misconfigured
+    # deployment would hit.
+    with pytest.raises(ServiceKeyConfigError):
+        import os
+
+        saved = {
+            k: os.environ.pop(k)
+            for k in list(os.environ)
+            if k.startswith("PERSONAL_DATA_MCP_SERVICE_")
+        }
+        try:
+            build_app()
+        finally:
+            os.environ.update(saved)
 
 
 def test_success_result_carries_structured_and_text() -> None:
