@@ -2,11 +2,11 @@
 
 Henson 的个人 Agent 项目：iOS App + 自托管 Agent Backend + Personal Data MCP。
 
-PRD v1.0 已发布，当前在等待明确的 Phase 1 技术设计 / 开发授权。iOS App 为薄客户端；服务端负责 Agent Runtime、MCP Client、工具策略、审计和自动任务。首选模型为智谱 GLM；基于当前 Spike 证据，Phase 1 暂定使用 Google ADK，Claude Agent SDK 保留为候选和回退。
+PRD v1.0.1 已通过产品评审，当前在等待明确的 Phase 1 技术设计 / 开发授权。一期只做 Finance 记账场景；iOS App 为薄客户端，服务端负责 Agent Runtime、MCP Client、允许工具集合、审计和每日复核。首选模型为智谱 GLM；Phase 1 暂定使用 Google ADK，Claude Agent SDK 保留为候选和回退。
 
 ## 当前进度
 
-- 一期产品范围、数据边界、权限分级和实施路线已完成 PRD v1.0；
+- 一期产品范围、数据边界、权限分级和实施路线已完成 PRD v1.0.1 并通过评审；
 - ECS 第一阶段安全加固完成：非 root SSH、公钥登录、UFW、Fail2ban、自动安全更新、Show Trace 停用；
 - ECS 系统盘已迁移为 KMS 加密盘，并已配置每日自动快照和迁移后手动基线快照；
 - 公网接入方案确定为 HTTPS + 设备身份，不把 Tailscale 作为移动端必需依赖。
@@ -20,7 +20,8 @@ PRD v1.0 已发布，当前在等待明确的 Phase 1 技术设计 / 开发授�
 
 - [当前状态与交接清单](./PROJECT_STATUS.md)
 - [项目协作与开发约定](./AGENTS.md)（与 `CLAUDE.md` 相同）
-- [个人 Agent iOS App PRD v1.0](./个人Agent_PRD_v1.0.md)
+- [个人 Agent iOS App PRD v1.0.1](./个人Agent_PRD_v1.0.1.md)
+- [PRD v1.0.1 评审结论](./docs/PRD评审结论_2026-07-23.md)
 - [ECS 安全加固实施记录](./ECS安全加固实施记录_2026-07-23.md)
 - [MCP 工具 IR v0.1](./docs/MCP工具IR_v0.1.md)
 - [Agent 框架与 GLM Spike 计划 v0.1](./docs/Agent框架Spike计划_v0.1.md)
@@ -64,14 +65,14 @@ uv run personal-agent-online-eval --framework claude --case-id FIN-021
 - 离线 eval 验证的是测试集合同和确定性 policy，不是模型准确率。
 - 当前 Claude 证据是 smoke，不是完整准确率、时延或成本基准。
 - ADK v0.2 是按用户决定在 23/30 时停止的部分运行；结果文件的 `case_count` 反映实际完成数量。
-- 10–20 条经用户复核的脱敏真实表达属于 Phase 1 技术验证，不是 PRD 1.0 的前置条件。
+- 10–20 条经用户复核的脱敏真实表达属于 Phase 1 技术验证，不是 PRD 的前置条件。
 
 ## 下一步
 
 收到用户明确的 Phase 1 授权后，按以下顺序开始：
 
 1. 输出 Phase 1 技术方案、数据模型和开发任务拆解。
-2. 以 ADK 为主框架验证 Streamable HTTP、超时、重连、pending action 和审计 trace。
+2. 以 ADK 为主框架验证 Streamable HTTP、超时、重连、服务端允许工具集合和审计 trace。
 3. 增加 10–20 条经用户复核的脱敏真实表达；只有 ADK 触发选型门时，才为 Claude 跑同批完整回归。
 4. 补充异机加密备份和真实恢复演练。
 

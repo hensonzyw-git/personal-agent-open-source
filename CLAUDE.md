@@ -58,11 +58,12 @@ P0 is the shared Agent/MCP/security foundation plus:
 
 1. The approved Finance surface: expense, income, family fund, query, and
    daily human review.
-2. Chat, device permissions, audit, confirmation cards, and scheduled jobs.
+2. Chat, device permissions, audit, the service-side allowed tool set, and the
+   Finance daily review job. Full pending-action confirmation is later work.
 
 Knowledge Base, HealthKit, and Wardrobe/OOTD are later-phase directions. Their
 detailed product contracts belong to their own later PRDs, not the current PRD
-1.0 gate. Wardrobe also remains blocked until the iCloud wardrobe source can be
+1.0.1 gate. Wardrobe also remains blocked until the iCloud wardrobe source can be
 accessed from the home development machine. Asset data is high-sensitive,
 read-only later work; it is not MVP scope.
 
@@ -75,7 +76,7 @@ for Phase 1 technical design. Do not reintroduce superseded Finance rules.
 
 ## 4.1 Current phase gate
 
-PRD v1.0 is published. Do not proactively build its MCP server, Feishu
+PRD v1.0.1 has passed product review. Do not proactively build its MCP server, Feishu
 application, iOS screens, or write against personal records merely because the
 requirements exist; wait for explicit user approval before entering Phase 1
 technical design or development.
@@ -88,8 +89,9 @@ Already confirmed:
 - The write destination is the Feishu annual `支出记录` table. Only the stored
   amount, name, date, family flag, and category fields may be written; formula
   fields and auto-number fields may not be written.
-- `Asia/Shanghai` determines dates. Missing date means message day; `昨天` and
-  `前天` resolve deterministically before the MCP call.
+- `occurred_on` is the actual payment/entry date, not the future consumption
+  date. Missing date means message day; paying today for a future trip is still
+  recorded today. `昨天` and `前天` resolve before the MCP call.
 - Every new entry must explicitly state `个人支出` or `家庭支出`. There is no
   default and history must not be used to infer this attribute. Missing scope
   means ask before writing.
@@ -126,9 +128,9 @@ Already confirmed:
   `买充电宝 -> 购物`; borrowed/rented `充电宝 -> 日常生活`. Ask only when a
   new input does not reveal whether the power bank was bought or borrowed.
 
-The finance mapping derived from the current ledger is a candidate rule set,
-not a permission to invent new mappings. Before implementing it, record user
-approval and add representative redacted evaluations.
+The finance mapping derived from the current ledger is approved but remains
+conservative; it is not permission to invent new mappings. Add representative
+redacted evaluations before implementation.
 
 ## 5. Engineering and safety rules
 
@@ -180,7 +182,7 @@ conflict instead of silently choosing an old default.
 
 ## 8. Canonical project documents
 
-- `个人Agent_PRD_v1.0.md` — released Phase 1 product scope and requirements.
+- `个人Agent_PRD_v1.0.1.md` — reviewed Phase 1 product scope and requirements.
 - `docs/Agent框架Spike初步结果_2026-07-23.md` — evidence for ADK-first choice.
 - `docs/MCP工具IR_v0.1.md` — cross-domain IR baseline; archived Finance text is
   non-normative, while its Finance contract summary is current.
