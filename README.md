@@ -2,7 +2,7 @@
 
 Henson 的个人 Agent 项目：iOS App + 自托管 Agent Backend + Personal Data MCP。
 
-当前处于 Phase 0。iOS App 为薄客户端；服务端负责 Agent Runtime、MCP Client、工具策略、审计和自动任务。首选模型为智谱 GLM，Agent 框架将在 Google ADK 与 Claude Agent SDK 的同一组技术 Spike 后确定。
+当前处于 Phase 0 收尾。iOS App 为薄客户端；服务端负责 Agent Runtime、MCP Client、工具策略、审计和自动任务。首选模型为智谱 GLM；基于当前 Spike 证据，Phase 1 暂定使用 Google ADK，Claude Agent SDK 保留为候选和回退。
 
 ## 当前进度
 
@@ -12,7 +12,9 @@ Henson 的个人 Agent 项目：iOS App + 自托管 Agent Backend + Personal Dat
 - 公网接入方案确定为 HTTPS + 设备身份，不把 Tailscale 作为移动端必需依赖。
 - MCP 工具 IR v0.1 和 30 条记账基线评测集已建立；
 - 独立 MCP Client 已真实跑通 stdio initialize、tool discovery 和结构化工具调用；
-- Google ADK 已完成无 Key 的 MCP discovery；Claude Agent SDK 已完成无 Key 的 MCP 配置与 Client 构造。
+- Google ADK 和 Claude Agent SDK 均已通过 GLM-5.2 + MCP 的真实工具调用；
+- ADK v0.2 已完成 23/30 条合成 eval 后按用户决定停止：严格通过率 95.65%，安全率、关键参数正确率和外部回执率均为 100%；
+- Claude Agent SDK 已完成单笔和双笔 MCP smoke，但没有跑完整测试集，不与 ADK 的 23 条结果做伪横评。
 
 ## 文档
 
@@ -20,6 +22,7 @@ Henson 的个人 Agent 项目：iOS App + 自托管 Agent Backend + Personal Dat
 - [ECS 安全加固实施记录](./ECS安全加固实施记录_2026-07-23.md)
 - [MCP 工具 IR v0.1](./docs/MCP工具IR_v0.1.md)
 - [Agent 框架与 GLM Spike 计划 v0.1](./docs/Agent框架Spike计划_v0.1.md)
+- [Agent 框架与 GLM Spike 初步结果](./docs/Agent框架Spike初步结果_2026-07-23.md)
 
 ## 本地运行
 
@@ -43,18 +46,29 @@ sh scripts/configure_local_key.sh
 
 不要把 Key 粘贴到聊天、Git、命令行参数、测试快照或日志。
 
+在线 eval 会真实消耗模型 API，但仍只调用本地 fixture：
+
+```bash
+set -a
+. ./.env.local
+set +a
+uv run personal-agent-online-eval --framework adk --case-id FIN-021
+uv run personal-agent-online-eval --framework claude --case-id FIN-021
+```
+
 ## Spike 证据边界
 
 - `evals/finance_expense_v0.1.jsonl` 的 30 条数据均有来源标签，当前不含真实个人账单。
 - 离线 eval 验证的是测试集合同和确定性 policy，不是模型准确率。
-- Claude Agent SDK 在无 Key 阶段只验证到配置和 Client 构造；其 MCP discovery 与 GLM 兼容性必须在连接 Agent 进程后实测。
-- 最终选型前仍需增加 10–20 条经用户复核的脱敏真实表达。
+- 当前 Claude 证据是 smoke，不是完整准确率、时延或成本基准。
+- ADK v0.2 是按用户决定在 23/30 时停止的部分运行；结果文件的 `case_count` 反映实际完成数量。
+- PRD 1.0 前仍需增加 10–20 条经用户复核的脱敏真实表达。
 
 ## 下一步
 
-1. 使用新 Key 跑 ADK / Claude Agent SDK + GLM 的同一组 30 条 eval。
-2. 补充 Streamable HTTP、超时、重连、pending action 和审计 trace。
-3. 输出框架选型报告、Phase 1 技术方案与开发任务拆解。
+1. 以 ADK 为 Phase 1 暂定主框架，补 Streamable HTTP、超时、重连、pending action 和审计 trace。
+2. 增加 10–20 条经用户复核的脱敏真实表达；只有 ADK 触发选型门时，才为 Claude 跑同批完整回归。
+3. 输出 Phase 1 技术方案、数据模型和开发任务拆解。
 4. 补充异机加密备份和真实恢复演练。
 
 ## 安全约定

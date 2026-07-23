@@ -7,13 +7,25 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 
-Action = Literal["call_tool", "ask_clarification", "pending_action", "reject"]
+Action = Literal[
+    "call_tool",
+    "call_tools",
+    "ask_clarification",
+    "pending_action",
+    "reject",
+]
 SourceType = Literal["synthetic", "prd_example", "user_provided_redacted"]
+
+
+class ExpectedToolCall(BaseModel):
+    tool: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExpectedBehavior(BaseModel):
     action: Action
     tool: str | None = None
+    calls: list[ExpectedToolCall] = Field(default_factory=list)
     arguments: dict[str, Any] = Field(default_factory=dict)
     missing_fields: list[str] = Field(default_factory=list)
     requires_confirmation: bool = False
@@ -23,8 +35,12 @@ class ExpectedBehavior(BaseModel):
     def validate_action_shape(self) -> "ExpectedBehavior":
         if self.action == "call_tool" and not self.tool:
             raise ValueError("call_tool cases require a tool")
+        if self.action == "call_tools" and len(self.calls) < 2:
+            raise ValueError("call_tools cases require at least two calls")
         if self.action != "call_tool" and self.tool is not None:
             raise ValueError("non-call cases cannot declare a tool")
+        if self.action != "call_tools" and self.calls:
+            raise ValueError("only call_tools cases can declare calls")
         return self
 
 

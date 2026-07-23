@@ -31,6 +31,7 @@ dev = [
 personal-agent-offline-eval = "personal_agent_spike.offline_eval:main"
 personal-agent-mcp-probe = "personal_agent_spike.client_probe:main"
 personal-agent-framework-probe = "personal_agent_spike.framework_probe:main"
+personal-agent-online-eval = "personal_agent_spike.online_eval:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/personal_agent_spike"]

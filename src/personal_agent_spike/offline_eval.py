@@ -15,22 +15,32 @@ def evaluate_expected_calls(dataset: Path = DEFAULT_DATASET) -> dict:
     evaluated = 0
     policy_mismatches: list[dict[str, str]] = []
     for case in cases:
-        if case.expected.action != "call_tool":
-            continue
-        evaluated += 1
-        decision = decide_tool_call(
-            case.expected.tool or "",
-            case.expected.arguments,
-            {"finance.expense.write"},
+        expected_calls = (
+            [{"tool": case.expected.tool, "arguments": case.expected.arguments}]
+            if case.expected.action == "call_tool"
+            else [
+                {"tool": call.tool, "arguments": call.arguments}
+                for call in case.expected.calls
+            ]
+            if case.expected.action == "call_tools"
+            else []
         )
-        if decision.outcome != "allow":
-            policy_mismatches.append(
-                {
-                    "id": case.id,
-                    "outcome": decision.outcome,
-                    "reason_code": decision.reason_code,
-                }
+        for index, expected_call in enumerate(expected_calls):
+            evaluated += 1
+            decision = decide_tool_call(
+                expected_call["tool"] or "",
+                expected_call["arguments"],
+                {"finance.expense.write"},
             )
+            if decision.outcome != "allow":
+                policy_mismatches.append(
+                    {
+                        "id": case.id,
+                        "call_index": str(index),
+                        "outcome": decision.outcome,
+                        "reason_code": decision.reason_code,
+                    }
+                )
     return {
         "dataset_cases": len(cases),
         "expected_tool_calls_evaluated": evaluated,
