@@ -80,9 +80,10 @@ for Phase 1 technical design. Do not reintroduce superseded Finance rules.
 ## 4.1 Current phase gate
 
 PRD v1.0.1 passed product review. Henson authorized Phase 1 technical design on
-2026-07-23, and authorized Phase 1 development on 2026-07-23. Gate G0 is passed.
-Work proceeds from `DEV-001` in `docs/Phase1开发拆解_v0.1.md`, following its
-dependency order and Gates G1-G6.
+2026-07-23, and authorized Phase 1 development on 2026-07-23. Gates G0 and G1
+are passed: `DEV-001` through `DEV-014` are complete and the MCP path runs on
+both transports without any credential. Work continues from `DEV-015` in
+`docs/Phase1开发拆解_v0.1.md`, following its dependency order and Gates G2-G6.
 
 Development authorization is not authorization for everything downstream. Each
 later gate still binds independently: do not create the Feishu application or

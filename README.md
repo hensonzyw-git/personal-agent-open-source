@@ -2,13 +2,16 @@
 
 Henson 的个人 Agent 项目：iOS App + 自托管 Agent Backend + Personal Data MCP。
 
-PRD v1.0.1、Phase 1 技术方案 v0.1 和开发拆解 v0.1 均已通过评审；Henson 已于 2026-07-23 授权开发，Gate G0 通过，实施从 DEV-001 开始。一期只做 Finance 记账场景；iOS App 为薄客户端，服务端负责 Agent Runtime、MCP Client、允许工具集合、审计和每日复核。首选模型为智谱 GLM；Phase 1 暂定使用 Google ADK，Claude Agent SDK 保留为候选和回退。
+PRD v1.0.1、Phase 1 技术方案 v0.1 和开发拆解 v0.1 均已通过评审；Henson 已于 2026-07-23 授权开发。Gate G0 与 G1 已通过，DEV-001 至 DEV-014 完成，下一步为 DEV-015。一期只做 Finance 记账场景；iOS App 为薄客户端，服务端负责 Agent Runtime、MCP Client、允许工具集合、审计和每日复核。首选模型为智谱 GLM；Phase 1 暂定使用 Google ADK，Claude Agent SDK 保留为候选和回退。
 
 ## 当前进度
 
 - 一期产品范围、数据边界、权限分级和实施路线已完成 PRD v1.0.1 并通过评审；
 - Phase 1 技术方案 v0.1 已补齐跨服务恢复、设备鉴权 wire contract 和加密/key rotation，并通过最终技术评审；
-- Phase 1 开发拆解 v0.1 已定义 40 个任务、关键路径、G0-G6 七个 Gate、外部输入和完成定义；开发已获授权，从 DEV-001 开始；
+- Phase 1 开发拆解 v0.1 已定义 40 个任务、关键路径、G0-G6 七个 Gate、外部输入和完成定义；
+- Wave 0–2（DEV-001～014）已完成：工具合同生成与漂移检测、两份 SQLite 与执行状态机、
+  AEAD key ring、设备认证与 Host Context 绑定、独立 MCP Client Core、connector 隔离与
+  Governed Tool Bridge；331 项测试通过，全程零凭证、未接触飞书；
 - 正式 Finance 将使用独立、最小权限的飞书自建应用；现有全权限机器人应用只允许在合成测试 Base 做早期连通验证；
 - ECS 第一阶段安全加固完成：非 root SSH、公钥登录、UFW、Fail2ban、自动安全更新、Show Trace 停用；
 - ECS 系统盘已迁移为 KMS 加密盘，并已配置每日自动快照和迁移后手动基线快照；
@@ -84,8 +87,8 @@ uv run personal-agent-online-eval --framework claude --case-id FIN-021
 
 下一步按以下顺序进行：
 
-1. 按[Phase 1 开发拆解](./docs/Phase1开发拆解_v0.1.md)的依赖顺序推进 Wave 0–6，逐个通过 G1–G6。
-2. G2 前创建专用、最小权限的 `Personal Agent Finance` 飞书自建应用和合成测试 Base；在此之前不需要任何飞书凭证。
+1. 从 DEV-015 继续，按[Phase 1 开发拆解](./docs/Phase1开发拆解_v0.1.md)的依赖顺序推进，逐个通过 G2–G6。
+2. G2 前确认专用飞书应用已导入[最小权限清单](./docs/飞书Finance应用权限_v0.1.md)，并已被加为**合成测试 Base** 的编辑协作者；个人年度账本在 G5 前不授权。
 3. G5 前增加 10–20 条经用户复核的脱敏真实表达，并完成异机加密备份和真实恢复演练。
 
 ## 安全约定
