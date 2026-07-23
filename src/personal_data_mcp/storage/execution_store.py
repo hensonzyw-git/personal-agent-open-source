@@ -38,6 +38,12 @@ from personal_data_mcp.storage.state_machine import (
 
 DEFAULT_LEASE_SECONDS: Final[int] = 30
 
+TOOL_TABLE_KINDS: Final[dict[str, str]] = {
+    "finance.log_expense": "expense",
+    "finance.log_income": "income",
+    "finance.update_family_fund": "family_fund",
+}
+
 
 class UnverifiedReceiptError(RuntimeError):
     """An execution tried to report success without verified external proof."""
@@ -106,6 +112,10 @@ def transition(
     assert_transition(current_state, target_state)
 
     if target_state == "succeeded":
+        execution = session.get(ToolExecution, idempotency_key)
+        expected_table_kind = (
+            TOOL_TABLE_KINDS.get(execution.tool) if execution is not None else None
+        )
         receipts = list(
             session.scalars(
                 select(ExternalReceipt).where(
@@ -113,10 +123,16 @@ def transition(
                 )
             )
         )
-        if len(receipts) != 1 or receipts[0].verified_at is None:
+        if (
+            len(receipts) != 1
+            or receipts[0].verified_at is None
+            or not receipts[0].record_id.strip()
+            or expected_table_kind is None
+            or receipts[0].table_kind != expected_table_kind
+        ):
             raise UnverifiedReceiptError(
                 f"{idempotency_key} cannot succeed without exactly one "
-                "verified external receipt"
+                "matching verified external receipt"
             )
 
     values: dict[str, Any] = {
@@ -280,6 +296,18 @@ def record_receipt(
     a crash before the read-back still leaves the record id to verify against
     rather than an unknown commit to reconcile.
     """
+    execution = session.get(ToolExecution, idempotency_key)
+    if execution is None:
+        raise UnverifiedReceiptError(
+            f"{idempotency_key} has no execution to receive external proof"
+        )
+    expected_table_kind = TOOL_TABLE_KINDS.get(execution.tool)
+    if expected_table_kind is None or table_kind != expected_table_kind:
+        raise UnverifiedReceiptError(
+            f"{execution.tool} cannot record a {table_kind!r} receipt"
+        )
+    if not record_id.strip():
+        raise UnverifiedReceiptError("external receipt record_id must not be empty")
     receipt = ExternalReceipt(
         receipt_id=receipt_id,
         idempotency_key=idempotency_key,

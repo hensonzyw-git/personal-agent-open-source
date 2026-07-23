@@ -18,6 +18,7 @@ Two behaviours follow the 2025-11-25 spec rather than intuition:
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -42,6 +43,33 @@ DEFAULT_WRITE_CALL_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
 
 #: A server is free to paginate one tool at a time; this only stops a runaway.
 MAX_CATALOG_PAGES: Final[int] = 100
+
+
+def _error_payload(result: Any) -> dict[str, Any] | None:
+    """Extract the stable error envelope without trusting free-form text."""
+    candidates: list[Any] = [result.structuredContent]
+    candidates.extend(result.content or [])
+    for candidate in candidates:
+        payload: Any = candidate
+        if hasattr(candidate, "text"):
+            try:
+                payload = json.loads(candidate.text)
+            except (TypeError, json.JSONDecodeError):
+                continue
+        if not isinstance(payload, dict):
+            continue
+        error = payload.get("error", payload)
+        if isinstance(error, dict) and isinstance(error.get("code"), str):
+            return error
+    return None
+
+
+def _validate_protocol_version(connector_id: str, observed: str) -> None:
+    if observed != PROTOCOL_VERSION:
+        raise McpTransportError(
+            f"{connector_id} negotiated unsupported MCP protocol "
+            f"{observed!r}; expected {PROTOCOL_VERSION!r}"
+        )
 
 
 class McpTransportError(RuntimeError):
@@ -129,12 +157,16 @@ class McpClientCore:
                     )
                 else:
                     # Connector credentials ride on this client and nowhere
-                    # else, so one server's headers never reach another.
-                    http_client = None
-                    if self.transport.headers:
-                        http_client = await stack.enter_async_context(
-                            httpx.AsyncClient(headers=self.transport.headers)
+                    # else, so one server's headers never reach another. System
+                    # proxy settings are deliberately ignored: Finance uses a
+                    # loopback endpoint and its credentials must never leave
+                    # this machine through an ambient proxy.
+                    http_client = await stack.enter_async_context(
+                        httpx.AsyncClient(
+                            headers=self.transport.headers,
+                            trust_env=False,
                         )
+                    )
                     read_stream, write_stream, _ = await stack.enter_async_context(
                         streamable_http_client(
                             self.transport.url, http_client=http_client
@@ -147,6 +179,9 @@ class McpClientCore:
                     DEFAULT_INITIALIZE_TIMEOUT.total_seconds()
                 ):
                     result = await session.initialize()
+                _validate_protocol_version(
+                    self.connector_id, result.protocolVersion
+                )
 
                 self._session = session
                 self._identity = ServerIdentity(
@@ -249,19 +284,53 @@ class McpClientCore:
         arguments: dict[str, Any],
         *,
         timeout: timedelta = DEFAULT_READ_CALL_TIMEOUT,
+        host_context: dict[str, str] | None = None,
     ) -> Any:
         """Invoke one tool.
+
+        `host_context` is the per-call authorisation the Host binds to this
+        invocation. The caller states it once and this method routes it to the
+        channel the transport actually has: HTTP headers, or `_meta` for stdio,
+        which has no header layer. Callers cannot pick the channel themselves,
+        so a context can neither be sent twice nor silently dropped.
 
         A timeout raises rather than returning a value. For a write the caller
         must then treat the call as possibly committed, which is exactly what the
         Finance execution state machine is built to resolve.
         """
+        meta: dict[str, Any] | None = None
+        if host_context:
+            if isinstance(self.transport, StreamableHttpTransport):
+                # Headers only. Repeating the bearer token in `_meta` would put
+                # it in the JSON-RPC body, which server frameworks routinely
+                # log, for no gain over the header that already carries it.
+                #
+                # It cannot be installed by mutating the shared AsyncClient
+                # either: concurrent calls would receive each other's identity.
+                # The protocol is stateless, so a short isolated connection is
+                # the safe boundary.
+                call_transport = StreamableHttpTransport(
+                    url=self.transport.url,
+                    headers={**self.transport.headers, **host_context},
+                )
+                async with McpClientCore(
+                    self.connector_id, call_transport
+                ) as call_client:
+                    return await call_client.call_tool(
+                        name, arguments, timeout=timeout
+                    )
+            # stdio has no headers, so `_meta` is the only channel available.
+            meta = dict(host_context)
+
         session = self._require_session()
         try:
             # The SDK enforces the per-request budget itself; wrapping it in a
             # second, outer timeout is what tore the cancel scope apart.
             result = await session.call_tool(
-                name, arguments, read_timeout_seconds=timeout
+                name,
+                arguments,
+                read_timeout_seconds=timeout,
+                meta=meta,
             )
         except TimeoutError as exc:
             raise McpTimeoutError(
@@ -278,16 +347,47 @@ class McpClientCore:
             ) from exc
 
         if result.isError:
+            payload = _error_payload(result)
+            if payload is not None:
+                try:
+                    code = ErrorCode(payload["code"])
+                except ValueError:
+                    code = ErrorCode.INTERNAL_ERROR
+            else:
+                code = ErrorCode.INTERNAL_ERROR
             raise AppError(
-                ErrorCode.INVALID_ARGUMENT,
-                internal_detail=f"{self.connector_id}.{name} returned isError",
+                code,
+                internal_detail=(
+                    f"{self.connector_id}.{name} returned isError"
+                    + (
+                        f" with stable code {payload['code']}"
+                        if payload is not None
+                        else " without a valid error envelope"
+                    )
+                ),
             )
         return result.structuredContent or result.content
 
     async def list_resources(self) -> list[Any]:
-        with anyio.fail_after(DEFAULT_LIST_TIMEOUT.total_seconds()):
-            result = await self._require_session().list_resources()
-        return list(result.resources)
+        """Read the complete resource catalog, following every cursor."""
+        session = self._require_session()
+        resources: list[Any] = []
+        cursor: str | None = None
+        for _ in range(MAX_CATALOG_PAGES):
+            try:
+                with anyio.fail_after(DEFAULT_LIST_TIMEOUT.total_seconds()):
+                    page = await session.list_resources(cursor=cursor)
+            except TimeoutError as exc:
+                raise McpTimeoutError(
+                    f"{self.connector_id} resources/list timed out"
+                ) from exc
+            resources.extend(page.resources)
+            cursor = page.nextCursor
+            if not cursor:
+                return resources
+        raise McpTransportError(
+            f"{self.connector_id} did not finish paginating resources/list"
+        )
 
     async def read_resource(self, uri: str) -> Any:
         from pydantic import AnyUrl

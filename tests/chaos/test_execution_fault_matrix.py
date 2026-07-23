@@ -272,6 +272,33 @@ def test_success_without_a_verified_receipt_is_rejected(node: Node) -> None:
     assert state_of(node) == "committed_unverified"
 
 
+@pytest.mark.parametrize(
+    ("table_kind", "record_id"),
+    [
+        ("income", "rec_wrong_table"),
+        ("expense", ""),
+        ("expense", "   "),
+    ],
+)
+def test_a_receipt_must_match_the_execution_and_have_an_external_id(
+    node: Node, table_kind: str, record_id: str
+) -> None:
+    prepare(node)
+    with node.session() as session:
+        with pytest.raises(UnverifiedReceiptError):
+            record_receipt(
+                session,
+                receipt_id="rc-invalid",
+                idempotency_key=KEY,
+                table_kind=table_kind,
+                record_id=record_id,
+                now=T0,
+                verified=True,
+            )
+        session.rollback()
+    assert receipts(node) == []
+
+
 def test_cancelling_after_submit_cannot_produce_a_cancelled_outcome(
     node: Node,
 ) -> None:

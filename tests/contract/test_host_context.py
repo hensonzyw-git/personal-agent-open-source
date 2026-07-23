@@ -70,6 +70,9 @@ def verify(ring, token, **overrides):
         "tool": TOOL,
         "idempotency_key": KEY,
         "request_id": REQUEST,
+        "user_id": "henson",
+        "trace_id": "tr-1",
+        "timezone": "Asia/Shanghai",
         "arguments": ARGUMENTS,
         "now": NOW,
     }
@@ -94,6 +97,9 @@ def test_a_matching_call_verifies(ring) -> None:
         {"tool": "finance.log_income"},
         {"idempotency_key": "018f0000-0000-4000-8000-0000000000ff"},
         {"request_id": "018f0000-0000-4000-8000-0000000000ee"},
+        {"user_id": "other-user"},
+        {"trace_id": "other-trace"},
+        {"timezone": "UTC"},
     ],
 )
 def test_replaying_a_token_with_different_headers_fails(ring, swap) -> None:

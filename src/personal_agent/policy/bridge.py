@@ -22,13 +22,41 @@ Two separate checks, deliberately not one:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable, Mapping
 
+from jsonschema import Draft202012Validator, FormatChecker, ValidationError
+
+from personal_agent.mcp_client.core import McpClientCore
 from personal_agent.mcp_client.registry import CatalogEntry, ConnectorRegistry
 from personal_agent_core.errors import AppError, ErrorCode
-from personal_agent_core.host_context import strip_host_only_fields
-from personal_agent_core.manifest import load_manifest
+from personal_agent_core.host_context import (
+    HostContext,
+    ServiceKeyRing,
+    sign_host_context,
+    strip_host_only_fields,
+)
+from personal_agent_core.manifest import canonical_json, load_manifest
+
+
+MAX_RESULT_BYTES = 64 * 1024
+_SENSITIVE_RESULT_KEYS = frozenset(
+    {
+        "authorization",
+        "accesstoken",
+        "tenantaccesstoken",
+        "refreshtoken",
+        "pushtoken",
+        "appsecret",
+        "clientsecret",
+        "apikey",
+        "privatekey",
+        "apptoken",
+        "baseid",
+        "tableid",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -55,15 +83,71 @@ class VisibleTool:
     required_scopes: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class BridgeCallContext:
+    """Trusted per-call state supplied by the Agent API, never by the model."""
+
+    host: HostContext
+    signing_keys: ServiceKeyRing
+
+
+@dataclass(frozen=True)
+class BridgeExecutionResult:
+    """Keep the App receipt separate from the redacted model-facing result."""
+
+    trusted_result: dict[str, Any]
+    model_result: dict[str, Any]
+
+
+def _normalise_result(result: Any) -> dict[str, Any]:
+    if isinstance(result, dict):
+        return result
+    if isinstance(result, list) and len(result) == 1:
+        item = result[0]
+        text = getattr(item, "text", None)
+        if isinstance(text, str):
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                return payload
+    raise AppError(
+        ErrorCode.INTERNAL_ERROR,
+        internal_detail="MCP result is not one structured JSON object",
+    )
+
+
+def _result_key_fingerprint(key: str) -> str:
+    return "".join(
+        character for character in key.casefold() if character.isalnum()
+    )
+
+
+def _filter_sensitive_result(value: Any) -> Any:
+    """Remove service credentials and resource identifiers recursively."""
+    if isinstance(value, dict):
+        return {
+            key: _filter_sensitive_result(child)
+            for key, child in value.items()
+            if _result_key_fingerprint(key) not in _SENSITIVE_RESULT_KEYS
+        }
+    if isinstance(value, list):
+        return [_filter_sensitive_result(child) for child in value]
+    return value
+
+
 class GovernedToolBridge:
     def __init__(
         self,
         registry: ConnectorRegistry,
         *,
         global_allowlist: frozenset[str],
+        clients: Mapping[str, McpClientCore] | None = None,
     ) -> None:
         self.registry = registry
         self.global_allowlist = global_allowlist
+        self._clients = dict(clients or {})
         manifest = load_manifest()
         self._contracts = {tool["name"]: tool for tool in manifest["tools"]}
         self.allowed_tools_version = manifest["allowed_tools_version"]
@@ -150,4 +234,124 @@ class GovernedToolBridge:
                 ErrorCode.SCOPE_DENIED,
                 internal_detail="device carries a stale allowed_tools_version",
             )
-        return entry, strip_host_only_fields(arguments)
+        cleaned = strip_host_only_fields(arguments)
+        try:
+            Draft202012Validator(
+                contract["model_input_schema"],
+                format_checker=FormatChecker(),
+            ).validate(cleaned)
+        except ValidationError as exc:
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail=(
+                    f"{alias} input failed schema validation at "
+                    f"{list(exc.absolute_path)}"
+                ),
+            ) from exc
+        return entry, cleaned
+
+    def adk_tools(
+        self,
+        *,
+        device_provider: Callable[[], DeviceAuthorization],
+        context_provider: Callable[
+            [str, dict[str, Any], DeviceAuthorization, Any], BridgeCallContext
+        ],
+    ) -> list[Any]:
+        """Build model tools from the current effective catalog.
+
+        Each wrapper fetches the device again during `run_async`, so revocation
+        or a scope change after catalog construction still takes effect.
+        """
+        # ADK remains an optional adapter dependency. Keeping this import lazy
+        # lets policy, MCP and Finance services run without loading a model SDK.
+        from personal_agent.policy.adk_bridge import build_adk_tools
+
+        device = device_provider()
+        return build_adk_tools(
+            visible_tools=self.visible_tools(device),
+            bridge=self,
+            device_provider=device_provider,
+            context_provider=context_provider,
+        )
+
+    async def execute(
+        self,
+        alias: str,
+        arguments: dict[str, Any],
+        device: DeviceAuthorization,
+        *,
+        call_context: BridgeCallContext,
+    ) -> BridgeExecutionResult:
+        """Authorize, bind, execute and filter one model-selected tool call."""
+        entry, cleaned = self.authorize(alias, arguments, device)
+        host = call_context.host
+        if (
+            host.tool != entry.remote_name
+            or host.device_id != device.device_id
+            or frozenset(host.scopes) != device.scopes
+            or host.allowed_tools_version != device.allowed_tools_version
+        ):
+            raise AppError(
+                ErrorCode.HOST_CONTEXT_MISMATCH,
+                internal_detail="Bridge call context does not match authorization",
+            )
+        if not host.user_id or not host.trace_id or not host.timezone:
+            raise AppError(
+                ErrorCode.HOST_CONTEXT_MISMATCH,
+                internal_detail="Bridge call context is missing identity or trace",
+            )
+        try:
+            client = self._clients[entry.connector_id]
+        except KeyError:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail=f"no MCP client for connector {entry.connector_id}",
+            ) from None
+
+        token = sign_host_context(call_context.signing_keys, host, cleaned)
+        raw_result = await client.call_tool(
+            entry.remote_name,
+            cleaned,
+            host_context={
+                "Authorization": f"Bearer {token}",
+                "X-Request-ID": host.request_id,
+                "Idempotency-Key": host.idempotency_key,
+                "traceparent": host.trace_id,
+                "X-User-ID": host.user_id,
+                "X-Timezone": host.timezone,
+            },
+        )
+        trusted = _normalise_result(raw_result)
+        try:
+            encoded = canonical_json(trusted).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail=f"{alias} result is not canonical JSON",
+            ) from exc
+        if len(encoded) > MAX_RESULT_BYTES:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail=(
+                    f"{alias} result exceeded {MAX_RESULT_BYTES} bytes"
+                ),
+            )
+        contract = self._contracts[entry.remote_name]
+        try:
+            Draft202012Validator(
+                contract["output_schema"],
+                format_checker=FormatChecker(),
+            ).validate(trusted)
+        except ValidationError as exc:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail=(
+                    f"{alias} output failed schema validation at "
+                    f"{list(exc.absolute_path)}"
+                ),
+            ) from exc
+        return BridgeExecutionResult(
+            trusted_result=trusted,
+            model_result=_filter_sensitive_result(trusted),
+        )

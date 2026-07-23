@@ -170,6 +170,39 @@ def test_a_structured_call_returns_external_evidence(finance_http) -> None:
         assert payload["evidence"]["kind"] == "feishu_record"
 
 
+def test_a_per_call_host_context_uses_an_isolated_http_connection(
+    finance_http,
+) -> None:
+    """Over HTTP the context becomes headers, on its own connection.
+
+    Installing it by mutating the shared client would let concurrent calls read
+    each other's identity, so each call that carries a context gets its own
+    short-lived connection.
+    """
+
+    async def call():
+        async with McpClientCore(
+            "finance", StreamableHttpTransport(url=finance_http.url)
+        ) as client:
+            return await client.call_tool(
+                "finance.log_expense",
+                EXPENSE,
+                host_context={
+                    "Authorization": "Bearer synthetic-test-token",
+                    "X-Request-ID": "synthetic-request",
+                },
+            )
+
+    result = run(call())
+    if isinstance(result, dict):
+        payload = result
+    else:
+        import json
+
+        payload = json.loads(result[0].text)
+    assert payload["record_id"].startswith("fixture_")
+
+
 def test_calling_an_unknown_tool_fails(finance_http) -> None:
     async def call():
         async with McpClientCore(
@@ -263,9 +296,12 @@ def test_the_endpoint_negotiates_content_and_refuses_delete(finance_http) -> Non
     an idle GET pins a connection, so DEV-015 has to decide explicitly whether
     the production server rejects GET rather than inheriting this default.
     """
-    assert httpx.get(finance_http.url, timeout=5).status_code == 406
+    assert (
+        httpx.get(finance_http.url, timeout=5, trust_env=False).status_code
+        == 406
+    )
 
-    with httpx.Client(timeout=5) as client:
+    with httpx.Client(timeout=5, trust_env=False) as client:
         with client.stream(
             "GET",
             finance_http.url,

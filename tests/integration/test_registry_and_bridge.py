@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 import sys
 
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
 from mcp.types import Tool
 
+from fixtures.finance_fixture import fixture_receipt
 from personal_agent.mcp_client.core import McpClientCore, StdioTransport
 from personal_agent.mcp_client.registry import (
     ConnectorRegistry,
@@ -15,8 +18,14 @@ from personal_agent.mcp_client.registry import (
     TrustLevel,
     schema_hash,
 )
-from personal_agent.policy.bridge import DeviceAuthorization, GovernedToolBridge
+from personal_agent.policy.bridge import (
+    MAX_RESULT_BYTES,
+    BridgeCallContext,
+    DeviceAuthorization,
+    GovernedToolBridge,
+)
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.host_context import HostContext, ServiceKey, ServiceKeyRing
 from personal_agent_core.manifest import load_manifest
 
 
@@ -339,3 +348,160 @@ def test_a_quarantined_tool_never_becomes_visible(finance_tools) -> None:
         if tool["name"] == "finance.log_expense"
     )
     assert "finance.log_expense" in aliases
+
+
+# --- DEV-013: governed execution and ADK wrappers ---------------------------
+
+
+class RecordingClient:
+    def __init__(self, result=None) -> None:
+        self.result = result
+        self.calls = []
+
+    async def call_tool(self, name, arguments, **kwargs):
+        self.calls.append((name, arguments, kwargs))
+        return (
+            self.result
+            if self.result is not None
+            else fixture_receipt(name, arguments)
+        )
+
+
+def bridge_call_context(subject: DeviceAuthorization) -> BridgeCallContext:
+    private = ec.generate_private_key(ec.SECP256R1())
+    ring = ServiceKeyRing(
+        active=ServiceKey("svc-test", private, private.public_key())
+    )
+    return BridgeCallContext(
+        host=HostContext(
+            agent_id="agent-1",
+            device_id=subject.device_id,
+            user_id="henson",
+            scopes=tuple(sorted(subject.scopes)),
+            tool="finance.log_expense",
+            request_id="018f0000-0000-4000-8000-000000000009",
+            trace_id="00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            idempotency_key="018f0000-0000-4000-8000-000000000001",
+            request_fingerprint="fp",
+            allowed_tools_version=subject.allowed_tools_version,
+        ),
+        signing_keys=ring,
+    )
+
+
+def test_execute_injects_context_and_filters_the_model_result(registry) -> None:
+    subject = device()
+    receipt = fixture_receipt("finance.log_expense", EXPENSE)
+    receipt["record"]["app_token"] = "must-not-reach-the-model"
+    client = RecordingClient(receipt)
+    governed = GovernedToolBridge(
+        registry,
+        global_allowlist=ENABLED,
+        clients={"personal-data": client},
+    )
+
+    result = asyncio.run(
+        governed.execute(
+            "finance.log_expense",
+            EXPENSE,
+            subject,
+            call_context=bridge_call_context(subject),
+        )
+    )
+
+    assert result.trusted_result["record"]["app_token"] == (
+        "must-not-reach-the-model"
+    )
+    assert "app_token" not in result.model_result["record"]
+    assert len(client.calls) == 1
+    name, arguments, kwargs = client.calls[0]
+    assert name == "finance.log_expense"
+    assert arguments == EXPENSE
+    context = kwargs["host_context"]
+    assert context["X-Request-ID"] == "018f0000-0000-4000-8000-000000000009"
+    assert context["Idempotency-Key"] == "018f0000-0000-4000-8000-000000000001"
+
+    # The bridge states the context once and lets the transport decide the
+    # channel, so the bearer token is never handed over twice.
+    assert "meta" not in kwargs and "headers" not in kwargs
+    assert sum("Bearer " in str(value) for value in context.values()) == 1
+
+    claims = jwt.decode(
+        context["Authorization"].removeprefix("Bearer "),
+        options={"verify_signature": False},
+    )
+    assert claims["user_id"] == "henson"
+    assert claims["timezone"] == "Asia/Shanghai"
+    assert claims["trace_id"] == context["traceparent"]
+
+
+def test_invalid_mcp_output_is_not_returned_to_the_model(registry) -> None:
+    subject = device()
+    governed = GovernedToolBridge(
+        registry,
+        global_allowlist=ENABLED,
+        clients={"personal-data": RecordingClient({"status": "created"})},
+    )
+    with pytest.raises(AppError) as excinfo:
+        asyncio.run(
+            governed.execute(
+                "finance.log_expense",
+                EXPENSE,
+                subject,
+                call_context=bridge_call_context(subject),
+            )
+        )
+    assert excinfo.value.code is ErrorCode.INTERNAL_ERROR
+
+
+def test_oversized_mcp_output_is_not_returned_to_the_model(registry) -> None:
+    subject = device()
+    receipt = fixture_receipt("finance.log_expense", EXPENSE)
+    receipt["record"]["oversized"] = "x" * MAX_RESULT_BYTES
+    governed = GovernedToolBridge(
+        registry,
+        global_allowlist=ENABLED,
+        clients={"personal-data": RecordingClient(receipt)},
+    )
+    with pytest.raises(AppError) as excinfo:
+        asyncio.run(
+            governed.execute(
+                "finance.log_expense",
+                EXPENSE,
+                subject,
+                call_context=bridge_call_context(subject),
+            )
+        )
+    assert excinfo.value.code is ErrorCode.INTERNAL_ERROR
+
+
+def test_adk_wrapper_rechecks_device_and_uses_only_the_bridge(registry) -> None:
+    subject = device()
+    current = {"device": subject}
+    client = RecordingClient()
+    governed = GovernedToolBridge(
+        registry,
+        global_allowlist=ENABLED,
+        clients={"personal-data": client},
+    )
+
+    def context_provider(alias, args, live_device, tool_context):
+        return bridge_call_context(live_device)
+
+    tools = governed.adk_tools(
+        device_provider=lambda: current["device"],
+        context_provider=context_provider,
+    )
+    tool = next(tool for tool in tools if tool.name == "finance.log_expense")
+    declaration = tool._get_declaration()
+    assert declaration.parameters_json_schema == next(
+        visible.input_schema
+        for visible in governed.visible_tools(subject)
+        if visible.alias == tool.name
+    )
+
+    current["device"] = device(status="revoked")
+    with pytest.raises(AppError) as excinfo:
+        asyncio.run(tool.run_async(args=EXPENSE, tool_context=None))
+    assert excinfo.value.code is ErrorCode.SCOPE_DENIED
+    assert client.calls == []

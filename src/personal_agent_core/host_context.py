@@ -66,13 +66,16 @@ HOST_ONLY_FIELDS: Final[frozenset[str]] = frozenset(
 BOUND_CLAIMS: Final[tuple[str, ...]] = (
     "agent_id",
     "device_id",
+    "user_id",
     "scopes",
     "tool",
     "request_id",
+    "trace_id",
     "idempotency_key",
     "request_fingerprint",
     "arguments_hash",
     "allowed_tools_version",
+    "timezone",
 )
 
 
@@ -121,13 +124,16 @@ class HostContext:
         return {
             "agent_id": self.agent_id,
             "device_id": self.device_id,
+            "user_id": self.user_id,
             "scopes": list(self.scopes),
             "tool": self.tool,
             "request_id": self.request_id,
+            "trace_id": self.trace_id,
             "idempotency_key": self.idempotency_key,
             "request_fingerprint": self.request_fingerprint,
             "arguments_hash": arguments_hash(arguments),
             "allowed_tools_version": self.allowed_tools_version,
+            "timezone": self.timezone,
         }
 
 
@@ -226,6 +232,9 @@ def verify_host_context(
     tool: str,
     idempotency_key: str,
     request_id: str,
+    user_id: str,
+    trace_id: str,
+    timezone: str,
     arguments: dict[str, Any],
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -293,6 +302,9 @@ def verify_host_context(
         "tool": tool,
         "idempotency_key": idempotency_key,
         "request_id": request_id,
+        "user_id": user_id,
+        "trace_id": trace_id,
+        "timezone": timezone,
         "arguments_hash": arguments_hash(arguments),
     }
     for field, value in observed.items():

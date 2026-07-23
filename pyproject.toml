@@ -18,6 +18,7 @@ dependencies = [
   "httpx>=0.28,<1",
   "cryptography>=49,<50",
   "pyjwt>=2.13,<3",
+  "jsonschema>=4.23,<5",
 ]
 
 [project.optional-dependencies]
@@ -32,7 +33,6 @@ claude = [
 [dependency-groups]
 dev = [
   "pytest>=8.4,<9",
-  "jsonschema>=4.23,<5",
 ]
 
 [project.scripts]
