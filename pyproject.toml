@@ -45,6 +45,7 @@ personal-agent-online-eval = "personal_agent_spike.online_eval:main"
 [tool.hatch.build.targets.wheel]
 packages = [
   "src/personal_agent",
+  "src/personal_agent_core",
   "src/personal_data_mcp",
   "src/personal_agent_spike",
 ]
