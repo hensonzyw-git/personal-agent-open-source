@@ -13,9 +13,10 @@ hash of the arguments cannot.
 
 Two rules are enforced here rather than trusted to callers:
 
-- the model never supplies any of these fields. Anything Host-injected that
-  appears in model output is dropped before the arguments are hashed, so a model
-  cannot smuggle in a `device_id`, a `duplicate_override` or an idempotency key;
+- the model never supplies any of these fields. The Agent Host drops them before
+  signing, while the Finance MCP rejects them if they nevertheless arrive. They
+  are excluded from the business-argument hash so they cannot be confused with
+  model-visible input;
 - the receiver recomputes the argument hash from what it actually received and
   compares field by field. Matching claims against a request that was modified
   in flight fails closed with a single stable error.
@@ -86,9 +87,8 @@ class HostContextError(Exception):
 def strip_host_only_fields(arguments: dict[str, Any]) -> dict[str, Any]:
     """Remove anything the model is not allowed to decide.
 
-    Dropped rather than rejected: a model that hallucinates a `device_id` should
-    still get its legitimate business fields through, and silently honouring one
-    would be far worse than ignoring it.
+    This is the Agent Host's pre-signing cleanup. The Finance MCP independently
+    rejects any Host-only key that reaches its raw request boundary.
     """
     return {
         key: value

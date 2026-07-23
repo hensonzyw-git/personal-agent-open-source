@@ -25,6 +25,7 @@ from personal_agent_core.host_context import (
     ServiceKeyRing,
     sign_host_context,
 )
+from personal_agent_core.manifest import load_manifest
 from personal_data_mcp.server.authz import Authorizer
 from personal_data_mcp.server.keys import (
     ACTIVE_KID_ENV,
@@ -37,7 +38,7 @@ DEFAULT_DEVICE = "device-test-1"
 DEFAULT_USER = "henson"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 DEFAULT_TRACE = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-DEFAULT_ATV = "atv-test"
+DEFAULT_ATV = load_manifest()["allowed_tools_version"]
 
 
 @dataclass

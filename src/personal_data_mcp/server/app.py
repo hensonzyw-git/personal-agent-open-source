@@ -26,13 +26,14 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import Any, Final
 
+from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, Tool
 from starlette.applications import Starlette
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from personal_agent_core.errors import AppError, ErrorCode
-from personal_agent_core.host_context import ServiceKeyRing
+from personal_agent_core.host_context import HOST_ONLY_FIELDS, ServiceKeyRing
 from personal_data_mcp.server.authz import Authorizer
 from personal_data_mcp.server.config import ServerConfig
 from personal_data_mcp.server.control import SessionFactory, build_control_app
@@ -136,14 +137,41 @@ async def dispatch(
 
         # Verify before the handler. Nothing below this line may run for a
         # call that fails here.
-        authorizer.authorize(
+        verified_call = authorizer.authorize(
             tool=name,
             arguments=arguments,
             headers=headers,
             required_scopes=tuple(contract["required_scopes"]),
         )
+        forbidden = sorted(set(arguments) & HOST_ONLY_FIELDS)
+        if forbidden:
+            raise AppError(
+                ErrorCode.HOST_CONTEXT_MISMATCH,
+                internal_detail=(
+                    f"{name} supplied Host-only fields {forbidden}"
+                ),
+            )
+        try:
+            Draft202012Validator(
+                contract["model_input_schema"],
+                format_checker=FormatChecker(),
+            ).validate(arguments)
+        except ValidationError as exc:
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail=(
+                    f"{name} input failed schema validation at "
+                    f"{list(exc.absolute_path)}"
+                ),
+            ) from exc
 
-        payload = await handler(ToolInvocation(tool=name, arguments=arguments))
+        payload = await handler(
+            ToolInvocation(
+                tool=name,
+                arguments=arguments,
+                verified_call=verified_call,
+            )
+        )
         return success_result(payload)
     except AppError as error:
         return error_result(error)

@@ -20,9 +20,12 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, TYPE_CHECKING
 
 from personal_agent_core.manifest import load_manifest
+
+if TYPE_CHECKING:
+    from personal_data_mcp.server.authz import VerifiedCall
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,7 @@ class ToolInvocation:
 
     tool: str
     arguments: dict[str, Any]
+    verified_call: "VerifiedCall"
 
 
 ToolHandler = Callable[[ToolInvocation], Awaitable[dict[str, Any]]]

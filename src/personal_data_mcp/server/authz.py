@@ -27,6 +27,7 @@ from typing import Any
 
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.host_context import ServiceKeyRing, verify_host_context
+from personal_agent_core.manifest import load_manifest
 
 
 AUTHORIZATION_HEADER = "authorization"
@@ -57,10 +58,20 @@ class VerifiedCall:
 class Authorizer:
     """Verifies the signed Host Context and the tool's scope."""
 
-    def __init__(self, verification_ring: ServiceKeyRing) -> None:
+    def __init__(
+        self,
+        verification_ring: ServiceKeyRing,
+        *,
+        allowed_tools_version: str | None = None,
+    ) -> None:
         # A ring that still holds private material would let this process mint
         # tokens as well as verify them; the design keeps the two apart.
         self._ring = verification_ring.public_only()
+        self._allowed_tools_version = (
+            allowed_tools_version
+            if allowed_tools_version is not None
+            else load_manifest()["allowed_tools_version"]
+        )
 
     def _bearer(self, headers: dict[str, str]) -> str:
         raw = headers.get(AUTHORIZATION_HEADER, "")
@@ -130,6 +141,13 @@ class Authorizer:
             raise AppError(
                 ErrorCode.SCOPE_DENIED,
                 internal_detail=f"{tool} requires scopes not granted to the device",
+            )
+        if claims["allowed_tools_version"] != self._allowed_tools_version:
+            raise AppError(
+                ErrorCode.SCOPE_DENIED,
+                internal_detail=(
+                    f"{tool} carries a stale allowed_tools_version"
+                ),
             )
 
         return VerifiedCall(
