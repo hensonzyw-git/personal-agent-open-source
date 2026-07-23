@@ -1,0 +1,15 @@
+{
+  "_comment": "Fixed cross-language vectors for technical design 4.2.1. Swift and Python must both reproduce every derived value here. The private key is test-only and must never be used in production.",
+  "curve": "P-256",
+  "private_key_scalar_hex": "0c28fca386c7a227600b2fe50b7cae11ec86d3bf1fbe471be89827e19d72aa1d",
+  "public_key_x963_b64u": "BO480Hm_vD0Dy0QwI2mkSB430-qHb-2BfiBbGIAssgOcvfj_mpfgWRgIX9mCYsu34_EDNWrBXAXaZRDJCt5kO_s",
+  "public_key_bytes": 65,
+  "device_key_thumbprint_b64u": "k2jo8Cix4bvT54QP7n5aikBobjdia8CYh3k8r8M2khc",
+  "challenge_id": "018f0000-0000-7000-8000-000000000001",
+  "device_id": "018f0000-0000-7000-8000-000000000002",
+  "nonce_b64u": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "signing_input_utf8": "personal-agent-auth-v1\n018f0000-0000-7000-8000-000000000001\nAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8\n018f0000-0000-7000-8000-000000000002\npersonal-agent-api",
+  "signing_input_sha256_b64u": "XHOOmkk7ygRsWTPGO6IQSujxJEys5qISH-za0TrZdwg",
+  "signature_der_b64u": "MEQCIQDLWGzZt6BK7zKjE-Xp-N44PCPTCjPE1G7EdsYJ0xSEZgIfdOtf_vau4i0Q-y3M_ad9IxMEGp_jxkSr4ocnn8-Htw",
+  "signature_jose_b64u": "y1hs2begSu8yoxPl6fjeODwj0wozxNRuxHbGCdMUhGYAdOtf_vau4i0Q-y3M_ad9IxMEGp_jxkSr4ocnn8-Htw"
+}
