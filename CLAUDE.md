@@ -79,13 +79,20 @@ for Phase 1 technical design. Do not reintroduce superseded Finance rules.
 
 ## 4.1 Current phase gate
 
-PRD v1.0.1 has passed product review. Henson authorized Phase 1 technical design
-on 2026-07-23. The technical design and development breakdown have passed final
-review and the project is stopped at the development authorization gate.
-Development remains unauthorized: do not start `DEV-001`, build the MCP server,
-create the Feishu application, implement iOS screens, deploy services, or write
-against personal records until Henson explicitly authorizes development in a
-later instruction.
+PRD v1.0.1 passed product review. Henson authorized Phase 1 technical design on
+2026-07-23, and authorized Phase 1 development on 2026-07-23. Gate G0 is passed.
+Work proceeds from `DEV-001` in `docs/Phase1开发拆解_v0.1.md`, following its
+dependency order and Gates G1-G6.
+
+Development authorization is not authorization for everything downstream. Each
+later gate still binds independently: do not create the Feishu application or
+access any real Base before G2; do not write to a Feishu test table before G3;
+do not connect production Finance credentials or the personal annual ledger
+before G5; and do not enable `finance.log_expense_batch` until its separate
+atomicity gate passes. The production package skeleton and offline fixtures
+require no credentials. Keep the existing `personal_agent_spike` package as
+historical evidence only; production code must not import its obsolete Finance
+tools, policy, or contracts.
 
 Already confirmed:
 
