@@ -44,6 +44,8 @@ uv run pytest -q
 uv run personal-agent-mcp-probe
 uv run personal-agent-framework-probe
 uv run personal-agent-offline-eval
+uv run personal-agent-generate-contracts --check
+uv run personal-agent-eval-lint
 ```
 
 这些命令默认不会发起模型请求，也不会写入飞书。
@@ -68,7 +70,11 @@ uv run personal-agent-online-eval --framework claude --case-id FIN-021
 
 ## Spike 证据边界
 
-- `evals/finance_expense_v0.1.jsonl` 的 30 条数据均有来源标签，当前不含真实个人账单。
+- `evals/finance_v0.2.jsonl` 是按冻结合同重建的 48 条基线：每条都用生成的工具 schema 校验过，
+  缺个人/家庭归属一律追问、外币由服务端换算、多笔在 batch 关闭时一笔也不写。
+- `evals/finance_expense_v0.1.jsonl` 保留为 Spike 期历史证据。它的期望包含已被推翻的默认个人
+  归属、外币追问和两次单笔写，不得用于 Phase 1 验收。
+- 目前没有任何 `user_provided_redacted` 数据；该标签由 DEV-037 在 Henson 实际复核后才可使用。
 - 离线 eval 验证的是测试集合同和确定性 policy，不是模型准确率。
 - 当前 Claude 证据是 smoke，不是完整准确率、时延或成本基准。
 - ADK v0.2 是按用户决定在 23/30 时停止的部分运行；结果文件的 `case_count` 反映实际完成数量。

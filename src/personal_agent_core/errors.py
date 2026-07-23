@@ -25,6 +25,7 @@ class ErrorCode(StrEnum):
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
     SCOPE_DENIED = "SCOPE_DENIED"
     TOOL_NOT_ALLOWLISTED = "TOOL_NOT_ALLOWLISTED"
+    UNSUPPORTED_OPERATION = "UNSUPPORTED_OPERATION"
     HOST_CONTEXT_MISMATCH = "HOST_CONTEXT_MISMATCH"
     IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
 
@@ -58,6 +59,7 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.INVALID_ARGUMENT: "请求参数不符合工具合同",
     ErrorCode.SCOPE_DENIED: "当前设备没有执行该操作的权限",
     ErrorCode.TOOL_NOT_ALLOWLISTED: "该工具不在服务端允许集合内",
+    ErrorCode.UNSUPPORTED_OPERATION: "该操作一期不开放，请在电脑端飞书账本处理",
     ErrorCode.HOST_CONTEXT_MISMATCH: "调用上下文与签名不一致，已拒绝执行",
     ErrorCode.IDEMPOTENCY_CONFLICT: "同一请求键对应了不同的请求内容",
     ErrorCode.CLARIFICATION_REQUIRED: "信息不完整，需要先确认后才能记账",

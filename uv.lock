@@ -844,6 +844,7 @@ claude = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "jsonschema" },
     { name = "pytest" },
 ]
 
@@ -865,7 +866,10 @@ requires-dist = [
 provides-extras = ["adk", "claude"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.4,<9" }]
+dev = [
+    { name = "jsonschema", specifier = ">=4.23,<5" },
+    { name = "pytest", specifier = ">=8.4,<9" },
+]
 
 [[package]]
 name = "pluggy"
