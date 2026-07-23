@@ -18,6 +18,8 @@ Henson 的个人 Agent 项目：iOS App + 自托管 Agent Backend + Personal Dat
 
 ## 文档
 
+- [当前状态与交接清单](./PROJECT_STATUS.md)
+- [项目协作与开发约定](./AGENTS.md)（与 `CLAUDE.md` 相同）
 - [个人 Agent iOS App PRD v0.4](./个人Agent_PRD_v0.4.md)
 - [ECS 安全加固实施记录](./ECS安全加固实施记录_2026-07-23.md)
 - [MCP 工具 IR v0.1](./docs/MCP工具IR_v0.1.md)
