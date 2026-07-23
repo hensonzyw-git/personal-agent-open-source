@@ -2,7 +2,7 @@
 
 Revision ID: 0001_agent_baseline
 Revises: none
-Create Date: 2026-07-23 05:45:49.644999
+Create Date: 2026-07-23 05:57:04.298630
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from typing import Sequence
 from alembic import op
 import sqlalchemy as sa
 
-import personal_agent.storage.types
+import personal_agent_core.sqlite
 
 
 revision: str = '0001_agent_baseline'
@@ -29,22 +29,22 @@ def upgrade() -> None:
     sa.Column('capabilities', sa.Text(), nullable=False),
     sa.Column('catalog_hash', sa.Text(), nullable=False),
     sa.Column('health_status', sa.Text(), nullable=False),
-    sa.Column('last_connected_at', personal_agent.storage.types.UtcTimestamp(), nullable=True),
-    sa.Column('last_discovered_at', personal_agent.storage.types.UtcTimestamp(), nullable=True),
+    sa.Column('last_connected_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=True),
+    sa.Column('last_discovered_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=True),
     sa.PrimaryKeyConstraint('connector_id', name=op.f('pk_connector_catalog'))
     )
     op.create_table('conversations',
     sa.Column('conversation_id', sa.Text(), nullable=False),
-    sa.Column('created_at', personal_agent.storage.types.UtcTimestamp(), nullable=False),
-    sa.Column('last_event_at', personal_agent.storage.types.UtcTimestamp(), nullable=True),
+    sa.Column('created_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
+    sa.Column('last_event_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=True),
     sa.PrimaryKeyConstraint('conversation_id', name=op.f('pk_conversations'))
     )
     op.create_table('daily_reviews',
     sa.Column('review_id', sa.Text(), nullable=False),
     sa.Column('review_date', sa.Text(), nullable=False),
     sa.Column('status', sa.Text(), nullable=False),
-    sa.Column('created_at', personal_agent.storage.types.UtcTimestamp(), nullable=False),
-    sa.Column('reviewed_at', personal_agent.storage.types.UtcTimestamp(), nullable=True),
+    sa.Column('created_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
+    sa.Column('reviewed_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=True),
     sa.CheckConstraint("review_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'", name=op.f('ck_daily_reviews_review_date_is_iso')),
     sa.CheckConstraint("status IN ('pending', 'deferred', 'reviewed')", name=op.f('ck_daily_reviews_status')),
     sa.PrimaryKeyConstraint('review_id', name=op.f('pk_daily_reviews')),
@@ -53,9 +53,9 @@ def upgrade() -> None:
     op.create_table('deletion_manifest',
     sa.Column('entry_id', sa.Text(), nullable=False),
     sa.Column('object_type', sa.Text(), nullable=False),
-    sa.Column('encrypted_object_id', personal_agent.storage.types.EncryptedEnvelope(), nullable=False),
-    sa.Column('deleted_at', personal_agent.storage.types.UtcTimestamp(), nullable=False),
-    sa.Column('backup_expiry_after', personal_agent.storage.types.UtcTimestamp(), nullable=True),
+    sa.Column('encrypted_object_id', personal_agent_core.sqlite.EncryptedEnvelope(), nullable=False),
+    sa.Column('deleted_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
+    sa.Column('backup_expiry_after', personal_agent_core.sqlite.UtcTimestamp(), nullable=True),
     sa.PrimaryKeyConstraint('entry_id', name=op.f('pk_deletion_manifest'))
     )
     op.create_table('devices',
@@ -63,12 +63,12 @@ def upgrade() -> None:
     sa.Column('display_name', sa.Text(), nullable=False),
     sa.Column('public_key', sa.Text(), nullable=False),
     sa.Column('device_key_thumbprint', sa.Text(), nullable=False),
-    sa.Column('encrypted_push_token', personal_agent.storage.types.EncryptedEnvelope(), nullable=True),
+    sa.Column('encrypted_push_token', personal_agent_core.sqlite.EncryptedEnvelope(), nullable=True),
     sa.Column('status', sa.Text(), nullable=False),
     sa.Column('scopes', sa.Text(), nullable=False),
     sa.Column('allowed_tools_version', sa.Text(), nullable=False),
-    sa.Column('created_at', personal_agent.storage.types.UtcTimestamp(), nullable=False),
-    sa.Column('revoked_at', personal_agent.storage.types.UtcTimestamp(), nullable=True),
+    sa.Column('created_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
+    sa.Column('revoked_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=True),
     sa.CheckConstraint("(status = 'active' AND revoked_at IS NULL) OR (status = 'revoked' AND revoked_at IS NOT NULL)", name=op.f('ck_devices_revoked_at_matches_status')),
     sa.CheckConstraint("status IN ('active', 'revoked')", name=op.f('ck_devices_status')),
     sa.PrimaryKeyConstraint('device_id', name=op.f('pk_devices'))
@@ -76,9 +76,9 @@ def upgrade() -> None:
     op.create_table('enrollment_codes',
     sa.Column('code_hash', sa.Text(), nullable=False),
     sa.Column('grants_device_manage', sa.Boolean(), nullable=False),
-    sa.Column('created_at', personal_agent.storage.types.UtcTimestamp(), nullable=False),
-    sa.Column('expires_at', personal_agent.storage.types.UtcTimestamp(), nullable=False),
-    sa.Column('used_at', personal_agent.storage.types.UtcTimestamp(), nullable=True),
+    sa.Column('created_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
+    sa.Column('expires_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
+    sa.Column('used_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=True),
     sa.PrimaryKeyConstraint('code_hash', name=op.f('pk_enrollment_codes'))
     )
     op.create_table('api_requests',
@@ -86,8 +86,8 @@ def upgrade() -> None:
     sa.Column('device_id', sa.Text(), nullable=False),
     sa.Column('client_request_id', sa.Text(), nullable=False),
     sa.Column('request_fingerprint', sa.Text(), nullable=False),
-    sa.Column('encrypted_request_payload', personal_agent.storage.types.EncryptedEnvelope(), nullable=True),
-    sa.Column('received_at', personal_agent.storage.types.UtcTimestamp(), nullable=False),
+    sa.Column('encrypted_request_payload', personal_agent_core.sqlite.EncryptedEnvelope(), nullable=True),
+    sa.Column('received_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
     sa.ForeignKeyConstraint(['device_id'], ['devices.device_id'], name=op.f('fk_api_requests_device_id'), ondelete='RESTRICT'),
     sa.PrimaryKeyConstraint('request_id', name=op.f('pk_api_requests')),
     sa.UniqueConstraint('device_id', 'client_request_id', name='device_id_client_request_id')
@@ -97,9 +97,9 @@ def upgrade() -> None:
     sa.Column('device_id', sa.Text(), nullable=False),
     sa.Column('nonce_hash', sa.Text(), nullable=False),
     sa.Column('failed_attempts', sa.Integer(), nullable=False),
-    sa.Column('created_at', personal_agent.storage.types.UtcTimestamp(), nullable=False),
-    sa.Column('expires_at', personal_agent.storage.types.UtcTimestamp(), nullable=False),
-    sa.Column('consumed_at', personal_agent.storage.types.UtcTimestamp(), nullable=True),
+    sa.Column('created_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
+    sa.Column('expires_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
+    sa.Column('consumed_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=True),
     sa.CheckConstraint('failed_attempts >= 0', name=op.f('ck_auth_challenges_failed_attempts_non_negative')),
     sa.ForeignKeyConstraint(['device_id'], ['devices.device_id'], name=op.f('fk_auth_challenges_device_id'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('challenge_id', name=op.f('pk_auth_challenges'))
@@ -111,9 +111,9 @@ def upgrade() -> None:
     sa.Column('event_id', sa.Text(), nullable=False),
     sa.Column('conversation_id', sa.Text(), nullable=False),
     sa.Column('event_type', sa.Text(), nullable=False),
-    sa.Column('encrypted_content', personal_agent.storage.types.EncryptedEnvelope(), nullable=False),
+    sa.Column('encrypted_content', personal_agent_core.sqlite.EncryptedEnvelope(), nullable=False),
     sa.Column('operation_id', sa.Text(), nullable=True),
-    sa.Column('created_at', personal_agent.storage.types.UtcTimestamp(), nullable=False),
+    sa.Column('created_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
     sa.ForeignKeyConstraint(['conversation_id'], ['conversations.conversation_id'], name=op.f('fk_conversation_events_conversation_id'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('event_id', name=op.f('pk_conversation_events'))
     )
@@ -125,7 +125,7 @@ def upgrade() -> None:
     sa.Column('review_id', sa.Text(), nullable=False),
     sa.Column('tool', sa.Text(), nullable=False),
     sa.Column('record_id', sa.Text(), nullable=False),
-    sa.Column('committed_at', personal_agent.storage.types.UtcTimestamp(), nullable=False),
+    sa.Column('committed_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
     sa.ForeignKeyConstraint(['review_id'], ['daily_reviews.review_id'], name=op.f('fk_daily_review_items_review_id'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('item_id', name=op.f('pk_daily_review_items')),
     sa.UniqueConstraint('review_id', 'record_id', name='review_id_record_id')
@@ -136,8 +136,8 @@ def upgrade() -> None:
     sa.Column('review_id', sa.Text(), nullable=True),
     sa.Column('provider_status', sa.Text(), nullable=False),
     sa.Column('attempts', sa.Integer(), nullable=False),
-    sa.Column('next_attempt_at', personal_agent.storage.types.UtcTimestamp(), nullable=True),
-    sa.Column('created_at', personal_agent.storage.types.UtcTimestamp(), nullable=False),
+    sa.Column('next_attempt_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=True),
+    sa.Column('created_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
     sa.CheckConstraint('attempts >= 0', name=op.f('ck_notification_outbox_attempts_non_negative')),
     sa.ForeignKeyConstraint(['device_id'], ['devices.device_id'], name=op.f('fk_notification_outbox_device_id'), ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('event_id', name=op.f('pk_notification_outbox'))
@@ -155,8 +155,8 @@ def upgrade() -> None:
     sa.Column('client_detached', sa.Boolean(), nullable=False),
     sa.Column('duplicate_check_id', sa.Text(), nullable=True),
     sa.Column('safe_result', sa.Text(), nullable=True),
-    sa.Column('created_at', personal_agent.storage.types.UtcTimestamp(), nullable=False),
-    sa.Column('updated_at', personal_agent.storage.types.UtcTimestamp(), nullable=False),
+    sa.Column('created_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
+    sa.Column('updated_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
     sa.CheckConstraint("state IN ('accepted', 'interpreting', 'waiting_for_clarification', 'waiting_for_duplicate_decision', 'dispatching', 'source_in_progress', 'verifying', 'succeeded', 'failed_safe', 'needs_manual_review', 'cancelled_pre_submit')", name=op.f('ck_operations_state')),
     sa.CheckConstraint('state_version >= 1', name=op.f('ck_operations_state_version_positive')),
     sa.ForeignKeyConstraint(['request_id'], ['api_requests.request_id'], name=op.f('fk_operations_request_id'), ondelete='RESTRICT'),

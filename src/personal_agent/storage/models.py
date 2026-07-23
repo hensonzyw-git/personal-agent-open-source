@@ -44,7 +44,11 @@ from sqlalchemy.orm import (
     relationship,
 )
 
-from personal_agent.storage.types import EncryptedEnvelope, UtcTimestamp
+from personal_agent_core.sqlite import (
+    NAMING_CONVENTION,
+    EncryptedEnvelope,
+    UtcTimestamp,
+)
 
 
 #: Authoritative operation states. `policy_denied` is a reason code on
@@ -77,15 +81,6 @@ RECOVERABLE_OPERATION_STATES: Final[tuple[str, ...]] = (
 
 DEVICE_STATUSES: Final[tuple[str, ...]] = ("active", "revoked")
 REVIEW_STATUSES: Final[tuple[str, ...]] = ("pending", "deferred", "reviewed")
-
-NAMING_CONVENTION: Final[dict[str, str]] = {
-    "ix": "ix_%(table_name)s_%(column_0_N_name)s",
-    "uq": "uq_%(table_name)s_%(column_0_N_name)s",
-    "ck": "ck_%(table_name)s_%(constraint_name)s",
-    "fk": "fk_%(table_name)s_%(column_0_N_name)s",
-    "pk": "pk_%(table_name)s",
-}
-
 
 def _in_set(column: str, values: tuple[str, ...]) -> str:
     joined = ", ".join(f"'{value}'" for value in values)
