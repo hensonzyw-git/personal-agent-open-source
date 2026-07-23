@@ -1,0 +1,23 @@
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets and certificates
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# Personal data, exports, backups, and runtime state
+backups/
+data/
+health-exports/
+*.sqlite
+*.sqlite3
+*.db
+*.log
