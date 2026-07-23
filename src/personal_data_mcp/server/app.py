@@ -32,8 +32,10 @@ from starlette.applications import Starlette
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.host_context import ServiceKeyRing
 from personal_data_mcp.server.authz import Authorizer
 from personal_data_mcp.server.config import ServerConfig
+from personal_data_mcp.server.control import SessionFactory, build_control_app
 from personal_data_mcp.server.errors import (
     error_result,
     internal_error_result,
@@ -160,11 +162,14 @@ def build_server(
     config: ServerConfig | None = None,
     registry: ToolRegistry | None = None,
     authorizer: Authorizer | None = None,
+    *,
+    verification_ring: ServiceKeyRing | None = None,
 ) -> FastMCP:
     config = config or ServerConfig()
     registry = registry if registry is not None else build_registry()
     if authorizer is None:
-        authorizer = Authorizer(load_verification_ring())
+        ring = verification_ring or load_verification_ring()
+        authorizer = Authorizer(ring)
 
     server = FastMCP(
         SERVER_NAME,
@@ -201,11 +206,31 @@ def build_server(
 def build_app(
     config: ServerConfig | None = None,
     registry: ToolRegistry | None = None,
-    authorizer: Authorizer | None = None,
+    *,
+    verification_ring: ServiceKeyRing | None = None,
+    session_factory: SessionFactory | None = None,
 ) -> Starlette:
-    """The ASGI application, guard included."""
+    """The ASGI application: the MCP endpoint, and the control API if a database
+    is wired.
+
+    The verification ring is resolved once and shared by the tool-call gate and
+    the control plane, so both check signatures against the same keys. The
+    control routes are only mounted when a `session_factory` is supplied; the
+    MCP-only path (no database) still stands up for transport work.
+    """
     config = config or ServerConfig()
-    server = build_server(config, registry, authorizer)
+    ring = verification_ring or load_verification_ring()
+    server = build_server(config, registry, Authorizer(ring))
     app = server.streamable_http_app()
+
+    if session_factory is not None:
+        # The control API is a sibling on /internal, never an MCP tool and never
+        # on /mcp. Adding its routes to the same app keeps it one loopback
+        # service while keeping it off the model's tool surface entirely.
+        control = build_control_app(
+            verification_ring=ring, session_factory=session_factory
+        )
+        app.router.routes.extend(control.router.routes)
+
     app.add_middleware(LoopbackHttpGuard, mcp_path=config.mcp_path)
     return app
