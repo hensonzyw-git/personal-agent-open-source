@@ -37,6 +37,7 @@ dev = [
 
 [project.scripts]
 personal-agent-api = "personal_agent.cli:main"
+personal-agent-db = "personal_agent.storage.db:main"
 personal-agent-generate-contracts = "personal_agent_core.manifest:main"
 personal-agent-eval-lint = "personal_agent_core.evalset:main"
 personal-data-mcp = "personal_data_mcp.cli:main"
