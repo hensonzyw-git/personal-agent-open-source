@@ -107,7 +107,9 @@ Already confirmed:
   recorded today. `昨天` and `前天` resolve before the MCP call.
 - Every new entry must explicitly state `个人支出` or `家庭支出`. There is no
   default and history must not be used to infer this attribute. Missing scope
-  means ask before writing.
+  means ask before writing. Indirect wording such as `给家里` or `全家` does not
+  count as explicit: Henson confirmed he states `家庭支出` when he means it, so
+  asking one extra time is correct and inferring is not.
 - Normal expenses are positive; refunds and AA receipts are negative. Users do
   not need to type `-`; normalize from explicit semantics. Refund/AA category
   may inherit only from a unique, high-confidence matching original record;
