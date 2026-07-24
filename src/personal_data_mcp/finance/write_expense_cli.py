@@ -2,10 +2,15 @@
 
 This exists because the first real writes must be deliberate, single, fully
 specified acts -- not side effects of a model call. `finance.log_expense` is not
-registered as an MCP tool yet: the pre-write duplicate check (DEV-020) is not
-built, and the registry only advertises tools that can actually execute. So the
-semantics arrive here from a human, in exactly the shape the model is
-contracted to produce, and go through the same resolvers (DEV-021).
+registered as an MCP tool yet, and the registry only advertises tools that can
+actually execute. So the semantics arrive here from a human, in exactly the
+shape the model is contracted to produce, and go through the same resolvers
+(DEV-021) and the same pre-write duplicate gate (DEV-020) a tool call will.
+
+A `possible_duplicate` result is a question, not a failure: it returns a
+`duplicate_check_id` and writes nothing, and re-running with
+`--duplicate-override <id>` releases exactly that decision -- the server
+re-checks and refuses if the candidate set has moved.
 
 Everything the write path enforces still applies, and two guards are added
 around it:
@@ -50,7 +55,6 @@ from personal_data_mcp.feishu.redaction import redact_for_log
 from personal_data_mcp.finance.expense_record import ExpenseEntry
 from personal_data_mcp.finance.expense_policy import (
     Clarification,
-    REDUCTION_KINDS,
     resolve_expense,
 )
 from personal_data_mcp.finance.ledger_reader import read_year_expenses
@@ -59,7 +63,9 @@ from personal_data_mcp.finance.schema_validator import (
     observed_field_from_feishu,
     validate_schema,
 )
-from personal_data_mcp.finance.write_path import write_expense
+from personal_data_mcp.crypto.keys import load_data_keyring
+from personal_data_mcp.finance.duplicate_check import DuplicateFinding, OverrideRefused
+from personal_data_mcp.finance.write_path import submit_expense
 from personal_data_mcp.storage.engine import (
     create_all,
     create_database_engine,
@@ -107,20 +113,13 @@ class RawEntry:
     destination: str | None
 
 
-def _needs_the_ledger(raw: RawEntry) -> bool:
-    """Whether resolving this entry requires reading the year.
-
-    Only two things need it: turning a bare destination into a trip tag, and
-    finding the unique original a reduction inherits its category from. An
-    entry that needs neither is written without a scan.
-    """
-    if raw.destination is not None and raw.trip_tag is None:
-        return True
-    return raw.category is None and raw.entry_kind in REDUCTION_KINDS
-
-
 async def run(
-    raw: RawEntry, *, config_path: Path, db_path: Path, idempotency_key: str
+    raw: RawEntry,
+    *,
+    config_path: Path,
+    db_path: Path,
+    idempotency_key: str,
+    duplicate_override: str | None = None,
 ) -> dict:
     config = load_ledger_config(
         json.loads(config_path.read_text(encoding="utf-8"))
@@ -155,10 +154,11 @@ async def run(
                 ]
             validation = validate_schema(config, observed)
 
-            rows = (
-                await read_year_expenses(adapter, source=source, config=config)
-                if _needs_the_ledger(raw)
-                else []
+            # The duplicate check compares against the whole year including
+            # rows Henson typed into Feishu himself, so the scan is no longer
+            # conditional on what resolution needs.
+            rows = await read_year_expenses(
+                adapter, source=source, config=config
             )
             resolved = resolve_expense(
                 name=raw.name,
@@ -182,8 +182,11 @@ async def run(
                 }
             entry = resolved.entry
 
-            outcome = await write_expense(
+            outcome = await submit_expense(
                 entry,
+                ledger_rows=rows,
+                keyring=load_data_keyring(),
+                duplicate_override=duplicate_override,
                 sessions=sessions,
                 adapter=adapter,
                 config=config,
@@ -193,6 +196,13 @@ async def run(
                 request_fingerprint=request_fingerprint(entry),
                 trace_id=f"g3-{idempotency_key}",
             )
+            if isinstance(outcome, DuplicateFinding):
+                return {
+                    "status": "possible_duplicate",
+                    "duplicate_check_id": outcome.check_id,
+                    "candidates": [c.card() for c in outcome.candidates],
+                    "scanned_rows": len(rows),
+                }
     finally:
         engine.dispose()
 
@@ -271,6 +281,13 @@ def main() -> None:
         "--entry-kind", default="expense", choices=list(ENTRY_KINDS)
     )
     parser.add_argument(
+        "--duplicate-override",
+        help=(
+            "a duplicate_check_id this server issued; releasing re-runs the "
+            "check and refuses if the candidate set moved"
+        ),
+    )
+    parser.add_argument(
         "--idempotency-key",
         default=None,
         help="reuse a key to prove a replay writes nothing new",
@@ -291,10 +308,17 @@ def main() -> None:
                 config_path=args.config,
                 db_path=args.db,
                 idempotency_key=key,
+                duplicate_override=args.duplicate_override,
             )
         )
-    except (AppError, LedgerSourceError) as exc:
-        code = exc.code.value if isinstance(exc, AppError) else "LEDGER_SOURCE"
+    except (AppError, LedgerSourceError, OverrideRefused) as exc:
+        code = (
+            exc.code.value
+            if isinstance(exc, AppError)
+            else "DUPLICATE_OVERRIDE_REFUSED"
+            if isinstance(exc, OverrideRefused)
+            else "LEDGER_SOURCE"
+        )
         print(
             redact_for_log(f"write refused or unresolved: {code} ({exc})"),
             file=sys.stderr,
@@ -306,4 +330,8 @@ def main() -> None:
     print(f"idempotency_key={key}")
     # A clarification is a legitimate outcome, but it is not a write. Exiting 0
     # would let a script treat "I asked a question" as "it is recorded".
-    sys.exit(3 if evidence["status"] == "clarification_required" else 0)
+    sys.exit(
+        3
+        if evidence["status"] in ("clarification_required", "possible_duplicate")
+        else 0
+    )

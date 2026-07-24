@@ -33,10 +33,18 @@ from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.timeutil import utc_now
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
+from personal_data_mcp.finance.duplicate_check import (
+    DuplicateFinding,
+    authorise_override,
+    find_exact_duplicates,
+    raise_check,
+)
+from personal_data_mcp.finance.ledger_reader import LedgerExpense
 from personal_data_mcp.finance.expense_record import (
     ExpenseEntry,
     build_expense_payload,
@@ -104,6 +112,79 @@ def _replay_of_succeeded(
         record_id=receipt.record_id,
         committed_at=receipt.verified_at or receipt.created_at,
         stored_fields={},
+    )
+
+
+async def submit_expense(
+    entry: ExpenseEntry,
+    *,
+    sessions: sessionmaker[Session],
+    adapter: FeishuAdapter,
+    config: LedgerConfig,
+    validation: SchemaValidation,
+    source: BaseSource,
+    idempotency_key: str,
+    request_fingerprint: str,
+    trace_id: str,
+    ledger_rows: list[LedgerExpense],
+    keyring: KeyRing,
+    duplicate_override: str | None = None,
+    now: Callable[[], datetime] = utc_now,
+    **write_kwargs,
+) -> WriteOutcome | DuplicateFinding:
+    """The duplicate gate, then the write.
+
+    The gate is outside `write_expense` for a reason that is easy to get wrong:
+    it must not run when an execution for this idempotency key already exists.
+    A replay would otherwise find the row it wrote itself a moment ago, call it
+    a duplicate, and refuse -- turning idempotency into a failure. Design 7.6
+    rule 8 states this directly: the check happens only before the first
+    `prepared`, and recovery is never handled by "looks like a duplicate".
+    """
+    with sessions() as session:
+        already_started = session.get(ToolExecution, idempotency_key) is not None
+
+    if not already_started:
+        candidates = find_exact_duplicates(entry, ledger_rows)
+        if candidates:
+            if duplicate_override is None:
+                with sessions() as session:
+                    finding = raise_check(
+                        session,
+                        entry=entry,
+                        candidates=candidates,
+                        keyring=keyring,
+                        now=now(),
+                    )
+                    session.commit()
+                # Zero writes: no execution row, nothing to reconcile, and a
+                # question for Henson instead of a guess.
+                return finding
+            with sessions() as session:
+                authorise_override(
+                    session,
+                    check_id=duplicate_override,
+                    entry=entry,
+                    current_candidates=candidates,
+                    keyring=keyring,
+                    now=now(),
+                )
+                session.commit()
+        # No candidates: there is nothing to release, so an override that names
+        # a now-empty check is simply unnecessary rather than an error.
+
+    return await write_expense(
+        entry,
+        sessions=sessions,
+        adapter=adapter,
+        config=config,
+        validation=validation,
+        source=source,
+        idempotency_key=idempotency_key,
+        request_fingerprint=request_fingerprint,
+        trace_id=trace_id,
+        now=now,
+        **write_kwargs,
     )
 
 

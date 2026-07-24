@@ -417,6 +417,132 @@ def test_rich_text_segments_read_back_as_the_same_name(sessions) -> None:
     assert state_of(sessions) == "succeeded"
 
 
+# --- the duplicate gate sits in front of the write ---------------------------
+
+
+def keyring_for():
+    from personal_agent_core.crypto import KeyRing, generate_key
+
+    return KeyRing([generate_key("dup-test")], service="personal_data_mcp")
+
+
+async def do_submit(
+    fake: FakeFeishu,
+    sessions,
+    *,
+    rows,
+    key: str = "idem-1",
+    override: str | None = None,
+    keyring=None,
+):
+    from personal_data_mcp.finance.write_path import submit_expense
+
+    async with adapter_for(fake) as adapter:
+        return await submit_expense(
+            LUNCH,
+            sessions=sessions,
+            adapter=adapter,
+            config=CONFIG,
+            validation=VALIDATION,
+            source=SOURCE,
+            idempotency_key=key,
+            request_fingerprint="fp-1",
+            trace_id="trace-1",
+            ledger_rows=rows,
+            keyring=keyring or keyring_for(),
+            duplicate_override=override,
+        )
+
+
+def existing_lunch_row():
+    from personal_data_mcp.finance.ledger_reader import LedgerExpense
+
+    return LedgerExpense(
+        record_id="rec-existing",
+        name="午饭",
+        amount_cny=Decimal("20.00"),
+        occurred_on=date(2026, 7, 23),
+        category="餐饮",
+    )
+
+
+def test_an_exact_duplicate_stops_the_write_entirely(sessions) -> None:
+    from personal_data_mcp.finance.duplicate_check import DuplicateFinding
+
+    fake = FakeFeishu()
+    outcome = run(do_submit(fake, sessions, rows=[existing_lunch_row()]))
+
+    assert isinstance(outcome, DuplicateFinding)
+    assert [c.record_id for c in outcome.candidates] == ["rec-existing"]
+    # Nothing was written, and no execution row exists to reconcile later.
+    assert fake.creates == []
+    assert state_of(sessions) is None
+
+
+def test_no_candidate_writes_straight_through(sessions) -> None:
+    fake = FakeFeishu()
+    outcome = run(do_submit(fake, sessions, rows=[]))
+    assert outcome.status == "created"
+    assert len(fake.creates) == 1
+
+
+def test_a_valid_decision_releases_exactly_one_write(sessions) -> None:
+    from personal_data_mcp.finance.duplicate_check import DuplicateFinding
+
+    keyring = keyring_for()
+    fake = FakeFeishu()
+    rows = [existing_lunch_row()]
+
+    finding = run(do_submit(fake, sessions, rows=rows, keyring=keyring))
+    assert isinstance(finding, DuplicateFinding)
+    assert fake.creates == []
+
+    outcome = run(
+        do_submit(
+            fake, sessions, rows=rows, override=finding.check_id, keyring=keyring
+        )
+    )
+    assert outcome.status == "created"
+    assert len(fake.creates) == 1
+
+
+def test_a_forged_override_does_not_release_the_write(sessions) -> None:
+    from personal_data_mcp.finance.duplicate_check import OverrideRefused
+
+    fake = FakeFeishu()
+    with pytest.raises(OverrideRefused):
+        run(
+            do_submit(
+                fake,
+                sessions,
+                rows=[existing_lunch_row()],
+                override="00000000-0000-0000-0000-000000000000",
+            )
+        )
+    assert fake.creates == []
+    assert state_of(sessions) is None
+
+
+def test_a_replay_is_never_treated_as_its_own_duplicate(sessions) -> None:
+    """The subtle one: idempotency must survive the gate.
+
+    After a successful write the ledger contains the row that write created. A
+    replay of the same key scans that row, and if the gate ran again it would
+    call the write a duplicate of itself and refuse -- turning idempotency into
+    a failure. Design 7.6 rule 8 puts the check before the first `prepared`
+    only.
+    """
+    fake = FakeFeishu()
+    first = run(do_submit(fake, sessions, rows=[]))
+    assert first.status == "created"
+
+    # The ledger now contains what was just written.
+    replay = run(do_submit(fake, sessions, rows=[existing_lunch_row()]))
+    assert replay.status == "idempotent_replay"
+    assert replay.record_id == first.record_id
+    assert len(fake.creates) == 1
+
+
 def test_both_live_read_shapes_verify_as_the_same_record() -> None:
     """Regression against what the real test Base actually returned at G3.
 
@@ -510,32 +636,23 @@ def test_the_g3_command_states_semantics_and_resolves_nothing_itself() -> None:
     assert parse().occurred_on == date(2026, 7, 23)
 
 
-def test_the_g3_command_only_scans_the_ledger_when_resolution_needs_it() -> None:
-    from personal_data_mcp.finance.write_expense_cli import RawEntry, _needs_the_ledger
+def test_the_raw_entry_carries_the_statement_unresolved() -> None:
+    from personal_data_mcp.finance.write_expense_cli import RawEntry
 
-    def raw(**overrides):
-        base = dict(
-            name="机票",
-            input_amount="2000",
-            occurred_on=date(2026, 7, 23),
-            is_family_expense=True,
-            entry_kind="expense",
-            category="餐饮",
-            trip_tag=None,
-            destination=None,
-        )
-        base.update(overrides)
-        return RawEntry(**base)
-
-    assert _needs_the_ledger(raw()) is False
-    # A bare destination must be resolved against existing trips.
-    assert _needs_the_ledger(raw(destination="东京", category=None)) is True
-    # An explicit tag is used as written, so no scan is needed.
-    assert _needs_the_ledger(raw(trip_tag="东京02", destination="东京")) is False
-    # A reduction with no category needs its original.
-    assert (
-        _needs_the_ledger(raw(entry_kind="refund", category=None)) is True
+    raw = RawEntry(
+        name="机票",
+        input_amount="2000",
+        occurred_on=date(2026, 7, 23),
+        is_family_expense=True,
+        entry_kind="expense",
+        category=None,
+        trip_tag=None,
+        destination="东京",
     )
+    # A bare destination is left for the resolver; the CLI does not turn it into
+    # a tag itself.
+    assert raw.destination == "东京"
+    assert raw.trip_tag is None
 
 
 def test_a_late_evening_entry_keeps_its_shanghai_ledger_date(sessions) -> None:
