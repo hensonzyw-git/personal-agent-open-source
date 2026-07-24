@@ -154,6 +154,238 @@ def _replay_of_succeeded(
     )
 
 
+async def execute_governed_write(
+    *,
+    tool: str,
+    table_kind: str,
+    payload: dict[str, Any],
+    sessions: sessionmaker[Session],
+    adapter: FeishuAdapter,
+    base_token: str,
+    table_id: str,
+    idempotency_key: str,
+    request_fingerprint: str,
+    trace_id: str,
+    verify: Callable[[dict[str, Any]], list[str]],
+    keyring: KeyRing | None = None,
+    now: Callable[[], datetime] = utc_now,
+    new_client_token: Callable[[], str] = lambda: str(uuid.uuid4()),
+) -> WriteOutcome:
+    """The crash-safe create-and-verify skeleton, shared by every write tool.
+
+    The ordering is the safety property and it lives here, in one place, so the
+    expense, income and family-fund tools cannot drift from it: `prepared` (with
+    the client token) commits before any network; `submitting` commits before
+    the request leaves; the receipt and `committed_unverified` commit before the
+    read-back. `verify` returns the logical names of any fields whose read-back
+    disagrees with what was sent -- an empty list is the only thing that reaches
+    `succeeded`. Nothing here retries a create or writes a correction.
+    """
+    sealed_payload = (
+        seal_create_payload(payload, keyring=keyring, idempotency_key=idempotency_key)
+        if keyring is not None
+        else None
+    )
+
+    # --- step 1: prepared, committed before any network ----------------------
+    with sessions() as session:
+        execution = prepare_execution(
+            session,
+            idempotency_key=idempotency_key,
+            tool=tool,
+            request_fingerprint=request_fingerprint,
+            client_token=new_client_token(),
+            encrypted_payload=sealed_payload,
+            now=now(),
+        )
+        replay = _replay_of_succeeded(session, execution)
+        if replay is not None:
+            session.commit()
+            return replay
+        if execution.state != "prepared":
+            raise AppError(
+                ErrorCode.SOURCE_COMMIT_UNKNOWN,
+                internal_detail=(
+                    f"{idempotency_key} is at {execution.state}; "
+                    "recovery belongs to the reconciler"
+                ),
+            )
+        client_token = execution.client_token
+        state_version = execution.state_version
+        _audit(
+            session,
+            trace_id=trace_id,
+            event_type="write_prepared",
+            summary=f"prepared {tool} for table {table_kind}",
+            now=now(),
+        )
+        session.commit()
+
+    # --- step 2: submitting, committed before the request leaves -------------
+    with sessions() as session:
+        state_version = transition(
+            session,
+            idempotency_key=idempotency_key,
+            current_state="prepared",
+            current_version=state_version,
+            target_state="submitting",
+            now=now(),
+        )
+        session.commit()
+
+    # --- step 3: the one create ----------------------------------------------
+    try:
+        record = await adapter.create_record(
+            base_token, table_id, fields=payload, client_token=client_token
+        )
+    except AppError as error:
+        with sessions() as session:
+            transition(
+                session,
+                idempotency_key=idempotency_key,
+                current_state="submitting",
+                current_version=state_version,
+                target_state="commit_unknown",
+                now=now(),
+                failure_code=error.code.value,
+            )
+            _audit(
+                session,
+                trace_id=trace_id,
+                event_type="write_commit_unknown",
+                summary=f"create failed with {error.code.value}",
+                now=now(),
+            )
+            session.commit()
+        raise AppError(
+            ErrorCode.SOURCE_COMMIT_UNKNOWN,
+            internal_detail=f"create failed as {error.code.value}",
+        ) from error
+
+    record_id = record.get("record_id")
+    if not isinstance(record_id, str) or not record_id.strip():
+        with sessions() as session:
+            transition(
+                session,
+                idempotency_key=idempotency_key,
+                current_state="submitting",
+                current_version=state_version,
+                target_state="commit_unknown",
+                now=now(),
+                failure_code=ErrorCode.SOURCE_COMMIT_UNKNOWN.value,
+            )
+            session.commit()
+        raise AppError(
+            ErrorCode.SOURCE_COMMIT_UNKNOWN,
+            internal_detail="create returned no usable record id",
+        )
+
+    # --- step 4: receipt first, then committed_unverified --------------------
+    with sessions() as session:
+        record_receipt(
+            session,
+            receipt_id=str(uuid.uuid4()),
+            idempotency_key=idempotency_key,
+            table_kind=table_kind,
+            record_id=record_id,
+            now=now(),
+        )
+        state_version = transition(
+            session,
+            idempotency_key=idempotency_key,
+            current_state="submitting",
+            current_version=state_version,
+            target_state="committed_unverified",
+            now=now(),
+        )
+        _audit(
+            session,
+            trace_id=trace_id,
+            event_type="write_committed_unverified",
+            summary="record id received and persisted",
+            now=now(),
+        )
+        session.commit()
+
+    # --- step 5: read back ---------------------------------------------------
+    stored: dict[str, Any] | None = None
+    last_error: AppError | None = None
+    for _ in range(READ_BACK_ATTEMPTS):
+        try:
+            read = await adapter.get_record(base_token, table_id, record_id)
+        except AppError as error:
+            last_error = error
+            continue
+        fields = read.get("fields")
+        stored = fields if isinstance(fields, dict) else {}
+        break
+
+    if stored is None:
+        raise AppError(
+            ErrorCode.SOURCE_COMMIT_UNKNOWN,
+            internal_detail=(
+                "record created but read-back unavailable after "
+                f"{READ_BACK_ATTEMPTS} attempts"
+                + (f" ({last_error.code.value})" if last_error else "")
+            ),
+        )
+
+    mismatches = verify(stored)
+    if mismatches:
+        with sessions() as session:
+            transition(
+                session,
+                idempotency_key=idempotency_key,
+                current_state="committed_unverified",
+                current_version=state_version,
+                target_state="needs_manual_review",
+                now=now(),
+                failure_code=ErrorCode.SOURCE_COMMITTED_MISMATCH.value,
+            )
+            _audit(
+                session,
+                trace_id=trace_id,
+                event_type="write_mismatch",
+                summary="read-back mismatch on " + ",".join(mismatches),
+                now=now(),
+            )
+            session.commit()
+        raise AppError(
+            ErrorCode.SOURCE_COMMITTED_MISMATCH,
+            internal_detail="read-back mismatch on " + ",".join(mismatches),
+        )
+
+    # --- step 6: verified, and only now succeeded ----------------------------
+    committed_at = now()
+    with sessions() as session:
+        mark_receipt_verified(
+            session, idempotency_key=idempotency_key, now=committed_at
+        )
+        transition(
+            session,
+            idempotency_key=idempotency_key,
+            current_state="committed_unverified",
+            current_version=state_version,
+            target_state="succeeded",
+            now=committed_at,
+        )
+        _audit(
+            session,
+            trace_id=trace_id,
+            event_type="write_succeeded",
+            summary="read-back verified every written field",
+            now=committed_at,
+        )
+        session.commit()
+
+    return WriteOutcome(
+        status="created",
+        record_id=record_id,
+        committed_at=committed_at,
+        stored_fields=stored,
+    )
+
+
 async def submit_expense(
     entry: ExpenseEntry,
     *,
@@ -261,232 +493,29 @@ async def write_expense(
                 "expense write source does not match the validated ledger config"
             ),
         )
-    table_id = source.tables[TABLE_KIND]
-
     # Built before anything is persisted: a refusal for a drifted schema, an
     # unknown category or a blank name must cost nothing and leave no row.
     payload = build_expense_payload(entry, config=config, validation=validation)
-    sealed_payload = (
-        seal_create_payload(
-            payload, keyring=keyring, idempotency_key=idempotency_key
-        )
-        if keyring is not None
-        else None
-    )
 
-    # --- step 1: prepared, committed before any network ----------------------
-    with sessions() as session:
-        execution = prepare_execution(
-            session,
-            idempotency_key=idempotency_key,
-            tool=TOOL,
-            request_fingerprint=request_fingerprint,
-            client_token=new_client_token(),
-            encrypted_payload=sealed_payload,
-            now=now(),
-        )
-        replay = _replay_of_succeeded(session, execution)
-        if replay is not None:
-            session.commit()
-            return replay
-        if execution.state != "prepared":
-            # Anything past `prepared` may already have reached Feishu. Only the
-            # reconciler may touch it, and only under the same client token.
-            raise AppError(
-                ErrorCode.SOURCE_COMMIT_UNKNOWN,
-                internal_detail=(
-                    f"{idempotency_key} is at {execution.state}; "
-                    "recovery belongs to the reconciler"
-                ),
-            )
-        client_token = execution.client_token
-        state_version = execution.state_version
-        _audit(
-            session,
-            trace_id=trace_id,
-            event_type="expense_write_prepared",
-            summary=f"prepared {TOOL} for table {TABLE_KIND}",
-            now=now(),
-        )
-        session.commit()
+    def verify(stored: dict) -> list[str]:
+        return [
+            m.logical_name
+            for m in verify_expense_record(entry, stored, config=config)
+        ]
 
-    # --- step 2: submitting, committed before the request leaves -------------
-    with sessions() as session:
-        state_version = transition(
-            session,
-            idempotency_key=idempotency_key,
-            current_state="prepared",
-            current_version=state_version,
-            target_state="submitting",
-            now=now(),
-        )
-        session.commit()
-
-    # --- step 3: the one create -----------------------------------------------
-    try:
-        record = await adapter.create_record(
-            source.base_token,
-            table_id,
-            fields=payload,
-            client_token=client_token,
-        )
-    except AppError as error:
-        # Conservative by design: the adapter cannot yet prove which Feishu
-        # failures leave no record, so every failed create is an *unknown*
-        # commit rather than a safe failure. Narrowing this to `failed_safe`
-        # needs evidence from the test Base, not an assumption -- and being
-        # wrong in that direction invents a duplicate later.
-        with sessions() as session:
-            transition(
-                session,
-                idempotency_key=idempotency_key,
-                current_state="submitting",
-                current_version=state_version,
-                target_state="commit_unknown",
-                now=now(),
-                failure_code=error.code.value,
-            )
-            _audit(
-                session,
-                trace_id=trace_id,
-                event_type="expense_write_commit_unknown",
-                summary=f"create failed with {error.code.value}",
-                now=now(),
-            )
-            session.commit()
-        raise AppError(
-            ErrorCode.SOURCE_COMMIT_UNKNOWN,
-            internal_detail=f"create failed as {error.code.value}",
-        ) from error
-
-    record_id = record.get("record_id")
-    if not isinstance(record_id, str) or not record_id.strip():
-        with sessions() as session:
-            transition(
-                session,
-                idempotency_key=idempotency_key,
-                current_state="submitting",
-                current_version=state_version,
-                target_state="commit_unknown",
-                now=now(),
-                failure_code=ErrorCode.SOURCE_COMMIT_UNKNOWN.value,
-            )
-            session.commit()
-        raise AppError(
-            ErrorCode.SOURCE_COMMIT_UNKNOWN,
-            internal_detail="create returned no usable record id",
-        )
-
-    # --- step 4: receipt first, then committed_unverified ---------------------
-    with sessions() as session:
-        record_receipt(
-            session,
-            receipt_id=str(uuid.uuid4()),
-            idempotency_key=idempotency_key,
-            table_kind=TABLE_KIND,
-            record_id=record_id,
-            now=now(),
-        )
-        state_version = transition(
-            session,
-            idempotency_key=idempotency_key,
-            current_state="submitting",
-            current_version=state_version,
-            target_state="committed_unverified",
-            now=now(),
-        )
-        _audit(
-            session,
-            trace_id=trace_id,
-            event_type="expense_write_committed_unverified",
-            summary="record id received and persisted",
-            now=now(),
-        )
-        session.commit()
-
-    # --- step 5: read back ----------------------------------------------------
-    stored: dict[str, Any] | None = None
-    last_error: AppError | None = None
-    for _ in range(READ_BACK_ATTEMPTS):
-        try:
-            read = await adapter.get_record(source.base_token, table_id, record_id)
-        except AppError as error:
-            last_error = error
-            continue
-        fields = read.get("fields")
-        stored = fields if isinstance(fields, dict) else {}
-        break
-
-    if stored is None:
-        # The record exists and its id is durable; only the verification is
-        # missing. It stays `committed_unverified` for the reconciler, and the
-        # caller is told exactly that rather than a success or a failure.
-        raise AppError(
-            ErrorCode.SOURCE_COMMIT_UNKNOWN,
-            internal_detail=(
-                "record created but read-back unavailable after "
-                f"{READ_BACK_ATTEMPTS} attempts"
-                + (f" ({last_error.code.value})" if last_error else "")
-            ),
-        )
-
-    mismatches = verify_expense_record(entry, stored, config=config)
-    if mismatches:
-        with sessions() as session:
-            transition(
-                session,
-                idempotency_key=idempotency_key,
-                current_state="committed_unverified",
-                current_version=state_version,
-                target_state="needs_manual_review",
-                now=now(),
-                failure_code=ErrorCode.SOURCE_COMMITTED_MISMATCH.value,
-            )
-            _audit(
-                session,
-                trace_id=trace_id,
-                event_type="expense_write_mismatch",
-                summary=(
-                    "read-back mismatch on "
-                    + ",".join(m.logical_name for m in mismatches)
-                ),
-                now=now(),
-            )
-            session.commit()
-        raise AppError(
-            ErrorCode.SOURCE_COMMITTED_MISMATCH,
-            internal_detail=(
-                "read-back mismatch on "
-                + ",".join(m.logical_name for m in mismatches)
-            ),
-        )
-
-    # --- step 6: verified, and only now succeeded -----------------------------
-    committed_at = now()
-    with sessions() as session:
-        mark_receipt_verified(
-            session, idempotency_key=idempotency_key, now=committed_at
-        )
-        transition(
-            session,
-            idempotency_key=idempotency_key,
-            current_state="committed_unverified",
-            current_version=state_version,
-            target_state="succeeded",
-            now=committed_at,
-        )
-        _audit(
-            session,
-            trace_id=trace_id,
-            event_type="expense_write_succeeded",
-            summary="read-back verified every written field",
-            now=committed_at,
-        )
-        session.commit()
-
-    return WriteOutcome(
-        status="created",
-        record_id=record_id,
-        committed_at=committed_at,
-        stored_fields=stored,
+    return await execute_governed_write(
+        tool=TOOL,
+        table_kind=TABLE_KIND,
+        payload=payload,
+        sessions=sessions,
+        adapter=adapter,
+        base_token=source.base_token,
+        table_id=source.tables[TABLE_KIND],
+        idempotency_key=idempotency_key,
+        request_fingerprint=request_fingerprint,
+        trace_id=trace_id,
+        verify=verify,
+        keyring=keyring,
+        now=now,
+        new_client_token=new_client_token,
     )
