@@ -14,13 +14,15 @@ from pathlib import Path
 import pytest
 
 from personal_agent.api.duplicate_flow import decide_duplicate
-from personal_agent.api.intent import WriteIntent
+from personal_agent.api.intent import WriteIntent, open_intent
 from personal_agent.api.operation_store import (
     open_operation,
     request_cancel,
     transition_operation,
 )
 from personal_agent.api.orchestrator import (
+    CommitClarificationZeroWrite,
+    CommitDuplicateZeroWrite,
     CommitFailedSafe,
     CommitUnknown,
     DirectAnswer,
@@ -322,6 +324,79 @@ def test_a_commit_failed_safe_fails_safe(session, keyring) -> None:
         keyring=keyring,
     )
     assert result.state == "failed_safe"
+
+
+# --- proven zero-write outcomes learned during the single MCP call -----------
+
+
+def _commit_outcome(session, keyring, outcome, key="req-1"):
+    """Drive an operation into `source_in_progress`, then return that outcome."""
+    op = _fresh_operation(session, key=key)
+    intent = WriteIntent("finance.log_expense", {"name": "午饭", "amount": "45"})
+    result = _run(
+        session, op,
+        interpreter=FakeInterpreter(ToolCall("finance.log_expense", {"name": "午饭"})),
+        dispatcher=FakeDispatcher(resolve=Resolved(intent), commit=outcome),
+        keyring=keyring,
+    )
+    return op, result
+
+
+def test_a_duplicate_learned_during_the_call_parks_on_proven_zero_writes(
+    session, keyring
+) -> None:
+    intent = WriteIntent("finance.log_expense", {"name": "午饭", "amount": "45"})
+    op, result = _commit_outcome(
+        session,
+        keyring,
+        CommitDuplicateZeroWrite("dup-mcp", "午饭 ¥45 餐饮"),
+    )
+    assert result.state == "waiting_for_duplicate_decision"
+    assert result.duplicate_check_id == "dup-mcp"
+    session.refresh(op)
+    assert op.state == "waiting_for_duplicate_decision"
+    # The intent is sealed so `write anyway` can resume without the model.
+    assert op.api_request.encrypted_request_payload is not None
+    assert open_intent(
+        keyring,
+        request_id=op.request_id,
+        envelope=op.api_request.encrypted_request_payload,
+    ) == intent
+
+
+def test_a_resolver_question_learned_during_the_call_parks_the_operation(
+    session, keyring
+) -> None:
+    op, result = _commit_outcome(
+        session, keyring, CommitClarificationZeroWrite("东京 还是 东京01？")
+    )
+    assert result.state == "waiting_for_clarification"
+    assert result.clarification == "东京 还是 东京01？"
+    session.refresh(op)
+    assert op.state == "waiting_for_clarification"
+
+
+def test_parking_on_proven_zero_writes_restores_an_honest_cancel(
+    session, keyring
+) -> None:
+    # This is the point of requiring evidence: the operation passed through
+    # source_in_progress, but Finance proved nothing was written, so a user who
+    # now abandons it is told the truth rather than "a write may exist".
+    op, _ = _commit_outcome(
+        session, keyring, CommitDuplicateZeroWrite("dup-2", "午饭 ¥45")
+    )
+    outcome = request_cancel(session, operation_id=op.operation_id, now=NOW)
+    assert outcome.cancelled is True
+    assert outcome.state == "cancelled_pre_submit"
+
+
+def test_an_unknown_commit_still_cannot_park(session, keyring) -> None:
+    # The contrast that makes the rule meaningful: an unknown commit has no
+    # zero-write proof, so it escalates instead of parking.
+    op, result = _commit_outcome(session, keyring, CommitUnknown("timeout"))
+    assert result.state == "needs_manual_review"
+    session.refresh(op)
+    assert op.state == "needs_manual_review"
 
 
 # --- the duplicate decision flow ---------------------------------------------

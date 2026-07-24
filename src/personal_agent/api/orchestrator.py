@@ -147,7 +147,34 @@ class CommitFailedSafe:
     reason: str
 
 
-CommitOutcome = Written | CommitUnknown | CommitFailedSafe
+@dataclass(frozen=True)
+class CommitDuplicateZeroWrite:
+    """Finance found a duplicate and reported writing nothing.
+
+    `finance.log_expense` is a single MCP call that resolves, duplicate-checks
+    and writes, so a duplicate can only be learned once the call is under way.
+    Finance reports it with zero writes and no execution row, which is the
+    evidence that lets the operation park instead of resolving.
+    """
+
+    duplicate_check_id: str
+    existing_summary: str
+
+
+@dataclass(frozen=True)
+class CommitClarificationZeroWrite:
+    """A server-side resolver needs an answer, and Finance wrote nothing."""
+
+    question: str
+
+
+CommitOutcome = (
+    Written
+    | CommitUnknown
+    | CommitFailedSafe
+    | CommitDuplicateZeroWrite
+    | CommitClarificationZeroWrite
+)
 
 
 class Dispatcher(Protocol):
@@ -318,6 +345,7 @@ def _apply_resolve(
             intent=outcome.intent,
             dispatcher=dispatcher,
             duplicate_override=None,
+            keyring=keyring,
             now=now,
         )
 
@@ -348,6 +376,7 @@ def _run_override(
         intent=intent,
         dispatcher=dispatcher,
         duplicate_override=operation.duplicate_check_id,
+        keyring=keyring,
         now=now,
     )
 
@@ -359,6 +388,7 @@ def _commit(
     intent: WriteIntent,
     dispatcher: Dispatcher,
     duplicate_override: str | None,
+    keyring: KeyRing,
     now: datetime,
 ) -> RunResult:
     # Commit `source_in_progress` before the write can occur: from here a cancel
@@ -400,6 +430,37 @@ def _commit(
     if isinstance(outcome, CommitFailedSafe):
         _step(session, operation, "failed_safe", now, failure_reason=outcome.reason)
         return RunResult(state="failed_safe", failure_reason=outcome.reason)
+    if isinstance(outcome, CommitDuplicateZeroWrite):
+        # Proven zero writes, so parking is a projection of Finance's own report,
+        # not an assumption. The evidence is stated explicitly at the call site.
+        record_possible_duplicate(
+            session,
+            keyring,
+            operation=operation,
+            # The dispatcher may report facts about this attempt, but it cannot
+            # replace the already-authorized and resolved write intent.
+            write_intent=intent,
+            duplicate_check_id=outcome.duplicate_check_id,
+            now=now,
+            zero_write_proven=True,
+        )
+        return RunResult(
+            state="waiting_for_duplicate_decision",
+            duplicate_check_id=outcome.duplicate_check_id,
+            duplicate_existing=outcome.existing_summary,
+        )
+    if isinstance(outcome, CommitClarificationZeroWrite):
+        _step(
+            session,
+            operation,
+            "waiting_for_clarification",
+            now,
+            safe_result=outcome.question,
+            zero_write_proven=True,
+        )
+        return RunResult(
+            state="waiting_for_clarification", clarification=outcome.question
+        )
     raise AppError(  # pragma: no cover - the union is exhaustive above
         ErrorCode.INTERNAL_ERROR,
         internal_detail=f"unhandled commit outcome {type(outcome).__name__}",
@@ -429,6 +490,7 @@ def _step(
     tool: str | None = None,
     safe_result: str | None = None,
     failure_reason: str | None = None,
+    zero_write_proven: bool = False,
 ) -> None:
     session.refresh(operation)
     transition_operation(
@@ -441,5 +503,6 @@ def _step(
         tool=tool,
         safe_result=safe_result,
         failure_reason=failure_reason,
+        zero_write_proven=zero_write_proven,
     )
     session.refresh(operation)

@@ -186,6 +186,35 @@ authorize automatically injecting the full archive into model context.
 - Before changes, inspect the worktree and preserve unrelated user changes.
   Use focused edits; do not refactor adjacent code or documents unless asked.
 
+### 5.1 Non-deterministic and adversarial boundaries
+
+These rules exist because a DEV-027 review found six blocking defects behind a
+fully green suite. The cause was structural, not careless: fakes were built from
+the same assumptions as the code, so they could only ever confirm those
+assumptions, and one small happy-path live check was mistaken for validation.
+
+- A green suite is evidence only where the failure modes are already enumerated.
+  At a model, network, or attacker-facing boundary, confidence comes from
+  adversarial coverage, not from a passing run.
+- For any such boundary, design the failing cases **before** the implementation,
+  and make each one a test: empty response, multiple tool calls, a tool call
+  mixed with prose, malformed arguments, multi-turn context, a tampered
+  environment variable or host, and a provider error. Fail closed everywhere;
+  never silently truncate, drop, or repair model output.
+- Never let a fake be the only counterparty. A fake written from the same mental
+  model as the code proves nothing about the real one. Live checks must include
+  the failure shapes, not only the clean path.
+- A model or provider must never be trusted to bound its own behaviour. Pin the
+  provider host and path; a credential may only travel to that pinned endpoint.
+- When the contract has a gap, look it up or ask. Do not invent a plausible
+  rule: in a ledger, a plausible-sounding invention silently loses money.
+- Spike code is historical evidence, not a production template. Re-derive the
+  threat model rather than copying spike wiring into production.
+- Framework and architecture choices that are already confirmed (Phase 1 uses
+  Google ADK) may not be quietly replaced for implementation convenience.
+  Surface the conflict and the trade-off; let Henson decide. Never describe an
+  architecture the code does not actually implement.
+
 ## 6. Source-of-truth precedence
 
 When documents conflict, use this order:
@@ -209,6 +238,18 @@ conflict instead of silently choosing an old default.
 - Do not print secrets in commands, logs, test snapshots, or replies.
 - If a change affects ECS networking, SSH, backups, or encryption, preserve a
   rollback path and verify that the personal site remains reachable.
+- A task touching a non-deterministic or adversarial boundary is complete only
+  when all four hold: the confirmed framework is actually used, the failure
+  modes of §5.1 are covered by tests, the production composition really exists
+  (a seam wired only in tests is not wiring), and the documentation states
+  exactly that — no more.
+- State completion at the level actually proven. Distinguish "offline tests
+  pass", "one happy-path live call succeeded", and "the failure modes were
+  exercised live". Passing tests written against one's own assumptions is the
+  weakest of the three, and must not be reported as the strongest.
+- When updating `PROJECT_STATUS.md`, re-read the sections a change affects and
+  fix the ones it contradicts. Two sections disagreeing about who owns a piece
+  of work is a defect, not a documentation detail.
 
 ## 8. Canonical project documents
 

@@ -21,6 +21,7 @@ from personal_agent.api.operation_state import (
     is_recoverable,
     is_terminal,
     may_have_reached_source,
+    needs_zero_write_evidence,
     recovery_target,
 )
 from personal_agent.storage.models import (
@@ -125,6 +126,57 @@ def test_recovery_keeps_a_recoverable_state_for_reconcile() -> None:
     # Parked and early states are not driven by the recovery scan.
     assert recovery_target("accepted") is None
     assert recovery_target("waiting_for_clarification") is None
+
+
+# --- the evidence-only parking edges -----------------------------------------
+
+
+def test_parking_a_post_submit_operation_is_refused_without_evidence() -> None:
+    # `finance.log_expense` is one MCP call, so a duplicate or a resolver
+    # question is only learned after the call began. Parking on it is honest
+    # only with the fact source's zero-write proof; the default refuses.
+    for target in ("waiting_for_duplicate_decision", "waiting_for_clarification"):
+        assert can_transition("source_in_progress", target)
+        with pytest.raises(IllegalOperationTransitionError):
+            assert_transition("source_in_progress", target)
+        assert_transition("source_in_progress", target, zero_write_proven=True)
+
+
+def test_the_evidence_flag_is_not_a_master_key() -> None:
+    # It unlocks exactly the two parking edges and nothing else: a
+    # possibly-submitted write still can never be reported as cancelled.
+    with pytest.raises(IllegalOperationTransitionError):
+        assert_transition(
+            "source_in_progress", "cancelled_pre_submit", zero_write_proven=True
+        )
+    with pytest.raises(IllegalOperationTransitionError):
+        assert_transition(
+            "source_in_progress", "succeeded", zero_write_proven=True
+        )
+    with pytest.raises(IllegalOperationTransitionError):
+        assert_transition("verifying", "cancelled_pre_submit", zero_write_proven=True)
+
+
+def test_evidence_is_only_required_where_the_risk_exists() -> None:
+    assert needs_zero_write_evidence(
+        "source_in_progress", "waiting_for_duplicate_decision"
+    )
+    assert needs_zero_write_evidence("verifying", "waiting_for_clarification")
+    # Parking from a pre-submit state needs no evidence: nothing was submitted.
+    assert not needs_zero_write_evidence(
+        "dispatching", "waiting_for_duplicate_decision"
+    )
+    assert_transition("dispatching", "waiting_for_duplicate_decision")
+    # And the ordinary post-submit resolutions are unaffected.
+    assert not needs_zero_write_evidence("source_in_progress", "verifying")
+    assert not needs_zero_write_evidence("source_in_progress", "needs_manual_review")
+
+
+def test_a_parked_operation_can_then_cancel_cleanly_because_nothing_was_written():
+    # Once parked on proven zero writes, the operation is genuinely pre-submit
+    # again, so an abandoning user gets an honest cancellation.
+    assert can_cancel_pre_submit("waiting_for_duplicate_decision")
+    assert can_cancel_pre_submit("waiting_for_clarification")
 
 
 def test_illegal_transitions_explain_the_rule() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from google.genai import types
 
 from personal_agent.api.orchestrator import InterpreterError
 from personal_agent.policy.bridge import VisibleTool
@@ -51,6 +52,16 @@ def _call(name, args):
         text=None,
         thought=False,
         function_call=SimpleNamespace(name=name, args=args),
+    )
+
+
+def _call_with_unsupported_content(name, args):
+    return types.Part(
+        function_call=types.FunctionCall(name=name, args=args),
+        inline_data=types.Blob(
+            mime_type="application/octet-stream",
+            data=b"unsupported",
+        ),
     )
 
 
@@ -159,6 +170,38 @@ def test_structured_clarification_and_batch_gate_are_not_direct_answers() -> Non
 def test_malformed_or_ambiguous_responses_fail_closed(response) -> None:
     gateway, _ = _gateway(response)
     with pytest.raises(ModelGatewayError):
+        _propose(gateway)
+
+
+def test_a_tool_call_with_an_unsupported_part_payload_fails_closed() -> None:
+    gateway, _ = _gateway(
+        _response(
+            _call_with_unsupported_content(
+                "finance.log_expense",
+                {"name": "午饭", "input_amount": "45"},
+            )
+        )
+    )
+    with pytest.raises(ModelGatewayError, match="unsupported content"):
+        _propose(gateway)
+
+
+def test_a_partial_response_fails_closed_even_if_it_contains_a_tool_call() -> None:
+    response = _response(_call("finance.log_expense", {"name": "午饭"}))
+    response.partial = True
+    gateway, _ = _gateway(response)
+    with pytest.raises(ModelGatewayError, match="partial"):
+        _propose(gateway)
+
+
+def test_thought_content_is_not_silently_dropped_beside_a_tool_call() -> None:
+    gateway, _ = _gateway(
+        _response(
+            _text("hidden reasoning", thought=True),
+            _call("finance.log_expense", {"name": "午饭"}),
+        )
+    )
+    with pytest.raises(ModelGatewayError, match="thought content"):
         _propose(gateway)
 
 

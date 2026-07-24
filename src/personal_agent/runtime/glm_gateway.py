@@ -37,6 +37,7 @@ from personal_agent_core.errors import ErrorCode
 _ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4/"
 _ASK_CLARIFICATION = "agent.ask_clarification"
 _FAIL_BATCH = "agent.fail_batch_unavailable"
+_SUPPORTED_PART_FIELDS = frozenset({"function_call", "text", "thought"})
 
 # Injected only by offline tests. Production always uses `_generate_with_adk`.
 Generate = Callable[..., Any]
@@ -176,6 +177,10 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
     error_code = getattr(response, "error_code", None)
     if error_code:
         raise ModelGatewayError("ADK model response reported an error")
+    if getattr(response, "partial", False):
+        raise ModelGatewayError("ADK model response was partial")
+    if getattr(response, "interrupted", False):
+        raise ModelGatewayError("ADK model response was interrupted")
     content = getattr(response, "content", None)
     parts = getattr(content, "parts", None)
     if not isinstance(parts, list) or not parts:
@@ -184,6 +189,16 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
     calls: list[Any] = []
     text_parts: list[str] = []
     for part in parts:
+        if getattr(part, "thought", False):
+            raise ModelGatewayError(
+                "ADK model response contained unsupported thought content"
+            )
+        unsupported = _unsupported_part_fields(part)
+        if unsupported:
+            names = ", ".join(sorted(unsupported))
+            raise ModelGatewayError(
+                f"ADK model response contained unsupported content: {names}"
+            )
         call = getattr(part, "function_call", None)
         if call is not None:
             calls.append(call)
@@ -216,6 +231,25 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
     if not answer:
         raise ModelGatewayError("model response was blank")
     return ProposedAnswer(text=answer)
+
+
+def _unsupported_part_fields(part: Any) -> set[str]:
+    """Return populated ADK Part fields whose semantics we do not support.
+
+    Google GenAI adds new ``Part`` payload variants over time. Inspecting the
+    concrete object's fields makes that evolution fail closed: a new content
+    type cannot be silently discarded while an adjacent write call proceeds.
+    """
+
+    try:
+        fields = vars(part)
+    except TypeError as exc:
+        raise ModelGatewayError("ADK model response part was not inspectable") from exc
+    return {
+        name
+        for name, value in fields.items()
+        if name not in _SUPPORTED_PART_FIELDS and value is not None
+    }
 
 
 def _parse_arguments(raw: Any) -> dict[str, Any]:

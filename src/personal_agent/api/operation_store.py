@@ -186,14 +186,21 @@ def transition_operation(
     tool: str | None = None,
     duplicate_check_id: str | None = None,
     safe_result: str | None = None,
+    zero_write_proven: bool = False,
 ) -> int:
     """Move one operation forward, returning its new `state_version`.
 
     Validated against the safety table first, then applied as a compare-and-swap
     on `(state, state_version)`; a `rowcount` other than one means another worker
     moved it first.
+
+    `zero_write_proven` is passed through to the safety table and defaults to
+    False, so parking a possibly-submitted operation is refused unless the caller
+    explicitly carries the fact source's zero-write evidence.
     """
-    assert_transition(current_state, target_state)
+    assert_transition(
+        current_state, target_state, zero_write_proven=zero_write_proven
+    )
 
     values: dict[str, Any] = {
         "state": target_state,

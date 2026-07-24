@@ -62,6 +62,7 @@ def record_possible_duplicate(
     write_intent: WriteIntent,
     duplicate_check_id: str,
     now: datetime,
+    zero_write_proven: bool = False,
 ) -> None:
     """Park a dispatching operation on a duplicate, sealing its intent for later.
 
@@ -81,6 +82,7 @@ def record_possible_duplicate(
         target_state="waiting_for_duplicate_decision",
         now=now,
         duplicate_check_id=duplicate_check_id,
+        zero_write_proven=zero_write_proven,
     )
 
 

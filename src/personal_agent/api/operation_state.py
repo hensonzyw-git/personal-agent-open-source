@@ -98,9 +98,22 @@ ALLOWED_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
         }
     ),
     "waiting_for_duplicate_decision": frozenset({"cancelled_pre_submit"}),
-    # From here the write may exist. No path returns to a cancellable state.
+    # From here the write may exist, so nothing may *assume* its way back to a
+    # cancellable state. The two parking edges are the exception, and only on
+    # proof: `finance.log_expense` is one MCP call that resolves, duplicate
+    # checks and writes, so a duplicate or a resolver question can only be
+    # learned *after* the call has begun. Both are outcomes Finance reports with
+    # zero writes and no execution row, so parking on them projects proven fact
+    # rather than guessing -- the same discipline `recovery.py` uses. They are
+    # guarded by `park_on_zero_write_evidence`; a user cancel never takes them.
     "source_in_progress": frozenset(
-        {"verifying", "failed_safe", "needs_manual_review"}
+        {
+            "verifying",
+            "failed_safe",
+            "needs_manual_review",
+            "waiting_for_duplicate_decision",
+            "waiting_for_clarification",
+        }
     ),
     "verifying": frozenset({"succeeded", "failed_safe", "needs_manual_review"}),
     "succeeded": frozenset(),
@@ -135,12 +148,32 @@ def can_cancel_pre_submit(state: str) -> bool:
     return "cancelled_pre_submit" in ALLOWED_TRANSITIONS.get(state, frozenset())
 
 
+#: Parked states an operation may return to from a post-submit state, and only
+#: when the fact source proved the call wrote nothing.
+ZERO_WRITE_PARK_STATES: Final[frozenset[str]] = frozenset(
+    {"waiting_for_duplicate_decision", "waiting_for_clarification"}
+)
+
+
+def needs_zero_write_evidence(current: str, target: str) -> bool:
+    """Whether this edge may only be taken on proven-zero-write evidence."""
+    return current in POST_SUBMIT_STATES and target in ZERO_WRITE_PARK_STATES
+
+
 def can_transition(current: str, target: str) -> bool:
     return target in ALLOWED_TRANSITIONS.get(current, frozenset())
 
 
-def assert_transition(current: str, target: str) -> None:
-    """Raise unless the move is permitted, with a reason worth reading."""
+def assert_transition(
+    current: str, target: str, *, zero_write_proven: bool = False
+) -> None:
+    """Raise unless the move is permitted, with a reason worth reading.
+
+    `zero_write_proven` defaults to *False* on purpose: the two parking edges out
+    of a post-submit state are refused unless a caller explicitly states it holds
+    the fact source's definitive zero-write evidence. Forgetting the argument
+    refuses the edge rather than silently allowing it.
+    """
     if current not in ALLOWED_TRANSITIONS:
         raise IllegalOperationTransitionError(f"unknown operation state {current!r}")
     if target not in OPERATION_STATES:
@@ -154,6 +187,12 @@ def assert_transition(current: str, target: str) -> None:
             f"{current} -> {target} is not permitted. "
             "An operation whose write may already have been submitted cannot be "
             "reported as cancelled; it must be resolved from Finance MCP."
+        )
+    if needs_zero_write_evidence(current, target) and not zero_write_proven:
+        raise IllegalOperationTransitionError(
+            f"{current} -> {target} needs the fact source's definitive "
+            "zero-write evidence. A write that may have been submitted must be "
+            "resolved from Finance MCP, never parked."
         )
 
 
