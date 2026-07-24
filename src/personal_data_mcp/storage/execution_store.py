@@ -322,6 +322,32 @@ def record_receipt(
     return receipt
 
 
+def mark_receipt_verified(
+    session: Session, *, idempotency_key: str, now: datetime
+) -> ExternalReceipt:
+    """Stamp the receipt as verified, once read-back has actually proven it.
+
+    Separate from `record_receipt` on purpose: the record id is persisted the
+    moment it arrives, but `verified_at` is what `transition` requires before
+    an execution may succeed, so it must not be set by the same call that
+    merely learned an id exists.
+    """
+    receipts = list(
+        session.scalars(
+            select(ExternalReceipt).where(
+                ExternalReceipt.idempotency_key == idempotency_key
+            )
+        )
+    )
+    if len(receipts) != 1:
+        raise UnverifiedReceiptError(
+            f"{idempotency_key} does not have exactly one receipt to verify"
+        )
+    receipts[0].verified_at = now
+    session.flush()
+    return receipts[0]
+
+
 def acquire_resource_lock(
     session: Session,
     *,

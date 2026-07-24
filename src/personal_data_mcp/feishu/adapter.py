@@ -33,6 +33,8 @@ from personal_agent_core.errors import AppError, ErrorCode
 from personal_data_mcp.feishu.credentials import FeishuCredentials
 from personal_data_mcp.feishu.endpoints import (
     ALLOWLIST,
+    CREATE_RECORD,
+    GET_RECORD,
     LIST_FIELDS,
     TENANT_TOKEN,
     Endpoint,
@@ -182,6 +184,70 @@ class FeishuAdapter:
             ErrorCode.SOURCE_UNAVAILABLE,
             internal_detail="list_fields did not terminate its pagination",
         )
+
+    # --- write: create one record, and read it back --------------------------
+
+    async def create_record(
+        self,
+        app_token: str,
+        table_id: str,
+        *,
+        fields: dict[str, Any],
+        client_token: str,
+    ) -> dict[str, Any]:
+        """Create one record, returning the created record object.
+
+        `client_token` is Feishu's own idempotency token and comes from the
+        execution row, persisted before the first submit: a replay after a lost
+        response carries the same token and must not produce a second record.
+        `ignore_consistency_check=false` is sent explicitly rather than left to
+        the provider default (design 9.4.2).
+
+        This method never retries. A lost response is an *unknown* commit, and
+        deciding what to do about one belongs to the execution state machine,
+        which is the only thing that knows whether a record id was persisted.
+        """
+        data = await self.request(
+            CREATE_RECORD,
+            params={"app_token": app_token, "table_id": table_id},
+            json={"fields": fields},
+            query={
+                "client_token": client_token,
+                "ignore_consistency_check": "false",
+            },
+        )
+        return self._record_of(data, "create_record")
+
+    async def get_record(
+        self, app_token: str, table_id: str, record_id: str
+    ) -> dict[str, Any]:
+        """Read one record back by id, for post-write verification."""
+        data = await self.request(
+            GET_RECORD,
+            params={
+                "app_token": app_token,
+                "table_id": table_id,
+                "record_id": record_id,
+            },
+        )
+        return self._record_of(data, "get_record")
+
+    @staticmethod
+    def _record_of(data: dict[str, Any], operation: str) -> dict[str, Any]:
+        """Pull the `record` object out of a Bitable response, or fail.
+
+        A missing or malformed record is never treated as an empty success: for
+        a create, "no record id" is precisely the unknown-commit case, so it
+        must raise rather than return something falsy that a caller might read
+        as a clean failure.
+        """
+        record = data.get("record")
+        if not isinstance(record, dict):
+            raise AppError(
+                ErrorCode.SOURCE_UNAVAILABLE,
+                internal_detail=f"{operation} returned no record object",
+            )
+        return record
 
     # --- the one request path -------------------------------------------------
 
