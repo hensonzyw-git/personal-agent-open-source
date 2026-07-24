@@ -32,7 +32,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -43,14 +43,21 @@ from personal_agent_core.timeutil import ledger_date, ledger_day_epoch_millis, u
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
 from personal_data_mcp.feishu.endpoints import SEARCH_RECORDS
-from personal_data_mcp.finance.expense_record import as_decimal
+from personal_data_mcp.finance.expense_record import verify_stored_against_sent
 from personal_data_mcp.finance.ledger_config import LedgerConfig
+from personal_data_mcp.finance.schema_validator import SchemaValidation
+from personal_data_mcp.finance.source_guard import require_validated_source
 from personal_data_mcp.finance.write_path import execute_governed_write
 from personal_data_mcp.storage.execution_store import (
     acquire_resource_lock,
     release_resource_lock,
+    renew_resource_lock,
 )
-from personal_data_mcp.storage.models import ExternalReceipt, ToolExecution
+from personal_data_mcp.storage.models import (
+    TERMINAL_EXECUTION_STATES,
+    ExternalReceipt,
+    ToolExecution,
+)
 
 
 TOOL: str = "finance.update_family_fund"
@@ -59,6 +66,11 @@ INTEREST_NOTE: str = "利息补齐"
 
 _RESULT_TABLE: str = "tool_executions"
 _RESULT_COLUMN: str = "encrypted_result"
+
+# Adapter requests are bounded (8 s read, 10 s create, three 8 s read-backs).
+# This covers the complete worst-case cycle with ample margin; the lease is
+# renewed after the initial balance read and immediately before the write.
+FAMILY_FUND_LOCK_SECONDS: int = 120
 
 
 @dataclass(frozen=True)
@@ -102,7 +114,16 @@ async def read_current_balance(
         json={"field_names": [balance_name], "automatic_fields": False},
         query={"page_size": "500"},
     )
-    items = data.get("items") or []
+    items = data.get("items")
+    if items is None:
+        items = []
+    if not isinstance(items, list) or not all(
+        isinstance(item, dict) for item in items
+    ):
+        raise AppError(
+            ErrorCode.SOURCE_UNAVAILABLE,
+            internal_detail="family-fund balance read returned malformed items",
+        )
     if not items:
         return None
     # Every row carries the same total; the last one is as good as any.
@@ -115,9 +136,9 @@ def _balance_of(cells: dict[str, Any], balance_name: str) -> Decimal | None:
     if isinstance(raw, dict):
         value = raw.get("value")
         if isinstance(value, list) and value:
-            return as_decimal(value[0])
-        return as_decimal(value)
-    return as_decimal(raw)
+            return _exact_decimal(value[0])
+        return _exact_decimal(value)
+    return _exact_decimal(raw)
 
 
 def _compute_recharge(
@@ -175,12 +196,16 @@ def _replay(session: Session, key: str, *, keyring: KeyRing) -> FundOutcome | No
     sealed result rather than re-reading a balance that may have since moved.
     """
     execution = session.get(ToolExecution, key)
-    if (
-        execution is None
-        or execution.state != "succeeded"
-        or execution.encrypted_result is None
-    ):
+    if execution is None or execution.state != "succeeded":
         return None
+    if execution.encrypted_result is None:
+        raise AppError(
+            ErrorCode.SOURCE_COMMITTED_MISMATCH,
+            internal_detail=(
+                "family-fund execution succeeded without its sealed result; "
+                "manual review is required"
+            ),
+        )
     receipt = (
         session.query(ExternalReceipt)
         .filter(ExternalReceipt.idempotency_key == key)
@@ -209,6 +234,37 @@ def _replay(session: Session, key: str, *, keyring: KeyRing) -> FundOutcome | No
     )
 
 
+def _other_unfinished_execution(
+    session: Session, *, idempotency_key: str
+) -> ToolExecution | None:
+    return (
+        session.query(ToolExecution)
+        .filter(
+            ToolExecution.tool == TOOL,
+            ToolExecution.idempotency_key != idempotency_key,
+            ToolExecution.state.not_in(sorted(TERMINAL_EXECUTION_STATES)),
+        )
+        .order_by(ToolExecution.created_at)
+        .first()
+    )
+
+
+def _refuse_unfinished_family_fund(
+    session: Session, *, idempotency_key: str
+) -> None:
+    """Keep a prior unknown write ahead of every new read-compute-write cycle."""
+    if _other_unfinished_execution(
+        session, idempotency_key=idempotency_key
+    ) is not None:
+        raise AppError(
+            ErrorCode.SOURCE_COMMIT_UNKNOWN,
+            internal_detail=(
+                "a previous family-fund write is unfinished; "
+                "recover it before starting another"
+            ),
+        )
+
+
 async def update_family_fund(
     *,
     mode: str,
@@ -218,28 +274,52 @@ async def update_family_fund(
     sessions: sessionmaker[Session],
     adapter: FeishuAdapter,
     config: LedgerConfig,
+    validation: SchemaValidation,
     source: BaseSource,
     idempotency_key: str,
     request_fingerprint: str,
     trace_id: str,
     keyring: KeyRing,
-    owner: str = "family-fund",
+    owner: str | None = None,
     now: Callable[[], datetime] = utc_now,
     new_client_token: Callable[[], str] = lambda: str(uuid.uuid4()),
 ) -> FundOutcome:
     """Serialise, read the balance, write one recharge, verify against target."""
+    require_validated_source(
+        config=config,
+        validation=validation,
+        source=source,
+        operation="family-fund write",
+    )
     fields = _fields(config)
     lock_key = f"family_fund:{config.ledger_year}"
+    lock_owner = f"{owner or 'family-fund'}:{uuid.uuid4()}"
 
     # A quick replay check before taking the lock keeps a settled key cheap.
     with sessions() as session:
         replayed = _replay(session, idempotency_key, keyring=keyring)
         if replayed is not None:
             return replayed
+        existing = session.get(ToolExecution, idempotency_key)
+        if existing is not None:
+            raise AppError(
+                ErrorCode.SOURCE_COMMIT_UNKNOWN,
+                internal_detail=(
+                    f"{idempotency_key} is at {existing.state}; "
+                    "recovery belongs to the reconciler"
+                ),
+            )
+        _refuse_unfinished_family_fund(
+            session, idempotency_key=idempotency_key
+        )
 
     with sessions() as session:
         if not acquire_resource_lock(
-            session, lock_key=lock_key, owner=owner, now=now()
+            session,
+            lock_key=lock_key,
+            owner=lock_owner,
+            now=now(),
+            seconds=FAMILY_FUND_LOCK_SECONDS,
         ):
             session.commit()
             raise AppError(
@@ -249,7 +329,28 @@ async def update_family_fund(
         session.commit()
 
     try:
+        # Repeat after acquiring the lock: two fresh operations may both pass
+        # the optimistic pre-check, but only the one that prepared first may
+        # proceed if it became unknown before releasing the lock.
+        with sessions() as session:
+            _refuse_unfinished_family_fund(
+                session, idempotency_key=idempotency_key
+            )
         current = await read_current_balance(adapter, source=source, config=config)
+        if current is None:
+            raise AppError(
+                ErrorCode.SOURCE_UNAVAILABLE,
+                internal_detail=(
+                    "family-fund balance is unavailable; refusing an "
+                    "unverifiable recharge"
+                ),
+            )
+        _renew_family_fund_lock(
+            sessions,
+            lock_key=lock_key,
+            owner=lock_owner,
+            now=now,
+        )
         recharge = _compute_recharge(
             mode=mode,
             recharge_amount_cny=recharge_amount_cny,
@@ -270,16 +371,38 @@ async def update_family_fund(
             payload[fields["note"].expected_name] = stored_note
 
         balance_name = fields["balance"].expected_name
+        expected_after = current + recharge * 2
+        recovery_context: dict[str, Any] = {
+            "mode": mode,
+            "recharge": str(recharge),
+            "balance_before": str(current),
+            "balance_after": str(expected_after),
+            "note": stored_note,
+        }
 
         def verify(stored: dict[str, Any]) -> list[str]:
-            after = _balance_of(stored, balance_name)
-            if after is None:
-                return ["balance"]
-            if mode == "interest_reconcile" and after != target_balance_cny:
-                # An external change moved the balance; do not auto-correct.
-                return ["balance"]
-            return []
+            return verify_family_fund_recovery(
+                payload,
+                stored,
+                config=config,
+                recovery_context=recovery_context,
+            )
 
+        def seal_result(stored: dict[str, Any]) -> dict[str, Any]:
+            return seal_family_fund_result(
+                stored,
+                config=config,
+                recovery_context=recovery_context,
+                keyring=keyring,
+                idempotency_key=idempotency_key,
+            )
+
+        _renew_family_fund_lock(
+            sessions,
+            lock_key=lock_key,
+            owner=lock_owner,
+            now=now,
+        )
         outcome = await execute_governed_write(
             tool=TOOL,
             table_kind=TABLE_KIND,
@@ -292,66 +415,129 @@ async def update_family_fund(
             request_fingerprint=request_fingerprint,
             trace_id=trace_id,
             verify=verify,
+            config_checksum=config.checksum(),
+            recovery_context=recovery_context,
+            result_envelope_factory=seal_result,
             keyring=keyring,
             now=now,
             new_client_token=new_client_token,
         )
     finally:
         with sessions() as session:
-            release_resource_lock(session, lock_key=lock_key, owner=owner)
+            release_resource_lock(
+                session, lock_key=lock_key, owner=lock_owner
+            )
             session.commit()
 
     after = _balance_of(outcome.stored_fields, balance_name)
-    _persist_result(
-        sessions,
-        key=idempotency_key,
-        keyring=keyring,
-        mode=mode,
-        recharge=recharge,
-        balance_before=current,
-        balance_after=after,
-        note=stored_note,
-    )
+    if after is None:  # verify() makes this unreachable on a created outcome
+        raise AppError(
+            ErrorCode.SOURCE_COMMITTED_MISMATCH,
+            internal_detail="family-fund write has no verified post-write balance",
+        )
     return FundOutcome(
         status=outcome.status,
         record_id=outcome.record_id,
         mode=mode,
         recharge_amount_cny=recharge,
         balance_before_cny=current,
-        balance_after_cny=after if after is not None else Decimal("0"),
+        balance_after_cny=after,
         note=stored_note,
     )
 
 
-def _persist_result(
+def _renew_family_fund_lock(
     sessions: sessionmaker[Session],
     *,
-    key: str,
-    keyring: KeyRing,
-    mode: str,
-    recharge: Decimal,
-    balance_before: Decimal | None,
-    balance_after: Decimal | None,
-    note: str | None,
+    lock_key: str,
+    owner: str,
+    now: Callable[[], datetime],
 ) -> None:
-    """Seal enough on the execution to replay the receipt without recomputing."""
-    result = {
-        "mode": mode,
-        "recharge": str(recharge),
-        "balance_before": None if balance_before is None else str(balance_before),
-        "balance_after": None if balance_after is None else str(balance_after),
-        "note": note,
+    with sessions() as session:
+        held = renew_resource_lock(
+            session,
+            lock_key=lock_key,
+            owner=owner,
+            now=now(),
+            seconds=FAMILY_FUND_LOCK_SECONDS,
+        )
+        session.commit()
+    if not held:
+        raise AppError(
+            ErrorCode.SOURCE_UNAVAILABLE,
+            internal_detail="family-fund lock was lost before the write",
+        )
+
+
+def _exact_decimal(value: Any) -> Decimal | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float, str)):
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+    return None
+
+
+def verify_family_fund_recovery(
+    sent_fields: dict[str, Any],
+    stored_fields: dict[str, Any],
+    *,
+    config: LedgerConfig,
+    recovery_context: dict[str, Any],
+) -> list[str]:
+    """Verify both the written row and the formula effect needed for success."""
+    mismatches = {
+        mismatch.logical_name
+        for mismatch in verify_stored_against_sent(
+            sent_fields,
+            stored_fields,
+            config=config,
+            table_kind=TABLE_KIND,
+        )
     }
-    sealed = keyring.encrypt(
+    fields = _fields(config)
+    recharge_name = fields["recharge_amount"].expected_name
+    if _exact_decimal(sent_fields.get(recharge_name)) != _exact_decimal(
+        stored_fields.get(recharge_name)
+    ):
+        mismatches.add("recharge_amount")
+
+    expected_after = _exact_decimal(recovery_context.get("balance_after"))
+    actual_after = _balance_of(stored_fields, fields["balance"].expected_name)
+    if expected_after is None or actual_after != expected_after:
+        mismatches.add("balance")
+    return sorted(mismatches)
+
+
+def seal_family_fund_result(
+    stored_fields: dict[str, Any],
+    *,
+    config: LedgerConfig,
+    recovery_context: dict[str, Any],
+    keyring: KeyRing,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Seal the verified domain result for the same transaction as success."""
+    balance_after = _balance_of(
+        stored_fields, _fields(config)["balance"].expected_name
+    )
+    if balance_after is None:
+        raise AppError(
+            ErrorCode.SOURCE_COMMITTED_MISMATCH,
+            internal_detail="cannot seal a family-fund result without a balance",
+        )
+    result = {
+        "mode": recovery_context["mode"],
+        "recharge": recovery_context["recharge"],
+        "balance_before": recovery_context["balance_before"],
+        "balance_after": str(balance_after),
+        "note": recovery_context.get("note"),
+    }
+    return keyring.encrypt(
         json.dumps(result, ensure_ascii=False).encode("utf-8"),
         table=_RESULT_TABLE,
         column=_RESULT_COLUMN,
-        row_id=key,
+        row_id=idempotency_key,
     )
-    with sessions() as session:
-        execution = session.get(ToolExecution, key)
-        if execution is None:
-            return
-        execution.encrypted_result = sealed
-        session.flush()
-        session.commit()

@@ -29,15 +29,13 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.manifest import canonical_json
-from personal_data_mcp.finance.expense_record import ExpenseEntry
-from personal_data_mcp.finance.ledger_reader import LedgerExpense
 from personal_data_mcp.storage.models import DuplicateCheck
 
 
@@ -76,7 +74,23 @@ class DuplicateFinding:
     candidates: tuple[Candidate, ...]
 
 
-def intent_fingerprint(entry: ExpenseEntry) -> str:
+class DuplicateIntent(Protocol):
+    name: str
+    amount_cny: Decimal
+    occurred_on: Any
+    category: str
+
+
+class DuplicateRow(DuplicateIntent, Protocol):
+    record_id: str
+
+
+def _family_scope(value: object) -> bool | None:
+    scope = getattr(value, "is_family_expense", None)
+    return scope if isinstance(scope, bool) else None
+
+
+def intent_fingerprint(entry: DuplicateIntent) -> str:
     """Bind a check to the exact entry it was raised for.
 
     Scope is included here even though it is not part of the *match* key: an
@@ -90,14 +104,14 @@ def intent_fingerprint(entry: ExpenseEntry) -> str:
                 "amount_cny": str(entry.amount_cny),
                 "occurred_on": entry.occurred_on.isoformat(),
                 "category": entry.category,
-                "is_family_expense": entry.is_family_expense,
+                "is_family_expense": _family_scope(entry),
             }
         ).encode("utf-8")
     ).hexdigest()
 
 
 def find_exact_duplicates(
-    entry: ExpenseEntry, rows: list[LedgerExpense]
+    entry: DuplicateIntent, rows: list[DuplicateRow]
 ) -> tuple[Candidate, ...]:
     """Every ledger row that exactly matches what is about to be written.
 
@@ -120,7 +134,7 @@ def find_exact_duplicates(
             name=row.name,
             amount_cny=row.amount_cny,
             category=row.category or "",
-            is_family_expense=row.is_family_expense,
+            is_family_expense=_family_scope(row),
         )
         for row in matches
     )
@@ -140,7 +154,7 @@ def candidate_set_hash(candidates: tuple[Candidate, ...]) -> str:
 def raise_check(
     session: Session,
     *,
-    entry: ExpenseEntry,
+    entry: DuplicateIntent,
     candidates: tuple[Candidate, ...],
     keyring: KeyRing,
     now: datetime,
@@ -177,7 +191,7 @@ def authorise_override(
     session: Session,
     *,
     check_id: str,
-    entry: ExpenseEntry,
+    entry: DuplicateIntent,
     current_candidates: tuple[Candidate, ...],
     keyring: KeyRing,
     now: datetime,

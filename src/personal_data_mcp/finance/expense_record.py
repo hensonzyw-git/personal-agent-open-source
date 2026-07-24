@@ -262,6 +262,7 @@ def verify_stored_against_sent(
     stored_fields: dict[str, Any],
     *,
     config: LedgerConfig,
+    table_kind: str = "expense",
 ) -> list[FieldMismatch]:
     """Compare a read-back against the exact payload that was sent.
 
@@ -271,7 +272,13 @@ def verify_stored_against_sent(
     so `20.0` sent and `"20"` read back agree, and a checkbox absent on either
     side reads as `false`. A field the payload never carried is not compared.
     """
-    fields = _writable_expense_fields(config)
+    table = config.tables.get(table_kind)
+    if table is None:
+        raise AppError(
+            ErrorCode.SOURCE_SCHEMA_CHANGED,
+            internal_detail=f"the ledger config has no {table_kind} table",
+        )
+    fields = table.fields
     mismatches: list[FieldMismatch] = []
 
     for logical, spec in fields.items():

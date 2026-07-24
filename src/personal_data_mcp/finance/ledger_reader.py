@@ -57,6 +57,17 @@ class LedgerExpense:
     is_family_expense: bool | None = None
 
 
+@dataclass(frozen=True)
+class LedgerIncome:
+    """One existing income row, reduced to the exact-duplicate key."""
+
+    record_id: str
+    name: str
+    amount_cny: Decimal | None
+    occurred_on: date | None
+    category: str | None
+
+
 async def _search_page(
     adapter: FeishuAdapter,
     *,
@@ -107,7 +118,9 @@ async def read_year_expenses(
             ],
             page_token=page_token,
         )
-        items = data.get("items") or []
+        items = data.get("items")
+        if items is None:
+            items = []
         if not isinstance(items, list):
             raise AppError(
                 ErrorCode.SOURCE_UNAVAILABLE,
@@ -159,4 +172,81 @@ async def read_year_expenses(
     raise AppError(
         ErrorCode.SOURCE_UNAVAILABLE,
         internal_detail="search_records did not terminate its pagination",
+    )
+
+
+async def read_year_incomes(
+    adapter: FeishuAdapter, *, source: BaseSource, config: LedgerConfig
+) -> list[LedgerIncome]:
+    """Every income row in the active annual table, read to exhaustion."""
+    fields = config.tables["income"].fields
+    name_field = fields["name"].expected_name
+    amount_field = fields["amount"].expected_name
+    date_field = fields["occurred_on"].expected_name
+    category_field = fields["category"].expected_name
+
+    rows: list[LedgerIncome] = []
+    page_token: str | None = None
+    seen: set[str] = set()
+
+    for _ in range(MAX_PAGES):
+        data = await _search_page(
+            adapter,
+            base_token=source.base_token,
+            table_id=source.tables["income"],
+            field_names=[
+                name_field,
+                amount_field,
+                date_field,
+                category_field,
+            ],
+            page_token=page_token,
+        )
+        items = data.get("items")
+        if items is None:
+            items = []
+        if not isinstance(items, list):
+            raise AppError(
+                ErrorCode.SOURCE_UNAVAILABLE,
+                internal_detail="income search returned malformed items",
+            )
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            cells = item.get("fields") or {}
+            rows.append(
+                LedgerIncome(
+                    record_id=str(item.get("record_id", "")),
+                    name=as_text(cells.get(name_field)) or "",
+                    amount_cny=as_decimal(cells.get(amount_field)),
+                    occurred_on=as_ledger_date(cells.get(date_field)),
+                    category=as_text(cells.get(category_field)),
+                )
+            )
+
+        has_more = data.get("has_more", False)
+        if not isinstance(has_more, bool):
+            raise AppError(
+                ErrorCode.SOURCE_UNAVAILABLE,
+                internal_detail="income search returned malformed has_more",
+            )
+        if not has_more:
+            return rows
+
+        page_token = data.get("page_token")
+        if not isinstance(page_token, str) or not page_token:
+            raise AppError(
+                ErrorCode.SOURCE_UNAVAILABLE,
+                internal_detail="income search reported more pages without a cursor",
+            )
+        if page_token in seen:
+            raise AppError(
+                ErrorCode.SOURCE_UNAVAILABLE,
+                internal_detail="income search repeated a pagination cursor",
+            )
+        seen.add(page_token)
+
+    raise AppError(
+        ErrorCode.SOURCE_UNAVAILABLE,
+        internal_detail="income search did not terminate its pagination",
     )

@@ -9,7 +9,10 @@ exercises the exact arithmetic the tool depends on.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -23,11 +26,14 @@ from personal_data_mcp.feishu.base_source import BaseSource
 from personal_data_mcp.feishu.credentials import FeishuCredentials
 from personal_data_mcp.finance.family_fund import FundOutcome, update_family_fund
 from personal_data_mcp.finance.ledger_config import load_ledger_config
+from personal_data_mcp.finance.onboarding import observed_from_snapshot
+from personal_data_mcp.finance.schema_validator import validate_schema
 from personal_data_mcp.storage.engine import (
     create_all,
     create_database_engine,
     session_factory,
 )
+from personal_data_mcp.storage.execution_store import acquire_resource_lock
 from personal_data_mcp.storage.models import ResourceLock, ToolExecution
 
 
@@ -35,6 +41,10 @@ LEDGER_FIXTURES = Path(__file__).parents[1] / "fixtures" / "ledger"
 CONFIG = load_ledger_config(
     json.loads((LEDGER_FIXTURES / "config.synthetic.json").read_text("utf-8"))
 )
+SNAPSHOT = json.loads(
+    (LEDGER_FIXTURES / "snapshot.synthetic.json").read_text("utf-8")
+)
+VALIDATION = validate_schema(CONFIG, observed_from_snapshot(SNAPSHOT))
 SOURCE = BaseSource(
     base_token=CONFIG.base_token,
     ledger_kind="synthetic_test",
@@ -71,6 +81,7 @@ class FakeFund:
         self.recharges: list[Decimal] = []
         self.record_seq = 0
         self.by_token: dict[str, str] = {}
+        self.records: dict[str, dict] = {}
         #: If set, applied to the total right after a create, to model an
         #: external concurrent change before read-back.
         self.perturb: Decimal | None = None
@@ -85,9 +96,7 @@ class FakeFund:
                 200, json={"code": 0, "tenant_access_token": "t", "expire": 7200}
             )
         if request.method == "POST" and path.endswith("/search"):
-            # Balance read: one row carrying the current total (or none).
-            if not self.recharges:
-                return httpx.Response(200, json={"code": 0, "data": {"items": []}})
+            # The active ledger has an initial-balance row even before a top-up.
             return httpx.Response(
                 200,
                 json={
@@ -109,6 +118,9 @@ class FakeFund:
                 self.record_seq += 1
                 rid = f"fund{self.record_seq:06d}"
                 self.by_token[token] = rid
+                self.records[rid] = copy.deepcopy(
+                    json.loads(request.content)["fields"]
+                )
             # The create echo carries NO formula value, like the real table.
             return httpx.Response(
                 200, json={"code": 0, "data": {"record": {"record_id": rid, "fields": {}}}}
@@ -117,7 +129,18 @@ class FakeFund:
             rid = path.rsplit("/", 1)[1]
             return httpx.Response(
                 200,
-                json={"code": 0, "data": {"record": {"record_id": rid, "fields": {"家庭基金余额": self._balance_cell()}}}},
+                json={
+                    "code": 0,
+                    "data": {
+                        "record": {
+                            "record_id": rid,
+                            "fields": {
+                                **self.records[rid],
+                                "家庭基金余额": self._balance_cell(),
+                            },
+                        }
+                    },
+                },
             )
         raise AssertionError(f"unexpected {request.method} {path}")
 
@@ -136,6 +159,7 @@ async def do(fake, sessions, keyring, *, key="fund-1", **kw):
             sessions=sessions,
             adapter=adapter,
             config=CONFIG,
+            validation=VALIDATION,
             source=SOURCE,
             idempotency_key=key,
             request_fingerprint="fp",
@@ -293,3 +317,270 @@ def test_the_lock_is_released_even_when_no_change_is_required(sessions, keyring)
         run(do(fake, sessions, keyring, mode="interest_reconcile", target_balance_cny=fake.total))
     with sessions() as s:
         assert s.query(ResourceLock).count() == 0
+
+
+def test_a_source_not_bound_to_the_validated_config_is_refused(
+    sessions, keyring
+) -> None:
+    fake = FakeFund()
+    wrong = BaseSource(
+        base_token="bas_other",
+        ledger_kind="production",
+        tables=SOURCE.tables,
+    )
+
+    async def scenario():
+        async with adapter_for(fake) as adapter:
+            return await update_family_fund(
+                mode="top_up",
+                recharge_amount_cny=Decimal("10"),
+                sessions=sessions,
+                adapter=adapter,
+                config=CONFIG,
+                validation=VALIDATION,
+                source=wrong,
+                idempotency_key="wrong-source",
+                request_fingerprint="fp",
+                trace_id="t",
+                keyring=keyring,
+            )
+
+    with pytest.raises(AppError) as caught:
+        run(scenario())
+    assert caught.value.code is ErrorCode.SOURCE_SCHEMA_CHANGED
+    assert fake.recharges == []
+
+
+def test_a_stale_family_fund_schema_validation_is_refused(
+    sessions, keyring
+) -> None:
+    fake = FakeFund()
+
+    async def scenario():
+        async with adapter_for(fake) as adapter:
+            return await update_family_fund(
+                mode="top_up",
+                recharge_amount_cny=Decimal("10"),
+                sessions=sessions,
+                adapter=adapter,
+                config=CONFIG,
+                validation=replace(
+                    VALIDATION, config_checksum="stale-checksum"
+                ),
+                source=SOURCE,
+                idempotency_key="stale-schema",
+                request_fingerprint="fp",
+                trace_id="t",
+                keyring=keyring,
+            )
+
+    with pytest.raises(AppError) as caught:
+        run(scenario())
+    assert caught.value.code is ErrorCode.SOURCE_SCHEMA_CHANGED
+    assert fake.recharges == []
+
+
+def test_a_silently_ignored_recharge_never_reports_success(
+    sessions, keyring
+) -> None:
+    fake = FakeFund()
+    original = fake.handler
+
+    def ignore_create(request):
+        if request.method == "POST" and request.url.path.endswith("/records"):
+            token = request.url.params.get("client_token")
+            fake.record_seq += 1
+            rid = f"fund{fake.record_seq:06d}"
+            fake.by_token[token] = rid
+            fake.records[rid] = {}
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {"record": {"record_id": rid, "fields": {}}},
+                },
+            )
+        return original(request)
+
+    fake.handler = ignore_create
+    with pytest.raises(AppError) as caught:
+        run(
+            do(
+                fake,
+                sessions,
+                keyring,
+                mode="top_up",
+                recharge_amount_cny=Decimal("500"),
+            )
+        )
+    assert caught.value.code is ErrorCode.SOURCE_COMMITTED_MISMATCH
+    assert state_of(sessions) == "needs_manual_review"
+
+
+def test_success_and_the_sealed_replay_result_are_atomic(
+    sessions, keyring
+) -> None:
+    fake = FakeFund()
+    first = run(
+        do(
+            fake,
+            sessions,
+            keyring,
+            mode="top_up",
+            recharge_amount_cny=Decimal("20"),
+        )
+    )
+    with sessions() as session:
+        execution = session.get(ToolExecution, "fund-1")
+        assert execution.state == "succeeded"
+        assert execution.encrypted_result is not None
+
+    replay = run(
+        do(
+            fake,
+            sessions,
+            keyring,
+            mode="top_up",
+            recharge_amount_cny=Decimal("20"),
+        )
+    )
+    assert replay.balance_after_cny == first.balance_after_cny
+
+
+def test_a_legacy_success_without_a_sealed_result_fails_closed(
+    sessions, keyring
+) -> None:
+    fake = FakeFund()
+    run(
+        do(
+            fake,
+            sessions,
+            keyring,
+            mode="top_up",
+            recharge_amount_cny=Decimal("20"),
+        )
+    )
+    with sessions() as session:
+        session.get(ToolExecution, "fund-1").encrypted_result = None
+        session.commit()
+
+    with pytest.raises(AppError) as caught:
+        run(
+            do(
+                fake,
+                sessions,
+                keyring,
+                mode="top_up",
+                recharge_amount_cny=Decimal("20"),
+            )
+        )
+    assert caught.value.code is ErrorCode.SOURCE_COMMITTED_MISMATCH
+    assert len(fake.recharges) == 1
+
+
+def test_the_family_fund_lease_survives_more_than_the_old_30_seconds(
+    sessions, keyring
+) -> None:
+    fake = FakeFund()
+    moment = [datetime(2026, 7, 23, 12, 0, tzinfo=timezone.utc)]
+    original = fake.handler
+
+    def advance_after_balance_read(request):
+        response = original(request)
+        if request.method == "POST" and request.url.path.endswith("/search"):
+            moment[0] += timedelta(seconds=31)
+        return response
+
+    fake.handler = advance_after_balance_read
+    outcome = run(
+        do(
+            fake,
+            sessions,
+            keyring,
+            mode="top_up",
+            recharge_amount_cny=Decimal("1"),
+            now=lambda: moment[0],
+        )
+    )
+    assert outcome.status == "created"
+
+
+def test_a_live_foreign_lock_is_not_released_by_this_invocation(
+    sessions, keyring
+) -> None:
+    fake = FakeFund()
+    moment = datetime(2026, 7, 23, 12, 0, tzinfo=timezone.utc)
+    with sessions() as session:
+        assert acquire_resource_lock(
+            session,
+            lock_key=f"family_fund:{CONFIG.ledger_year}",
+            owner="family-fund:other-worker",
+            now=moment,
+            seconds=120,
+        )
+        session.commit()
+
+    with pytest.raises(AppError) as caught:
+        run(
+            do(
+                fake,
+                sessions,
+                keyring,
+                mode="top_up",
+                recharge_amount_cny=Decimal("1"),
+                owner="family-fund",
+                now=lambda: moment,
+            )
+        )
+    assert caught.value.code is ErrorCode.SOURCE_UNAVAILABLE
+    with sessions() as session:
+        lock = session.get(
+            ResourceLock, f"family_fund:{CONFIG.ledger_year}"
+        )
+        assert lock.owner == "family-fund:other-worker"
+
+
+def test_an_unknown_family_fund_write_blocks_the_next_operation(
+    sessions, keyring
+) -> None:
+    fake = FakeFund()
+    original = fake.handler
+    failures = [1]
+
+    def fail_first_create(request):
+        if (
+            failures[0]
+            and request.method == "POST"
+            and request.url.path.endswith("/records")
+        ):
+            failures[0] -= 1
+            raise httpx.ConnectTimeout("unknown create")
+        return original(request)
+
+    fake.handler = fail_first_create
+    with pytest.raises(AppError) as first:
+        run(
+            do(
+                fake,
+                sessions,
+                keyring,
+                key="fund-unknown",
+                mode="top_up",
+                recharge_amount_cny=Decimal("10"),
+            )
+        )
+    assert first.value.code is ErrorCode.SOURCE_COMMIT_UNKNOWN
+
+    with pytest.raises(AppError) as second:
+        run(
+            do(
+                fake,
+                sessions,
+                keyring,
+                key="fund-next",
+                mode="top_up",
+                recharge_amount_cny=Decimal("5"),
+            )
+        )
+    assert second.value.code is ErrorCode.SOURCE_COMMIT_UNKNOWN
+    assert fake.recharges == []

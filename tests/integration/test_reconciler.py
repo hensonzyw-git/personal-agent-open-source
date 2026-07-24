@@ -24,10 +24,13 @@ from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
 from personal_data_mcp.feishu.credentials import FeishuCredentials
 from personal_data_mcp.finance.expense_record import ExpenseEntry
+from personal_data_mcp.finance.family_fund import update_family_fund
+from personal_data_mcp.finance.income_write import write_income
 from personal_data_mcp.finance.ledger_config import load_ledger_config
 from personal_data_mcp.finance.reconciler import (
     ReconcileError,
     reconcile_expense,
+    reconcile_write,
 )
 from personal_data_mcp.finance.schema_validator import validate_schema
 from personal_data_mcp.finance.onboarding import observed_from_snapshot
@@ -97,6 +100,7 @@ class DedupingFeishu:
         self.create_attempts = 0
         self.create_fails = 0  # fail the first N create calls
         self.read_fails = 0
+        self.family_balance: Decimal | None = None
 
     @property
     def row_count(self) -> int:
@@ -122,18 +126,57 @@ class DedupingFeishu:
                 self.next_id += 1
                 self.by_token[token] = rid
                 self.records[rid] = fields
+                if (
+                    self.family_balance is not None
+                    and "充值金额" in fields
+                ):
+                    self.family_balance += (
+                        Decimal(str(fields["充值金额"])) * 2
+                    )
             return httpx.Response(
                 200,
                 json={"code": 0, "data": {"record": {"record_id": rid, "fields": self.records[rid]}}},
+            )
+        if request.method == "POST" and path.endswith("/search"):
+            items = []
+            if self.family_balance is not None:
+                items = [
+                    {
+                        "record_id": "fund-balance",
+                        "fields": {
+                            "家庭基金余额": {
+                                "type": 2,
+                                "value": [float(self.family_balance)],
+                            }
+                        },
+                    }
+                ]
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {"items": items, "has_more": False},
+                },
             )
         if request.method == "GET" and "/records/" in path:
             if self.read_fails > 0:
                 self.read_fails -= 1
                 raise httpx.ConnectError("read boom")
             rid = path.rsplit("/", 1)[1]
+            fields = dict(self.records[rid])
+            if self.family_balance is not None and "充值金额" in fields:
+                fields["家庭基金余额"] = {
+                    "type": 2,
+                    "value": [float(self.family_balance)],
+                }
             return httpx.Response(
                 200,
-                json={"code": 0, "data": {"record": {"record_id": rid, "fields": self.records[rid]}}},
+                json={
+                    "code": 0,
+                    "data": {
+                        "record": {"record_id": rid, "fields": fields}
+                    },
+                },
             )
         raise AssertionError(f"unexpected {request.method} {path}")
 
@@ -177,6 +220,7 @@ async def drive_to_commit_unknown(fake, sessions, keyring, key="idem-1"):
                 request_fingerprint="fp",
                 trace_id="t",
                 keyring=keyring,
+                now=lambda: NOW,
             )
     assert state_of(sessions, key) == "commit_unknown"
 
@@ -190,6 +234,7 @@ def reconcile(fake, sessions, keyring, key="idem-1", **kw):
                 adapter=adapter,
                 source=SOURCE,
                 config=CONFIG,
+                validation=VALIDATION,
                 keyring=keyring,
                 owner="worker-1",
                 now=lambda: NOW,
@@ -257,6 +302,7 @@ def test_a_read_back_mismatch_escalates_and_keeps_the_record_id(
                 adapter=adapter,
                 source=SOURCE,
                 config=CONFIG,
+                validation=VALIDATION,
                 keyring=keyring,
                 owner="w",
                 now=lambda: NOW,
@@ -301,6 +347,7 @@ def test_committed_unverified_only_reads_back_and_never_replays(
                     request_fingerprint="fp",
                     trace_id="t",
                     keyring=keyring,
+                    now=lambda: NOW,
                 )
 
     run(scenario())
@@ -333,6 +380,7 @@ def test_a_missing_sealed_payload_escalates(sessions, keyring) -> None:
                     request_fingerprint="fp",
                     trace_id="t",
                     keyring=None,  # no keyring: nothing sealed
+                    now=lambda: NOW,
                 )
     run(scenario())
     assert state_of(sessions) == "commit_unknown"
@@ -371,6 +419,141 @@ def test_a_terminal_execution_is_returned_unchanged(sessions, keyring) -> None:
     before = fake.create_attempts
     reconcile(fake, sessions, keyring)
     assert fake.create_attempts == before
+
+
+def test_the_deadline_is_measured_from_the_persisted_submission(
+    sessions, keyring
+) -> None:
+    fake = DedupingFeishu()
+    run(drive_to_commit_unknown(fake, sessions, keyring))
+    with sessions() as session:
+        execution = session.get(ToolExecution, "idem-1")
+        execution.submitted_at = NOW - timedelta(seconds=31)
+        session.commit()
+    fake.create_fails = 1
+
+    result = reconcile(fake, sessions, keyring)
+    assert result.final_state == "needs_manual_review"
+
+
+def test_recovery_refuses_a_source_not_bound_to_the_validated_config(
+    sessions, keyring
+) -> None:
+    fake = DedupingFeishu()
+    run(drive_to_commit_unknown(fake, sessions, keyring))
+    wrong = BaseSource(
+        base_token="bas_other",
+        ledger_kind=SOURCE.ledger_kind,
+        tables=SOURCE.tables,
+    )
+
+    async def scenario():
+        async with adapter_for(fake) as adapter:
+            return await reconcile_write(
+                "idem-1",
+                sessions=sessions,
+                adapter=adapter,
+                source=wrong,
+                config=CONFIG,
+                validation=VALIDATION,
+                keyring=keyring,
+                owner="worker",
+                now=lambda: NOW,
+            )
+
+    with pytest.raises(AppError) as caught:
+        run(scenario())
+    assert caught.value.code is ErrorCode.SOURCE_SCHEMA_CHANGED
+    assert fake.row_count == 0
+
+
+def test_income_unknown_commit_recovers_against_the_income_contract(
+    sessions, keyring
+) -> None:
+    fake = DedupingFeishu()
+    fake.create_fails = 1
+
+    async def fail_then_recover():
+        async with adapter_for(fake) as adapter:
+            with pytest.raises(AppError):
+                await write_income(
+                    description="公积金入账",
+                    amount_cny=Decimal("2500"),
+                    occurred_on=date(2026, 7, 23),
+                    sessions=sessions,
+                    adapter=adapter,
+                    config=CONFIG,
+                    validation=VALIDATION,
+                    source=SOURCE,
+                    idempotency_key="income-unknown",
+                    request_fingerprint="income-fp",
+                    trace_id="income-t",
+                    keyring=keyring,
+                    now=lambda: NOW,
+                )
+            return await reconcile_write(
+                "income-unknown",
+                sessions=sessions,
+                adapter=adapter,
+                source=SOURCE,
+                config=CONFIG,
+                validation=VALIDATION,
+                keyring=keyring,
+                owner="income-worker",
+                now=lambda: NOW,
+            )
+
+    result = run(fail_then_recover())
+    assert result.final_state == "succeeded"
+    with sessions() as session:
+        receipt = receipt_of(sessions, "income-unknown")
+        assert receipt.table_kind == "income"
+
+
+def test_family_fund_unknown_commit_recovers_and_seals_the_result(
+    sessions, keyring
+) -> None:
+    fake = DedupingFeishu()
+    fake.family_balance = Decimal("1000")
+    fake.create_fails = 1
+
+    async def fail_then_recover():
+        async with adapter_for(fake) as adapter:
+            with pytest.raises(AppError):
+                await update_family_fund(
+                    mode="top_up",
+                    recharge_amount_cny=Decimal("10"),
+                    sessions=sessions,
+                    adapter=adapter,
+                    config=CONFIG,
+                    validation=VALIDATION,
+                    source=SOURCE,
+                    idempotency_key="fund-unknown",
+                    request_fingerprint="fund-fp",
+                    trace_id="fund-t",
+                    keyring=keyring,
+                    now=lambda: NOW,
+                )
+            return await reconcile_write(
+                "fund-unknown",
+                sessions=sessions,
+                adapter=adapter,
+                source=SOURCE,
+                config=CONFIG,
+                validation=VALIDATION,
+                keyring=keyring,
+                owner="fund-worker",
+                now=lambda: NOW,
+            )
+
+    result = run(fail_then_recover())
+    assert result.final_state == "succeeded"
+    assert fake.family_balance == Decimal("1020")
+    with sessions() as session:
+        execution = session.get(ToolExecution, "fund-unknown")
+        assert execution.encrypted_result is not None
+        receipt = receipt_of(sessions, "fund-unknown")
+        assert receipt.table_kind == "family_fund"
 
 
 def session_payload(sessions, key, keyring) -> str:

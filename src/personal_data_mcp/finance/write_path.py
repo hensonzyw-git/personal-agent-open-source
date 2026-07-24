@@ -25,7 +25,6 @@ two rows for one expense.
 
 from __future__ import annotations
 
-import hmac
 import json
 import uuid
 from collections.abc import Callable
@@ -54,6 +53,7 @@ from personal_data_mcp.finance.expense_record import (
 )
 from personal_data_mcp.finance.ledger_config import LedgerConfig
 from personal_data_mcp.finance.schema_validator import SchemaValidation
+from personal_data_mcp.finance.source_guard import require_validated_source
 from personal_data_mcp.storage.execution_store import (
     append_audit_event,
     mark_receipt_verified,
@@ -78,7 +78,14 @@ _PAYLOAD_COLUMN: str = "encrypted_payload"
 
 
 def seal_create_payload(
-    fields: dict[str, Any], *, keyring: KeyRing, idempotency_key: str
+    fields: dict[str, Any],
+    *,
+    keyring: KeyRing,
+    idempotency_key: str,
+    tool: str | None = None,
+    table_kind: str | None = None,
+    config_checksum: str | None = None,
+    recovery_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Seal the exact `fields` a create will send, for cold-restart recovery.
 
@@ -89,7 +96,16 @@ def seal_create_payload(
     a unique key the database must be able to enforce.
     """
     return keyring.encrypt(
-        json.dumps({"fields": fields}, ensure_ascii=False).encode("utf-8"),
+        json.dumps(
+            {
+                "fields": fields,
+                "tool": tool,
+                "table_kind": table_kind,
+                "config_checksum": config_checksum,
+                "recovery_context": recovery_context,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8"),
         table=_PAYLOAD_TABLE,
         column=_PAYLOAD_COLUMN,
         row_id=idempotency_key,
@@ -107,6 +123,22 @@ def open_create_payload(
         row_id=idempotency_key,
     )
     return json.loads(raw.decode("utf-8"))["fields"]
+
+
+def open_create_envelope(
+    envelope: dict[str, Any], *, keyring: KeyRing, idempotency_key: str
+) -> dict[str, Any]:
+    """Open the complete recovery envelope, including its binding metadata."""
+    raw = keyring.decrypt(
+        envelope,
+        table=_PAYLOAD_TABLE,
+        column=_PAYLOAD_COLUMN,
+        row_id=idempotency_key,
+    )
+    decoded = json.loads(raw.decode("utf-8"))
+    if not isinstance(decoded, dict) or not isinstance(decoded.get("fields"), dict):
+        raise ValueError("sealed create envelope is malformed")
+    return decoded
 
 
 @dataclass(frozen=True)
@@ -167,6 +199,11 @@ async def execute_governed_write(
     request_fingerprint: str,
     trace_id: str,
     verify: Callable[[dict[str, Any]], list[str]],
+    config_checksum: str,
+    recovery_context: dict[str, Any] | None = None,
+    result_envelope_factory: (
+        Callable[[dict[str, Any]], dict[str, Any]] | None
+    ) = None,
     keyring: KeyRing | None = None,
     now: Callable[[], datetime] = utc_now,
     new_client_token: Callable[[], str] = lambda: str(uuid.uuid4()),
@@ -182,7 +219,15 @@ async def execute_governed_write(
     `succeeded`. Nothing here retries a create or writes a correction.
     """
     sealed_payload = (
-        seal_create_payload(payload, keyring=keyring, idempotency_key=idempotency_key)
+        seal_create_payload(
+            payload,
+            keyring=keyring,
+            idempotency_key=idempotency_key,
+            tool=tool,
+            table_kind=table_kind,
+            config_checksum=config_checksum,
+            recovery_context=recovery_context,
+        )
         if keyring is not None
         else None
     )
@@ -357,6 +402,11 @@ async def execute_governed_write(
 
     # --- step 6: verified, and only now succeeded ----------------------------
     committed_at = now()
+    encrypted_result = (
+        result_envelope_factory(stored)
+        if result_envelope_factory is not None
+        else None
+    )
     with sessions() as session:
         mark_receipt_verified(
             session, idempotency_key=idempotency_key, now=committed_at
@@ -368,6 +418,7 @@ async def execute_governed_write(
             current_version=state_version,
             target_state="succeeded",
             now=committed_at,
+            encrypted_result=encrypted_result,
         )
         _audit(
             session,
@@ -479,20 +530,12 @@ async def write_expense(
     row, so a reconciler can replay it after a cold restart (design 7.6.2).
     Without one the write still works, but only in-process recovery is possible.
     """
-    expected_tables = {
-        kind: table.table_id for kind, table in config.tables.items()
-    }
-    if (
-        source.ledger_kind != config.ledger_kind
-        or not hmac.compare_digest(source.base_token, config.base_token)
-        or source.tables != expected_tables
-    ):
-        raise AppError(
-            ErrorCode.SOURCE_SCHEMA_CHANGED,
-            internal_detail=(
-                "expense write source does not match the validated ledger config"
-            ),
-        )
+    require_validated_source(
+        config=config,
+        validation=validation,
+        source=source,
+        operation="expense write",
+    )
     # Built before anything is persisted: a refusal for a drifted schema, an
     # unknown category or a blank name must cost nothing and leave no row.
     payload = build_expense_payload(entry, config=config, validation=validation)
@@ -515,6 +558,7 @@ async def write_expense(
         request_fingerprint=request_fingerprint,
         trace_id=trace_id,
         verify=verify,
+        config_checksum=config.checksum(),
         keyring=keyring,
         now=now,
         new_client_token=new_client_token,

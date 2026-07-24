@@ -12,9 +12,9 @@ unvalidated Base.
 
 from __future__ import annotations
 
-import hmac
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -33,18 +33,35 @@ from personal_data_mcp.finance.expense_record import (
     as_ledger_date,
     as_text,
 )
+from personal_data_mcp.finance.duplicate_check import (
+    DuplicateFinding,
+    authorise_override,
+    find_exact_duplicates,
+    raise_check,
+)
 from personal_data_mcp.finance.income_policy import (
     IncomeClarification,
     ResolvedIncome,
     resolve_income,
 )
 from personal_data_mcp.finance.ledger_config import LedgerConfig
+from personal_data_mcp.finance.ledger_reader import read_year_incomes
 from personal_data_mcp.finance.schema_validator import SchemaValidation
+from personal_data_mcp.finance.source_guard import require_validated_source
 from personal_data_mcp.finance.write_path import WriteOutcome, execute_governed_write
+from personal_data_mcp.storage.models import ToolExecution
 
 
 TOOL: str = "finance.log_income"
 TABLE_KIND: str = "income"
+
+
+@dataclass(frozen=True)
+class IncomeDuplicateIntent:
+    name: str
+    amount_cny: Decimal
+    occurred_on: date
+    category: str
 
 
 def _income_fields(config: LedgerConfig):
@@ -140,28 +157,23 @@ async def write_income(
     idempotency_key: str,
     request_fingerprint: str,
     trace_id: str,
-    keyring: KeyRing | None = None,
+    keyring: KeyRing,
+    duplicate_override: str | None = None,
     now: Callable[[], datetime] = utc_now,
     new_client_token: Callable[[], str] = lambda: str(uuid.uuid4()),
-) -> WriteOutcome | IncomeClarification:
+) -> WriteOutcome | IncomeClarification | DuplicateFinding:
     """Resolve the income, then write it. A clarification writes nothing."""
     resolved = resolve_income(description)
     if isinstance(resolved, IncomeClarification):
         return resolved
     assert isinstance(resolved, ResolvedIncome)
 
-    expected_tables = {
-        kind: table.table_id for kind, table in config.tables.items()
-    }
-    if (
-        source.ledger_kind != config.ledger_kind
-        or not hmac.compare_digest(source.base_token, config.base_token)
-        or source.tables != expected_tables
-    ):
-        raise AppError(
-            ErrorCode.SOURCE_SCHEMA_CHANGED,
-            internal_detail="income write source does not match the validated config",
-        )
+    require_validated_source(
+        config=config,
+        validation=validation,
+        source=source,
+        operation="income write",
+    )
 
     payload = build_income_payload(
         name=resolved.name,
@@ -171,6 +183,41 @@ async def write_income(
         config=config,
         validation=validation,
     )
+
+    duplicate_intent = IncomeDuplicateIntent(
+        name=resolved.name,
+        amount_cny=quantize_cny(amount_cny),
+        occurred_on=occurred_on,
+        category=resolved.category,
+    )
+    with sessions() as session:
+        already_started = session.get(ToolExecution, idempotency_key) is not None
+
+    if not already_started:
+        rows = await read_year_incomes(adapter, source=source, config=config)
+        candidates = find_exact_duplicates(duplicate_intent, rows)
+        if duplicate_override is not None:
+            with sessions() as session:
+                authorise_override(
+                    session,
+                    check_id=duplicate_override,
+                    entry=duplicate_intent,
+                    current_candidates=candidates,
+                    keyring=keyring,
+                    now=now(),
+                )
+                session.commit()
+        elif candidates:
+            with sessions() as session:
+                finding = raise_check(
+                    session,
+                    entry=duplicate_intent,
+                    candidates=candidates,
+                    keyring=keyring,
+                    now=now(),
+                )
+                session.commit()
+            return finding
 
     def verify(stored: dict[str, Any]) -> list[str]:
         return [
@@ -197,6 +244,7 @@ async def write_income(
         request_fingerprint=request_fingerprint,
         trace_id=trace_id,
         verify=verify,
+        config_checksum=config.checksum(),
         keyring=keyring,
         now=now,
         new_client_token=new_client_token,

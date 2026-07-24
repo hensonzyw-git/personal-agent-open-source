@@ -19,10 +19,12 @@ import httpx
 import pytest
 
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.crypto import KeyRing, generate_key
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
 from personal_data_mcp.feishu.credentials import FeishuCredentials
 from personal_data_mcp.finance.income_policy import IncomeClarification
+from personal_data_mcp.finance.duplicate_check import DuplicateFinding
 from personal_data_mcp.finance.income_write import write_income
 from personal_data_mcp.finance.ledger_config import load_ledger_config
 from personal_data_mcp.finance.schema_validator import validate_schema
@@ -47,6 +49,7 @@ SOURCE = BaseSource(
     tables={kind: table.table_id for kind, table in CONFIG.tables.items()},
 )
 DAY = date(2026, 7, 23)
+KEYRING = KeyRing([generate_key("income-2026")], service="personal_data_mcp")
 
 
 def clock():
@@ -86,6 +89,20 @@ class FakeIncome:
             return httpx.Response(
                 200, json={"code": 0, "data": {"record": {"record_id": rid, "fields": fields}}}
             )
+        if request.method == "POST" and path.endswith("/search"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "items": [
+                            {"record_id": rid, "fields": copy.deepcopy(fields)}
+                            for rid, fields in self.records.items()
+                        ],
+                        "has_more": False,
+                    },
+                },
+            )
         if request.method == "GET" and "/records/" in path:
             rid = path.rsplit("/", 1)[1]
             return httpx.Response(
@@ -103,7 +120,15 @@ def adapter_for(fake):
     )
 
 
-async def do(fake, sessions, *, description, amount="30000.00", key="inc-1"):
+async def do(
+    fake,
+    sessions,
+    *,
+    description,
+    amount="30000.00",
+    key="inc-1",
+    duplicate_override=None,
+):
     async with adapter_for(fake) as adapter:
         return await write_income(
             description=description,
@@ -117,6 +142,8 @@ async def do(fake, sessions, *, description, amount="30000.00", key="inc-1"):
             idempotency_key=key,
             request_fingerprint="fp",
             trace_id="t",
+            keyring=KEYRING,
+            duplicate_override=duplicate_override,
         )
 
 
@@ -194,3 +221,25 @@ def test_a_read_back_mismatch_is_manual_review(sessions) -> None:
         run(do(fake, sessions, description="工资"))
     assert caught.value.code is ErrorCode.SOURCE_COMMITTED_MISMATCH
     assert state_of(sessions) == "needs_manual_review"
+
+
+def test_an_exact_income_duplicate_requires_a_bound_override(sessions) -> None:
+    fake = FakeIncome()
+    run(do(fake, sessions, description="工资", key="income-first"))
+
+    finding = run(do(fake, sessions, description="工资", key="income-second"))
+    assert isinstance(finding, DuplicateFinding)
+    assert len(fake.creates) == 1
+    assert state_of(sessions, "income-second") is None
+
+    outcome = run(
+        do(
+            fake,
+            sessions,
+            description="工资",
+            key="income-second",
+            duplicate_override=finding.check_id,
+        )
+    )
+    assert outcome.status == "created"
+    assert len(fake.creates) == 2

@@ -1,29 +1,9 @@
-"""Driving an unknown-commit execution to a terminal state, without duplicating.
+"""Recover any governed Finance write under its original Feishu client token.
 
-When a create times out or the process dies mid-submit, the execution is at
-`commit_unknown`: the request may or may not have reached Feishu. The one safe
-move is to replay the create under the *same* client token and let Feishu
-deduplicate. This is verified, not assumed -- an empirical check on the test Base
-confirmed that a second create with the same `client_token` returns the original
-`record_id` and adds no row (design 7.6 rule 7). Minting a new token here is what
-would produce a duplicate, so nothing in this module ever does.
-
-The fault matrix of design 7.6.4 collapses to three entry states this driver
-handles:
-
-- `commit_unknown` / `reconciling_same_client_token`: replay the sealed payload
-  under the stored token, then verify;
-- `committed_unverified`: the record id is already known, so skip the replay and
-  only read it back.
-
-It is bounded. Past a wall-clock deadline, or when the source cannot be made to
-answer, the execution goes to `needs_manual_review` with its record id (if any)
-preserved and an alert raised -- never to a fabricated success.
-
-Recovery is single-writer: a durable lease is taken first, so two workers racing
-after a restart cannot both drive one execution. Every transition is the same
-compare-and-swap the execution store uses, so a slow worker cannot overwrite a
-fast one's result.
+Recovery is driven by durable facts: the execution's tool, its persisted first
+submission time, the sealed exact create payload, and binding metadata for the
+table and protected ledger config. It never accepts those facts from the model
+or from a caller-selected table.
 """
 
 from __future__ import annotations
@@ -42,18 +22,27 @@ from personal_agent_core.timeutil import utc_now
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
 from personal_data_mcp.finance.expense_record import verify_stored_against_sent
+from personal_data_mcp.finance.family_fund import (
+    FAMILY_FUND_LOCK_SECONDS,
+    seal_family_fund_result,
+    verify_family_fund_recovery,
+)
 from personal_data_mcp.finance.ledger_config import LedgerConfig
+from personal_data_mcp.finance.schema_validator import SchemaValidation
+from personal_data_mcp.finance.source_guard import require_validated_source
 from personal_data_mcp.finance.write_path import (
     READ_BACK_ATTEMPTS,
-    TABLE_KIND,
-    open_create_payload,
+    open_create_envelope,
 )
 from personal_data_mcp.storage.execution_store import (
+    TOOL_TABLE_KINDS,
     acquire_recovery_lease,
+    acquire_resource_lock,
     append_audit_event,
     mark_receipt_verified,
     record_receipt,
     release_recovery_lease,
+    release_resource_lock,
     transition,
 )
 from personal_data_mcp.storage.models import (
@@ -63,13 +52,11 @@ from personal_data_mcp.storage.models import (
 )
 
 
-#: A reconciliation that cannot finish in this many seconds is escalated rather
-#: than retried forever (design 7.6.2: "reconciler over 30 s -> manual review").
 DEADLINE_SECONDS: float = 30.0
 
 
 class ReconcileError(RuntimeError):
-    """Reconciliation could not reach a terminal state on its own."""
+    """Reconciliation could not reach a terminal state on this invocation."""
 
 
 @dataclass(frozen=True)
@@ -110,7 +97,6 @@ def _to_manual_review(
     trace_id: str,
     now: Callable[[], datetime],
 ) -> ReconcileResult:
-    """Escalate, keeping any record id, and signal that an alert is due."""
     with sessions() as session:
         transition(
             session,
@@ -124,7 +110,7 @@ def _to_manual_review(
         _audit(
             session,
             trace_id=trace_id,
-            event_type="expense_reconcile_manual_review",
+            event_type="write_reconcile_manual_review",
             summary=f"escalated: {reason}",
             now=now(),
         )
@@ -134,25 +120,59 @@ def _to_manual_review(
     return ReconcileResult(key, "needs_manual_review", record_id)
 
 
-async def reconcile_expense(
+def _deadline_reached(
+    submitted_at: datetime | None,
+    *,
+    now: Callable[[], datetime],
+    deadline_seconds: float,
+) -> bool:
+    """Use the persisted first submit time; retries cannot reset the deadline."""
+    if submitted_at is None:
+        return True
+    return (now() - submitted_at).total_seconds() >= deadline_seconds
+
+
+def _open_bound_envelope(
+    sealed: dict[str, Any],
+    *,
+    keyring: KeyRing,
+    key: str,
+    tool: str,
+    table_kind: str,
+    config: LedgerConfig,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    envelope = open_create_envelope(
+        sealed, keyring=keyring, idempotency_key=key
+    )
+    if (
+        envelope.get("tool") != tool
+        or envelope.get("table_kind") != table_kind
+        or envelope.get("config_checksum") != config.checksum()
+    ):
+        raise ValueError("sealed recovery binding does not match the execution")
+    context = envelope.get("recovery_context")
+    if context is not None and not isinstance(context, dict):
+        raise ValueError("sealed recovery context is malformed")
+    return envelope["fields"], context
+
+
+async def reconcile_write(
     idempotency_key: str,
     *,
     sessions: sessionmaker[Session],
     adapter: FeishuAdapter,
     source: BaseSource,
     config: LedgerConfig,
+    validation: SchemaValidation,
     keyring: KeyRing,
     owner: str,
     trace_id: str | None = None,
     now: Callable[[], datetime] = utc_now,
     deadline_seconds: float = DEADLINE_SECONDS,
 ) -> ReconcileResult:
-    """Take one unknown-commit execution to a terminal state. Zero duplicates."""
+    """Take one unknown Finance write to a terminal state, with zero duplicates."""
     trace_id = trace_id or f"reconcile-{idempotency_key}"
-    started = now()
 
-    # A terminal execution needs no lease -- and could not get one, since the
-    # lease is only grantable on unfinished work. Return its settled result.
     with sessions() as session:
         execution = session.get(ToolExecution, idempotency_key)
         if execution is None:
@@ -166,36 +186,77 @@ async def reconcile_expense(
                 execution.state,
                 receipt.record_id if receipt else None,
             )
-
-    with sessions() as session:
-        if not acquire_recovery_lease(
-            session, idempotency_key=idempotency_key, owner=owner, now=now()
-        ):
-            session.commit()
+        table_kind = TOOL_TABLE_KINDS.get(execution.tool)
+        if table_kind is None:
             raise ReconcileError(
-                f"{idempotency_key} is being recovered by another worker"
+                f"{idempotency_key} belongs to an unsupported tool"
             )
-        session.commit()
 
-    try:
-        return await _drive(
-            idempotency_key,
-            sessions=sessions,
-            adapter=adapter,
-            source=source,
-            config=config,
-            keyring=keyring,
-            trace_id=trace_id,
-            now=now,
-            started=started,
-            deadline_seconds=deadline_seconds,
-        )
-    finally:
+    require_validated_source(
+        config=config,
+        validation=validation,
+        source=source,
+        operation="write recovery",
+    )
+
+    resource_lock_key: str | None = None
+    resource_lock_owner: str | None = None
+    if table_kind == "family_fund":
+        resource_lock_key = f"family_fund:{config.ledger_year}"
+        resource_lock_owner = f"{owner}:recovery:{uuid.uuid4()}"
         with sessions() as session:
-            release_recovery_lease(
-                session, idempotency_key=idempotency_key, owner=owner
+            acquired = acquire_resource_lock(
+                session,
+                lock_key=resource_lock_key,
+                owner=resource_lock_owner,
+                now=now(),
+                seconds=FAMILY_FUND_LOCK_SECONDS,
             )
             session.commit()
+        if not acquired:
+            raise ReconcileError(
+                f"{idempotency_key} family fund is being updated by another worker"
+            )
+    try:
+        with sessions() as session:
+            if not acquire_recovery_lease(
+                session,
+                idempotency_key=idempotency_key,
+                owner=owner,
+                now=now(),
+            ):
+                session.commit()
+                raise ReconcileError(
+                    f"{idempotency_key} is being recovered by another worker"
+                )
+            session.commit()
+        try:
+            return await _drive(
+                idempotency_key,
+                sessions=sessions,
+                adapter=adapter,
+                source=source,
+                config=config,
+                keyring=keyring,
+                trace_id=trace_id,
+                now=now,
+                deadline_seconds=deadline_seconds,
+            )
+        finally:
+            with sessions() as session:
+                release_recovery_lease(
+                    session, idempotency_key=idempotency_key, owner=owner
+                )
+                session.commit()
+    finally:
+        if resource_lock_key is not None and resource_lock_owner is not None:
+            with sessions() as session:
+                release_resource_lock(
+                    session,
+                    lock_key=resource_lock_key,
+                    owner=resource_lock_owner,
+                )
+                session.commit()
 
 
 async def _drive(
@@ -208,11 +269,8 @@ async def _drive(
     keyring: KeyRing,
     trace_id: str,
     now: Callable[[], datetime],
-    started: datetime,
     deadline_seconds: float,
 ) -> ReconcileResult:
-    table_id = source.tables[TABLE_KIND]
-
     with sessions() as session:
         execution = session.get(ToolExecution, key)
         if execution is None:
@@ -221,34 +279,61 @@ async def _drive(
         version = execution.state_version
         client_token = execution.client_token
         sealed = execution.encrypted_payload
+        tool = execution.tool
+        submitted_at = execution.submitted_at
 
-    if state in ("succeeded", "failed_safe", "cancelled_pre_submit"):
-        receipt_id = None
-        with sessions() as session:
-            receipt = _receipt_of(session, key)
-            receipt_id = receipt.record_id if receipt else None
-        return ReconcileResult(key, state, receipt_id)
-    if state == "needs_manual_review":
+    table_kind = TOOL_TABLE_KINDS.get(tool)
+    if table_kind is None:
+        return _to_manual_review(
+            sessions,
+            key=key,
+            current_state=state,
+            current_version=version,
+            reason="execution tool has no Finance table binding",
+            trace_id=trace_id,
+            now=now,
+        )
+    table_id = source.tables[table_kind]
+
+    if state in TERMINAL_EXECUTION_STATES:
         with sessions() as session:
             receipt = _receipt_of(session, key)
             return ReconcileResult(
                 key, state, receipt.record_id if receipt else None
             )
 
-    # The record id may already be known (`committed_unverified`), in which case
-    # the replay is skipped entirely and only verification remains.
+    if sealed is None:
+        return _to_manual_review(
+            sessions,
+            key=key,
+            current_state=state,
+            current_version=version,
+            reason="no sealed payload to recover",
+            trace_id=trace_id,
+            now=now,
+        )
+    try:
+        fields, recovery_context = _open_bound_envelope(
+            sealed,
+            keyring=keyring,
+            key=key,
+            tool=tool,
+            table_kind=table_kind,
+            config=config,
+        )
+    except (KeyError, TypeError, ValueError):
+        return _to_manual_review(
+            sessions,
+            key=key,
+            current_state=state,
+            current_version=version,
+            reason="sealed payload or binding is invalid",
+            trace_id=trace_id,
+            now=now,
+        )
+
     record_id: str | None = None
     if state in ("commit_unknown", "reconciling_same_client_token"):
-        if sealed is None:
-            return _to_manual_review(
-                sessions,
-                key=key,
-                current_state=state,
-                current_version=version,
-                reason="no sealed payload to replay",
-                trace_id=trace_id,
-                now=now,
-            )
         if state == "commit_unknown":
             with sessions() as session:
                 version = transition(
@@ -261,21 +346,23 @@ async def _drive(
                 )
                 session.commit()
 
-        fields = open_create_payload(sealed, keyring=keyring, idempotency_key=key)
         try:
-            # Same client token: Feishu returns the original record if the first
-            # attempt did land, and creates it exactly once if it did not.
             record = await adapter.create_record(
-                source.base_token, table_id, fields=fields, client_token=client_token
+                source.base_token,
+                table_id,
+                fields=fields,
+                client_token=client_token,
             )
         except AppError:
-            if (now() - started).total_seconds() >= deadline_seconds:
+            if _deadline_reached(
+                submitted_at, now=now, deadline_seconds=deadline_seconds
+            ):
                 return _to_manual_review(
                     sessions,
                     key=key,
                     current_state="reconciling_same_client_token",
                     current_version=version,
-                    reason="replay still failing at deadline",
+                    reason="same-token replay still failing at deadline",
                     trace_id=trace_id,
                     now=now,
                 )
@@ -288,7 +375,7 @@ async def _drive(
                 key=key,
                 current_state="reconciling_same_client_token",
                 current_version=version,
-                reason="replay returned no record id",
+                reason="same-token replay returned no record id",
                 trace_id=trace_id,
                 now=now,
             )
@@ -299,7 +386,7 @@ async def _drive(
                     session,
                     receipt_id=str(uuid.uuid4()),
                     idempotency_key=key,
-                    table_kind=TABLE_KIND,
+                    table_kind=table_kind,
                     record_id=record_id,
                     now=now(),
                 )
@@ -314,36 +401,46 @@ async def _drive(
             _audit(
                 session,
                 trace_id=trace_id,
-                event_type="expense_reconcile_committed_unverified",
-                summary="same-token replay resolved the record id",
+                event_type="write_reconcile_committed_unverified",
+                summary=f"same-token replay resolved a {table_kind} record id",
                 now=now(),
             )
             session.commit()
+    elif state != "committed_unverified":
+        return _to_manual_review(
+            sessions,
+            key=key,
+            current_state=state,
+            current_version=version,
+            reason=f"unsupported recovery state {state}",
+            trace_id=trace_id,
+            now=now,
+        )
 
-    # From here the state is `committed_unverified`: verify by read-back.
     with sessions() as session:
         execution = session.get(ToolExecution, key)
         version = execution.state_version
-        sealed = execution.encrypted_payload
         receipt = _receipt_of(session, key)
         record_id = receipt.record_id if receipt else record_id
+        submitted_at = execution.submitted_at
 
-    if record_id is None or sealed is None:
+    if record_id is None:
         return _to_manual_review(
             sessions,
             key=key,
             current_state="committed_unverified",
             current_version=version,
-            reason="nothing to verify against",
+            reason="no external receipt to verify",
             trace_id=trace_id,
             now=now,
         )
 
-    fields = open_create_payload(sealed, keyring=keyring, idempotency_key=key)
     stored: dict[str, Any] | None = None
     for _ in range(READ_BACK_ATTEMPTS):
         try:
-            read = await adapter.get_record(source.base_token, table_id, record_id)
+            read = await adapter.get_record(
+                source.base_token, table_id, record_id
+            )
         except AppError:
             continue
         cells = read.get("fields")
@@ -351,7 +448,9 @@ async def _drive(
         break
 
     if stored is None:
-        if (now() - started).total_seconds() >= deadline_seconds:
+        if _deadline_reached(
+            submitted_at, now=now, deadline_seconds=deadline_seconds
+        ):
             return _to_manual_review(
                 sessions,
                 key=key,
@@ -363,16 +462,46 @@ async def _drive(
             )
         raise ReconcileError(f"{key} read-back unavailable; retry before deadline")
 
-    mismatches = verify_stored_against_sent(fields, stored, config=config)
-    if mismatches:
+    if table_kind == "family_fund":
+        if recovery_context is None:
+            mismatch_names = ["recovery_context"]
+        else:
+            mismatch_names = verify_family_fund_recovery(
+                fields,
+                stored,
+                config=config,
+                recovery_context=recovery_context,
+            )
+    else:
+        mismatch_names = [
+            mismatch.logical_name
+            for mismatch in verify_stored_against_sent(
+                fields,
+                stored,
+                config=config,
+                table_kind=table_kind,
+            )
+        ]
+    if mismatch_names:
         return _to_manual_review(
             sessions,
             key=key,
             current_state="committed_unverified",
             current_version=version,
-            reason="read-back mismatch on " + ",".join(m.logical_name for m in mismatches),
+            reason="read-back mismatch on " + ",".join(mismatch_names),
             trace_id=trace_id,
             now=now,
+        )
+
+    encrypted_result = None
+    if table_kind == "family_fund":
+        assert recovery_context is not None
+        encrypted_result = seal_family_fund_result(
+            stored,
+            config=config,
+            recovery_context=recovery_context,
+            keyring=keyring,
+            idempotency_key=key,
         )
 
     committed_at = now()
@@ -385,13 +514,22 @@ async def _drive(
             current_version=version,
             target_state="succeeded",
             now=committed_at,
+            encrypted_result=encrypted_result,
         )
         _audit(
             session,
             trace_id=trace_id,
-            event_type="expense_reconcile_succeeded",
-            summary="reconciled and verified every field",
+            event_type="write_reconcile_succeeded",
+            summary=f"reconciled and verified every {table_kind} field",
             now=committed_at,
         )
         session.commit()
     return ReconcileResult(key, "succeeded", record_id)
+
+
+async def reconcile_expense(
+    idempotency_key: str,
+    **kwargs: Any,
+) -> ReconcileResult:
+    """Backward-compatible name; the implementation now dispatches by tool."""
+    return await reconcile_write(idempotency_key, **kwargs)
