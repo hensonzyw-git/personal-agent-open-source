@@ -18,6 +18,11 @@ __pycache__/
 *.pfx
 secrets/
 
+# Protected server-side ledger configuration. It carries Base, table and field
+# identifiers, which are sensitive though not secret; only the redacted report
+# may be committed.
+config/
+
 # Personal data, exports, backups, and runtime state
 backups/
 data/
