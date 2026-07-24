@@ -43,14 +43,23 @@ from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.manifest import canonical_json
 
 
-def chat_request_fingerprint(*, conversation_id: str, text: str) -> str:
+def chat_request_fingerprint(
+    *,
+    conversation_id: str,
+    text: str,
+    clarification_of: str | None = None,
+) -> str:
     """A canonical fingerprint of one chat request's meaning.
 
     Only the fields that define what the user asked are included; transport and
     diagnostic fields (`client_sent_at`, headers) are deliberately excluded, so a
     genuine retry of the same message matches and a changed message does not.
     """
-    payload = {"conversation_id": conversation_id, "text": text}
+    payload = {
+        "conversation_id": conversation_id,
+        "text": text,
+        "clarification_of": clarification_of,
+    }
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 

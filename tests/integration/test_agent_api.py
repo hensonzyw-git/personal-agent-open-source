@@ -8,6 +8,7 @@ duplicate decision are tested as the wire sees them.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from personal_agent.api.app import AgentApiDeps, AuthContext, build_app
 from personal_agent.api.orchestrator import (
+    Clarification,
     DirectAnswer,
     PossibleDuplicate,
     Resolved,
@@ -106,27 +108,41 @@ def engine(tmp_path: Path):
     engine.dispose()
 
 
-def _token(token_ring: TokenKeyRing) -> str:
+def _token(
+    token_ring: TokenKeyRing,
+    *,
+    device_id: str = "dev-1",
+    thumbprint: str = "THUMB",
+) -> str:
     return issue_access_token(
         token_ring,
-        device_id="dev-1",
-        device_key_thumbprint="THUMB",
+        device_id=device_id,
+        device_key_thumbprint=thumbprint,
         scopes=["finance.write"],
         allowed_tools_version="v1",
         now=NOW,
     )
 
 
-def _client(engine, token_ring, keyring, *, interpreter, dispatcher) -> TestClient:
+def _client(
+    engine,
+    token_ring,
+    keyring,
+    *,
+    interpreter,
+    dispatcher,
+    sync_wait_seconds=30.0,
+) -> TestClient:
     deps = AgentApiDeps(
         session_factory=session_factory(engine),
         token_ring=token_ring,
         keyring=keyring,
-        interpreter=interpreter,
+        build_interpreter=lambda auth: interpreter,
         dispatcher=dispatcher,
         build_authorizer=lambda auth: (lambda *, tool, model_args: dict(model_args)),
         capabilities=lambda auth: [{"alias": "finance.log_expense"}],
         now=lambda: NOW,
+        sync_wait_seconds=sync_wait_seconds,
     )
     return TestClient(build_app(deps))
 
@@ -291,6 +307,136 @@ def test_the_same_key_with_a_different_body_conflicts(engine, token_ring, keyrin
     assert resp.status_code == 409
 
 
+def test_a_structured_clarification_is_parked_and_resumed_by_link(
+    engine, token_ring, keyring
+) -> None:
+    class SequencedInterpreter:
+        def __init__(self):
+            self.calls = []
+            self.results = [
+                Clarification("个人还是家庭支出？"),
+                ToolCall("finance.log_expense", {"name": "午饭"}),
+            ]
+
+        def interpret(
+            self,
+            *,
+            text,
+            conversation_id,
+            clarification_context=None,
+        ):
+            self.calls.append((text, conversation_id, clarification_context))
+            return self.results.pop(0)
+
+    interpreter = SequencedInterpreter()
+    intent = WriteIntent("finance.log_expense", {"name": "午饭"})
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=interpreter,
+        dispatcher=FakeDispatcher(
+            resolve=Resolved(intent), commit=Written("recCLARIFY")
+        ),
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    assert parked.status_code == 202
+    assert parked.json()["state"] == "waiting_for_clarification"
+    assert parked.json()["clarification"] == "个人还是家庭支出？"
+
+    resumed = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "个人支出",
+            "clarification_of": parked.json()["operation_id"],
+        },
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert resumed.status_code == 200
+    assert resumed.json()["record_id"] == "recCLARIFY"
+    context = interpreter.calls[1][2]
+    assert context.original_user_text == "午饭 45"
+    assert context.question == "个人还是家庭支出？"
+
+    old = client.get(
+        f"/v1/operations/{parked.json()['operation_id']}",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert old.json()["state"] == "cancelled_pre_submit"
+    assert old.json()["record_id"] is None
+
+
+def test_clarification_cannot_cross_conversations(
+    engine, token_ring, keyring
+) -> None:
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=FakeInterpreter(Clarification("个人还是家庭？")),
+        dispatcher=FakeDispatcher(),
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    response = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c2",
+            "text": "个人",
+            "clarification_of": parked.json()["operation_id"],
+        },
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert response.status_code == 400
+
+
+def test_slow_model_returns_202_and_finishes_in_the_worker(
+    engine, token_ring, keyring
+) -> None:
+    class SlowInterpreter:
+        def interpret(self, *, text, conversation_id):
+            time.sleep(0.1)
+            return DirectAnswer("完成")
+
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=SlowInterpreter(),
+        dispatcher=FakeDispatcher(),
+        sync_wait_seconds=0.01,
+    )
+    with client:
+        started = time.monotonic()
+        response = client.post(
+            "/v1/chat/messages",
+            json={"conversation_id": "c1", "text": "hi"},
+            headers=_auth(token_ring),
+        )
+        assert response.status_code == 202
+        assert time.monotonic() - started < 0.08
+
+        operation_id = response.json()["operation_id"]
+        for _ in range(30):
+            polled = client.get(
+                f"/v1/operations/{operation_id}",
+                headers={"Authorization": f"Bearer {_token(token_ring)}"},
+            )
+            if polled.json()["state"] == "succeeded":
+                break
+            time.sleep(0.01)
+        assert polled.status_code == 200
+        assert polled.json()["answer"] == "完成"
+
+
 # --- poll, cancel, capabilities, events --------------------------------------
 
 
@@ -306,6 +452,54 @@ def test_capabilities_lists_the_device_tools(engine, token_ring, keyring) -> Non
     )
     assert resp.status_code == 200
     assert resp.json()["tools"] == [{"alias": "finance.log_expense"}]
+
+
+def test_an_active_device_cannot_poll_or_cancel_another_devices_operation(
+    engine, token_ring, keyring
+) -> None:
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+    )
+    created = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "hi"},
+        headers=_auth(token_ring),
+    )
+    with session_factory(engine)() as session:
+        session.add(
+            Device(
+                device_id="dev-2",
+                display_name="Second iPhone",
+                public_key="K2",
+                device_key_thumbprint="THUMB2",
+                status="active",
+                scopes='["finance.write"]',
+                allowed_tools_version="v1",
+                created_at=NOW,
+            )
+        )
+        session.commit()
+    other_auth = {
+        "Authorization": (
+            "Bearer "
+            + _token(
+                token_ring,
+                device_id="dev-2",
+                thumbprint="THUMB2",
+            )
+        )
+    }
+    operation_id = created.json()["operation_id"]
+    assert client.get(
+        f"/v1/operations/{operation_id}", headers=other_auth
+    ).status_code == 400
+    assert client.delete(
+        f"/v1/operations/{operation_id}", headers=other_auth
+    ).status_code == 400
 
 
 def test_events_list_the_conversation_timeline(engine, token_ring, keyring) -> None:

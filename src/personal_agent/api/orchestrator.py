@@ -56,11 +56,40 @@ class ToolCall:
     model_args: dict[str, Any]
 
 
-Interpretation = DirectAnswer | ToolCall
+@dataclass(frozen=True)
+class Clarification:
+    """A structured question; it parks instead of pretending to be an answer."""
+
+    question: str
+
+
+@dataclass(frozen=True)
+class FailSafeInterpretation:
+    """A model-selected outcome backed by a frozen, non-write safety gate."""
+
+    reason: str
+
+
+Interpretation = DirectAnswer | ToolCall | Clarification | FailSafeInterpretation
+
+
+class InterpreterError(Exception):
+    """The interpreter could not produce a proposal.
+
+    Part of the seam contract: an implementation raises this for a model or
+    transport failure, and the orchestrator turns it into a safe `failed_safe`
+    rather than letting it crash the request. It is never a write.
+    """
 
 
 class Interpreter(Protocol):
-    def interpret(self, *, text: str, conversation_id: str) -> Interpretation: ...
+    def interpret(
+        self,
+        *,
+        text: str,
+        conversation_id: str,
+        clarification_context: Any | None = None,
+    ) -> Interpretation: ...
 
 
 # --- dispatcher results ------------------------------------------------------
@@ -163,6 +192,7 @@ def run_operation(
     *,
     text: str,
     conversation_id: str,
+    clarification_context: Any | None = None,
     interpreter: Interpreter,
     dispatcher: Dispatcher,
     authorize: Authorizer,
@@ -177,8 +207,48 @@ def run_operation(
             session, operation, dispatcher=dispatcher, keyring=keyring, now=now
         )
 
+    try:
+        kwargs = {"text": text, "conversation_id": conversation_id}
+        if clarification_context is not None:
+            kwargs["clarification_context"] = clarification_context
+        interpretation = interpreter.interpret(**kwargs)
+    except InterpreterError:
+        # A model or transport failure is a safe failure, never a write. The
+        # operation is still pre-submit, so this cannot hide a side effect.
+        _step(session, operation, "interpreting", now)
+        _step(session, operation, "failed_safe", now, failure_reason="model_unavailable")
+        return RunResult(state="failed_safe", failure_reason="model_unavailable")
+
+    # Do not hold SQLite's single-writer lock across the 25-second model budget.
+    # The durable state remains `accepted` while the side-effect-free proposal is
+    # obtained; cancellation can still win cleanly, and a crash safely replays
+    # the sealed request. The state walk is committed only after the proposal.
     _step(session, operation, "interpreting", now)
-    interpretation = interpreter.interpret(text=text, conversation_id=conversation_id)
+
+    if isinstance(interpretation, Clarification):
+        _step(
+            session,
+            operation,
+            "waiting_for_clarification",
+            now,
+            safe_result=interpretation.question,
+        )
+        return RunResult(
+            state="waiting_for_clarification",
+            clarification=interpretation.question,
+        )
+
+    if isinstance(interpretation, FailSafeInterpretation):
+        _step(
+            session,
+            operation,
+            "failed_safe",
+            now,
+            failure_reason=interpretation.reason,
+        )
+        return RunResult(
+            state="failed_safe", failure_reason=interpretation.reason
+        )
 
     if isinstance(interpretation, DirectAnswer):
         _step(session, operation, "succeeded", now, safe_result=interpretation.text)
@@ -211,7 +281,13 @@ def _apply_resolve(
         return RunResult(state="succeeded", record_id=None, answer=outcome.result)
 
     if isinstance(outcome, NeedsClarification):
-        _step(session, operation, "waiting_for_clarification", now)
+        _step(
+            session,
+            operation,
+            "waiting_for_clarification",
+            now,
+            safe_result=outcome.reason,
+        )
         return RunResult(
             state="waiting_for_clarification", clarification=outcome.reason
         )

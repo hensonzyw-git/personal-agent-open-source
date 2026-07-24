@@ -22,7 +22,9 @@ Four invariants live here rather than in a handler's good intentions:
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -39,17 +41,29 @@ from personal_agent.api.operation_store import (
     get_operation,
     open_operation,
     request_cancel,
+    transition_operation,
 )
+from personal_agent.api.operation_state import StaleOperationVersionError
 from personal_agent.api.orchestrator import (
     Authorizer,
     Dispatcher,
     Interpreter,
     run_operation,
 )
+from personal_agent.api.request_payload import (
+    ChatRequestPayload,
+    continuation_context,
+    open_chat_request,
+    seal_chat_request,
+    with_clarification_question,
+)
 from personal_agent.auth.tokens import TokenError, TokenKeyRing, verify_access_token
 from personal_agent.storage.models import Device, Operation
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -64,13 +78,22 @@ class AgentApiDeps:
     session_factory: Callable[[], Any]
     token_ring: TokenKeyRing
     keyring: KeyRing
-    interpreter: Interpreter
+    #: Builds the per-device interpreter; it is bound to that device's visible
+    #: tools, so it is constructed per request like the authorizer.
+    build_interpreter: Callable[[AuthContext], Interpreter]
     dispatcher: Dispatcher
     #: Builds the per-device tool authorizer used by the orchestrator.
     build_authorizer: Callable[[AuthContext], Authorizer]
     #: The tools genuinely available to this device (design 5.3 /capabilities).
     capabilities: Callable[[AuthContext], list[dict[str, Any]]]
     now: Callable[[], datetime]
+    #: HTTP waits no longer than this for an operation worker. Production uses
+    #: the design's 30-second ceiling; tests may shorten it.
+    sync_wait_seconds: float = 30.0
+
+    def __post_init__(self) -> None:
+        if self.sync_wait_seconds <= 0 or self.sync_wait_seconds > 30.0:
+            raise ValueError("sync_wait_seconds must be within (0, 30]")
 
 
 _STATUS_BY_CODE = {
@@ -101,6 +124,18 @@ class _Unauthenticated(Exception):
 
 def build_app(deps: AgentApiDeps) -> FastAPI:
     app = FastAPI()
+    operation_tasks: dict[str, asyncio.Task[JSONResponse]] = {}
+
+    def forget_task(operation_id: str, done: asyncio.Task[JSONResponse]) -> None:
+        if operation_tasks.get(operation_id) is done:
+            operation_tasks.pop(operation_id, None)
+        if not done.cancelled():
+            error = done.exception()
+            if error is not None:
+                logger.error(
+                    "operation worker failed before producing a safe projection",
+                    exc_info=(type(error), error, error.__traceback__),
+                )
 
     def authenticate(request: Request, session) -> AuthContext:
         raw = request.headers.get("authorization", "")
@@ -148,66 +183,77 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
 
     @app.post("/v1/chat/messages")
     async def post_message(request: Request):
-        with deps.session_factory() as session:
-            auth = authenticate(request, session)
-            body = await _json_body(request)
+        # Authentication stays ahead of body parsing, while SQLite and the
+        # model/dispatcher run outside the event loop.
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        body = await _json_body(request)
+        key = idempotency_key(request)
+        conversation_id = _required(body, "conversation_id")
+        text = _required(body, "text")
+        clarification_of = _optional_operation_id(body, "clarification_of")
 
-            def work():
-                key = idempotency_key(request)
-                conversation_id = _required(body, "conversation_id")
-                text = _required(body, "text")
-                fingerprint = chat_request_fingerprint(
-                    conversation_id=conversation_id, text=text
-                )
-                opened = open_operation(
-                    session,
-                    device_id=auth.device_id,
-                    client_request_id=key,
-                    request_fingerprint=fingerprint,
-                    now=deps.now(),
-                )
-                if not opened.created and opened.operation.state != "accepted":
-                    # A replay returns an already-started operation without
-                    # invoking the model or Finance again.
-                    return _operation_response(opened.operation)
-                if opened.created:
-                    # The request/operation anchor must survive any later model,
-                    # resolver, process, or network failure. An accepted replay is
-                    # safe to resume because no source submit can have happened.
-                    session.commit()
-                    session.refresh(opened.operation)
+        anchored = await asyncio.to_thread(
+            _anchor_chat,
+            deps,
+            auth,
+            key,
+            conversation_id,
+            text,
+            clarification_of,
+        )
+        if anchored.state != "accepted":
+            return await asyncio.to_thread(
+                _load_operation_response,
+                deps,
+                anchored.operation_id,
+                auth.device_id,
+            )
 
-                events.append_event(
-                    session, deps.keyring,
-                    conversation_id=conversation_id, event_type=events.USER_MESSAGE,
-                    content={"text": text}, operation_id=opened.operation.operation_id,
-                    now=deps.now(),
+        task = operation_tasks.get(anchored.operation_id)
+        if task is None or task.done():
+            task = asyncio.create_task(
+                asyncio.to_thread(
+                    _process_chat,
+                    deps,
+                    auth,
+                    anchored.operation_id,
                 )
-                result = run_operation(
-                    session, opened.operation,
-                    text=text, conversation_id=conversation_id,
-                    interpreter=deps.interpreter, dispatcher=deps.dispatcher,
-                    authorize=deps.build_authorizer(auth), keyring=deps.keyring,
-                    now=deps.now(),
+            )
+            operation_tasks[anchored.operation_id] = task
+            task.add_done_callback(
+                lambda done, operation_id=anchored.operation_id: forget_task(
+                    operation_id, done
                 )
-                events.append_event(
-                    session, deps.keyring,
-                    conversation_id=conversation_id, event_type=events.OPERATION_RESULT,
-                    content=_result_content(result),
-                    operation_id=opened.operation.operation_id, now=deps.now(),
-                )
-                return _operation_response(
-                    opened.operation, extra=_transient(result)
-                )
-
-            return _commit(session, work)
+            )
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(task), timeout=deps.sync_wait_seconds
+            )
+        except TimeoutError:
+            # The worker owns its session and continues. The client polls this
+            # durable operation id; timeout never means the write was cancelled.
+            return JSONResponse(
+                {
+                    "operation_id": anchored.operation_id,
+                    "state": "accepted",
+                    "cancel_requested": False,
+                    "client_detached": False,
+                    "tool": None,
+                    "record_id": None,
+                    "failure_reason": None,
+                    "duplicate_check_id": None,
+                },
+                status_code=202,
+            )
 
     @app.get("/v1/operations/{operation_id}")
     async def get_operation_status(operation_id: str, request: Request):
         with deps.session_factory() as session:
             def work():
-                authenticate(request, session)
-                operation = _owned_operation(session, operation_id)
+                auth = authenticate(request, session)
+                operation = _owned_operation(
+                    session, operation_id, device_id=auth.device_id
+                )
                 return _operation_response(operation)
 
             return _commit(session, work)
@@ -216,8 +262,8 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
     async def cancel_operation(operation_id: str, request: Request):
         with deps.session_factory() as session:
             def work():
-                authenticate(request, session)
-                _owned_operation(session, operation_id)
+                auth = authenticate(request, session)
+                _owned_operation(session, operation_id, device_id=auth.device_id)
                 request_cancel(session, operation_id=operation_id, now=deps.now())
                 return _operation_response(get_operation(session, operation_id))
 
@@ -265,34 +311,18 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
 
     @app.post("/v1/duplicate-checks/{duplicate_check_id}/decision")
     async def post_decision(duplicate_check_id: str, request: Request):
-        with deps.session_factory() as session:
-            auth = authenticate(request, session)
-            body = await _json_body(request)
-
-            def work():
-                key = idempotency_key(request)
-                decision = _required(body, "decision")
-                outcome = decide_duplicate(
-                    session, deps.keyring,
-                    duplicate_check_id=duplicate_check_id, decision=decision,
-                    device_id=auth.device_id, new_client_request_id=key,
-                    now=deps.now(),
-                )
-                new_op = outcome.new_operation
-                if new_op is not None and new_op.state == "accepted":
-                    run_operation(
-                        session, new_op,
-                        text="", conversation_id="",
-                        interpreter=deps.interpreter, dispatcher=deps.dispatcher,
-                        authorize=deps.build_authorizer(auth), keyring=deps.keyring,
-                        now=deps.now(),
-                    )
-                target = new_op if new_op is not None else _find_by_check(
-                    session, duplicate_check_id, auth.device_id
-                )
-                return _operation_response(target)
-
-            return _commit(session, work)
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        body = await _json_body(request)
+        key = idempotency_key(request)
+        decision = _required(body, "decision")
+        return await asyncio.to_thread(
+            _process_duplicate_decision,
+            deps,
+            auth,
+            duplicate_check_id,
+            decision,
+            key,
+        )
 
     @app.exception_handler(_Unauthenticated)
     async def _on_unauth(request: Request, exc: _Unauthenticated):
@@ -305,6 +335,229 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         return _error_response(exc)
 
     return app
+
+
+@dataclass(frozen=True)
+class _AnchoredChat:
+    operation_id: str
+    state: str
+
+
+def _authenticate_once(request, deps, authenticate) -> AuthContext:
+    with deps.session_factory() as session:
+        return authenticate(request, session)
+
+
+def _anchor_chat(
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    key: str,
+    conversation_id: str,
+    text: str,
+    clarification_of: str | None,
+) -> _AnchoredChat:
+    """Persist request, encrypted payload and user event before model work."""
+
+    with deps.session_factory() as session:
+        try:
+            fingerprint = chat_request_fingerprint(
+                conversation_id=conversation_id,
+                text=text,
+                clarification_of=clarification_of,
+            )
+            opened = open_operation(
+                session,
+                device_id=auth.device_id,
+                client_request_id=key,
+                request_fingerprint=fingerprint,
+                now=deps.now(),
+            )
+            operation = opened.operation
+            if not opened.created:
+                return _AnchoredChat(operation.operation_id, operation.state)
+
+            context = None
+            if clarification_of is not None:
+                source = _owned_operation(
+                    session,
+                    clarification_of,
+                    device_id=auth.device_id,
+                )
+                if source.state != "waiting_for_clarification":
+                    raise AppError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        internal_detail=(
+                            "clarification_of must name an operation waiting "
+                            "for clarification"
+                        ),
+                    )
+                source_payload = open_chat_request(
+                    deps.keyring,
+                    request_id=source.request_id,
+                    envelope=source.api_request.encrypted_request_payload,
+                )
+                if source_payload.conversation_id != conversation_id:
+                    raise AppError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        internal_detail=(
+                            "clarification must stay in the source conversation"
+                        ),
+                    )
+                context = continuation_context(source_payload)
+                transition_operation(
+                    session,
+                    operation_id=source.operation_id,
+                    current_state=source.state,
+                    current_version=source.state_version,
+                    target_state="cancelled_pre_submit",
+                    now=deps.now(),
+                )
+
+            payload = ChatRequestPayload(
+                conversation_id=conversation_id,
+                text=text,
+                clarification_of=clarification_of,
+                clarification_context=context,
+            )
+            operation.api_request.encrypted_request_payload = seal_chat_request(
+                deps.keyring,
+                request_id=operation.request_id,
+                payload=payload,
+            )
+            events.append_event(
+                session,
+                deps.keyring,
+                conversation_id=conversation_id,
+                event_type=events.USER_MESSAGE,
+                content={
+                    "text": text,
+                    **(
+                        {"clarification_of": clarification_of}
+                        if clarification_of is not None
+                        else {}
+                    ),
+                },
+                operation_id=operation.operation_id,
+                now=deps.now(),
+            )
+            session.commit()
+            return _AnchoredChat(operation.operation_id, operation.state)
+        except Exception:
+            session.rollback()
+            raise
+
+
+def _process_chat(
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    operation_id: str,
+) -> JSONResponse:
+    """Run one accepted operation in a worker-owned database session."""
+
+    with deps.session_factory() as session:
+        try:
+            operation = _owned_operation(
+                session, operation_id, device_id=auth.device_id
+            )
+            if operation.state != "accepted":
+                return _operation_response(operation)
+            payload = open_chat_request(
+                deps.keyring,
+                request_id=operation.request_id,
+                envelope=operation.api_request.encrypted_request_payload,
+            )
+            result = run_operation(
+                session,
+                operation,
+                text=payload.text,
+                conversation_id=payload.conversation_id,
+                clarification_context=payload.clarification_context,
+                interpreter=deps.build_interpreter(auth),
+                dispatcher=deps.dispatcher,
+                authorize=deps.build_authorizer(auth),
+                keyring=deps.keyring,
+                now=deps.now(),
+            )
+            if result.state == "waiting_for_clarification":
+                question = result.clarification
+                if not isinstance(question, str) or not question.strip():
+                    raise AppError(
+                        ErrorCode.INTERNAL_ERROR,
+                        internal_detail="parked clarification has no question",
+                    )
+                operation.api_request.encrypted_request_payload = seal_chat_request(
+                    deps.keyring,
+                    request_id=operation.request_id,
+                    payload=with_clarification_question(payload, question),
+                )
+            events.append_event(
+                session,
+                deps.keyring,
+                conversation_id=payload.conversation_id,
+                event_type=events.OPERATION_RESULT,
+                content=_result_content(result),
+                operation_id=operation.operation_id,
+                now=deps.now(),
+            )
+            session.commit()
+            session.refresh(operation)
+            return _operation_response(operation, extra=_transient(result))
+        except StaleOperationVersionError:
+            session.rollback()
+            operation = _owned_operation(
+                session, operation_id, device_id=auth.device_id
+            )
+            return _operation_response(operation)
+        except Exception:
+            session.rollback()
+            raise
+
+
+def _load_operation_response(
+    deps: AgentApiDeps, operation_id: str, device_id: str
+) -> JSONResponse:
+    with deps.session_factory() as session:
+        operation = _owned_operation(session, operation_id, device_id=device_id)
+        return _operation_response(operation)
+
+
+def _process_duplicate_decision(
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    duplicate_check_id: str,
+    decision: str,
+    key: str,
+) -> JSONResponse:
+    with deps.session_factory() as session:
+        def work():
+            outcome = decide_duplicate(
+                session,
+                deps.keyring,
+                duplicate_check_id=duplicate_check_id,
+                decision=decision,
+                device_id=auth.device_id,
+                new_client_request_id=key,
+                now=deps.now(),
+            )
+            new_op = outcome.new_operation
+            if new_op is not None and new_op.state == "accepted":
+                run_operation(
+                    session,
+                    new_op,
+                    text="",
+                    conversation_id="",
+                    interpreter=deps.build_interpreter(auth),
+                    dispatcher=deps.dispatcher,
+                    authorize=deps.build_authorizer(auth),
+                    keyring=deps.keyring,
+                    now=deps.now(),
+                )
+            target = new_op if new_op is not None else _find_by_check(
+                session, duplicate_check_id, auth.device_id
+            )
+            return _operation_response(target)
+
+        return _commit(session, work)
 
 
 def _commit(session, work: Callable[[], Any]):
@@ -320,8 +573,15 @@ def _commit(session, work: Callable[[], Any]):
         raise
 
 
-def _owned_operation(session, operation_id: str) -> Operation:
-    operation = get_operation(session, operation_id)
+def _owned_operation(
+    session, operation_id: str, *, device_id: str
+) -> Operation:
+    operation = (
+        session.query(Operation)
+        .filter(Operation.operation_id == operation_id)
+        .filter(Operation.api_request.has(device_id=device_id))
+        .one_or_none()
+    )
     if operation is None:
         raise AppError(
             ErrorCode.INVALID_ARGUMENT,
@@ -405,6 +665,22 @@ def _required(body: dict[str, Any], field: str) -> str:
     return value
 
 
+def _optional_operation_id(body: dict[str, Any], field: str) -> str | None:
+    value = body.get(field)
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or not value.startswith("op_")
+        or len(value) != 35
+    ):
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=f"{field} must be an operation id",
+        )
+    return value
+
+
 def _operation_response(
     operation: Operation, *, extra: dict[str, Any] | None = None
 ) -> JSONResponse:
@@ -444,9 +720,14 @@ def _operation_projection(operation: Operation) -> dict[str, Any]:
         "duplicate_check_id": operation.duplicate_check_id,
     }
     if operation.safe_result is not None:
-        if operation.tool in _RECORD_ID_RESULT_TOOLS:
+        if operation.state == "waiting_for_clarification":
+            projection["clarification"] = operation.safe_result
+        elif (
+            operation.state == "succeeded"
+            and operation.tool in _RECORD_ID_RESULT_TOOLS
+        ):
             projection["record_id"] = operation.safe_result
-        else:
+        elif operation.state == "succeeded":
             projection["answer"] = operation.safe_result
     return projection
 

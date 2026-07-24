@@ -161,6 +161,25 @@ def test_a_direct_answer_succeeds_with_no_tool(session, keyring) -> None:
     assert op.state == "succeeded"
 
 
+class RaisingInterpreter:
+    def interpret(self, *, text, conversation_id):
+        from personal_agent.api.orchestrator import InterpreterError
+
+        raise InterpreterError("model down")
+
+
+def test_a_model_failure_fails_safe(session, keyring) -> None:
+    op = _fresh_operation(session)
+    result = _run(
+        session, op,
+        interpreter=RaisingInterpreter(),
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "model_unavailable"
+
+
 def test_a_read_completes_without_touching_the_write_states(session, keyring) -> None:
     op = _fresh_operation(session)
     result = _run(

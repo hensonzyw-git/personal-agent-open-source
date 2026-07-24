@@ -4,8 +4,9 @@ from __future__ import annotations
 
 
 def main() -> None:
-    """Refuse to start: DEV-001 only delivers the package skeleton."""
+    """Refuse to start until the DEV-027 production composition root exists."""
     raise SystemExit(
-        "personal-agent-api is a DEV-001 package skeleton with no runnable service. "
-        "DEV-026 implements it; until then there is nothing to start."
+        "personal-agent-api has no production composition root yet. "
+        "The DEV-026 API and DEV-027 model adapter exist, but the governed "
+        "Finance dispatcher and service wiring must be completed before startup."
     )
