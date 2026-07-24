@@ -477,7 +477,13 @@ def test_the_g3_operator_command_refuses_a_production_config(tmp_path) -> None:
         )
 
 
-def test_the_g3_command_takes_its_sign_from_the_entry_kind() -> None:
+def test_the_g3_command_states_semantics_and_resolves_nothing_itself() -> None:
+    """The CLI collects what a human says; the ledger decides the rest.
+
+    The accounting sign, the trip tag and any inherited category are applied by
+    `resolve_expense`, so `build_entry` must pass the raw statement through
+    unchanged -- including leaving the amount unsigned.
+    """
     import argparse
 
     from personal_data_mcp.finance import write_expense_cli
@@ -490,15 +496,46 @@ def test_the_g3_command_takes_its_sign_from_the_entry_kind() -> None:
             scope="personal",
             category="餐饮",
             entry_kind="expense",
+            trip_tag=None,
+            destination=None,
         )
         for key, value in overrides.items():
             setattr(args, key, value)
         return write_expense_cli.build_entry(args)
 
-    assert parse().amount_cny == Decimal("20")
-    assert parse(entry_kind="refund").amount_cny == Decimal("-20")
+    assert parse().input_amount == "20"
+    assert parse(entry_kind="refund").input_amount == "20"
     assert parse(scope="family").is_family_expense is True
     assert parse().is_family_expense is False
+    assert parse().occurred_on == date(2026, 7, 23)
+
+
+def test_the_g3_command_only_scans_the_ledger_when_resolution_needs_it() -> None:
+    from personal_data_mcp.finance.write_expense_cli import RawEntry, _needs_the_ledger
+
+    def raw(**overrides):
+        base = dict(
+            name="机票",
+            input_amount="2000",
+            occurred_on=date(2026, 7, 23),
+            is_family_expense=True,
+            entry_kind="expense",
+            category="餐饮",
+            trip_tag=None,
+            destination=None,
+        )
+        base.update(overrides)
+        return RawEntry(**base)
+
+    assert _needs_the_ledger(raw()) is False
+    # A bare destination must be resolved against existing trips.
+    assert _needs_the_ledger(raw(destination="东京", category=None)) is True
+    # An explicit tag is used as written, so no scan is needed.
+    assert _needs_the_ledger(raw(trip_tag="东京02", destination="东京")) is False
+    # A reduction with no category needs its original.
+    assert (
+        _needs_the_ledger(raw(entry_kind="refund", category=None)) is True
+    )
 
 
 def test_a_late_evening_entry_keeps_its_shanghai_ledger_date(sessions) -> None:

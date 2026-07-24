@@ -1,11 +1,11 @@
 """The G3 operator command: one expense write against the synthetic test Base.
 
-This exists because the first real write must be a deliberate, single, fully
-specified act -- not a side effect of a model call. `finance.log_expense` is not
-registered as an MCP tool yet: the pre-write duplicate check (DEV-020) and the
-category/trip-tag resolvers (DEV-021) are not built, and the registry only
-advertises tools that can actually execute. So the entry arrives here already
-resolved, from a human, on the command line.
+This exists because the first real writes must be deliberate, single, fully
+specified acts -- not side effects of a model call. `finance.log_expense` is not
+registered as an MCP tool yet: the pre-write duplicate check (DEV-020) is not
+built, and the registry only advertises tools that can actually execute. So the
+semantics arrive here from a human, in exactly the shape the model is
+contracted to produce, and go through the same resolvers (DEV-021).
 
 Everything the write path enforces still applies, and two guards are added
 around it:
@@ -29,12 +29,14 @@ import json
 import sys
 import time
 import uuid
+from dataclasses import dataclass
+from datetime import date
 from decimal import InvalidOperation
 from pathlib import Path
 
 from personal_agent_core.errors import AppError
 from personal_agent_core.manifest import canonical_json
-from personal_agent_core.money import apply_entry_sign, parse_amount
+from personal_agent_core.tool_ir import ENTRY_KINDS
 from personal_agent_core.timeutil import ledger_date, parse_ledger_date, utc_now
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import (
@@ -46,6 +48,12 @@ from personal_data_mcp.feishu.base_source import (
 from personal_data_mcp.feishu.credentials import load_credentials
 from personal_data_mcp.feishu.redaction import redact_for_log
 from personal_data_mcp.finance.expense_record import ExpenseEntry
+from personal_data_mcp.finance.expense_policy import (
+    Clarification,
+    REDUCTION_KINDS,
+    resolve_expense,
+)
+from personal_data_mcp.finance.ledger_reader import read_year_expenses
 from personal_data_mcp.finance.ledger_config import load_ledger_config
 from personal_data_mcp.finance.schema_validator import (
     observed_field_from_feishu,
@@ -79,8 +87,40 @@ def request_fingerprint(entry: ExpenseEntry) -> str:
     ).hexdigest()
 
 
+@dataclass(frozen=True)
+class RawEntry:
+    """What a human states on the command line, before the ledger is consulted.
+
+    This is the same shape the model is contracted to produce: item text,
+    amount, date, scope, entry kind, and at most a bare destination. Which trip
+    that destination means, and what category a refund inherits, are decided
+    against the ledger by `resolve_expense`, never here.
+    """
+
+    name: str
+    input_amount: str
+    occurred_on: date
+    is_family_expense: bool
+    entry_kind: str
+    category: str | None
+    trip_tag: str | None
+    destination: str | None
+
+
+def _needs_the_ledger(raw: RawEntry) -> bool:
+    """Whether resolving this entry requires reading the year.
+
+    Only two things need it: turning a bare destination into a trip tag, and
+    finding the unique original a reduction inherits its category from. An
+    entry that needs neither is written without a scan.
+    """
+    if raw.destination is not None and raw.trip_tag is None:
+        return True
+    return raw.category is None and raw.entry_kind in REDUCTION_KINDS
+
+
 async def run(
-    entry: ExpenseEntry, *, config_path: Path, db_path: Path, idempotency_key: str
+    raw: RawEntry, *, config_path: Path, db_path: Path, idempotency_key: str
 ) -> dict:
     config = load_ledger_config(
         json.loads(config_path.read_text(encoding="utf-8"))
@@ -115,6 +155,33 @@ async def run(
                 ]
             validation = validate_schema(config, observed)
 
+            rows = (
+                await read_year_expenses(adapter, source=source, config=config)
+                if _needs_the_ledger(raw)
+                else []
+            )
+            resolved = resolve_expense(
+                name=raw.name,
+                input_amount=raw.input_amount,
+                occurred_on=raw.occurred_on,
+                is_family_expense=raw.is_family_expense,
+                entry_kind=raw.entry_kind,
+                category=raw.category,
+                trip_tag=raw.trip_tag,
+                destination=raw.destination,
+                ledger_rows=rows,
+            )
+            if isinstance(resolved, Clarification):
+                # A question is a complete outcome: nothing was written, and no
+                # execution row exists to reconcile.
+                return {
+                    "status": "clarification_required",
+                    "reason": resolved.reason.value,
+                    "options": list(resolved.options),
+                    "scanned_rows": len(rows),
+                }
+            entry = resolved.entry
+
             outcome = await write_expense(
                 entry,
                 sessions=sessions,
@@ -137,19 +204,20 @@ async def run(
         "ledger_kind": source.ledger_kind,
         "config_checksum": config.checksum(),
         "committed_at": outcome.committed_at.isoformat(),
+        "stored_name": entry.name,
+        "trip_resolution": (
+            resolved.trip_resolution.value if resolved.trip_resolution else None
+        ),
+        "inherited_category_from": resolved.inherited_from_record_id,
+        "scanned_rows": len(rows),
         "stored_fields": outcome.stored_fields,
     }
 
 
-def build_entry(args: argparse.Namespace) -> ExpenseEntry:
-    amount = parse_amount(args.amount)
-    if args.entry_kind != "expense":
-        # A refund or AA receipt is stored negative; the sign comes from the
-        # kind, never from a typed minus (`money.apply_entry_sign`).
-        amount = apply_entry_sign(amount, args.entry_kind)
-    return ExpenseEntry(
+def build_entry(args: argparse.Namespace) -> RawEntry:
+    return RawEntry(
         name=args.name,
-        amount_cny=amount,
+        input_amount=args.amount,
         # The default is *the ledger's* today, not the host's: `date.today()`
         # would silently use the machine's timezone and could book an entry on
         # the wrong ledger day.
@@ -157,7 +225,10 @@ def build_entry(args: argparse.Namespace) -> ExpenseEntry:
             parse_ledger_date(args.date) if args.date else ledger_date(utc_now())
         ),
         is_family_expense=args.scope == "family",
+        entry_kind=args.entry_kind,
         category=args.category,
+        trip_tag=args.trip_tag,
+        destination=args.destination,
     )
 
 
@@ -179,9 +250,25 @@ def main() -> None:
         choices=["personal", "family"],
         help="must be stated explicitly; there is no default and no inference",
     )
-    parser.add_argument("--category", required=True)
     parser.add_argument(
-        "--entry-kind", default="expense", choices=["expense", "refund", "aa_receipt"]
+        "--category",
+        help=(
+            "required for a plain expense; omit on a refund/AA receipt to "
+            "inherit from a unique matching original"
+        ),
+    )
+    parser.add_argument(
+        "--trip-tag", help="a trip Henson wrote explicitly; used as written"
+    )
+    parser.add_argument(
+        "--destination",
+        help=(
+            "a bare place name; the ledger decides which trip it means, and "
+            "asks when several same-destination trips exist"
+        ),
+    )
+    parser.add_argument(
+        "--entry-kind", default="expense", choices=list(ENTRY_KINDS)
     )
     parser.add_argument(
         "--idempotency-key",
@@ -217,4 +304,6 @@ def main() -> None:
 
     print(json.dumps(evidence, ensure_ascii=False, indent=2))
     print(f"idempotency_key={key}")
-    sys.exit(0)
+    # A clarification is a legitimate outcome, but it is not a write. Exiting 0
+    # would let a script treat "I asked a question" as "it is recorded".
+    sys.exit(3 if evidence["status"] == "clarification_required" else 0)

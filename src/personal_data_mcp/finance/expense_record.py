@@ -136,7 +136,7 @@ def build_expense_payload(
     }
 
 
-def _as_text(value: Any) -> str | None:
+def as_text(value: Any) -> str | None:
     """Normalise a Bitable text value.
 
     A text cell comes back either as a plain string or as a list of rich-text
@@ -157,7 +157,7 @@ def _as_text(value: Any) -> str | None:
     return None
 
 
-def _as_decimal(value: Any) -> Decimal | None:
+def as_decimal(value: Any) -> Decimal | None:
     """Read a number cell as an exact 2dp Decimal.
 
     Bitable stores a number as a double, so the value arrives as a JSON float.
@@ -175,7 +175,7 @@ def _as_decimal(value: Any) -> Decimal | None:
     return None
 
 
-def _as_ledger_date(value: Any) -> date | None:
+def as_ledger_date(value: Any) -> date | None:
     """Read a datetime cell back as the ledger day it represents.
 
     Bitable returns epoch milliseconds. The ledger's dates are Asia/Shanghai
@@ -211,15 +211,15 @@ def verify_expense_record(
     def stored(logical: str) -> Any:
         return stored_fields.get(fields[logical].expected_name)
 
-    if _as_decimal(stored("amount")) != quantize_cny(entry.amount_cny):
+    if as_decimal(stored("amount")) != quantize_cny(entry.amount_cny):
         mismatches.append(
             FieldMismatch("amount", "stored amount differs from the written amount")
         )
-    if _as_text(stored("name")) != entry.name:
+    if as_text(stored("name")) != entry.name:
         mismatches.append(
             FieldMismatch("name", "stored name differs from the user's text")
         )
-    if _as_ledger_date(stored("occurred_on")) != entry.occurred_on:
+    if as_ledger_date(stored("occurred_on")) != entry.occurred_on:
         mismatches.append(
             FieldMismatch("occurred_on", "stored ledger date differs")
         )
@@ -232,7 +232,7 @@ def verify_expense_record(
         mismatches.append(
             FieldMismatch("is_family_expense", "stored family scope differs")
         )
-    if _as_text(stored("category")) != entry.category:
+    if as_text(stored("category")) != entry.category:
         mismatches.append(FieldMismatch("category", "stored category differs"))
 
     return mismatches
