@@ -66,7 +66,7 @@
   "disabled_tools": [
     "finance.log_expense_batch"
   ],
-  "allowed_tools_version": "7f478c0a59c3269af9592ff324bc6da47bae1455aa3857937e864ca06d6fde09",
+  "allowed_tools_version": "5ef20d6c7c39033b45832a607c179105dc3834b92d702ce37316dfda09e1b5b7",
   "tools": [
     {
       "name": "finance.log_expense",
@@ -1257,14 +1257,24 @@
             "required": [
               "kind",
               "query_id",
+              "config_checksum",
+              "schema_snapshot_checksum",
               "scanned_pages",
-              "matched_count"
+              "matched_count",
+              "started_at",
+              "completed_at"
             ],
             "properties": {
               "kind": {
                 "const": "aggregate_query"
               },
               "query_id": {
+                "type": "string"
+              },
+              "config_checksum": {
+                "type": "string"
+              },
+              "schema_snapshot_checksum": {
                 "type": "string"
               },
               "scanned_pages": {
@@ -1274,6 +1284,12 @@
               "matched_count": {
                 "type": "integer",
                 "minimum": 0
+              },
+              "started_at": {
+                "type": "string"
+              },
+              "completed_at": {
+                "type": "string"
               }
             }
           }
@@ -1328,7 +1344,7 @@
         "SOURCE_TIMEOUT_UNKNOWN"
       ],
       "input_schema_hash": "24e4b58fa1180ed23cbce2c3c6ba06ce733aec235aacf351db9abb61cb4c753b",
-      "contract_hash": "82ad3ccb17009044060a8d077e8ecba0edf83d63c9cb0c6709dd5e0d2cae00b3"
+      "contract_hash": "20be6a0712c26103fcea10d44e51b9d58a99c5f4271f5bbd440a0720315b1495"
     },
     {
       "name": "meta.capabilities",

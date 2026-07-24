@@ -63,6 +63,12 @@ def base_config() -> dict:
                         "type": "single_select",
                         "options": list(EXPECTED_EXPENSE_CATEGORIES),
                     },
+                    "personal_spend": {
+                        "id": "fldPERSONAL",
+                        "expected_name": "个人支出",
+                        "type": "formula",
+                        "writable": False,
+                    },
                 },
             },
             "income": {
@@ -139,6 +145,12 @@ def matching_observed() -> dict[str, list[ObservedField]]:
                 "分类",
                 FieldType.SINGLE_SELECT,
                 options=tuple(ALLOWED_EXPENSE_CATEGORIES),
+            ),
+            ObservedField(
+                "fldPERSONAL",
+                "个人支出",
+                FieldType.FORMULA,
+                is_formula=True,
             ),
         ],
         "income": [
@@ -223,6 +235,24 @@ def test_a_matching_schema_is_valid() -> None:
     result = validate_schema(config, matching_observed())
     assert result.is_valid
     assert result.status == "valid"
+    assert len(result.snapshot_checksum) == 64
+
+
+def test_schema_snapshot_checksum_is_order_independent_but_detects_changes() -> None:
+    config = load_ledger_config(base_config())
+    observed = matching_observed()
+    first = validate_schema(config, observed).snapshot_checksum
+    reordered = {
+        table: list(reversed(fields))
+        for table, fields in reversed(list(observed.items()))
+    }
+    assert validate_schema(config, reordered).snapshot_checksum == first
+
+    changed = matching_observed()
+    changed["expense"][0] = ObservedField(
+        "fldAMOUNT", "renamed", FieldType.NUMBER
+    )
+    assert validate_schema(config, changed).snapshot_checksum != first
 
 
 def test_a_missing_field_is_drift() -> None:
@@ -282,7 +312,7 @@ def test_an_empty_snapshot_fails_closed() -> None:
     assert not result.is_valid
     # Every configured field is reported missing, not vacuously valid.
     assert all(d.kind is DriftKind.MISSING_FIELD for d in result.drifts)
-    assert len(result.drifts) == 14
+    assert len(result.drifts) == 15
 
 
 # --- Feishu normalisation ---------------------------------------------------

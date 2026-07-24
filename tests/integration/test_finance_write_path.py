@@ -377,6 +377,7 @@ def test_a_drifted_schema_refuses_before_any_row_or_request(sessions) -> None:
     drifted = SchemaValidation(
         config_version=CONFIG.config_version,
         config_checksum=CONFIG.checksum(),
+        snapshot_checksum="test-drifted-snapshot",
         drifts=(
             Drift("expense", "category", DriftKind.OPTIONS_CHANGED, "changed"),
         ),

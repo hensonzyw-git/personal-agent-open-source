@@ -14,10 +14,12 @@ re-confirmed against the live API when the connector is wired.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
+from personal_agent_core.manifest import canonical_json
 from personal_data_mcp.finance.ledger_config import (
     FieldType,
     LedgerConfig,
@@ -76,6 +78,7 @@ class Drift:
 class SchemaValidation:
     config_version: str
     config_checksum: str
+    snapshot_checksum: str
     drifts: tuple[Drift, ...]
 
     @property
@@ -208,8 +211,34 @@ def validate_schema(
     for table_name, table_config in config.tables.items():
         observed_fields = observed.get(table_name, [])
         drifts.extend(validate_table(table_name, table_config, observed_fields))
+    snapshot = {
+        table_name: [
+            {
+                "field_id": field.field_id,
+                "name": field.name,
+                "type": field.type.value if field.type is not None else None,
+                "options": (
+                    sorted(field.options) if field.options is not None else None
+                ),
+                "is_formula": field.is_formula,
+                "is_auto_number": field.is_auto_number,
+            }
+            for field in sorted(
+                observed_fields,
+                key=lambda item: (
+                    item.field_id,
+                    item.name,
+                    item.type.value if item.type is not None else "",
+                ),
+            )
+        ]
+        for table_name, observed_fields in sorted(observed.items())
+    }
     return SchemaValidation(
         config_version=config.config_version,
         config_checksum=config.checksum(),
+        snapshot_checksum=hashlib.sha256(
+            canonical_json(snapshot).encode("utf-8")
+        ).hexdigest(),
         drifts=tuple(drifts),
     )

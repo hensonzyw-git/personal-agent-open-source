@@ -18,6 +18,12 @@
           "expected_name": "分类",
           "type": "single_select",
           "options": ["出行", "餐饮", "游戏", "日常生活", "玩乐", "购物", "旅行", "房租"]
+        },
+        "personal_spend": {
+          "id": "fldSYNPERSONAL",
+          "expected_name": "个人支出",
+          "type": "formula",
+          "writable": false
         }
       }
     },

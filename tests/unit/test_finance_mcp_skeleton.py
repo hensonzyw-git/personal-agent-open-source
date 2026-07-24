@@ -79,6 +79,17 @@ def test_a_tool_without_a_handler_has_no_contract_and_no_catalog_entry() -> None
     assert [c["name"] for c in registry.catalog()] == ["finance.log_expense"]
 
 
+def test_query_is_advertised_only_after_validated_runtime_is_injected() -> None:
+    async def handler(_: ToolInvocation) -> dict:
+        return {"status": "ok"}
+
+    default_registry = build_registry()
+    assert "finance.query_expenses" not in default_registry.names()
+
+    registry = build_registry(expense_query_handler=handler)
+    assert "finance.query_expenses" in registry.names()
+
+
 def test_double_registration_is_refused() -> None:
     registry = ToolRegistry()
 

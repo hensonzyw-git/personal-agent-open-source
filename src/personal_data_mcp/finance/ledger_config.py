@@ -168,6 +168,16 @@ EXPECTED_TABLE_FIELDS: Final[
             True,
             EXPECTED_EXPENSE_CATEGORIES,
         ),
+        # This is deliberately a configured *read-only* field.  The write
+        # path still cannot address it, while DEV-022 can prove that its
+        # accounting totals come from the Base formula rather than trying to
+        # reconstruct family sharing or refunds from the stored amount.
+        "personal_spend": (
+            "个人支出",
+            FieldType.FORMULA,
+            False,
+            None,
+        ),
     },
     "income": {
         "amount": ("金额", FieldType.NUMBER, True, None),

@@ -15,9 +15,10 @@ to writing by id. So `build_expense_payload` refuses to build anything unless it
 is handed a valid validation for the same config -- a renamed column becomes a
 refused write, never a write into the wrong column.
 
-Only the five configured expense fields are ever sent. The formula columns
-(`个人支出`, `家庭基金变动`) and the auto-number `ID` are not in the config at
-all, so there is no code path that addresses them.
+Only the five configured writable expense fields are ever sent. ``个人支出`` is
+also frozen as a read-only query field, while ``家庭基金变动`` and auto-number
+``ID`` are outside this config; no create payload has a path to any formula or
+auto-number column.
 """
 
 from __future__ import annotations

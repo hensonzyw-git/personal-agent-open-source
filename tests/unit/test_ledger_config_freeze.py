@@ -80,12 +80,14 @@ def test_freezing_the_live_schema_reproduces_the_protected_config() -> None:
     assert derived.tables["family_fund"].fields["balance"].writable is False
 
 
-def test_unconfigured_live_fields_are_left_out_of_the_config() -> None:
-    # The expense table carries a formula column the contract does not name; it
-    # must not appear, so the connector can never address it.
+def test_personal_spend_formula_is_frozen_as_a_read_only_query_field() -> None:
+    # DEV-022 must use this formula for aggregation.  It is in the protected
+    # config so a renamed/retyped formula becomes schema drift, but its
+    # non-writable contract keeps it outside every create payload.
     derived = build_from(SNAPSHOT)
-    ids = {f.id for f in derived.tables["expense"].fields.values()}
-    assert "fldSYNPERSONAL" not in ids
+    personal_spend = derived.tables["expense"].fields["personal_spend"]
+    assert personal_spend.id == "fldSYNPERSONAL"
+    assert personal_spend.writable is False
 
 
 # --- resolution refuses rather than guesses ----------------------------------
