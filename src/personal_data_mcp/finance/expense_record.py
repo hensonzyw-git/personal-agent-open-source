@@ -245,6 +245,56 @@ def verify_expense_record(
     return mismatches
 
 
+def _as_checkbox(value: Any) -> bool | object:
+    """Normalise a checkbox cell: absent is false; a non-bool stays itself.
+
+    Returning the raw non-bool value (rather than coercing) keeps a garbage
+    cell from silently comparing equal to `True`/`False` -- it will simply not
+    match either side, which is the fail-closed behaviour a verifier wants.
+    """
+    if value is None:
+        return False
+    return value if isinstance(value, bool) else value
+
+
+def verify_stored_against_sent(
+    sent_fields: dict[str, Any],
+    stored_fields: dict[str, Any],
+    *,
+    config: LedgerConfig,
+) -> list[FieldMismatch]:
+    """Compare a read-back against the exact payload that was sent.
+
+    The reconciler recovers from the sealed payload, not from an `ExpenseEntry`,
+    so it compares two Feishu-keyed field dicts. Comparison is still by meaning:
+    each configured field is read through the same normaliser as a live write,
+    so `20.0` sent and `"20"` read back agree, and a checkbox absent on either
+    side reads as `false`. A field the payload never carried is not compared.
+    """
+    fields = _writable_expense_fields(config)
+    mismatches: list[FieldMismatch] = []
+
+    for logical, spec in fields.items():
+        name = spec.expected_name
+        if name not in sent_fields:
+            continue
+        sent = sent_fields.get(name)
+        stored = stored_fields.get(name)
+        if spec.type is FieldType.NUMBER:
+            ok = as_decimal(sent) == as_decimal(stored)
+        elif spec.type is FieldType.DATETIME:
+            ok = as_ledger_date(sent) == as_ledger_date(stored)
+        elif spec.type is FieldType.CHECKBOX:
+            ok = _as_checkbox(sent) == _as_checkbox(stored)
+        else:  # TEXT and SINGLE_SELECT compare as exact text
+            ok = as_text(sent) == as_text(stored)
+        if not ok:
+            mismatches.append(
+                FieldMismatch(logical, f"stored {logical} differs from the payload")
+            )
+    return mismatches
+
+
 def expense_field_types(config: LedgerConfig) -> dict[str, FieldType]:
     """The configured logical field types, for diagnostics and tests."""
     return {

@@ -26,6 +26,7 @@ two rows for one expense.
 from __future__ import annotations
 
 import hmac
+import json
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -69,6 +70,43 @@ TABLE_KIND: str = "expense"
 #: A read is safe to repeat, unlike a create. Bounded so a persistently
 #: unavailable source resolves to "unverified", not to an unbounded wait.
 READ_BACK_ATTEMPTS: int = 3
+
+#: AAD binding for the sealed create payload. The row id is the idempotency key,
+#: so a sealed payload cannot be lifted onto a different execution.
+_PAYLOAD_TABLE: str = "tool_executions"
+_PAYLOAD_COLUMN: str = "encrypted_payload"
+
+
+def seal_create_payload(
+    fields: dict[str, Any], *, keyring: KeyRing, idempotency_key: str
+) -> dict[str, Any]:
+    """Seal the exact `fields` a create will send, for cold-restart recovery.
+
+    A reconciler that wakes after a crash has only the database, so the payload
+    it must replay under the same client token has to be persisted here -- and
+    it names the amount and the item text, so it is sealed, not stored in the
+    clear. The client token itself is a separate plaintext column, because it is
+    a unique key the database must be able to enforce.
+    """
+    return keyring.encrypt(
+        json.dumps({"fields": fields}, ensure_ascii=False).encode("utf-8"),
+        table=_PAYLOAD_TABLE,
+        column=_PAYLOAD_COLUMN,
+        row_id=idempotency_key,
+    )
+
+
+def open_create_payload(
+    envelope: dict[str, Any], *, keyring: KeyRing, idempotency_key: str
+) -> dict[str, Any]:
+    """Recover the sealed `fields`. Raises if the AAD binding does not hold."""
+    raw = keyring.decrypt(
+        envelope,
+        table=_PAYLOAD_TABLE,
+        column=_PAYLOAD_COLUMN,
+        row_id=idempotency_key,
+    )
+    return json.loads(raw.decode("utf-8"))["fields"]
 
 
 @dataclass(frozen=True)
@@ -182,6 +220,7 @@ async def submit_expense(
         idempotency_key=idempotency_key,
         request_fingerprint=request_fingerprint,
         trace_id=trace_id,
+        keyring=keyring,
         now=now,
         **write_kwargs,
     )
@@ -198,10 +237,16 @@ async def write_expense(
     idempotency_key: str,
     request_fingerprint: str,
     trace_id: str,
+    keyring: KeyRing | None = None,
     now: Callable[[], datetime] = utc_now,
     new_client_token: Callable[[], str] = lambda: str(uuid.uuid4()),
 ) -> WriteOutcome:
-    """Write one expense and return external evidence, or raise."""
+    """Write one expense and return external evidence, or raise.
+
+    When a `keyring` is given the create payload is sealed into the execution
+    row, so a reconciler can replay it after a cold restart (design 7.6.2).
+    Without one the write still works, but only in-process recovery is possible.
+    """
     expected_tables = {
         kind: table.table_id for kind, table in config.tables.items()
     }
@@ -221,6 +266,13 @@ async def write_expense(
     # Built before anything is persisted: a refusal for a drifted schema, an
     # unknown category or a blank name must cost nothing and leave no row.
     payload = build_expense_payload(entry, config=config, validation=validation)
+    sealed_payload = (
+        seal_create_payload(
+            payload, keyring=keyring, idempotency_key=idempotency_key
+        )
+        if keyring is not None
+        else None
+    )
 
     # --- step 1: prepared, committed before any network ----------------------
     with sessions() as session:
@@ -230,7 +282,7 @@ async def write_expense(
             tool=TOOL,
             request_fingerprint=request_fingerprint,
             client_token=new_client_token(),
-            encrypted_payload=None,
+            encrypted_payload=sealed_payload,
             now=now(),
         )
         replay = _replay_of_succeeded(session, execution)
