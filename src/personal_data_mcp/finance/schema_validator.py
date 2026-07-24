@@ -75,6 +75,7 @@ class Drift:
 @dataclass(frozen=True)
 class SchemaValidation:
     config_version: str
+    config_checksum: str
     drifts: tuple[Drift, ...]
 
     @property
@@ -208,5 +209,7 @@ def validate_schema(
         observed_fields = observed.get(table_name, [])
         drifts.extend(validate_table(table_name, table_config, observed_fields))
     return SchemaValidation(
-        config_version=config.config_version, drifts=tuple(drifts)
+        config_version=config.config_version,
+        config_checksum=config.checksum(),
+        drifts=tuple(drifts),
     )

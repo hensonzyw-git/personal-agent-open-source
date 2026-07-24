@@ -22,7 +22,10 @@ import pytest
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
-from personal_data_mcp.finance.expense_record import ExpenseEntry
+from personal_data_mcp.finance.expense_record import (
+    ExpenseEntry,
+    build_expense_payload,
+)
 from personal_data_mcp.finance.ledger_config import load_ledger_config
 from personal_data_mcp.finance.schema_validator import (
     SchemaValidation,
@@ -161,15 +164,17 @@ async def do_write(
     key: str = "idem-1",
     fingerprint: str = "fp-1",
     validation: SchemaValidation = VALIDATION,
+    config=CONFIG,
+    source=SOURCE,
 ):
     async with adapter_for(fake) as adapter:
         return await write_expense(
             entry,
             sessions=sessions,
             adapter=adapter,
-            config=CONFIG,
+            config=config,
             validation=validation,
-            source=SOURCE,
+            source=source,
             idempotency_key=key,
             request_fingerprint=fingerprint,
             trace_id="trace-1",
@@ -371,6 +376,7 @@ def test_an_unknown_commit_is_left_to_the_reconciler(sessions) -> None:
 def test_a_drifted_schema_refuses_before_any_row_or_request(sessions) -> None:
     drifted = SchemaValidation(
         config_version=CONFIG.config_version,
+        config_checksum=CONFIG.checksum(),
         drifts=(
             Drift("expense", "category", DriftKind.OPTIONS_CHANGED, "changed"),
         ),
@@ -397,6 +403,37 @@ def test_an_unknown_category_refuses_before_any_row_or_request(sessions) -> None
         run(do_write(fake, sessions, entry=entry))
 
     assert caught.value.code is ErrorCode.CATEGORY_NOT_ALLOWED
+    assert state_of(sessions) is None
+    assert fake.creates == []
+
+
+def test_a_validation_from_another_same_version_config_is_refused() -> None:
+    document = CONFIG.model_dump(mode="json")
+    document["tables"]["expense"]["fields"]["amount"]["id"] = "fldOTHERAMOUNT"
+    other_config = load_ledger_config(document)
+    assert other_config.config_version == CONFIG.config_version
+    assert other_config.checksum() != CONFIG.checksum()
+
+    with pytest.raises(AppError) as caught:
+        build_expense_payload(
+            LUNCH, config=other_config, validation=VALIDATION
+        )
+    assert caught.value.code is ErrorCode.SOURCE_SCHEMA_CHANGED
+
+
+def test_a_source_not_bound_to_the_validated_config_is_refused(
+    sessions,
+) -> None:
+    other_source = BaseSource(
+        base_token="basDIFFERENT",
+        ledger_kind=SOURCE.ledger_kind,
+        tables=SOURCE.tables,
+    )
+    fake = FakeFeishu()
+    with pytest.raises(AppError) as caught:
+        run(do_write(fake, sessions, source=other_source))
+
+    assert caught.value.code is ErrorCode.SOURCE_SCHEMA_CHANGED
     assert state_of(sessions) is None
     assert fake.creates == []
 
@@ -504,6 +541,40 @@ def test_a_valid_decision_releases_exactly_one_write(sessions) -> None:
     )
     assert outcome.status == "created"
     assert len(fake.creates) == 1
+
+
+def test_an_override_is_refused_when_the_candidate_set_becomes_empty(
+    sessions,
+) -> None:
+    from personal_data_mcp.finance.duplicate_check import (
+        DuplicateFinding,
+        OverrideRefused,
+    )
+
+    keyring = keyring_for()
+    fake = FakeFeishu()
+    finding = run(
+        do_submit(
+            fake,
+            sessions,
+            rows=[existing_lunch_row()],
+            keyring=keyring,
+        )
+    )
+    assert isinstance(finding, DuplicateFinding)
+
+    with pytest.raises(OverrideRefused, match="candidate set changed"):
+        run(
+            do_submit(
+                fake,
+                sessions,
+                rows=[],
+                override=finding.check_id,
+                keyring=keyring,
+            )
+        )
+    assert fake.creates == []
+    assert state_of(sessions) is None
 
 
 def test_a_forged_override_does_not_release_the_write(sessions) -> None:

@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Final
 
-from sqlalchemy import select
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from personal_agent_core.crypto import KeyRing
@@ -120,6 +120,7 @@ def find_exact_duplicates(
             name=row.name,
             amount_cny=row.amount_cny,
             category=row.category or "",
+            is_family_expense=row.is_family_expense,
         )
         for row in matches
     )
@@ -213,35 +214,57 @@ def authorise_override(
             "the candidate set changed since the decision was made"
         )
 
-    check.status = "write_anyway"
-    check.decided_at = now
-    session.flush()
+    result = session.execute(
+        update(DuplicateCheck)
+        .where(
+            DuplicateCheck.check_id == check_id,
+            DuplicateCheck.status == "awaiting_decision",
+            DuplicateCheck.expires_at > now,
+            DuplicateCheck.intent_fingerprint == intent_fingerprint(entry),
+        )
+        .values(status="write_anyway", decided_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        # Another request consumed, dismissed or expired this decision after the
+        # checks above. A stale ORM identity must never turn that race into a
+        # second authorisation.
+        raise OverrideRefused("duplicate check was decided concurrently")
+    session.expire(check)
 
 
 def dismiss(
     session: Session, *, check_id: str, now: datetime
 ) -> None:
     """End the operation with no accounting side effect at all."""
-    check = session.get(DuplicateCheck, check_id)
-    if check is None:
-        raise OverrideRefused("no such duplicate check")
-    if check.status != "awaiting_decision":
+    result = session.execute(
+        update(DuplicateCheck)
+        .where(
+            DuplicateCheck.check_id == check_id,
+            DuplicateCheck.status == "awaiting_decision",
+            DuplicateCheck.expires_at > now,
+        )
+        .values(status="dismissed", decided_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        check = session.get(DuplicateCheck, check_id, populate_existing=True)
+        if check is None:
+            raise OverrideRefused("no such duplicate check")
+        if check.expires_at <= now:
+            raise OverrideRefused("duplicate check has expired")
         raise OverrideRefused(f"duplicate check already {check.status}")
-    check.status = "dismissed"
-    check.decided_at = now
-    session.flush()
 
 
 def expire_stale(session: Session, *, now: datetime) -> int:
     """Mark undecided checks past their expiry, so none lingers as pending."""
-    stale = session.scalars(
-        select(DuplicateCheck).where(
+    result = session.execute(
+        update(DuplicateCheck)
+        .where(
             DuplicateCheck.status == "awaiting_decision",
             DuplicateCheck.expires_at <= now,
         )
-    ).all()
-    for check in stale:
-        check.status = "expired"
-        check.decided_at = now
-    session.flush()
-    return len(stale)
+        .values(status="expired", decided_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount

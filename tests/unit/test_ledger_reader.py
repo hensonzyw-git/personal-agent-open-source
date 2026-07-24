@@ -46,16 +46,25 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def record(name: str, amount, category: str = "旅行", record_id: str = "rec"):
+def record(
+    name: str,
+    amount,
+    category: str = "旅行",
+    record_id: str = "rec",
+    family: bool | None = None,
+):
     """A row in the shape `search_records` actually returns (see G3 evidence)."""
+    fields = {
+        "名称": [{"text": name, "type": "text"}],
+        "原始金额": amount,
+        "日期": 1784736000000,
+        "分类": category,
+    }
+    if family is not None:
+        fields["是否家庭支出"] = family
     return {
         "record_id": record_id,
-        "fields": {
-            "名称": [{"text": name, "type": "text"}],
-            "原始金额": amount,
-            "日期": 1784736000000,
-            "分类": category,
-        },
+        "fields": fields,
     }
 
 
@@ -116,12 +125,25 @@ def test_every_page_is_read_before_the_year_is_considered_complete() -> None:
 
 def test_values_are_normalised_from_the_search_shape() -> None:
     rows, _ = read_with(
-        [{"items": [record("机票 #东京", 2000)], "has_more": False}]
+        [
+            {
+                "items": [record("机票 #东京", 2000, family=True)],
+                "has_more": False,
+            }
+        ]
     )
     assert rows[0].name == "机票 #东京"
     assert rows[0].amount_cny == Decimal("2000.00")
     assert rows[0].category == "旅行"
     assert rows[0].occurred_on.isoformat() == "2026-07-23"
+    assert rows[0].is_family_expense is True
+
+
+def test_an_omitted_unchecked_family_box_reads_as_personal() -> None:
+    rows, _ = read_with(
+        [{"items": [record("午饭", 20, category="餐饮")], "has_more": False}]
+    )
+    assert rows[0].is_family_expense is False
 
 
 def test_more_pages_without_a_cursor_fails_rather_than_truncating() -> None:

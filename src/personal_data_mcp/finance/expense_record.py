@@ -93,6 +93,13 @@ def _require_valid_schema(validation: SchemaValidation, config: LedgerConfig) ->
                 "the schema validation belongs to a different config version"
             ),
         )
+    if validation.config_checksum != config.checksum():
+        raise AppError(
+            ErrorCode.SOURCE_SCHEMA_CHANGED,
+            internal_detail=(
+                "the schema validation belongs to a different ledger config"
+            ),
+        )
 
 
 def build_expense_payload(

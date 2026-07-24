@@ -25,6 +25,7 @@ two rows for one expense.
 
 from __future__ import annotations
 
+import hmac
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -146,20 +147,7 @@ async def submit_expense(
 
     if not already_started:
         candidates = find_exact_duplicates(entry, ledger_rows)
-        if candidates:
-            if duplicate_override is None:
-                with sessions() as session:
-                    finding = raise_check(
-                        session,
-                        entry=entry,
-                        candidates=candidates,
-                        keyring=keyring,
-                        now=now(),
-                    )
-                    session.commit()
-                # Zero writes: no execution row, nothing to reconcile, and a
-                # question for Henson instead of a guess.
-                return finding
+        if duplicate_override is not None:
             with sessions() as session:
                 authorise_override(
                     session,
@@ -170,8 +158,19 @@ async def submit_expense(
                     now=now(),
                 )
                 session.commit()
-        # No candidates: there is nothing to release, so an override that names
-        # a now-empty check is simply unnecessary rather than an error.
+        elif candidates:
+            with sessions() as session:
+                finding = raise_check(
+                    session,
+                    entry=entry,
+                    candidates=candidates,
+                    keyring=keyring,
+                    now=now(),
+                )
+                session.commit()
+            # Zero writes: no execution row, nothing to reconcile, and a
+            # question for Henson instead of a guess.
+            return finding
 
     return await write_expense(
         entry,
@@ -203,6 +202,20 @@ async def write_expense(
     new_client_token: Callable[[], str] = lambda: str(uuid.uuid4()),
 ) -> WriteOutcome:
     """Write one expense and return external evidence, or raise."""
+    expected_tables = {
+        kind: table.table_id for kind, table in config.tables.items()
+    }
+    if (
+        source.ledger_kind != config.ledger_kind
+        or not hmac.compare_digest(source.base_token, config.base_token)
+        or source.tables != expected_tables
+    ):
+        raise AppError(
+            ErrorCode.SOURCE_SCHEMA_CHANGED,
+            internal_detail=(
+                "expense write source does not match the validated ledger config"
+            ),
+        )
     table_id = source.tables[TABLE_KIND]
 
     # Built before anything is persisted: a refusal for a drifted schema, an

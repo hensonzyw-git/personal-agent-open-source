@@ -54,6 +54,7 @@ class LedgerExpense:
     amount_cny: Decimal | None
     occurred_on: date | None
     category: str | None
+    is_family_expense: bool | None = None
 
 
 async def _search_page(
@@ -86,6 +87,7 @@ async def read_year_expenses(
     amount_field = fields["amount"].expected_name
     date_field = fields["occurred_on"].expected_name
     category_field = fields["category"].expected_name
+    family_field = fields["is_family_expense"].expected_name
 
     rows: list[LedgerExpense] = []
     page_token: str | None = None
@@ -96,7 +98,13 @@ async def read_year_expenses(
             adapter,
             base_token=source.base_token,
             table_id=source.tables["expense"],
-            field_names=[name_field, amount_field, date_field, category_field],
+            field_names=[
+                name_field,
+                amount_field,
+                date_field,
+                category_field,
+                family_field,
+            ],
             page_token=page_token,
         )
         items = data.get("items") or []
@@ -109,6 +117,12 @@ async def read_year_expenses(
             if not isinstance(item, dict):
                 continue
             cells = item.get("fields") or {}
+            family = cells.get(family_field)
+            if family is None:
+                # Feishu commonly omits an unchecked checkbox from a record.
+                family = False
+            elif not isinstance(family, bool):
+                family = None
             rows.append(
                 LedgerExpense(
                     record_id=str(item.get("record_id", "")),
@@ -116,6 +130,7 @@ async def read_year_expenses(
                     amount_cny=as_decimal(cells.get(amount_field)),
                     occurred_on=as_ledger_date(cells.get(date_field)),
                     category=as_text(cells.get(category_field)),
+                    is_family_expense=family,
                 )
             )
 

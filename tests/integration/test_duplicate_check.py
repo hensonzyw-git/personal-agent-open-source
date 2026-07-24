@@ -69,6 +69,7 @@ def ledger_row(
     when: date = DAY,
     category: str = "餐饮",
     record_id: str = "rec1",
+    is_family_expense: bool | None = False,
 ) -> LedgerExpense:
     return LedgerExpense(
         record_id=record_id,
@@ -76,6 +77,7 @@ def ledger_row(
         amount_cny=Decimal(amount),
         occurred_on=when,
         category=category,
+        is_family_expense=is_family_expense,
     )
 
 
@@ -99,7 +101,18 @@ def test_scope_does_not_decide_whether_to_prompt() -> None:
         is_family_expense=True,
         category="餐饮",
     )
-    assert len(find_exact_duplicates(family_lunch, [ledger_row()])) == 1
+    candidates = find_exact_duplicates(
+        family_lunch, [ledger_row(is_family_expense=False)]
+    )
+    assert len(candidates) == 1
+    assert candidates[0].is_family_expense is False
+
+
+def test_candidate_card_carries_the_existing_family_scope() -> None:
+    candidates = find_exact_duplicates(
+        LUNCH, [ledger_row(is_family_expense=True)]
+    )
+    assert candidates[0].card()["is_family_expense"] is True
 
 
 @pytest.mark.parametrize(
@@ -305,6 +318,41 @@ def test_a_decision_cannot_be_spent_twice(sessions, keyring) -> None:
                 keyring=keyring,
                 now=NOW,
             )
+
+
+def test_a_stale_session_cannot_authorise_an_already_spent_decision(
+    sessions, keyring
+) -> None:
+    finding, candidates = raise_for(sessions, keyring)
+    stale_session = sessions()
+    winning_session = sessions()
+    try:
+        # Both workers observed the same pending decision. The winner commits;
+        # the stale identity map must not be able to overwrite that decision.
+        stale = stale_session.get(DuplicateCheck, finding.check_id)
+        assert stale.status == "awaiting_decision"
+        authorise_override(
+            winning_session,
+            check_id=finding.check_id,
+            entry=LUNCH,
+            current_candidates=candidates,
+            keyring=keyring,
+            now=NOW,
+        )
+        winning_session.commit()
+
+        with pytest.raises(OverrideRefused, match="concurrently"):
+            authorise_override(
+                stale_session,
+                check_id=finding.check_id,
+                entry=LUNCH,
+                current_candidates=candidates,
+                keyring=keyring,
+                now=NOW,
+            )
+    finally:
+        stale_session.close()
+        winning_session.close()
 
 
 def test_dismissing_ends_the_operation_without_side_effects(
