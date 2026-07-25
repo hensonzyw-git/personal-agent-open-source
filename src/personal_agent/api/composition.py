@@ -1,0 +1,548 @@
+"""Where the Agent API service actually gets its keys, model and connectors.
+
+`DEV-027`, the last piece. Every collaborator in `api/` is written so that it
+*cannot* load anything: the FastAPI app, the orchestrator, the dispatcher and
+the interpreter all receive their dependencies. That discipline is only worth
+something if there is exactly one place where those are loaded, and this is it
+-- the Agent-side twin of `personal_data_mcp/server/composition.py`.
+
+The refusals here are the ones that keep a credential from leaving this host:
+
+- **the Finance MCP and control URLs must be loopback.** Every governed call
+  carries a signed Host Context, and every control read carries a control token.
+  A URL pointing anywhere else would send those off the machine, so it is
+  refused at composition, before a socket exists;
+- **the model endpoint is pinned inside the gateway**, and the gateway is built
+  at boot, so a tampered `GLM_OPENAI_BASE_URL` fails at startup rather than on
+  Henson's first message;
+- **an empty tool catalog is a refusal**, because it is what a URL pointing at
+  the wrong server looks like.
+
+Two freshness properties are structural rather than incidental:
+
+- the **device row is re-read on every authorisation and every dispatch**, never
+  cached in a closure. A device revoked during a 25-second model turn must not
+  be able to commit a write when the turn ends;
+- each governed call opens its own short-lived MCP connection (measured at
+  ~21 ms at `DEV-015`). The connection made here is used for discovery only, so
+  a connector that would need a long-lived session is refused rather than
+  silently sharing one across event loops.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from collections.abc import Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any, AsyncIterator, Final
+
+from personal_agent.api.app import AgentApiDeps, AuthContext
+from personal_agent.api.control_client import (
+    ControlPlaneError,
+    FinanceControlClient,
+    require_loopback_url,
+)
+from personal_agent.api.finance_dispatcher import (
+    DispatcherContext,
+    McpFinanceDispatcher,
+)
+from personal_agent.api.orchestrator import (
+    CommitFailedSafe,
+    CommitOutcome,
+    Dispatcher,
+    ResolveFailedSafe,
+    ResolveOutcome,
+)
+from personal_agent.api.intent import WriteIntent
+from personal_agent.api.recovery import FinanceExecutionStatus, recover_pending
+from personal_agent.keys import (
+    load_access_token_ring,
+    load_agent_data_keyring,
+    load_service_signing_ring,
+)
+from personal_agent.mcp_client.core import (
+    McpClientCore,
+    McpTimeoutError,
+    McpTransportError,
+    StreamableHttpTransport,
+)
+from personal_agent.mcp_client.registry import ConnectorRegistry, TrustLevel
+from personal_agent.policy.bridge import DeviceAuthorization, GovernedToolBridge
+from personal_agent.runtime.glm_gateway import glm_gateway_from_env
+from personal_agent.runtime.model_gateway import ModelGatewayError
+from personal_agent.runtime.interpreter import ModelInterpreter
+from personal_agent.runtime.prompt import build_system_prompt
+from personal_agent.storage.engine import (
+    check_integrity,
+    create_database_engine,
+    session_factory,
+)
+from personal_agent.storage.models import Device
+from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.host_context import ISSUER
+from personal_agent_core.manifest import load_manifest
+from personal_agent_core.timeutil import (
+    format_ledger_date,
+    ledger_date,
+    utc_now,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+#: The Agent's own identity in the Host Context, fixed by design 4.3.
+AGENT_ID: Final[str] = ISSUER
+
+#: The one trusted Personal Data connector. Its alias namespace is unprefixed,
+#: which is exactly why nothing else may ever be registered under this id.
+FINANCE_CONNECTOR_ID: Final[str] = "personal-data"
+
+LEDGER_TIMEZONE: Final[str] = "Asia/Shanghai"
+
+
+class CompositionError(RuntimeError):
+    """The service cannot be composed safely and must not start."""
+
+
+@dataclass(frozen=True)
+class AgentServiceConfig:
+    """Everything the service needs that is not a secret.
+
+    Secrets come from the environment (systemd credentials in production, a
+    mode-600 file sourced into the shell locally); no path here ever names one.
+    """
+
+    database: Path
+    #: The Finance MCP Streamable HTTP endpoint, e.g. `http://127.0.0.1:8811/mcp`.
+    finance_mcp_url: str
+    #: The Finance internal control base, e.g. `http://127.0.0.1:8811`.
+    finance_control_url: str
+    #: The single user this backend serves. Never guessed: it names a person and
+    #: travels into Finance's audit trail.
+    user_id: str
+    agent_id: str = AGENT_ID
+    connector_id: str = FINANCE_CONNECTOR_ID
+    #: The configured server-side allowlist. `None` means every enabled contract;
+    #: a narrower set is how a read-only rollout is expressed.
+    allowed_tools: frozenset[str] | None = None
+    sync_wait_seconds: float = 30.0
+
+
+@dataclass
+class ComposedAgentService:
+    """The live dependencies, plus what an operator needs to see at boot."""
+
+    deps: AgentApiDeps
+    bridge: GovernedToolBridge
+    catalog_aliases: tuple[str, ...]
+    quarantined: tuple[str, ...] = field(default=())
+
+
+# --- device state ------------------------------------------------------------
+
+
+def device_authorization(
+    session,
+    device_id: str,
+    *,
+    enabled_tools: frozenset[str],
+    manifest_version: str,
+) -> DeviceAuthorization | None:
+    """Read one device's current authorisation, or None if it does not exist.
+
+    The `devices` table stores `scopes` and `allowed_tools_version`; design 4.4's
+    `device_allowed_tools` term is therefore the *version binding*: a device is
+    granted the tools of the manifest it was enrolled against, and a device
+    carrying any other version is granted none. Narrowing further per device
+    would need a column that does not exist, and inventing one here would put a
+    second, invisible source of truth beside the manifest.
+    """
+    device = session.get(Device, device_id)
+    if device is None:
+        return None
+    try:
+        scopes = json.loads(device.scopes)
+    except json.JSONDecodeError as exc:
+        raise CompositionError(
+            f"device {device_id} has an unreadable scopes column"
+        ) from exc
+    if not isinstance(scopes, list) or not all(
+        isinstance(scope, str) for scope in scopes
+    ):
+        raise CompositionError(f"device {device_id} has a malformed scopes column")
+    granted = (
+        enabled_tools
+        if device.allowed_tools_version == manifest_version
+        else frozenset()
+    )
+    return DeviceAuthorization(
+        device_id=device.device_id,
+        status=device.status,
+        scopes=frozenset(scopes),
+        allowed_tools=granted,
+        allowed_tools_version=device.allowed_tools_version,
+    )
+
+
+class DeviceBoundDispatcher:
+    """A `Dispatcher` that re-reads the device immediately before each call.
+
+    `McpFinanceDispatcher` binds one `DeviceAuthorization` snapshot, which is
+    right for a single dispatch and wrong for a whole operation: the model turn
+    between building the dispatcher and committing the write is up to 25 seconds
+    long, and a device revoked inside that window must not be able to commit.
+    So the snapshot is taken per phase, and the dispatcher is built around it.
+
+    A device that no longer exists is a safe failure with zero writes. A device
+    that exists but is revoked is *not* special-cased here: it is handed to the
+    bridge, which refuses it. Duplicating that judgement would create a second
+    policy that can drift from the real one.
+    """
+
+    def __init__(
+        self,
+        *,
+        device_id: str,
+        sessions: Callable[[], Any],
+        bridge: GovernedToolBridge,
+        control: FinanceControlClient,
+        signing_ring,
+        user_id: str,
+        agent_id: str,
+        trace_id: str,
+        enabled_tools: frozenset[str],
+        manifest_version: str,
+        run: Callable[[Any], Any] = asyncio.run,
+    ) -> None:
+        self._device_id = device_id
+        self._sessions = sessions
+        self._bridge = bridge
+        self._control = control
+        self._ring = signing_ring
+        self._user_id = user_id
+        self._agent_id = agent_id
+        self._trace_id = trace_id
+        self._enabled_tools = enabled_tools
+        self._manifest_version = manifest_version
+        self._run = run
+
+    def _dispatcher(self) -> McpFinanceDispatcher | None:
+        with self._sessions() as session:
+            device = device_authorization(
+                session,
+                self._device_id,
+                enabled_tools=self._enabled_tools,
+                manifest_version=self._manifest_version,
+            )
+        if device is None:
+            return None
+        return McpFinanceDispatcher(
+            bridge=self._bridge,
+            control=self._control,
+            signing_ring=self._ring,
+            context=DispatcherContext(
+                device=device,
+                user_id=self._user_id,
+                agent_id=self._agent_id,
+                conversation_trace_id=self._trace_id,
+                timezone=LEDGER_TIMEZONE,
+            ),
+            run=self._run,
+        )
+
+    def resolve(self, *, tool: str, model_args: dict[str, Any]) -> ResolveOutcome:
+        dispatcher = self._dispatcher()
+        if dispatcher is None:
+            return ResolveFailedSafe(reason="policy_denied")
+        return dispatcher.resolve(tool=tool, model_args=model_args)
+
+    def commit(
+        self,
+        *,
+        intent: WriteIntent,
+        idempotency_key: str,
+        duplicate_override: str | None,
+    ) -> CommitOutcome:
+        dispatcher = self._dispatcher()
+        if dispatcher is None:
+            # The device vanished between resolve and commit. Nothing has been
+            # sent, so this is a safe failure and never an unknown commit.
+            return CommitFailedSafe(reason="policy_denied")
+        return dispatcher.commit(
+            intent=intent,
+            idempotency_key=idempotency_key,
+            duplicate_override=duplicate_override,
+        )
+
+
+# --- the composition root ----------------------------------------------------
+
+
+def _allowlist(config: AgentServiceConfig, enabled: frozenset[str]) -> frozenset[str]:
+    if config.allowed_tools is None:
+        return enabled
+    unknown = config.allowed_tools - enabled
+    if unknown:
+        # A typo in the allowlist would otherwise silently disable a tool, which
+        # looks exactly like a broken deployment and is diagnosed as a model bug.
+        raise CompositionError(
+            "the configured allowlist names tools that are not enabled "
+            f"contracts: {sorted(unknown)}"
+        )
+    return frozenset(config.allowed_tools)
+
+
+async def _discover(
+    client: McpClientCore, registry: ConnectorRegistry, connector_id: str
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Connect once, read the whole catalog, and close.
+
+    The connection is not kept: a governed call opens its own isolated
+    connection so that one call's Host Context can never be seen by another.
+    """
+    try:
+        await client.connect()
+        try:
+            discovered = await client.list_tools()
+        finally:
+            await client.close()
+    except (McpTimeoutError, McpTransportError) as exc:
+        raise CompositionError(
+            f"the Finance MCP service could not be reached for discovery: {exc}"
+        ) from exc
+    catalog = registry.refresh(
+        connector_id,
+        trust_level=TrustLevel.PERSONAL_DATA,
+        discovered=discovered,
+    )
+    quarantined = tuple(
+        f"{entry.remote_name}:{entry.reason}" for entry in catalog.quarantined
+    )
+    if not catalog.entries:
+        raise CompositionError(
+            "the Finance connector advertised no manifest-verified tool; "
+            "refusing to start against a server that cannot be the ledger "
+            f"service (quarantined: {list(quarantined)})"
+        )
+    return tuple(sorted(catalog.entries)), quarantined
+
+
+def _finance_status_reader(
+    control: FinanceControlClient, run: Callable[[Any], Any]
+) -> Callable[[str], FinanceExecutionStatus | None]:
+    """Adapt the control-plane body to what recovery projects from.
+
+    A body that cannot be understood raises. Recovery must never read a failed
+    or malformed read as "Finance never saw this request", which is the one
+    interpretation that would let a committed write be re-dispatched.
+    """
+
+    def read(idempotency_key: str) -> FinanceExecutionStatus | None:
+        execution = run(control.get_execution(idempotency_key))
+        if execution is None:
+            return None
+        state = execution.get("state")
+        record_id = execution.get("record_id")
+        verified = execution.get("receipt_verified")
+        if not isinstance(state, str) or not state:
+            raise ControlPlaneError("execution body carried no state")
+        if record_id is not None and not isinstance(record_id, str):
+            raise ControlPlaneError("execution body carried a non-string record id")
+        if not isinstance(verified, bool):
+            raise ControlPlaneError("execution body carried no receipt evidence")
+        return FinanceExecutionStatus(
+            state=state, record_id=record_id, receipt_verified=verified
+        )
+
+    return read
+
+
+def recover_at_startup(
+    sessions: Callable[[], Any],
+    control: FinanceControlClient,
+    *,
+    now: Callable[[], datetime] = utc_now,
+    run: Callable[[Any], Any] = asyncio.run,
+) -> list[tuple[str, Any]]:
+    """Project Finance truth onto every recoverable operation, once, at boot.
+
+    An unreadable control plane rolls the whole scan back rather than leaving
+    half a projection behind: the operations stay recoverable and the next start
+    tries again. Refusing to start instead would wedge the Agent whenever
+    Finance is down, and guessing would be worse than both.
+    """
+    read = _finance_status_reader(control, run)
+    with sessions() as session:
+        try:
+            results = recover_pending(session, read, now=now())
+            session.commit()
+        except ControlPlaneError as exc:
+            session.rollback()
+            logger.warning(
+                "startup recovery could not read the Finance control plane (%s); "
+                "recoverable operations are left untouched for the next start",
+                type(exc).__name__,
+            )
+            return []
+        except Exception:
+            session.rollback()
+            raise
+    for operation_id, plan in results:
+        logger.info("startup recovery: %s -> %s", operation_id, plan.action)
+    return results
+
+
+@contextmanager
+def _engine_for(database: Path) -> Iterator[Any]:
+    engine = create_database_engine(database)
+    try:
+        if database.exists():
+            check_integrity(engine)
+        yield engine
+    finally:
+        engine.dispose()
+
+
+@asynccontextmanager
+async def agent_service(
+    config: AgentServiceConfig,
+    *,
+    now: Callable[[], datetime] = utc_now,
+    build_gateway: Callable[[], Any] = glm_gateway_from_env,
+) -> AsyncIterator[ComposedAgentService]:
+    """Compose the Agent API for the lifetime of the service."""
+    # Both internal channels are checked here, before a key is read or a socket
+    # is opened, so a misconfigured host can never receive a signed token.
+    try:
+        mcp_url = require_loopback_url(config.finance_mcp_url)
+        require_loopback_url(config.finance_control_url)
+    except ValueError as exc:
+        raise CompositionError(str(exc)) from exc
+
+    manifest = load_manifest()
+    manifest_version = manifest["allowed_tools_version"]
+    enabled = frozenset(
+        tool["name"] for tool in manifest["tools"] if tool["enabled"]
+    )
+    allowlist = _allowlist(config, enabled)
+
+    # Keys and the model gateway come first: a service that cannot sign, cannot
+    # seal or cannot reach the model must fail before it opens a connection.
+    keyring = load_agent_data_keyring()
+    token_ring = load_access_token_ring()
+    service_ring = load_service_signing_ring()
+    try:
+        gateway = build_gateway()
+    except ModelGatewayError as exc:
+        # A missing model credential or a tampered endpoint is a deployment
+        # failure, not something to discover on the first message.
+        raise CompositionError(f"the model gateway could not be built: {exc}") from exc
+
+    with _engine_for(config.database) as engine:
+        sessions = session_factory(engine)
+        registry = ConnectorRegistry()
+        client = McpClientCore(
+            config.connector_id, StreamableHttpTransport(url=mcp_url)
+        )
+        aliases, quarantined = await _discover(client, registry, config.connector_id)
+        bridge = GovernedToolBridge(
+            registry,
+            global_allowlist=allowlist,
+            clients={config.connector_id: client},
+        )
+        control = FinanceControlClient(
+            base_url=config.finance_control_url, signing_ring=service_ring
+        )
+        try:
+            # In a worker thread, because the scan is synchronous SQLite work
+            # and its control reads drive their own event loop.
+            await asyncio.to_thread(recover_at_startup, sessions, control, now=now)
+
+            def device_for(auth: AuthContext) -> DeviceAuthorization | None:
+                with sessions() as session:
+                    return device_authorization(
+                        session,
+                        auth.device_id,
+                        enabled_tools=enabled,
+                        manifest_version=manifest_version,
+                    )
+
+            def build_interpreter(auth: AuthContext) -> ModelInterpreter:
+                device = device_for(auth)
+                tools = [] if device is None else bridge.visible_tools(device)
+                return ModelInterpreter(
+                    gateway,
+                    tools=tools,
+                    system=build_system_prompt(
+                        today=format_ledger_date(ledger_date(now()))
+                    ),
+                )
+
+            def build_authorizer(auth: AuthContext):
+                def authorize(*, tool: str, model_args: dict[str, Any]):
+                    device = device_for(auth)
+                    if device is None:
+                        raise _no_such_device(auth.device_id)
+                    _, cleaned = bridge.authorize(tool, model_args, device)
+                    return cleaned
+
+                return authorize
+
+            def build_dispatcher(auth: AuthContext, trace_id: str) -> Dispatcher:
+                return DeviceBoundDispatcher(
+                    device_id=auth.device_id,
+                    sessions=sessions,
+                    bridge=bridge,
+                    control=control,
+                    signing_ring=service_ring,
+                    user_id=config.user_id,
+                    agent_id=config.agent_id,
+                    trace_id=trace_id,
+                    enabled_tools=enabled,
+                    manifest_version=manifest_version,
+                )
+
+            def capabilities(auth: AuthContext) -> list[dict[str, Any]]:
+                device = device_for(auth)
+                if device is None:
+                    return []
+                return [
+                    {
+                        "alias": tool.alias,
+                        "description": tool.description,
+                        "risk_level": tool.risk_level,
+                        "required_scopes": list(tool.required_scopes),
+                    }
+                    for tool in bridge.visible_tools(device)
+                ]
+
+            yield ComposedAgentService(
+                deps=AgentApiDeps(
+                    session_factory=sessions,
+                    token_ring=token_ring,
+                    keyring=keyring,
+                    build_interpreter=build_interpreter,
+                    build_dispatcher=build_dispatcher,
+                    build_authorizer=build_authorizer,
+                    capabilities=capabilities,
+                    now=now,
+                    sync_wait_seconds=config.sync_wait_seconds,
+                ),
+                bridge=bridge,
+                catalog_aliases=aliases,
+                quarantined=quarantined,
+            )
+        finally:
+            await control.aclose()
+            await client.close()
+def _no_such_device(device_id: str) -> AppError:
+    return AppError(
+        ErrorCode.TOOL_NOT_ALLOWLISTED,
+        internal_detail=f"no device row for {device_id}",
+    )

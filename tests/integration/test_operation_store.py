@@ -93,6 +93,11 @@ def test_open_creates_a_single_accepted_operation(session) -> None:
     assert opened.operation.state_version == 1
     # The client UUID is reused as the downstream idempotency key.
     assert opened.operation.idempotency_key == "req-uuid-1"
+    version, trace_id, span_id, flags = opened.operation.trace_id.split("-")
+    assert version == "00"
+    assert len(trace_id) == 32
+    assert len(span_id) == 16
+    assert flags == "01"
     assert session.query(Operation).count() == 1
     assert session.query(ApiRequest).count() == 1
 

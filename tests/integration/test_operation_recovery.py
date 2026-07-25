@@ -109,8 +109,10 @@ def test_finance_cancel_only_projects_when_agent_is_pre_submit() -> None:
     ).target_state == "needs_manual_review"
 
 
-def test_no_finance_execution_is_redispatch_only_when_pre_submit() -> None:
-    assert plan_recovery("dispatching", None).action is RecoveryAction.REDISPATCH
+def test_no_finance_execution_fails_safe_without_a_replayable_intent() -> None:
+    pre_submit = plan_recovery("dispatching", None)
+    assert pre_submit.action is RecoveryAction.RESOLVE
+    assert pre_submit.target_state == "failed_safe"
     past = plan_recovery("source_in_progress", None)
     assert past.action is RecoveryAction.RESOLVE
     assert past.target_state == "needs_manual_review"
@@ -210,12 +212,13 @@ def test_applying_failed_safe_records_the_reason(session) -> None:
     assert op.failure_reason is not None
 
 
-def test_redispatch_leaves_the_state_untouched(session) -> None:
+def test_missing_finance_execution_resolves_pre_submit_to_failed_safe(session) -> None:
     op = _operation_at(session, "dispatching")
     plan = apply_recovery(session, op, None, now=NOW)
-    assert plan.action is RecoveryAction.REDISPATCH
+    assert plan.action is RecoveryAction.RESOLVE
     session.refresh(op)
-    assert op.state == "dispatching"
+    assert op.state == "failed_safe"
+    assert op.failure_reason is not None
 
 
 def test_leave_touches_no_state(session) -> None:

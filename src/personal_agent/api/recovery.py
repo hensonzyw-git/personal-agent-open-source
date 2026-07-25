@@ -64,7 +64,6 @@ class RecoveryAction(StrEnum):
     RESOLVE = "resolve"  # walk to a projected terminal state
     ADVANCE_IN_PROGRESS = "advance_in_progress"  # move dispatching -> source_in_progress
     LEAVE = "leave"  # still consistently in flight; re-poll later
-    REDISPATCH = "redispatch"  # Finance never saw it; safe to re-run under same key
 
 
 @dataclass(frozen=True)
@@ -126,9 +125,17 @@ def plan_recovery(
 
     if finance_status is None:
         if agent_pre_submit:
+            # The current Agent schema retains the sealed user request, but not
+            # the complete authorised tool intent at `dispatching`. Re-running
+            # the model could silently produce different arguments, so design
+            # 7.6.1 requires a safe failure and a fresh user request instead.
             return RecoveryPlan(
-                RecoveryAction.REDISPATCH,
-                reason="finance has no execution; the dispatch never landed",
+                RecoveryAction.RESOLVE,
+                target_state="failed_safe",
+                reason=(
+                    "finance has no execution and no complete replayable tool "
+                    "intent was persisted"
+                ),
             )
         return _manual_review(
             "the operation is past submit but finance has no execution"
@@ -195,8 +202,7 @@ def apply_recovery(
 ) -> RecoveryPlan:
     """Project a Finance status onto one operation, walking legal transitions.
 
-    Returns the plan that was applied. `LEAVE` and `REDISPATCH` change no state:
-    re-dispatch under the same key is the orchestration's job, not recovery's.
+    Returns the plan that was applied. `LEAVE` changes no state.
     """
     plan = plan_recovery(operation.state, finance_status)
 
@@ -206,7 +212,7 @@ def apply_recovery(
         assert plan.target_state is not None
         path = _RECOVERY_PATHS[(operation.state, plan.target_state)]
         _walk(session, operation, path, now, plan)
-    # LEAVE and REDISPATCH intentionally touch no state.
+    # LEAVE intentionally touches no state.
     return plan
 
 
@@ -215,9 +221,8 @@ def recover_pending(
 ) -> list[tuple[str, RecoveryPlan]]:
     """Reconcile every recoverable operation against Finance, on startup.
 
-    Returns `(operation_id, plan)` for each, so a caller can log or drive the
-    re-dispatch of the `REDISPATCH` ones without recovery reaching into the
-    orchestration itself.
+    Returns `(operation_id, plan)` for each so the composition root can log the
+    projection without having to re-read the affected rows.
     """
     pending = list(
         session.query(Operation)

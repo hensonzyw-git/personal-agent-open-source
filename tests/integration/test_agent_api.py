@@ -36,7 +36,7 @@ from personal_agent.storage.engine import (
     create_database_engine,
     session_factory,
 )
-from personal_agent.storage.models import Device
+from personal_agent.storage.models import Device, Operation
 from personal_agent_core.crypto import KeyRing, generate_key
 
 
@@ -131,14 +131,20 @@ def _client(
     *,
     interpreter,
     dispatcher,
+    dispatcher_traces=None,
     sync_wait_seconds=30.0,
 ) -> TestClient:
+    def build_dispatcher(auth, trace_id):
+        if dispatcher_traces is not None:
+            dispatcher_traces.append(trace_id)
+        return dispatcher
+
     deps = AgentApiDeps(
         session_factory=session_factory(engine),
         token_ring=token_ring,
         keyring=keyring,
         build_interpreter=lambda auth: interpreter,
-        dispatcher=dispatcher,
+        build_dispatcher=build_dispatcher,
         build_authorizer=lambda auth: (lambda *, tool, model_args: dict(model_args)),
         capabilities=lambda auth: [{"alias": "finance.log_expense"}],
         now=lambda: NOW,
@@ -152,6 +158,29 @@ def _auth(token_ring, key=REQUEST_ID_1) -> dict:
 
 
 # --- auth --------------------------------------------------------------------
+
+
+def test_the_persisted_operation_trace_reaches_the_dispatcher(
+    engine, token_ring, keyring
+) -> None:
+    traces: list[str] = []
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+        dispatcher_traces=traces,
+    )
+    response = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "hi"},
+        headers=_auth(token_ring),
+    )
+    assert response.status_code == 200
+    with session_factory(engine)() as session:
+        operation = session.query(Operation).one()
+        assert traces == [operation.trace_id]
 
 
 def test_a_request_without_a_token_is_unauthenticated(engine, token_ring, keyring):

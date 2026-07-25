@@ -55,7 +55,13 @@ class ControlPlaneError(RuntimeError):
     """
 
 
-def _require_loopback(base_url: str) -> str:
+def require_loopback_url(base_url: str) -> str:
+    """Refuse any URL that would send an internal token off this host.
+
+    Shared with the composition root, which applies the identical rule to the
+    Finance MCP endpoint: one statement of the rule, so the two channels cannot
+    drift apart.
+    """
     parts = urlsplit(base_url)
     if parts.scheme != "http" or parts.hostname is None:
         raise ValueError("the control base URL must be an http:// loopback URL")
@@ -84,24 +90,40 @@ class FinanceControlClient:
         client: httpx.AsyncClient | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
-        self._base_url = _require_loopback(base_url)
+        self._base_url = require_loopback_url(base_url)
         self._ring = signing_ring
-        self._client = client or httpx.AsyncClient(trust_env=False)
+        # An injected client belongs to the caller's event loop; tests supply
+        # one. Production injects nothing, because this client is constructed
+        # once at composition and then used from operation worker threads, each
+        # driving its own loop. An `httpx.AsyncClient` binds its pool to the loop
+        # that first uses it, so a shared instance would be a cross-loop bug that
+        # no in-loop test can see. One short-lived client per read instead: the
+        # control plane is loopback and read rarely.
+        self._client = client
         self._timeout = timeout_seconds
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        if self._client is not None:
+            await self._client.aclose()
 
     async def _get(
         self, path: str, *, action: ControlAction, resource: str
     ) -> dict[str, Any]:
         token = sign_control_token(self._ring, action=action, resource=resource)
         try:
-            response = await self._client.get(
-                f"{self._base_url}{path}",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=self._timeout,
-            )
+            if self._client is not None:
+                response = await self._client.get(
+                    f"{self._base_url}{path}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=self._timeout,
+                )
+            else:
+                async with httpx.AsyncClient(trust_env=False) as client:
+                    response = await client.get(
+                        f"{self._base_url}{path}",
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=self._timeout,
+                    )
         except httpx.HTTPError as exc:
             raise ControlPlaneError(
                 f"control read {action} failed: {type(exc).__name__}"

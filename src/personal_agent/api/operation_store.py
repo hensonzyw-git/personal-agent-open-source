@@ -110,7 +110,7 @@ def open_operation(
             operation = Operation(
                 operation_id=operation_id,
                 request_id=request_id,
-                trace_id=trace_id or f"trace_{uuid.uuid4().hex}",
+                trace_id=trace_id or new_traceparent(),
                 idempotency_key=client_request_id,
                 state="accepted",
                 state_version=1,
@@ -126,6 +126,11 @@ def open_operation(
         if contender is None:  # pragma: no cover - the constraint just fired
             raise
         return _reuse(contender, request_fingerprint, client_request_id)
+
+
+def new_traceparent() -> str:
+    """Create the W3C traceparent persisted for one operation end to end."""
+    return f"00-{uuid.uuid4().hex}-{uuid.uuid4().hex[:16]}-01"
 
 
 def _existing_operation(

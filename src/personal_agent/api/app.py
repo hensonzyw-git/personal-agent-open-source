@@ -81,7 +81,10 @@ class AgentApiDeps:
     #: Builds the per-device interpreter; it is bound to that device's visible
     #: tools, so it is constructed per request like the authorizer.
     build_interpreter: Callable[[AuthContext], Interpreter]
-    dispatcher: Dispatcher
+    #: Builds the per-operation Finance dispatcher. Like the interpreter it is
+    #: bound to the calling device -- it signs a Host Context naming that device
+    #: -- so it is constructed per request and never shared between them.
+    build_dispatcher: Callable[[AuthContext, str], Dispatcher]
     #: Builds the per-device tool authorizer used by the orchestrator.
     build_authorizer: Callable[[AuthContext], Authorizer]
     #: The tools genuinely available to this device (design 5.3 /capabilities).
@@ -473,7 +476,7 @@ def _process_chat(
                 conversation_id=payload.conversation_id,
                 clarification_context=payload.clarification_context,
                 interpreter=deps.build_interpreter(auth),
-                dispatcher=deps.dispatcher,
+                dispatcher=deps.build_dispatcher(auth, operation.trace_id),
                 authorize=deps.build_authorizer(auth),
                 keyring=deps.keyring,
                 now=deps.now(),
@@ -547,7 +550,7 @@ def _process_duplicate_decision(
                     text="",
                     conversation_id="",
                     interpreter=deps.build_interpreter(auth),
-                    dispatcher=deps.dispatcher,
+                    dispatcher=deps.build_dispatcher(auth, new_op.trace_id),
                     authorize=deps.build_authorizer(auth),
                     keyring=deps.keyring,
                     now=deps.now(),

@@ -83,9 +83,12 @@ PRD v1.0.1 passed product review. Henson authorized Phase 1 technical design on
 2026-07-23, and authorized Phase 1 development on 2026-07-23. Gates G0 and G1
 are passed: `DEV-001` through `DEV-014` are complete and the MCP path runs on
 both transports without any credential. Gates G2 and G3 are also passed.
-`DEV-015` through `DEV-026` are complete, and `DEV-027` now has both its model
-adapter and its Finance dispatcher seam built offline; the Agent-side service
-composition root is the remaining piece. Work continues from there in
+`DEV-015` through `DEV-026` are complete, and `DEV-027` is now built end to end
+offline: model adapter, Finance dispatcher seam, and the Agent-side service
+composition root, so `personal-agent-api` starts and serves. One expense has run
+through both composition roots entirely offline, with deterministic model and
+Feishu boundaries. What it has never had is a current-code live model turn or a
+live Feishu write through both roots. Work continues from there in
 `docs/Phase1开发拆解_v0.1.md`, following its dependency order and Gates G4-G6.
 
 Development authorization is not authorization for everything downstream. Each
