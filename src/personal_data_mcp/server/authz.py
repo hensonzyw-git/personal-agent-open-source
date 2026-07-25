@@ -36,6 +36,9 @@ IDEMPOTENCY_HEADER = "idempotency-key"
 TRACEPARENT_HEADER = "traceparent"
 USER_ID_HEADER = "x-user-id"
 TIMEZONE_HEADER = "x-timezone"
+#: Optional. Present only when the Host is releasing one duplicate check, and
+#: only ever believed because the signed context says the same thing.
+DUPLICATE_OVERRIDE_HEADER = "x-duplicate-override"
 
 _BEARER_PREFIX = "Bearer "
 
@@ -46,6 +49,11 @@ class VerifiedCall:
 
     tool: str
     idempotency_key: str
+    #: The Host's fingerprint of the semantic request. It binds the idempotency
+    #: key to *this* request, and it is deliberately the Host's rather than one
+    #: recomputed from the resolved entry: a retry must stay the same request
+    #: even if the ledger moved a trip resolution underneath it.
+    request_fingerprint: str
     request_id: str
     trace_id: str
     user_id: str
@@ -53,6 +61,9 @@ class VerifiedCall:
     timezone: str
     scopes: tuple[str, ...]
     allowed_tools_version: str
+    #: The duplicate check this call is authorised to release, if any. It comes
+    #: from the verified Host Context, never from the arguments.
+    duplicate_override: str | None = None
 
 
 class Authorizer:
@@ -118,6 +129,10 @@ class Authorizer:
         trace_id = self._required_header(headers, TRACEPARENT_HEADER)
         user_id = self._required_header(headers, USER_ID_HEADER)
         timezone = self._required_header(headers, TIMEZONE_HEADER)
+        # An empty header is not "no override": it is a header that says
+        # nothing, and treating it as absent would let a stripped value pass as
+        # a plain call. It is carried through verbatim and must match the claim.
+        duplicate_override = headers.get(DUPLICATE_OVERRIDE_HEADER)
 
         claims = verify_host_context(
             self._ring,
@@ -129,6 +144,7 @@ class Authorizer:
             trace_id=trace_id,
             timezone=timezone,
             arguments=arguments,
+            duplicate_override=duplicate_override,
             now=now,
         )
 
@@ -153,6 +169,7 @@ class Authorizer:
         return VerifiedCall(
             tool=tool,
             idempotency_key=idempotency_key,
+            request_fingerprint=str(claims["request_fingerprint"]),
             request_id=request_id,
             trace_id=trace_id,
             user_id=user_id,
@@ -160,4 +177,5 @@ class Authorizer:
             timezone=timezone,
             scopes=tuple(sorted(granted)),
             allowed_tools_version=str(claims["allowed_tools_version"]),
+            duplicate_override=duplicate_override,
         )

@@ -15,7 +15,7 @@ reads it and resolves the write day in `Asia/Shanghai`.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -25,6 +25,7 @@ from personal_agent_core.timeutil import (
     ledger_day_start_utc,
     to_rfc3339,
 )
+from personal_data_mcp.finance.duplicate_check import pending_check_for
 from personal_data_mcp.storage.models import ExternalReceipt, ToolExecution
 
 
@@ -68,6 +69,30 @@ def get_execution_status(
         "receipt_verified": (
             receipt is not None and receipt.verified_at is not None
         ),
+    }
+
+
+def get_pending_duplicate_check(
+    session: Session, idempotency_key: str, *, now: datetime
+) -> dict[str, Any] | None:
+    """The undecided duplicate check raised for this request, or None.
+
+    Only the check id and its expiry leave: the candidate record ids are sealed
+    and stay sealed, because the Agent needs to know *that* a decision is
+    pending and which id answers it -- not which ledger rows matched. The
+    candidate cards Henson sees come from the same MCP call that raised the
+    check, never from this endpoint.
+    """
+    check = pending_check_for(
+        session, idempotency_key=idempotency_key, now=now
+    )
+    if check is None:
+        return None
+    return {
+        "duplicate_check_id": check.check_id,
+        "status": check.status,
+        "created_at": to_rfc3339(check.created_at),
+        "expires_at": to_rfc3339(check.expires_at),
     }
 
 

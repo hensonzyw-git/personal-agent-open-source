@@ -180,17 +180,31 @@ async def dispatch(
 
 
 def build_registry(
-    *, expense_query_handler=None
+    *,
+    expense_query_handler=None,
+    expense_write_handler=None,
+    income_write_handler=None,
+    family_fund_handler=None,
 ) -> ToolRegistry:
-    """The production tool set for this build."""
+    """The production tool set for this build.
+
+    The default server deliberately remains credential-free. Every Finance
+    handler is supplied by service composition, and only after it has loaded and
+    freshly validated the protected ledger config; until then an enabled
+    contract is simply not advertised as executable. `finance.log_expense_batch`
+    has no parameter here at all, because it is disabled in the manifest and
+    registering it would be refused.
+    """
     registry = ToolRegistry()
     registry.register(meta.TOOL_NAME, meta.build_handler(registry))
-    # The default server deliberately remains credential-free.  Service
-    # composition supplies this only after it has loaded and freshly validated
-    # the protected finance config; until then an enabled contract is not
-    # advertised as executable.
-    if expense_query_handler is not None:
-        registry.register("finance.query_expenses", expense_query_handler)
+    for name, handler in (
+        ("finance.query_expenses", expense_query_handler),
+        ("finance.log_expense", expense_write_handler),
+        ("finance.log_income", income_write_handler),
+        ("finance.update_family_fund", family_fund_handler),
+    ):
+        if handler is not None:
+            registry.register(name, handler)
     return registry
 
 

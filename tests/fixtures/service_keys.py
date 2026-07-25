@@ -86,6 +86,8 @@ class SignedCaller:
         idempotency_key: str | None = None,
         request_id: str | None = None,
         scopes: tuple[str, ...] | None = None,
+        request_fingerprint: str = "fp-test",
+        duplicate_override: str | None = None,
     ) -> HostContext:
         return HostContext(
             agent_id="agent-test",
@@ -96,9 +98,10 @@ class SignedCaller:
             request_id=request_id or str(uuid.uuid4()),
             trace_id=DEFAULT_TRACE,
             idempotency_key=idempotency_key or str(uuid.uuid4()),
-            request_fingerprint="fp-test",
+            request_fingerprint=request_fingerprint,
             allowed_tools_version=self.allowed_tools_version,
             timezone=DEFAULT_TIMEZONE,
+            duplicate_override=duplicate_override,
         )
 
     def headers(
@@ -109,10 +112,14 @@ class SignedCaller:
         host: HostContext | None = None,
         **host_kwargs: Any,
     ) -> dict[str, str]:
-        """The six headers a governed HTTP call sends, signed over `arguments`."""
+        """The headers a governed HTTP call sends, signed over `arguments`.
+
+        The duplicate override is emitted exactly as the bridge emits it: only
+        when the signed context carries one, and never as an argument.
+        """
         host = host or self.host_context(tool, **host_kwargs)
         token = sign_host_context(self.ring, host, arguments)
-        return {
+        headers = {
             "Authorization": f"Bearer {token}",
             "X-Request-ID": host.request_id,
             "Idempotency-Key": host.idempotency_key,
@@ -120,3 +127,6 @@ class SignedCaller:
             "X-User-ID": host.user_id,
             "X-Timezone": host.timezone,
         }
+        if host.duplicate_override is not None:
+            headers["X-Duplicate-Override"] = host.duplicate_override
+        return headers

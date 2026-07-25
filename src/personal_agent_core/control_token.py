@@ -50,6 +50,11 @@ class ControlAction(StrEnum):
 
     GET_EXECUTION = "get_execution"
     LIST_SUCCESSFUL_WRITES = "list_successful_writes"
+    #: "Which duplicate check blocked the write I sent under this idempotency
+    #: key?" The id is deliberately not on the MCP result: that is the
+    #: model-facing channel, and design 5.2 requires the model never to see or
+    #: forge a `duplicate_check_id`.
+    GET_PENDING_DUPLICATE_CHECK = "get_pending_duplicate_check"
 
 
 class ControlTokenError(Exception):

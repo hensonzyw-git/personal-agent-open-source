@@ -33,9 +33,10 @@ from personal_agent_core.control_token import (
 )
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.host_context import ServiceKeyRing
-from personal_agent_core.timeutil import parse_ledger_date
+from personal_agent_core.timeutil import parse_ledger_date, utc_now
 from personal_data_mcp.server.control_queries import (
     get_execution_status,
+    get_pending_duplicate_check,
     successful_writes_on,
 )
 
@@ -104,6 +105,27 @@ def build_control_app(
             return JSONResponse({"status": "not_found"})
         return JSONResponse({"status": "found", "execution": status})
 
+    async def get_duplicate_check(request: Request) -> JSONResponse:
+        key = request.path_params["idempotency_key"]
+        try:
+            token = _bearer(request)
+            verify_control_token(
+                ring,
+                token,
+                action=ControlAction.GET_PENDING_DUPLICATE_CHECK,
+                resource=key,
+            )
+        except AppError as error:
+            return _error_response(error)
+
+        with session_factory() as session:
+            pending = get_pending_duplicate_check(session, key, now=utc_now())
+        if pending is None:
+            # "Nothing is pending" is a branch, not a failure: a write can be
+            # refused for reasons that are not a duplicate at all.
+            return JSONResponse({"status": "not_found"})
+        return JSONResponse({"status": "found", "duplicate_check": pending})
+
     async def list_successful_writes(request: Request) -> JSONResponse:
         raw_date = request.query_params.get("write_date", "")
         try:
@@ -133,6 +155,11 @@ def build_control_app(
             Route(
                 f"{CONTROL_PREFIX}/executions/{{idempotency_key}}",
                 get_execution,
+                methods=["GET"],
+            ),
+            Route(
+                f"{CONTROL_PREFIX}/duplicate-checks/{{idempotency_key}}",
+                get_duplicate_check,
                 methods=["GET"],
             ),
             Route(

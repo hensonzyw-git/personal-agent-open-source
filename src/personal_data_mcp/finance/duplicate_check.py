@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Final, Protocol
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from personal_agent_core.crypto import KeyRing
@@ -158,8 +158,15 @@ def raise_check(
     candidates: tuple[Candidate, ...],
     keyring: KeyRing,
     now: datetime,
+    idempotency_key: str,
 ) -> DuplicateFinding:
-    """Record a pending decision and return its id. Writes nothing to Feishu."""
+    """Record a pending decision and return its id. Writes nothing to Feishu.
+
+    The idempotency key is recorded because the id is *not* returned on the
+    model-facing channel: the MCP call fails with a bare `POSSIBLE_DUPLICATE`,
+    and the Agent looks the pending check up through the internal control plane
+    using the key it sent.
+    """
     check_id = str(uuid.uuid4())
     sealed = keyring.encrypt(
         json.dumps(
@@ -172,6 +179,7 @@ def raise_check(
     session.add(
         DuplicateCheck(
             check_id=check_id,
+            idempotency_key=idempotency_key,
             intent_fingerprint=intent_fingerprint(entry),
             encrypted_candidate_record_ids=sealed,
             status="awaiting_decision",
@@ -268,6 +276,28 @@ def dismiss(
         if check.expires_at <= now:
             raise OverrideRefused("duplicate check has expired")
         raise OverrideRefused(f"duplicate check already {check.status}")
+
+
+def pending_check_for(
+    session: Session, *, idempotency_key: str, now: datetime
+) -> DuplicateCheck | None:
+    """The check still awaiting a decision for this request, if any.
+
+    A blocked write creates no execution row, so the same idempotency key can
+    legitimately raise more than one check over time. The newest undecided one
+    is the only one a decision can be about; an expired or already-decided check
+    is deliberately not returned, so a stale id is never handed back as pending.
+    """
+    return session.scalars(
+        select(DuplicateCheck)
+        .where(
+            DuplicateCheck.idempotency_key == idempotency_key,
+            DuplicateCheck.status == "awaiting_decision",
+            DuplicateCheck.expires_at > now,
+        )
+        .order_by(DuplicateCheck.created_at.desc(), DuplicateCheck.check_id.desc())
+        .limit(1)
+    ).one_or_none()
 
 
 def expire_stale(session: Session, *, now: datetime) -> int:

@@ -119,9 +119,15 @@ class HostContext:
     request_fingerprint: str
     allowed_tools_version: str
     timezone: str = "Asia/Shanghai"
+    #: A `duplicate_check_id` this Host is releasing for exactly this call. It
+    #: travels as a signed claim rather than an argument because design 5.2
+    #: requires that the model can neither read nor forge it: an argument is the
+    #: model-facing channel, and `duplicate_override` is in `HOST_ONLY_FIELDS`
+    #: precisely so a model-emitted copy is stripped before the hash is taken.
+    duplicate_override: str | None = None
 
     def claims(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        return {
+        claims = {
             "agent_id": self.agent_id,
             "device_id": self.device_id,
             "user_id": self.user_id,
@@ -135,6 +141,11 @@ class HostContext:
             "allowed_tools_version": self.allowed_tools_version,
             "timezone": self.timezone,
         }
+        # Emitted only when there is one, so a plain call's token carries no
+        # override claim at all and cannot be confused with one that does.
+        if self.duplicate_override is not None:
+            claims["duplicate_override"] = self.duplicate_override
+        return claims
 
 
 @dataclass(frozen=True)
@@ -236,6 +247,7 @@ def verify_host_context(
     trace_id: str,
     timezone: str,
     arguments: dict[str, Any],
+    duplicate_override: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Check the token against what actually arrived.
@@ -310,4 +322,9 @@ def verify_host_context(
     for field, value in observed.items():
         if claims[field] != value:
             raise mismatch(f"{field} does not match the signed context")
+    # Absent on both sides is the normal call. Any disagreement -- a header
+    # without a claim, a claim without a header, or two different ids -- is a
+    # mismatch, so an override can only release the check the Host signed for.
+    if claims.get("duplicate_override") != duplicate_override:
+        raise mismatch("duplicate_override does not match the signed context")
     return claims

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 
 import jwt
@@ -367,7 +368,12 @@ class RecordingClient:
         )
 
 
-def bridge_call_context(subject: DeviceAuthorization) -> BridgeCallContext:
+def bridge_call_context(
+    subject: DeviceAuthorization,
+    *,
+    tool: str = "finance.log_expense",
+    duplicate_override: str | None = None,
+) -> BridgeCallContext:
     private = ec.generate_private_key(ec.SECP256R1())
     ring = ServiceKeyRing(
         active=ServiceKey("svc-test", private, private.public_key())
@@ -378,15 +384,113 @@ def bridge_call_context(subject: DeviceAuthorization) -> BridgeCallContext:
             device_id=subject.device_id,
             user_id="henson",
             scopes=tuple(sorted(subject.scopes)),
-            tool="finance.log_expense",
+            tool=tool,
             request_id="018f0000-0000-4000-8000-000000000009",
             trace_id="00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
             idempotency_key="018f0000-0000-4000-8000-000000000001",
             request_fingerprint="fp",
             allowed_tools_version=subject.allowed_tools_version,
+            duplicate_override=duplicate_override,
         ),
         signing_keys=ring,
     )
+
+
+def test_a_signed_override_is_sent_on_its_own_header_not_as_an_argument(
+    registry,
+) -> None:
+    """The model must never be able to read or emit this id."""
+    subject = device()
+    client = RecordingClient(None)
+    governed = GovernedToolBridge(
+        registry, global_allowlist=ENABLED, clients={"personal-data": client}
+    )
+
+    asyncio.run(
+        governed.execute(
+            "finance.log_expense",
+            EXPENSE,
+            subject,
+            call_context=bridge_call_context(
+                subject, duplicate_override="chk-1"
+            ),
+        )
+    )
+
+    name, arguments, kwargs = client.calls[0]
+    assert kwargs["host_context"]["X-Duplicate-Override"] == "chk-1"
+    assert "duplicate_override" not in arguments
+    claims = jwt.decode(
+        kwargs["host_context"]["Authorization"].removeprefix("Bearer "),
+        options={"verify_signature": False},
+    )
+    # Signed as well as sent: the header alone authorises nothing.
+    assert claims["duplicate_override"] == "chk-1"
+
+
+def test_a_plain_call_carries_no_override_header_or_claim(registry) -> None:
+    subject = device()
+    client = RecordingClient(None)
+    governed = GovernedToolBridge(
+        registry, global_allowlist=ENABLED, clients={"personal-data": client}
+    )
+
+    asyncio.run(
+        governed.execute(
+            "finance.log_expense",
+            EXPENSE,
+            subject,
+            call_context=bridge_call_context(subject),
+        )
+    )
+
+    _, _, kwargs = client.calls[0]
+    assert "X-Duplicate-Override" not in kwargs["host_context"]
+    claims = jwt.decode(
+        kwargs["host_context"]["Authorization"].removeprefix("Bearer "),
+        options={"verify_signature": False},
+    )
+    assert "duplicate_override" not in claims
+
+
+def test_the_call_budget_comes_from_the_contract_effect(registry) -> None:
+    """A create given a read-shaped deadline would misreport a lost write."""
+    from personal_agent.mcp_client.core import (
+        DEFAULT_READ_CALL_TIMEOUT,
+        DEFAULT_WRITE_CALL_TIMEOUT,
+    )
+
+    subject = device()
+    client = RecordingClient(None)
+    governed = GovernedToolBridge(
+        registry, global_allowlist=ENABLED, clients={"personal-data": client}
+    )
+
+    asyncio.run(
+        governed.execute(
+            "finance.log_expense",
+            EXPENSE,
+            subject,
+            call_context=bridge_call_context(subject),
+        )
+    )
+    # The read tool's fixture receipt is an expense shape, so output validation
+    # rejects it afterwards. The budget was already chosen by then, which is the
+    # only thing under test here.
+    with contextlib.suppress(AppError):
+        asyncio.run(
+            governed.execute(
+                "meta.capabilities",
+                {},
+                subject,
+                call_context=bridge_call_context(
+                    subject, tool="meta.capabilities"
+                ),
+            )
+        )
+
+    assert client.calls[0][2]["timeout"] == DEFAULT_WRITE_CALL_TIMEOUT
+    assert client.calls[1][2]["timeout"] == DEFAULT_READ_CALL_TIMEOUT
 
 
 def test_execute_injects_context_and_filters_the_model_result(registry) -> None:

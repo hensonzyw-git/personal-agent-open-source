@@ -154,6 +154,14 @@ HOST_CONTEXT_SCHEMA: Final[dict[str, Any]] = {
         },
         "timezone": {"const": "Asia/Shanghai"},
         "trace_id": {"type": "string", "minLength": 1},
+        "duplicate_override": {
+            "type": ["string", "null"],
+            "default": None,
+            "description": (
+                "Host 在“仍然写入”决策后绑定的 duplicate_check_id，只对本次调用生效。"
+                "它只走 Host 签名通道，不是模型参数：模型既看不到也无法伪造。"
+            ),
+        },
     },
 }
 
@@ -658,7 +666,10 @@ UPDATE_FAMILY_FUND = ToolContract(
             "record_id": {"type": "string", "minLength": 1},
             "mode": {"enum": ["top_up", "interest_reconcile"]},
             "recharge_amount_cny": {"type": "string"},
-            "balance_before_cny": {"type": "string"},
+            # Null only when the fund table had no row at all, so there was no
+            # prior balance to read. Reporting "0" or "" there would assert a
+            # balance nobody observed.
+            "balance_before_cny": {"type": ["string", "null"]},
             "balance_after_cny": {"type": "string"},
             "note": {"type": ["string", "null"]},
             "evidence": {

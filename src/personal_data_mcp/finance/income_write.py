@@ -159,6 +159,7 @@ async def write_income(
     trace_id: str,
     keyring: KeyRing,
     duplicate_override: str | None = None,
+    on_prepared: Callable[[Session], None] | None = None,
     now: Callable[[], datetime] = utc_now,
     new_client_token: Callable[[], str] = lambda: str(uuid.uuid4()),
 ) -> WriteOutcome | IncomeClarification | DuplicateFinding:
@@ -215,6 +216,7 @@ async def write_income(
                     candidates=candidates,
                     keyring=keyring,
                     now=now(),
+                    idempotency_key=idempotency_key,
                 )
                 session.commit()
             return finding
@@ -245,6 +247,7 @@ async def write_income(
         trace_id=trace_id,
         verify=verify,
         config_checksum=config.checksum(),
+        on_prepared=on_prepared,
         keyring=keyring,
         now=now,
         new_client_token=new_client_token,

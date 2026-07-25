@@ -230,6 +230,12 @@ class DuplicateCheck(Base):
     __tablename__ = "duplicate_checks"
 
     check_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    #: The request that raised this check. It is how the Agent asks the control
+    #: plane "was my write blocked, and by which check?" without the id ever
+    #: travelling on the model-facing MCP result. Not unique: a blocked write
+    #: creates no execution row, so the same key can legitimately be retried and
+    #: raise another check.
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
     intent_fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
     encrypted_candidate_record_ids: Mapped[dict[str, Any]] = mapped_column(
         EncryptedEnvelope, nullable=False
@@ -251,6 +257,7 @@ class DuplicateCheck(Base):
             "(status = 'awaiting_decision') = (decided_at IS NULL)",
             name="decided_at_matches_status",
         ),
+        Index("ix_duplicate_checks_idempotency_key", "idempotency_key"),
     )
 
 

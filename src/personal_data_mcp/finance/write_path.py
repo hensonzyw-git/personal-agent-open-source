@@ -204,6 +204,7 @@ async def execute_governed_write(
     result_envelope_factory: (
         Callable[[dict[str, Any]], dict[str, Any]] | None
     ) = None,
+    on_prepared: Callable[[Session], None] | None = None,
     keyring: KeyRing | None = None,
     now: Callable[[], datetime] = utc_now,
     new_client_token: Callable[[], str] = lambda: str(uuid.uuid4()),
@@ -257,6 +258,13 @@ async def execute_governed_write(
             )
         client_token = execution.client_token
         state_version = execution.state_version
+        if on_prepared is not None:
+            # Evidence that justifies the amount (today: the FX quote) is
+            # written in the same transaction as `prepared`, before any network
+            # call. Recording it afterwards would mean a completed write whose
+            # justification was lost, or -- worse -- a successful write reported
+            # as a failure because a purely evidential insert raised.
+            on_prepared(session)
         _audit(
             session,
             trace_id=trace_id,
@@ -487,6 +495,7 @@ async def submit_expense(
                     candidates=candidates,
                     keyring=keyring,
                     now=now(),
+                    idempotency_key=idempotency_key,
                 )
                 session.commit()
             # Zero writes: no execution row, nothing to reconcile, and a
@@ -521,6 +530,7 @@ async def write_expense(
     request_fingerprint: str,
     trace_id: str,
     keyring: KeyRing | None = None,
+    on_prepared: Callable[[Session], None] | None = None,
     now: Callable[[], datetime] = utc_now,
     new_client_token: Callable[[], str] = lambda: str(uuid.uuid4()),
 ) -> WriteOutcome:
@@ -559,6 +569,7 @@ async def write_expense(
         trace_id=trace_id,
         verify=verify,
         config_checksum=config.checksum(),
+        on_prepared=on_prepared,
         keyring=keyring,
         now=now,
         new_client_token=new_client_token,

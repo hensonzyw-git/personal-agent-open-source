@@ -153,7 +153,9 @@ def test_the_candidate_set_hash_ignores_order() -> None:
 # --- releasing requires a real, current, matching decision -------------------
 
 
-def raise_for(sessions, keyring, entry=LUNCH, rows=None, now=NOW):
+def raise_for(
+    sessions, keyring, entry=LUNCH, rows=None, now=NOW, idempotency_key="idem-1"
+):
     rows = rows if rows is not None else [ledger_row()]
     candidates = find_exact_duplicates(entry, rows)
     with sessions() as session:
@@ -163,6 +165,7 @@ def raise_for(sessions, keyring, entry=LUNCH, rows=None, now=NOW):
             candidates=candidates,
             keyring=keyring,
             now=now,
+            idempotency_key=idempotency_key,
         )
         session.commit()
     return finding, candidates

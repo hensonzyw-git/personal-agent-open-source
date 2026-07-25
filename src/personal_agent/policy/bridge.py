@@ -28,7 +28,11 @@ from typing import Any, Callable, Mapping
 
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
-from personal_agent.mcp_client.core import McpClientCore
+from personal_agent.mcp_client.core import (
+    DEFAULT_READ_CALL_TIMEOUT,
+    DEFAULT_WRITE_CALL_TIMEOUT,
+    McpClientCore,
+)
 from personal_agent.mcp_client.registry import CatalogEntry, ConnectorRegistry
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.host_context import (
@@ -310,17 +314,33 @@ class GovernedToolBridge:
             ) from None
 
         token = sign_host_context(call_context.signing_keys, host, cleaned)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Request-ID": host.request_id,
+            "Idempotency-Key": host.idempotency_key,
+            "traceparent": host.trace_id,
+            "X-User-ID": host.user_id,
+            "X-Timezone": host.timezone,
+        }
+        if host.duplicate_override is not None:
+            # Sent on the Host channel only, and only because the same value is
+            # inside the signature above. It is never added to `cleaned`.
+            headers["X-Duplicate-Override"] = host.duplicate_override
+        # The contract's own effect decides the budget: a create must be given
+        # the write timeout, and a timeout on a write is an *unknown* commit
+        # rather than a failure, which is what the Finance state machine
+        # resolves. Reading it from the contract keeps a caller from quietly
+        # giving a write a read-shaped deadline.
+        effect = self._contracts[entry.remote_name]["effect"]
         raw_result = await client.call_tool(
             entry.remote_name,
             cleaned,
-            host_context={
-                "Authorization": f"Bearer {token}",
-                "X-Request-ID": host.request_id,
-                "Idempotency-Key": host.idempotency_key,
-                "traceparent": host.trace_id,
-                "X-User-ID": host.user_id,
-                "X-Timezone": host.timezone,
-            },
+            timeout=(
+                DEFAULT_READ_CALL_TIMEOUT
+                if effect == "read"
+                else DEFAULT_WRITE_CALL_TIMEOUT
+            ),
+            host_context=headers,
         )
         trusted = _normalise_result(raw_result)
         try:

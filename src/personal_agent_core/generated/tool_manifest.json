@@ -53,6 +53,14 @@
       "trace_id": {
         "type": "string",
         "minLength": 1
+      },
+      "duplicate_override": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "default": null,
+        "description": "Host 在“仍然写入”决策后绑定的 duplicate_check_id，只对本次调用生效。它只走 Host 签名通道，不是模型参数：模型既看不到也无法伪造。"
       }
     }
   },
@@ -66,7 +74,7 @@
   "disabled_tools": [
     "finance.log_expense_batch"
   ],
-  "allowed_tools_version": "5ef20d6c7c39033b45832a607c179105dc3834b92d702ce37316dfda09e1b5b7",
+  "allowed_tools_version": "b3fec68e004e1d00c831ac8e85ce3cee8ac47bcad7ba1cf2d00973ae95bf65a3",
   "tools": [
     {
       "name": "finance.log_expense",
@@ -978,7 +986,10 @@
             "type": "string"
           },
           "balance_before_cny": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "balance_after_cny": {
             "type": "string"
@@ -1063,7 +1074,7 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "d2067ac7ebc9cc96cdc64a52e4b079079405a249603dc8ce02e2710697e3e7df",
-      "contract_hash": "12df071cc849be95eb79da224e7cffd675d7dd6130aa0fc9ac4ddc51d68c7985"
+      "contract_hash": "9093fa711ba35aedc8b12c1a25e573d67542767979a3cbbcd505ecbc034ba657"
     },
     {
       "name": "finance.query_expenses",

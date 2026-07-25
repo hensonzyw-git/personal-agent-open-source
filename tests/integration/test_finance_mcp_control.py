@@ -338,3 +338,146 @@ def test_a_get_on_the_control_path_is_not_swallowed_by_the_mcp_guard(
     resp = run(scenario())
     # Not a 405: the guard did not treat this as the MCP path.
     assert resp.status_code == 200
+
+
+# --- the pending duplicate check (DEV-027, design 5.2) -----------------------
+
+#: The endpoint compares against the real clock, so a pending check needs an
+#: expiry that cannot lapse while the suite runs.
+FAR_FUTURE = datetime(2099, 1, 1, tzinfo=timezone.utc)
+
+
+def seed_duplicate_check(
+    session,
+    *,
+    key: str,
+    status: str = "awaiting_decision",
+    expires_at: datetime = FAR_FUTURE,
+) -> str:
+    from personal_agent_core.crypto import KeyRing, generate_key
+    from personal_data_mcp.storage.models import DuplicateCheck
+
+    keyring = KeyRing([generate_key("dup-1")], service="personal_data_mcp")
+    check_id = str(uuid.uuid4())
+    sealed = keyring.encrypt(
+        b'["rec-original"]',
+        table="duplicate_checks",
+        column="encrypted_candidate_record_ids",
+        row_id=check_id,
+    )
+    session.add(
+        DuplicateCheck(
+            check_id=check_id,
+            idempotency_key=key,
+            intent_fingerprint="fp",
+            encrypted_candidate_record_ids=sealed,
+            status=status,
+            created_at=COMMIT_UTC,
+            expires_at=expires_at,
+            decided_at=None if status == "awaiting_decision" else COMMIT_UTC,
+        )
+    )
+    session.commit()
+    return check_id
+
+
+def get_check(client, caller, key: str, *, resource: str | None = None):
+    async def scenario():
+        async with client() as c:
+            return await c.get(
+                f"/internal/v1/duplicate-checks/{key}",
+                headers=control_headers(
+                    caller,
+                    ControlAction.GET_PENDING_DUPLICATE_CHECK,
+                    resource if resource is not None else key,
+                ),
+            )
+
+    return run(scenario())
+
+
+def test_a_pending_duplicate_check_is_returned_for_its_own_request(
+    caller, client, sf
+) -> None:
+    key = str(uuid.uuid4())
+    with sf() as session:
+        check_id = seed_duplicate_check(session, key=key)
+
+    resp = get_check(client, caller, key)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "found"
+    assert body["duplicate_check"]["duplicate_check_id"] == check_id
+    # The sealed candidates never leave: this endpoint answers "which decision
+    # is pending", not "which ledger rows matched".
+    assert "candidate" not in resp.text
+    assert "rec-original" not in resp.text
+
+
+def test_an_unrelated_request_gets_no_check(caller, client, sf) -> None:
+    with sf() as session:
+        seed_duplicate_check(session, key=str(uuid.uuid4()))
+
+    resp = get_check(client, caller, str(uuid.uuid4()))
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "not_found"}
+
+
+@pytest.mark.parametrize(
+    "status, expires_at",
+    [
+        ("write_anyway", FAR_FUTURE),
+        ("dismissed", FAR_FUTURE),
+        # Expired: undecided, but no longer answerable.
+        (
+            "awaiting_decision",
+            datetime(2020, 1, 1, 0, 0, tzinfo=timezone.utc),
+        ),
+    ],
+)
+def test_a_settled_or_expired_check_is_never_reported_as_pending(
+    caller, client, sf, status, expires_at
+) -> None:
+    key = str(uuid.uuid4())
+    with sf() as session:
+        seed_duplicate_check(
+            session, key=key, status=status, expires_at=expires_at
+        )
+
+    resp = get_check(client, caller, key)
+
+    assert resp.json() == {"status": "not_found"}
+
+
+def test_a_token_for_another_request_cannot_read_this_check(
+    caller, client, sf
+) -> None:
+    key = str(uuid.uuid4())
+    with sf() as session:
+        seed_duplicate_check(session, key=key)
+
+    resp = get_check(client, caller, key, resource=str(uuid.uuid4()))
+
+    assert resp.status_code == 403
+
+
+def test_an_execution_token_cannot_read_a_duplicate_check(
+    caller, client, sf
+) -> None:
+    """The action is bound too, not only the resource."""
+    key = str(uuid.uuid4())
+    with sf() as session:
+        seed_duplicate_check(session, key=key)
+
+    async def scenario():
+        async with client() as c:
+            return await c.get(
+                f"/internal/v1/duplicate-checks/{key}",
+                headers=control_headers(
+                    caller, ControlAction.GET_EXECUTION, key
+                ),
+            )
+
+    assert run(scenario()).status_code == 403
