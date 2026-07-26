@@ -101,6 +101,7 @@ async def _serve_with_finance_tools(config, args, *, session_factory) -> None:
             composed.registry,
             session_factory=session_factory,
             record_reader=composed.record_reader,
+            data_keyring=composed.dependencies.keyring,
         )
         server = uvicorn.Server(
             uvicorn.Config(

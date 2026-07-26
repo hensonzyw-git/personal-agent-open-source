@@ -161,9 +161,12 @@ def dispatcher(bridge, control=None) -> McpFinanceDispatcher:
 
 
 class Pending:
-    def __init__(self, check_id: str) -> None:
+    def __init__(
+        self, check_id: str, existing_summary: str = "午饭 ¥45 餐饮 · 个人支出"
+    ) -> None:
         self.duplicate_check_id = check_id
         self.expires_at = "2026-07-24T12:00:00Z"
+        self.existing_summary = existing_summary
 
 
 # --- resolve -----------------------------------------------------------------
@@ -268,6 +271,7 @@ def test_a_duplicate_parks_with_the_id_read_from_the_control_plane() -> None:
 
     assert isinstance(outcome, CommitDuplicateZeroWrite)
     assert outcome.duplicate_check_id == "chk-9"
+    assert outcome.existing_summary == "午饭 ¥45 餐饮 · 个人支出"
     assert control.asked == ["idem-1"]
 
 
@@ -388,6 +392,7 @@ def test_the_pending_check_is_read_with_a_resource_bound_token() -> None:
                     "status": "awaiting_decision",
                     "created_at": "2026-07-24T03:00:00Z",
                     "expires_at": "2026-07-24T03:15:00Z",
+                    "existing_summary": "午饭 ¥45 餐饮 · 个人支出",
                 },
             },
         )
@@ -396,6 +401,7 @@ def test_the_pending_check_is_read_with_a_resource_bound_token() -> None:
     pending = asyncio.run(client.get_pending_duplicate_check("idem-1"))
 
     assert pending.duplicate_check_id == "chk-1"
+    assert pending.existing_summary == "午饭 ¥45 餐饮 · 个人支出"
     assert seen["path"] == "/internal/v1/duplicate-checks/idem-1"
     assert seen["auth"].startswith("Bearer ")
 

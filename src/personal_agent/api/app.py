@@ -538,7 +538,7 @@ def _process_chat(
                 dispatcher=deps.build_dispatcher(auth, operation.trace_id),
                 authorize=deps.build_authorizer(auth),
                 keyring=deps.keyring,
-                now=deps.now(),
+                now=deps.now,
             )
             if result.state == "waiting_for_clarification":
                 question = result.clarification
@@ -612,7 +612,7 @@ def _process_duplicate_decision(
                     dispatcher=deps.build_dispatcher(auth, new_op.trace_id),
                     authorize=deps.build_authorizer(auth),
                     keyring=deps.keyring,
-                    now=deps.now(),
+                    now=deps.now,
                 )
             target = new_op if new_op is not None else _find_by_check(
                 session, duplicate_check_id, auth.device_id
@@ -803,6 +803,8 @@ def _operation_projection(operation: Operation) -> dict[str, Any]:
     if operation.safe_result is not None:
         if operation.state == "waiting_for_clarification":
             projection["clarification"] = operation.safe_result
+        elif operation.state == "waiting_for_duplicate_decision":
+            projection["duplicate_existing"] = operation.safe_result
         elif (
             operation.state == "succeeded"
             and operation.tool in _RECORD_ID_RESULT_TOOLS

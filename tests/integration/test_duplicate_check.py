@@ -20,6 +20,7 @@ from personal_data_mcp.finance.duplicate_check import (
     OVERRIDE_TTL,
     OverrideRefused,
     authorise_override,
+    candidate_summary_for_check,
     candidate_set_hash,
     dismiss,
     expire_stale,
@@ -182,6 +183,10 @@ def test_a_raised_check_is_pending_and_seals_its_candidates(
         # The record ids point at real ledger rows, so they are never stored in
         # the clear.
         assert "rec1" not in str(check.encrypted_candidate_record_ids)
+        assert (
+            candidate_summary_for_check(check, keyring)
+            == "午饭 ¥20 餐饮 · 个人支出"
+        )
 
 
 def test_the_matching_decision_releases_the_write(sessions, keyring) -> None:

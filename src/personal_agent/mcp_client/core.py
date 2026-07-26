@@ -29,6 +29,7 @@ import httpx
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.exceptions import McpError
 from mcp.types import Tool
 
 from personal_agent_core.errors import AppError, ErrorCode
@@ -40,6 +41,27 @@ DEFAULT_INITIALIZE_TIMEOUT: Final[timedelta] = timedelta(seconds=5)
 DEFAULT_LIST_TIMEOUT: Final[timedelta] = timedelta(seconds=5)
 DEFAULT_READ_CALL_TIMEOUT: Final[timedelta] = timedelta(seconds=15)
 DEFAULT_WRITE_CALL_TIMEOUT: Final[timedelta] = timedelta(seconds=30)
+
+#: How long the HTTP transport will wait for bytes, which is *not* the call
+#: deadline: `call_tool` owns that, per call, from the contract's effect.
+#:
+#: It exists because httpx defaults to a 5-second read timeout, and a governed
+#: write is a single request whose server side talks to Feishu several times.
+#: Live evidence (2026-07-26): a real `finance.log_expense` created the record,
+#: read it back and reached `succeeded` in Finance, while the Agent saw nothing
+#: -- the stream had already been torn down at 5s, so the session waited out its
+#: own budget and reported `source_commit_unknown`. A verified write reported as
+#: an unknown commit is the worst outcome this system has, and no offline test
+#: could see it: every fake counterparty answers in milliseconds.
+#:
+#: Kept comfortably above the longest call budget so the deadline that fires is
+#: always the call's, never the socket's.
+TRANSPORT_READ_TIMEOUT: Final[timedelta] = (
+    DEFAULT_WRITE_CALL_TIMEOUT + timedelta(seconds=15)
+)
+
+#: Loopback connect and write are fast or broken; there is nothing to wait for.
+TRANSPORT_CONNECT_TIMEOUT: Final[timedelta] = timedelta(seconds=5)
 
 #: A server is free to paginate one tool at a time; this only stops a runaway.
 MAX_CATALOG_PAGES: Final[int] = 100
@@ -161,10 +183,19 @@ class McpClientCore:
                     # proxy settings are deliberately ignored: Finance uses a
                     # loopback endpoint and its credentials must never leave
                     # this machine through an ambient proxy.
+                    #
+                    # The timeout is stated rather than inherited. httpx's
+                    # default read timeout is 5 seconds, which is shorter than a
+                    # real governed write takes, and a stream torn down early
+                    # turns a *completed* write into an unknown commit.
                     http_client = await stack.enter_async_context(
                         httpx.AsyncClient(
                             headers=self.transport.headers,
                             trust_env=False,
+                            timeout=httpx.Timeout(
+                                TRANSPORT_READ_TIMEOUT.total_seconds(),
+                                connect=TRANSPORT_CONNECT_TIMEOUT.total_seconds(),
+                            ),
                         )
                     )
                     read_stream, write_stream, _ = await stack.enter_async_context(
@@ -335,6 +366,17 @@ class McpClientCore:
         except TimeoutError as exc:
             raise McpTimeoutError(
                 f"{self.connector_id}.{name} exceeded {timeout}"
+            ) from exc
+        except McpError as exc:
+            # The SDK catches its internal TimeoutError and re-raises McpError
+            # with HTTP 408 as the stable code. Without this branch every HTTP
+            # request-budget expiry is mislabeled as a transport failure.
+            if exc.error.code == httpx.codes.REQUEST_TIMEOUT:
+                raise McpTimeoutError(
+                    f"{self.connector_id}.{name} exceeded {timeout}"
+                ) from exc
+            raise McpTransportError(
+                f"{self.connector_id}.{name} failed: {type(exc).__name__}"
             ) from exc
         except asyncio.CancelledError:
             # Propagated so the SDK sends the cancellation notification. The

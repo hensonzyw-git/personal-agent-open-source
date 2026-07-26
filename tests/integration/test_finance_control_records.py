@@ -23,6 +23,7 @@ import pytest
 
 from fixtures.service_keys import SignedCaller
 from personal_agent_core.control_token import (
+    MAX_RECORD_BATCH,
     ControlAction,
     record_batch_resource,
     sign_control_token,
@@ -161,28 +162,16 @@ def make_client(caller, sf, reader):
     return make
 
 
-def get_record(client, caller, *, table_kind, record_id, resource=None, action=None):
-    resource = resource if resource is not None else f"{table_kind}:{record_id}"
-    action = action or ControlAction.GET_RECORD_FIELDS
-    token = sign_control_token(caller.ring, action=action, resource=resource)
-
-    async def scenario():
-        async with client() as c:
-            return await c.get(
-                f"/internal/v1/records/{table_kind}/{record_id}",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-
-    return run(scenario())
-
-
-def post_batch(client, caller, *, records, authorised_records=None):
+def post_batch(
+    client, caller, *, records, authorised_records=None, action=None, token=None
+):
     authorised = authorised_records if authorised_records is not None else records
-    token = sign_control_token(
-        caller.ring,
-        action=ControlAction.GET_RECORD_FIELDS_BATCH,
-        resource=record_batch_resource(authorised),
-    )
+    if token is None:
+        token = sign_control_token(
+            caller.ring,
+            action=action or ControlAction.GET_RECORD_FIELDS_BATCH,
+            resource=record_batch_resource(authorised),
+        )
 
     async def scenario():
         async with client() as c:
@@ -200,22 +189,23 @@ def post_batch(client, caller, *, records, authorised_records=None):
     return run(scenario())
 
 
+def entry(resp, index: int = 0) -> dict:
+    return resp.json()["records"][index]
+
+
 def test_a_verified_record_is_read_live(caller, sf) -> None:
     reader = RecordingReader()
     with sf() as session:
         seed_verified_write(session, key="k1", record_id="recA")
 
-    resp = get_record(
-        make_client(caller, sf, reader),
-        caller,
-        table_kind="expense",
-        record_id="recA",
+    resp = post_batch(
+        make_client(caller, sf, reader), caller, records=[("expense", "recA")]
     )
 
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "found"
-    assert body["record"]["values"]["name"] == "午饭"
+    item = entry(resp)
+    assert item["status"] == "found"
+    assert item["record"]["values"]["name"] == "\u5348\u996d"
     # The point of the endpoint: the values came from the source just now.
     assert reader.calls == [("expense", "recA")]
 
@@ -224,14 +214,13 @@ def test_a_record_this_service_never_wrote_is_not_readable(caller, sf) -> None:
     """Otherwise this is a general ledger reader with a nicer name."""
     reader = RecordingReader()
 
-    resp = get_record(
+    resp = post_batch(
         make_client(caller, sf, reader),
         caller,
-        table_kind="expense",
-        record_id="recSomeoneElse",
+        records=[("expense", "recSomeoneElse")],
     )
 
-    assert resp.json() == {"status": "not_found"}
+    assert entry(resp)["status"] == "not_found"
     assert reader.calls == []
 
 
@@ -243,14 +232,13 @@ def test_an_unverified_receipt_is_not_readable(caller, sf) -> None:
             session, key="k2", record_id="recPending", verified=False
         )
 
-    resp = get_record(
+    resp = post_batch(
         make_client(caller, sf, reader),
         caller,
-        table_kind="expense",
-        record_id="recPending",
+        records=[("expense", "recPending")],
     )
 
-    assert resp.json() == {"status": "not_found"}
+    assert entry(resp)["status"] == "not_found"
     assert reader.calls == []
 
 
@@ -260,33 +248,30 @@ def test_the_receipt_must_match_the_table_too(caller, sf) -> None:
     with sf() as session:
         seed_verified_write(session, key="k3", record_id="recA")
 
-    resp = get_record(
-        make_client(caller, sf, reader),
-        caller,
-        table_kind="income",
-        record_id="recA",
+    resp = post_batch(
+        make_client(caller, sf, reader), caller, records=[("income", "recA")]
     )
 
-    assert resp.json() == {"status": "not_found"}
+    assert entry(resp)["status"] == "not_found"
     assert reader.calls == []
 
 
-def test_a_token_for_another_record_is_refused(caller, sf) -> None:
+def test_one_unwritten_record_does_not_hide_the_others(caller, sf) -> None:
+    """Per-entry answers: a card keeps rendering around a missing pointer."""
     reader = RecordingReader()
     with sf() as session:
-        seed_verified_write(session, key="k4", record_id="recA")
-        seed_verified_write(session, key="k5", record_id="recB")
+        seed_verified_write(session, key="k3b", record_id="recA")
 
-    resp = get_record(
+    resp = post_batch(
         make_client(caller, sf, reader),
         caller,
-        table_kind="expense",
-        record_id="recA",
-        resource="expense:recB",
+        records=[("expense", "recGone"), ("expense", "recA")],
     )
 
-    assert resp.status_code == 403
-    assert reader.calls == []
+    assert entry(resp, 0)["status"] == "not_found"
+    assert entry(resp, 1)["status"] == "found"
+    # Only the record with a receipt reached the source.
+    assert reader.calls == [("expense", "recA")]
 
 
 def test_a_batch_token_cannot_be_replayed_with_another_body(caller, sf) -> None:
@@ -311,12 +296,29 @@ def test_a_token_for_the_same_id_in_another_table_is_refused(caller, sf) -> None
     with sf() as session:
         seed_verified_write(session, key="k6", record_id="recA")
 
-    resp = get_record(
+    resp = post_batch(
         make_client(caller, sf, reader),
         caller,
-        table_kind="expense",
-        record_id="recA",
-        resource="income:recA",
+        records=[("expense", "recA")],
+        authorised_records=[("income", "recA")],
+    )
+
+    assert resp.status_code == 403
+    assert reader.calls == []
+
+
+def test_reordering_the_pointers_invalidates_the_token(caller, sf) -> None:
+    """The resource is the *ordered* body, so results cannot be shuffled."""
+    reader = RecordingReader()
+    with sf() as session:
+        seed_verified_write(session, key="k6a", record_id="recA")
+        seed_verified_write(session, key="k6b", record_id="recB")
+
+    resp = post_batch(
+        make_client(caller, sf, reader),
+        caller,
+        records=[("expense", "recA"), ("expense", "recB")],
+        authorised_records=[("expense", "recB"), ("expense", "recA")],
     )
 
     assert resp.status_code == 403
@@ -328,11 +330,10 @@ def test_an_execution_token_cannot_read_a_record(caller, sf) -> None:
     with sf() as session:
         seed_verified_write(session, key="k7", record_id="recA")
 
-    resp = get_record(
+    resp = post_batch(
         make_client(caller, sf, reader),
         caller,
-        table_kind="expense",
-        record_id="recA",
+        records=[("expense", "recA")],
         action=ControlAction.GET_EXECUTION,
     )
 
@@ -345,29 +346,29 @@ def test_a_missing_token_is_refused(caller, sf) -> None:
 
     async def scenario():
         async with client() as c:
-            return await c.get("/internal/v1/records/expense/recA")
+            return await c.post(
+                "/internal/v1/records:batch",
+                json={"records": [{"table_kind": "expense", "record_id": "recA"}]},
+            )
 
     resp = run(scenario())
     assert resp.status_code == 403
     assert resp.json()["error"]["code"] == "HOST_CONTEXT_MISMATCH"
 
 
-def test_a_service_without_a_ledger_config_refuses_rather_than_saying_not_found(
+def test_a_service_without_a_ledger_config_says_unavailable_not_not_found(
     caller, sf
 ) -> None:
     """A missing capability must not be readable as a missing record."""
     with sf() as session:
         seed_verified_write(session, key="k8", record_id="recA")
 
-    resp = get_record(
-        make_client(caller, sf, None),
-        caller,
-        table_kind="expense",
-        record_id="recA",
+    resp = post_batch(
+        make_client(caller, sf, None), caller, records=[("expense", "recA")]
     )
 
-    assert resp.status_code == 500
-    assert resp.json()["error"]["code"] == "SOURCE_UNAVAILABLE"
+    assert resp.status_code == 200
+    assert entry(resp)["status"] == "unavailable"
 
 
 def test_a_source_failure_surfaces_as_a_stable_code_not_a_stack(caller, sf) -> None:
@@ -375,19 +376,56 @@ def test_a_source_failure_surfaces_as_a_stable_code_not_a_stack(caller, sf) -> N
 
     reader = RecordingReader(
         error=AppError(
-            ErrorCode.SOURCE_SCHEMA_CHANGED, internal_detail="renamed 名称"
+            ErrorCode.SOURCE_SCHEMA_CHANGED, internal_detail="renamed \u540d\u79f0"
         )
     )
     with sf() as session:
         seed_verified_write(session, key="k9", record_id="recA")
 
-    resp = get_record(
-        make_client(caller, sf, reader),
-        caller,
-        table_kind="expense",
-        record_id="recA",
+    resp = post_batch(
+        make_client(caller, sf, reader), caller, records=[("expense", "recA")]
     )
 
     body = resp.json()
     assert body["error"]["code"] == "SOURCE_SCHEMA_CHANGED"
     assert "renamed" not in str(body)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"records": []},
+        {"records": "recA"},
+        {"records": [{"table_kind": "expense"}]},
+        {"records": [{"table_kind": "", "record_id": "recA"}]},
+        {"records": [["expense", "recA"]]},
+        {"pointers": [{"table_kind": "expense", "record_id": "recA"}]},
+    ],
+)
+def test_a_malformed_batch_body_is_a_client_error(caller, sf, body) -> None:
+    client = make_client(caller, sf, RecordingReader())
+    token = sign_control_token(
+        caller.ring,
+        action=ControlAction.GET_RECORD_FIELDS_BATCH,
+        resource=record_batch_resource([("expense", "recA")]),
+    )
+
+    async def scenario():
+        async with client() as c:
+            return await c.post(
+                "/internal/v1/records:batch",
+                json=body,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+    assert run(scenario()).status_code == 400
+
+
+def test_a_batch_larger_than_the_cap_is_refused(caller, sf) -> None:
+    """The client splits at the same number; the server is the backstop."""
+    client = make_client(caller, sf, RecordingReader())
+    records = [("expense", f"rec{index}") for index in range(MAX_RECORD_BATCH + 1)]
+
+    resp = post_batch(client, caller, records=records)
+
+    assert resp.status_code == 400

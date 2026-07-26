@@ -4,7 +4,7 @@ Four reads live here, and none is a tool call: "what state is the execution for
 this idempotency key in?" (crash recovery, design 7.6.1), "which duplicate check
 is blocking this request?" (the `write anyway` flow, design 5.2), and the two the
 daily review needs (design 7.7) -- "what was successfully written on this ledger
-day?" and "what does the ledger hold for this record now?".
+day?" and "what does the ledger hold for these card records now?".
 
 The second one is why this module exists at all. `finance.log_expense` reports a
 duplicate as a bare `POSSIBLE_DUPLICATE` error, because an MCP result is the
@@ -33,6 +33,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from personal_agent_core.control_token import (
+    MAX_RECORD_BATCH,
     ControlAction,
     record_batch_resource,
     sign_control_token,
@@ -49,6 +50,13 @@ _LOOPBACK_HOSTS: Final[frozenset[str]] = frozenset(
 )
 
 DEFAULT_TIMEOUT_SECONDS: Final[float] = 5.0
+
+#: A current-value card does substantially more work than the other control
+#: reads: one fresh schema validation, then one Feishu read per record. The
+#: server deliberately caps a chunk, and the caller gives that sequential work
+#: a matching budget instead of inheriting the five-second metadata-read limit.
+RECORD_BATCH_BASE_TIMEOUT_SECONDS: Final[float] = 10.0
+RECORD_BATCH_PER_RECORD_TIMEOUT_SECONDS: Final[float] = 2.0
 
 
 class ControlPlaneError(RuntimeError):
@@ -83,6 +91,7 @@ def require_loopback_url(base_url: str) -> str:
 class PendingDuplicateCheck:
     duplicate_check_id: str
     expires_at: str
+    existing_summary: str
 
 
 @dataclass(frozen=True)
@@ -191,15 +200,17 @@ class FinanceControlClient:
         action: ControlAction,
         resource: str,
         body: dict[str, Any],
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         token = sign_control_token(self._ring, action=action, resource=resource)
+        timeout = self._timeout if timeout_seconds is None else timeout_seconds
         try:
             if self._client is not None:
                 response = await self._client.post(
                     f"{self._base_url}{path}",
                     headers={"Authorization": f"Bearer {token}"},
                     json=body,
-                    timeout=self._timeout,
+                    timeout=timeout,
                 )
             else:
                 async with httpx.AsyncClient(trust_env=False) as client:
@@ -207,7 +218,7 @@ class FinanceControlClient:
                         f"{self._base_url}{path}",
                         headers={"Authorization": f"Bearer {token}"},
                         json=body,
-                        timeout=self._timeout,
+                        timeout=timeout,
                     )
         except httpx.HTTPError as exc:
             raise ControlPlaneError(
@@ -261,12 +272,17 @@ class FinanceControlClient:
             raise ControlPlaneError("duplicate check body was not understood")
         check_id = check.get("duplicate_check_id")
         expires_at = check.get("expires_at")
+        existing_summary = check.get("existing_summary")
         if not isinstance(check_id, str) or not check_id:
             raise ControlPlaneError("duplicate check body carried no id")
         if not isinstance(expires_at, str) or not expires_at:
             raise ControlPlaneError("duplicate check body carried no expiry")
+        if not isinstance(existing_summary, str) or not existing_summary.strip():
+            raise ControlPlaneError("duplicate check body carried no summary")
         return PendingDuplicateCheck(
-            duplicate_check_id=check_id, expires_at=expires_at
+            duplicate_check_id=check_id,
+            expires_at=expires_at,
+            existing_summary=existing_summary,
         )
 
     async def list_successful_writes(self, write_date: str) -> list[SuccessfulWrite]:
@@ -291,29 +307,28 @@ class FinanceControlClient:
             )
         return [_successful_write(item) for item in writes]
 
-    async def get_record_fields(
-        self, *, table_kind: str, record_id: str
-    ) -> RecordFields | None:
-        """The record's current values, or None when Finance has no receipt."""
-        payload = await self._get(
-            f"{CONTROL_PREFIX}/records/{table_kind}/{record_id}",
-            action=ControlAction.GET_RECORD_FIELDS,
-            resource=f"{table_kind}:{record_id}",
-        )
-        status = payload.get("status")
-        if status == "not_found":
-            return None
-        record = payload.get("record")
-        if status != "found" or not isinstance(record, dict):
-            raise ControlPlaneError("record body was not understood")
-        return _record_fields(
-            record, table_kind=table_kind, record_id=record_id
-        )
-
     async def get_record_fields_batch(
         self, records: list[tuple[str, str]]
     ) -> list[RecordFields | RecordUnavailable | None]:
-        """Read one card's current values with one control request."""
+        """Read one card's current values, in as few requests as the cap allows.
+
+        The server refuses a batch larger than `MAX_RECORD_BATCH`, so a card with
+        more items than that is split here. Sending it as one request instead
+        would turn a busy day into a card that can never be opened, and the
+        failure would look exactly like Finance being unreachable.
+        """
+        if not records:
+            return []
+        parsed: list[RecordFields | RecordUnavailable | None] = []
+        for start in range(0, len(records), MAX_RECORD_BATCH):
+            chunk = records[start : start + MAX_RECORD_BATCH]
+            parsed.extend(await self._record_chunk(chunk))
+        return parsed
+
+    async def _record_chunk(
+        self, records: list[tuple[str, str]]
+    ) -> list[RecordFields | RecordUnavailable | None]:
+        """One signed request for one chunk of pointers, in order."""
         body = {
             "records": [
                 {"table_kind": table_kind, "record_id": record_id}
@@ -325,6 +340,11 @@ class FinanceControlClient:
             action=ControlAction.GET_RECORD_FIELDS_BATCH,
             resource=record_batch_resource(records),
             body=body,
+            timeout_seconds=max(
+                self._timeout,
+                RECORD_BATCH_BASE_TIMEOUT_SECONDS
+                + RECORD_BATCH_PER_RECORD_TIMEOUT_SECONDS * len(records),
+            ),
         )
         raw_results = payload.get("records")
         if not isinstance(raw_results, list) or len(raw_results) != len(records):

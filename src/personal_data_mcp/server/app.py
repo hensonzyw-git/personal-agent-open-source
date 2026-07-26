@@ -32,6 +32,7 @@ from mcp.types import CallToolResult, Tool
 from starlette.applications import Starlette
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.host_context import HOST_ONLY_FIELDS, ServiceKeyRing
 from personal_data_mcp.server.authz import Authorizer
@@ -264,6 +265,7 @@ def build_app(
     verification_ring: ServiceKeyRing | None = None,
     session_factory: SessionFactory | None = None,
     record_reader: RecordReader | None = None,
+    data_keyring: KeyRing | None = None,
 ) -> Starlette:
     """The ASGI application: the MCP endpoint, and the control API if a database
     is wired.
@@ -286,6 +288,7 @@ def build_app(
             verification_ring=ring,
             session_factory=session_factory,
             record_reader=record_reader,
+            data_keyring=data_keyring,
         )
         app.router.routes.extend(control.router.routes)
 

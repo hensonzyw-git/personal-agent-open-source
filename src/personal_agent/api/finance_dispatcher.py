@@ -222,7 +222,7 @@ class McpFinanceDispatcher:
                 return CommitFailedSafe(reason="duplicate_check_unavailable")
             return CommitDuplicateZeroWrite(
                 duplicate_check_id=pending.duplicate_check_id,
-                existing_summary="",
+                existing_summary=pending.existing_summary,
             )
         if error.code is ErrorCode.CLARIFICATION_REQUIRED:
             return CommitClarificationZeroWrite(

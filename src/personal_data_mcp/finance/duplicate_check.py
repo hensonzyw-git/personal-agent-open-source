@@ -45,6 +45,7 @@ OVERRIDE_TTL: Final[timedelta] = timedelta(minutes=15)
 
 _TABLE: Final[str] = "duplicate_checks"
 _COLUMN: Final[str] = "encrypted_candidate_record_ids"
+_CANDIDATE_PAYLOAD_VERSION: Final[int] = 1
 
 
 @dataclass(frozen=True)
@@ -170,7 +171,16 @@ def raise_check(
     check_id = str(uuid.uuid4())
     sealed = keyring.encrypt(
         json.dumps(
-            sorted(c.record_id for c in candidates), ensure_ascii=False
+            {
+                "version": _CANDIDATE_PAYLOAD_VERSION,
+                "record_ids": sorted(c.record_id for c in candidates),
+                # The app must show what matched, but this is personal ledger
+                # data: keep the display projection inside the same encrypted
+                # envelope as the ids and expose it only on the Host-only
+                # control plane.
+                "candidates": [candidate.card() for candidate in candidates],
+            },
+            ensure_ascii=False,
         ).encode("utf-8"),
         table=_TABLE,
         column=_COLUMN,
@@ -223,14 +233,12 @@ def authorise_override(
     if check.intent_fingerprint != intent_fingerprint(entry):
         raise OverrideRefused("duplicate check was raised for a different entry")
 
-    shown = json.loads(
-        keyring.decrypt(
-            check.encrypted_candidate_record_ids,
-            table=_TABLE,
-            column=_COLUMN,
-            row_id=check_id,
-        ).decode("utf-8")
-    )
+    try:
+        shown = _candidate_record_ids(
+            _decrypt_candidate_payload(check, keyring)
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise OverrideRefused("the sealed candidate set is unreadable") from exc
     if sorted(shown) != sorted(c.record_id for c in current_candidates):
         raise OverrideRefused(
             "the candidate set changed since the decision was made"
@@ -298,6 +306,107 @@ def pending_check_for(
         .order_by(DuplicateCheck.created_at.desc(), DuplicateCheck.check_id.desc())
         .limit(1)
     ).one_or_none()
+
+
+def candidate_summary_for_check(
+    check: DuplicateCheck, keyring: KeyRing
+) -> str:
+    """A display-only summary for the authenticated Host control channel.
+
+    Record ids never leave. The summary carries the fields Henson needs to
+    judge the duplicate, including family scope, and collapses identical
+    candidates into a count rather than repeating the same text.
+    """
+    payload = _decrypt_candidate_payload(check, keyring)
+    if not isinstance(payload, dict):
+        # Checks written before the summary contract stored only a list of ids.
+        # They expire after fifteen minutes; fail closed rather than inventing a
+        # card that claims to identify the duplicate.
+        raise ValueError("candidate summary is absent")
+    if payload.get("version") != _CANDIDATE_PAYLOAD_VERSION:
+        raise ValueError("candidate payload version is unsupported")
+    raw_cards = payload.get("candidates")
+    if not isinstance(raw_cards, list) or not raw_cards:
+        raise ValueError("candidate payload carries no cards")
+
+    ordered: list[str] = []
+    counts: dict[str, int] = {}
+    for raw in raw_cards:
+        summary = _candidate_card_summary(raw)
+        if summary not in counts:
+            ordered.append(summary)
+            counts[summary] = 0
+        counts[summary] += 1
+    return "；".join(
+        f"{summary}（{counts[summary]} 条）"
+        if counts[summary] > 1
+        else summary
+        for summary in ordered
+    )
+
+
+def _decrypt_candidate_payload(
+    check: DuplicateCheck, keyring: KeyRing
+) -> Any:
+    return json.loads(
+        keyring.decrypt(
+            check.encrypted_candidate_record_ids,
+            table=_TABLE,
+            column=_COLUMN,
+            row_id=check.check_id,
+        ).decode("utf-8")
+    )
+
+
+def _candidate_record_ids(payload: Any) -> list[str]:
+    # Backward-compatible for a check written before the encrypted display
+    # projection existed. Those ids still bind an override safely.
+    if isinstance(payload, list):
+        raw_ids = payload
+    elif isinstance(payload, dict):
+        raw_ids = payload.get("record_ids")
+    else:
+        raise ValueError("candidate payload is neither legacy nor versioned")
+    if (
+        not isinstance(raw_ids, list)
+        or not raw_ids
+        or not all(isinstance(record_id, str) and record_id for record_id in raw_ids)
+    ):
+        raise ValueError("candidate payload carries invalid record ids")
+    return raw_ids
+
+
+def _candidate_card_summary(raw: Any) -> str:
+    if not isinstance(raw, dict):
+        raise ValueError("candidate card must be an object")
+    name = raw.get("name")
+    amount_raw = raw.get("amount_cny")
+    category = raw.get("category")
+    scope = raw.get("is_family_expense")
+    if (
+        not isinstance(name, str)
+        or not name
+        or not isinstance(amount_raw, str)
+        or not isinstance(category, str)
+        or not category
+        or (scope is not None and not isinstance(scope, bool))
+    ):
+        raise ValueError("candidate card is malformed")
+    try:
+        amount = Decimal(amount_raw)
+    except Exception as exc:
+        raise ValueError("candidate amount is malformed") from exc
+    amount_text = format(amount, "f")
+    if "." in amount_text:
+        amount_text = amount_text.rstrip("0").rstrip(".")
+    scope_text = (
+        "家庭支出"
+        if scope is True
+        else "个人支出"
+        if scope is False
+        else "归属未知"
+    )
+    return f"{name} ¥{amount_text} {category} · {scope_text}"
 
 
 def expire_stale(session: Session, *, now: datetime) -> int:

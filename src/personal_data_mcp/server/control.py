@@ -28,10 +28,12 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from personal_agent_core.control_token import (
+    MAX_RECORD_BATCH,
     ControlAction,
     record_batch_resource,
     verify_control_token,
 )
+from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.host_context import ServiceKeyRing
 from personal_agent_core.timeutil import parse_ledger_date, utc_now
@@ -53,8 +55,6 @@ SessionFactory = Callable[[], Session]
 RecordReader = Callable[
     [list[tuple[str, str]]], Awaitable[list[dict[str, Any]]]
 ]
-
-MAX_RECORD_BATCH = 100
 
 _BEARER_PREFIX = "Bearer "
 
@@ -92,13 +92,16 @@ def build_control_app(
     verification_ring: ServiceKeyRing,
     session_factory: SessionFactory,
     record_reader: RecordReader | None = None,
+    data_keyring: KeyRing | None = None,
 ) -> Starlette:
-    """The control ASGI app. Verification keys only; never signs.
+    """The control ASGI app. The service ring verifies and never signs.
 
     Without a `record_reader` the current-value route is still mounted but
     refuses: a service started without a ledger config has no credential and no
     protected config, and answering "not found" there would let a caller read a
-    missing capability as a missing record.
+    missing capability as a missing record. `data_keyring` decrypts only the
+    pending duplicate's display projection; it is never used for auth and its
+    plaintext never reaches the MCP/model channel.
     """
     ring = verification_ring.public_only()
 
@@ -136,8 +139,13 @@ def build_control_app(
         except AppError as error:
             return _error_response(error)
 
-        with session_factory() as session:
-            pending = get_pending_duplicate_check(session, key, now=utc_now())
+        try:
+            with session_factory() as session:
+                pending = get_pending_duplicate_check(
+                    session, key, now=utc_now(), keyring=data_keyring
+                )
+        except AppError as error:
+            return _error_response(error)
         if pending is None:
             # "Nothing is pending" is a branch, not a failure: a write can be
             # refused for reasons that are not a duplicate at all.
@@ -167,66 +175,6 @@ def build_control_app(
         with session_factory() as session:
             writes = successful_writes_on(session, day)
         return JSONResponse({"write_date": raw_date, "writes": writes})
-
-    async def get_record_fields(request: Request) -> JSONResponse:
-        table_kind = request.path_params["table_kind"]
-        record_id = request.path_params["record_id"]
-        try:
-            token = _bearer(request)
-            verify_control_token(
-                ring,
-                token,
-                action=ControlAction.GET_RECORD_FIELDS,
-                resource=f"{table_kind}:{record_id}",
-            )
-        except AppError as error:
-            return _error_response(error)
-
-        with session_factory() as session:
-            receipt = verified_receipt_for(
-                session, table_kind=table_kind, record_id=record_id
-            )
-        if receipt is None:
-            # Not "no such row in Feishu": no *receipt*. This endpoint reads
-            # only records this service wrote and verified. The answer does not
-            # depend on whether a ledger reader is composed, so it is given
-            # first: it is true either way.
-            return JSONResponse({"status": "not_found"})
-
-        if record_reader is None:
-            # A record this service *did* write, on a service with no ledger
-            # config. Refusing keeps a missing capability from being read as a
-            # missing record.
-            return _error_response(
-                AppError(
-                    ErrorCode.SOURCE_UNAVAILABLE,
-                    internal_detail=(
-                        "this service was started without a ledger config, so "
-                        "no record can be read"
-                    ),
-                )
-            )
-
-        try:
-            results = await record_reader([(table_kind, record_id)])
-        except AppError as error:
-            return _error_response(error)
-        if len(results) != 1:
-            return _error_response(
-                AppError(
-                    ErrorCode.SOURCE_UNAVAILABLE,
-                    internal_detail="record reader returned the wrong result count",
-                )
-            )
-        result = results[0]
-        if result.get("status") != "found":
-            return _error_response(
-                AppError(
-                    ErrorCode.SOURCE_UNAVAILABLE,
-                    internal_detail="the current record could not be read",
-                )
-            )
-        return JSONResponse(result)
 
     async def get_record_fields_batch(request: Request) -> JSONResponse:
         try:
@@ -312,11 +260,6 @@ def build_control_app(
             Route(
                 f"{CONTROL_PREFIX}/successful-writes",
                 list_successful_writes,
-                methods=["GET"],
-            ),
-            Route(
-                f"{CONTROL_PREFIX}/records/{{table_kind}}/{{record_id}}",
-                get_record_fields,
                 methods=["GET"],
             ),
             Route(

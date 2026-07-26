@@ -26,6 +26,7 @@ argument.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -213,6 +214,9 @@ class RunResult:
     failure_reason: str | None = None
 
 
+Clock = datetime | Callable[[], datetime]
+
+
 def run_operation(
     session,
     operation: Operation,
@@ -224,9 +228,14 @@ def run_operation(
     dispatcher: Dispatcher,
     authorize: Authorizer,
     keyring: KeyRing,
-    now: datetime,
+    now: Clock,
 ) -> RunResult:
-    """Drive one freshly-accepted operation to its outcome."""
+    """Drive one freshly-accepted operation to its outcome.
+
+    Production passes a clock callable so each durable transition records when
+    that transition actually happened. Tests may pass one fixed instant when
+    elapsed time is irrelevant.
+    """
     # A `write anyway` operation carries a resolved intent and an override; it
     # skips interpretation entirely.
     if _is_override_operation(operation):
@@ -301,7 +310,7 @@ def _apply_resolve(
     outcome: ResolveOutcome,
     dispatcher: Dispatcher,
     keyring: KeyRing,
-    now: datetime,
+    now: Clock,
 ) -> RunResult:
     if isinstance(outcome, ReadCompleted):
         _step(session, operation, "succeeded", now, safe_result=outcome.result)
@@ -330,7 +339,8 @@ def _apply_resolve(
             operation=operation,
             write_intent=outcome.intent,
             duplicate_check_id=outcome.duplicate_check_id,
-            now=now,
+            existing_summary=outcome.existing_summary,
+            now=_moment(now),
         )
         return RunResult(
             state="waiting_for_duplicate_decision",
@@ -361,7 +371,7 @@ def _run_override(
     *,
     dispatcher: Dispatcher,
     keyring: KeyRing,
-    now: datetime,
+    now: Clock,
 ) -> RunResult:
     intent = open_intent(
         keyring,
@@ -389,7 +399,7 @@ def _commit(
     dispatcher: Dispatcher,
     duplicate_override: str | None,
     keyring: KeyRing,
-    now: datetime,
+    now: Clock,
 ) -> RunResult:
     # Commit `source_in_progress` before the write can occur: from here a cancel
     # can no longer be reported as a clean pre-submit cancellation.
@@ -441,7 +451,8 @@ def _commit(
             # replace the already-authorized and resolved write intent.
             write_intent=intent,
             duplicate_check_id=outcome.duplicate_check_id,
-            now=now,
+            existing_summary=outcome.existing_summary,
+            now=_moment(now),
             zero_write_proven=True,
         )
         return RunResult(
@@ -485,7 +496,7 @@ def _step(
     session,
     operation: Operation,
     target: str,
-    now: datetime,
+    now: Clock,
     *,
     tool: str | None = None,
     safe_result: str | None = None,
@@ -499,10 +510,15 @@ def _step(
         current_state=operation.state,
         current_version=operation.state_version,
         target_state=target,
-        now=now,
+        now=_moment(now),
         tool=tool,
         safe_result=safe_result,
         failure_reason=failure_reason,
         zero_write_proven=zero_write_proven,
     )
     session.refresh(operation)
+
+
+def _moment(clock: Clock) -> datetime:
+    """Resolve a fresh transition instant without breaking fixed-time tests."""
+    return clock() if callable(clock) else clock

@@ -1,18 +1,24 @@
-"""constrain the notification outbox to one row per review per device
+"""scope review items by table, and constrain the notification outbox
 
-`DEV-028`. The baseline created `notification_outbox` with an unconstrained
-`provider_status` and nothing stopping two rows for the same review and device.
-Both matter for a push:
+`DEV-028`. Two tables change here, and the daily-review one is the easier to
+miss, so it is stated first:
 
-- a free-text status lets "sent" and "delivered" appear in a table whose whole
-  point is that the provider accepting a notification is *not* the user having
-  seen it. The status set is now closed;
-- without the unique pair, a retry that inserted instead of updating would send
-  the same card twice. The constraint makes that structurally impossible rather
-  than dependent on the delivery loop being written correctly.
+- `daily_review_items` was unique on `(review_id, record_id)`. A Feishu record
+  id is only unique *within its table*, so an expense and an income row that
+  happened to share an id could not both appear on one day's card -- the insert
+  would fail and the whole card would be lost. The pair becomes
+  `(review_id, tool, record_id)`, which is the identity the review code uses;
+- `notification_outbox` had an unconstrained `provider_status`, and nothing
+  stopping two rows for the same review and device. A free-text status lets
+  "sent" and "delivered" appear in a table whose whole point is that the
+  provider accepting a notification is *not* the user having seen it, so the set
+  is now closed; and without the unique pair a retry that inserted instead of
+  updating would send the same card twice.
 
-No rows exist yet -- no device is enrolled and nothing has ever been queued --
-so the upgrade needs no data migration. The downgrade drops both constraints.
+No rows exist yet -- no device is enrolled, nothing has ever been queued, and no
+review card has been built outside a test -- so the upgrade needs no data
+migration. The downgrade restores the narrower review-item pair and drops the
+outbox constraints.
 
 Revision ID: 0002_notification_outbox_constraints
 Revises: 0001_agent_baseline

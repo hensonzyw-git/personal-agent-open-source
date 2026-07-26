@@ -223,8 +223,9 @@ class FxEvidence(Base):
 class DuplicateCheck(Base):
     """A same-day exact match handed to Henson for a decision.
 
-    Candidate record ids are sealed: they point at real ledger rows, and the
-    audit trail is not allowed to name resources in plaintext.
+    Candidate record ids and the display projection are sealed: they point at
+    real ledger rows and contain personal fields, so neither belongs in
+    plaintext audit storage.
     """
 
     __tablename__ = "duplicate_checks"

@@ -12,6 +12,7 @@ model's tool surface: it is not an MCP tool, and it is not on `/mcp`.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ from personal_agent_core.control_token import (
     ControlAction,
     sign_control_token,
 )
+from personal_agent_core.crypto import KeyRing, generate_key
 from personal_data_mcp.server.app import build_app
 from personal_data_mcp.server.config import ServerConfig
 from personal_data_mcp.storage.engine import (
@@ -46,6 +48,9 @@ COMMIT_UTC = datetime(2026, 7, 23, 14, 0, tzinfo=timezone.utc)
 LATE_SAME_DAY_UTC = datetime(2026, 7, 23, 15, 30, tzinfo=timezone.utc)
 # 2026-07-24 00:30 local is 2026-07-23 16:30 UTC: a different ledger day.
 NEXT_DAY_UTC = datetime(2026, 7, 23, 16, 30, tzinfo=timezone.utc)
+DUPLICATE_KEYRING = KeyRing(
+    [generate_key("duplicate-control-test")], service="personal_data_mcp"
+)
 
 
 def run(coro):
@@ -119,7 +124,10 @@ def sf(tmp_path: Path):
 @pytest.fixture()
 def client(caller, sf):
     app = build_app(
-        ServerConfig(), verification_ring=caller.ring, session_factory=sf
+        ServerConfig(),
+        verification_ring=caller.ring,
+        session_factory=sf,
+        data_keyring=DUPLICATE_KEYRING,
     )
     transport = httpx.ASGITransport(app=app)
 
@@ -354,13 +362,26 @@ def seed_duplicate_check(
     status: str = "awaiting_decision",
     expires_at: datetime = FAR_FUTURE,
 ) -> str:
-    from personal_agent_core.crypto import KeyRing, generate_key
     from personal_data_mcp.storage.models import DuplicateCheck
 
-    keyring = KeyRing([generate_key("dup-1")], service="personal_data_mcp")
     check_id = str(uuid.uuid4())
-    sealed = keyring.encrypt(
-        b'["rec-original"]',
+    sealed = DUPLICATE_KEYRING.encrypt(
+        json.dumps(
+            {
+                "version": 1,
+                "record_ids": ["rec-original"],
+                "candidates": [
+                    {
+                        "record_id": "rec-original",
+                        "name": "午饭",
+                        "amount_cny": "20.00",
+                        "category": "餐饮",
+                        "is_family_expense": False,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ).encode(),
         table="duplicate_checks",
         column="encrypted_candidate_record_ids",
         row_id=check_id,
@@ -409,10 +430,41 @@ def test_a_pending_duplicate_check_is_returned_for_its_own_request(
     body = resp.json()
     assert body["status"] == "found"
     assert body["duplicate_check"]["duplicate_check_id"] == check_id
-    # The sealed candidates never leave: this endpoint answers "which decision
-    # is pending", not "which ledger rows matched".
-    assert "candidate" not in resp.text
+    assert (
+        body["duplicate_check"]["existing_summary"]
+        == "午饭 ¥20 餐饮 · 个人支出"
+    )
+    # The Host-only card projection leaves, but the resource id never does.
     assert "rec-original" not in resp.text
+
+
+def test_a_pending_check_without_the_data_key_fails_closed(caller, sf) -> None:
+    key = str(uuid.uuid4())
+    with sf() as session:
+        seed_duplicate_check(session, key=key)
+    app = build_app(
+        ServerConfig(),
+        verification_ring=caller.ring,
+        session_factory=sf,
+        data_keyring=None,
+    )
+
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://control.local",
+        ) as c:
+            return await c.get(
+                f"/internal/v1/duplicate-checks/{key}",
+                headers=control_headers(
+                    caller, ControlAction.GET_PENDING_DUPLICATE_CHECK, key
+                ),
+            )
+
+    response = run(scenario())
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "SOURCE_UNAVAILABLE"
+    assert "rec-original" not in response.text
 
 
 def test_an_unrelated_request_gets_no_check(caller, client, sf) -> None:

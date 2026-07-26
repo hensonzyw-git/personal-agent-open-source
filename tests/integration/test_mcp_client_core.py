@@ -50,12 +50,12 @@ def free_port() -> int:
 class HttpServer:
     """A fixture server in its own process, like the deployed one."""
 
-    def __init__(self, module: str) -> None:
+    def __init__(self, module: str, *, extra_env: dict[str, str] | None = None) -> None:
         self.port = free_port()
         self.module = module
         self.process = subprocess.Popen(
             [sys.executable, "-m", module, "http", str(self.port)],
-            env=ENV,
+            env={**ENV, **(extra_env or {})},
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -283,7 +283,7 @@ def test_a_call_timeout_raises_instead_of_returning(finance_http) -> None:
 
     # A write whose budget expires must not resolve as a value; the caller has
     # to treat it as possibly committed.
-    with pytest.raises((McpTimeoutError, McpTransportError)):
+    with pytest.raises(McpTimeoutError):
         run(scenario())
 
 
@@ -365,3 +365,93 @@ def test_two_servers_can_be_driven_at_once_without_interference(
     # registry's job, not the transport's.
     assert "finance.query_expenses" in finance_tools
     assert "finance.query_expenses" in almanac_tools
+
+
+# --- the transport must outlive a slow tool call (live finding, 2026-07-26) ---
+
+
+SLOWER_THAN_HTTPX_DEFAULT = 6.0
+
+
+@pytest.fixture(scope="module")
+def slow_finance_http():
+    """A server that takes longer to answer than httpx waits by default."""
+    server = HttpServer(
+        FINANCE_MODULE,
+        extra_env={"FIXTURE_TOOL_DELAY_SECONDS": str(SLOWER_THAN_HTTPX_DEFAULT)},
+    )
+    yield server
+    server.stop()
+
+
+def test_a_call_slower_than_the_http_default_still_returns_its_result(
+    slow_finance_http,
+) -> None:
+    """The regression test for the worst bug this system has had.
+
+    httpx defaults to a 5-second read timeout. The client used to inherit it, so
+    any governed write whose server side took longer had its stream torn down
+    mid-call; the session then waited out its own budget and reported a timeout.
+    Live on 2026-07-26 that turned a `finance.log_expense` that had *already*
+    created the record, read it back and reached `succeeded` in Finance into
+    `source_commit_unknown` on the Agent -- a verified write reported as an
+    unknown commit.
+
+    No fake could have caught it: every counterparty in this suite answers in
+    milliseconds, which is precisely why this one does not.
+    """
+    core = McpClientCore(
+        "finance", StreamableHttpTransport(url=slow_finance_http.url)
+    )
+
+    async def scenario():
+        await core.connect()
+        try:
+            started = time.monotonic()
+            result = await core.call_tool(
+                "finance.log_expense",
+                EXPENSE,
+                timeout=timedelta(seconds=25),
+            )
+            return result, time.monotonic() - started
+        finally:
+            await core.close()
+
+    result, elapsed = asyncio.run(scenario())
+
+    if isinstance(result, dict):
+        payload = result
+    else:
+        import json
+
+        payload = json.loads(result[0].text)
+    assert payload["evidence"]["kind"] == "feishu_record"
+    # It really did take longer than httpx would have waited on its own.
+    assert elapsed >= SLOWER_THAN_HTTPX_DEFAULT
+
+
+def test_the_call_budget_is_still_the_deadline_that_fires(slow_finance_http) -> None:
+    """Raising the transport timeout must not disarm the per-call budget.
+
+    The SDK enforces the budget and wraps its internal timeout as `McpError`
+    carrying HTTP 408. The client must recover that stable meaning as
+    `McpTimeoutError`; otherwise the timeout-specific branch and diagnostics
+    are dead on the HTTP transport.
+    """
+    core = McpClientCore(
+        "finance", StreamableHttpTransport(url=slow_finance_http.url)
+    )
+
+    async def scenario():
+        await core.connect()
+        try:
+            return await core.call_tool(
+                "finance.log_expense",
+                EXPENSE,
+                timeout=timedelta(seconds=1),
+            )
+        finally:
+            await core.close()
+
+    with pytest.raises(McpTimeoutError):
+        asyncio.run(scenario())

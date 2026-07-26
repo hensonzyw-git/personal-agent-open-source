@@ -61,6 +61,7 @@ def record_possible_duplicate(
     operation: Operation,
     write_intent: WriteIntent,
     duplicate_check_id: str,
+    existing_summary: str,
     now: datetime,
     zero_write_proven: bool = False,
 ) -> None:
@@ -82,6 +83,7 @@ def record_possible_duplicate(
         target_state="waiting_for_duplicate_decision",
         now=now,
         duplicate_check_id=duplicate_check_id,
+        safe_result=existing_summary,
         zero_write_proven=zero_write_proven,
     )
 

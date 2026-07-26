@@ -46,6 +46,13 @@ from personal_agent_core.timeutil import utc_now
 CONTROL_AUDIENCE: Final[str] = "personal-data-mcp-control"
 DEFAULT_CONTROL_TTL: Final[timedelta] = timedelta(seconds=60)
 
+#: How many record pointers one batch read may carry. It lives here, with the
+#: resource hash, because it is a contract *between* the two services: the
+#: server refuses a larger batch, so the client has to split at the same number.
+#: Keeping the cap on one side only is what makes an oversized card unopenable
+#: rather than slow.
+MAX_RECORD_BATCH: Final[int] = 100
+
 
 class ControlAction(StrEnum):
     """The reads the control plane may authorise, named so each is bindable."""
@@ -57,12 +64,16 @@ class ControlAction(StrEnum):
     #: model-facing channel, and design 5.2 requires the model never to see or
     #: forge a `duplicate_check_id`.
     GET_PENDING_DUPLICATE_CHECK = "get_pending_duplicate_check"
-    #: "What does the ledger hold for this record *now*?" Design 7.7 step 5: a
+    #: "What does the ledger hold for these records *now*?" Design 7.7 step 5: a
     #: review card must show the current fields, so a correction made in Feishu
-    #: on the computer is visible immediately. The resource is
-    #: `table_kind:record_id`, so a token minted for one record cannot read
-    #: another, or the same id in another table.
-    GET_RECORD_FIELDS = "get_record_fields"
+    #: on the computer is visible immediately.
+    #:
+    #: Deliberately batch-only. A card is opened as a whole, so one request
+    #: covers it behind one schema validation, and the resource is a hash of the
+    #: exact ordered pointers -- a token cannot be replayed against a different
+    #: body, a different record, or the same id in another table. A separate
+    #: single-record route existed briefly and had no caller; a second
+    #: authenticated endpoint for the same job is surface, not convenience.
     GET_RECORD_FIELDS_BATCH = "get_record_fields_batch"
 
 

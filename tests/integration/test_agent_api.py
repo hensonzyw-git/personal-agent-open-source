@@ -575,6 +575,12 @@ def test_duplicate_then_write_anyway_carries_the_override(engine, token_ring, ke
     assert body["state"] == "waiting_for_duplicate_decision"
     assert body["duplicate_check_id"] == "dup-1"
     assert body["duplicate_existing"] == "午饭 ¥45 餐饮"
+    polled = client.get(
+        f"/v1/operations/{body['operation_id']}",
+        headers=_auth(token_ring),
+    )
+    assert polled.status_code == 202
+    assert polled.json()["duplicate_existing"] == "午饭 ¥45 餐饮"
 
     decision = client.post(
         "/v1/duplicate-checks/dup-1/decision",

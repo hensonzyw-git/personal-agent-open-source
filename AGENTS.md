@@ -95,8 +95,17 @@ blocked on the Apple entitlement, so the only sender shipped refuses rather than
 claiming delivery. Late-verified writes reopen their existing daily card,
 record identity is table-scoped, current fields are batch-read behind one fresh
 schema validation, and revoked devices are rechecked immediately before push.
-What has still never happened is a **live Feishu write through
-both roots in one request**. Work continues in
+The **composed path has now run live end to end** (2026-07-26): one message went
+real GLM → policy → real MCP → a verified Feishu write on the synthetic test
+Base, and an identical repeat parked on the duplicate gate with zero writes. That
+run found and fixed the worst defect so far — an already-succeeded write reported
+as `source_commit_unknown`, caused by an inherited 5-second httpx read timeout
+that tore the stream down mid-call. No offline test could see it, because every
+fake counterparty answers instantly; the regression test is a real socket against
+a deliberately slow server. The follow-up review also fixed the stale operation
+clock, recovered SDK HTTP 408s as `McpTimeoutError`, added encrypted Host-only
+duplicate summaries, gave review batches a size-aware timeout, and made local
+keys private from their first filesystem instant. Work continues in
 `docs/Phase1开发拆解_v0.1.md`, following its dependency order and Gates G4-G6.
 
 Development authorization is not authorization for everything downstream. Each

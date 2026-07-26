@@ -4,11 +4,19 @@ The tools come from the generated manifest rather than being written out again,
 so the fixture cannot drift from the contract. It performs no I/O beyond
 returning deterministic receipts: no Feishu, no credentials, no network.
 
+`FIXTURE_TOOL_DELAY_SECONDS` makes a tool call take that long before answering.
+An instant counterparty is the one thing every fake here has in common, and it
+is exactly what hid a transport read timeout until the first live write: the
+real Finance handler talks to Feishu several times, and a stream torn down
+mid-call turns a completed write into an unknown commit.
+
 Run as `python -m fixtures.mcp_servers.finance_fixture_server [stdio|http] [port]`.
 """
 
 from __future__ import annotations
 
+import asyncio
+import os
 import sys
 from typing import Any
 
@@ -42,11 +50,15 @@ def build_server(*, host: str = "127.0.0.1", port: int = 0) -> FastMCP:
             for entry in catalog
         ]
 
+    delay = float(os.environ.get("FIXTURE_TOOL_DELAY_SECONDS", "0") or 0)
+
     @server._mcp_server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         known = {entry["name"] for entry in catalog}
         if name not in known:
             raise ValueError(f"unknown tool {name}")
+        if delay:
+            await asyncio.sleep(delay)
         import json
 
         return [

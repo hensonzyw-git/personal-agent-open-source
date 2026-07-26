@@ -8,7 +8,7 @@ ones that do not depend on a real model or a live Base -- the state walk, the
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -213,6 +213,35 @@ def test_a_resolved_write_walks_through_verification_to_success(session, keyring
     assert dispatcher.commit_calls[0]["duplicate_override"] is None
     # The idempotency key handed to Finance is the client UUID.
     assert dispatcher.commit_calls[0]["idempotency_key"] == op.idempotency_key
+
+
+def test_each_state_transition_records_its_actual_time(session, keyring) -> None:
+    op = _fresh_operation(session)
+    intent = WriteIntent("finance.log_expense", {"name": "午饭", "amount": "45"})
+    moments = iter(
+        [NOW + timedelta(seconds=offset) for offset in range(1, 6)]
+    )
+
+    result = run_operation(
+        session,
+        op,
+        text="午饭 45 个人支出",
+        conversation_id="conv-1",
+        interpreter=FakeInterpreter(
+            ToolCall("finance.log_expense", {"name": "午饭"})
+        ),
+        dispatcher=FakeDispatcher(
+            resolve=Resolved(intent), commit=Written("recABC")
+        ),
+        authorize=allow,
+        keyring=keyring,
+        now=lambda: next(moments),
+    )
+
+    assert result.state == "succeeded"
+    session.refresh(op)
+    assert op.state_version == 6
+    assert op.updated_at == NOW + timedelta(seconds=5)
 
 
 def test_source_in_progress_is_durable_before_the_external_commit(

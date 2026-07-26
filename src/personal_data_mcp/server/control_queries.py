@@ -21,11 +21,16 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from personal_agent_core.crypto import KeyRing
+from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.timeutil import (
     ledger_day_start_utc,
     to_rfc3339,
 )
-from personal_data_mcp.finance.duplicate_check import pending_check_for
+from personal_data_mcp.finance.duplicate_check import (
+    candidate_summary_for_check,
+    pending_check_for,
+)
 from personal_data_mcp.storage.models import ExternalReceipt, ToolExecution
 
 
@@ -73,26 +78,45 @@ def get_execution_status(
 
 
 def get_pending_duplicate_check(
-    session: Session, idempotency_key: str, *, now: datetime
+    session: Session,
+    idempotency_key: str,
+    *,
+    now: datetime,
+    keyring: KeyRing | None,
 ) -> dict[str, Any] | None:
     """The undecided duplicate check raised for this request, or None.
 
-    Only the check id and its expiry leave: the candidate record ids are sealed
-    and stay sealed, because the Agent needs to know *that* a decision is
-    pending and which id answers it -- not which ledger rows matched. The
-    candidate cards Henson sees come from the same MCP call that raised the
-    check, never from this endpoint.
+    The check id, expiry and a display-only candidate summary leave. Candidate
+    record ids stay sealed: the Agent needs to show what matched, but it never
+    needs the source identifier. This is the Host-only side channel; the
+    model-facing MCP error remains the bare `POSSIBLE_DUPLICATE`.
     """
     check = pending_check_for(
         session, idempotency_key=idempotency_key, now=now
     )
     if check is None:
         return None
+    if keyring is None:
+        raise AppError(
+            ErrorCode.SOURCE_UNAVAILABLE,
+            internal_detail=(
+                "a pending duplicate check exists but no data keyring is "
+                "composed for its display projection"
+            ),
+        )
+    try:
+        existing_summary = candidate_summary_for_check(check, keyring)
+    except Exception as exc:
+        raise AppError(
+            ErrorCode.SOURCE_UNAVAILABLE,
+            internal_detail="the pending duplicate display projection is unreadable",
+        ) from exc
     return {
         "duplicate_check_id": check.check_id,
         "status": check.status,
         "created_at": to_rfc3339(check.created_at),
         "expires_at": to_rfc3339(check.expires_at),
+        "existing_summary": existing_summary,
     }
 
 
