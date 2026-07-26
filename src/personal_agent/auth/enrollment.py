@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import secrets
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Final
@@ -62,6 +64,35 @@ class ChallengeError(Exception):
 
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def encode_device_scopes(scopes: Iterable[str]) -> str:
+    """Serialise the `devices.scopes` column.
+
+    The column is JSON. It used to be written with `repr()` here while every
+    reader used `json.loads`, which no test could see because nothing enrolled a
+    device outside this module and a `repr` list still answers `in` correctly for
+    a substring check. The first real enrollment would have produced a device
+    whose scopes could not be read at all -- a device granted nothing, failing at
+    composition rather than at the write. One encoder and one decoder now.
+    """
+    encoded = list(scopes)
+    if not all(isinstance(scope, str) for scope in encoded):
+        raise ValueError("device scopes must be strings")
+    return json.dumps(encoded)
+
+
+def decode_device_scopes(raw: str) -> tuple[str, ...]:
+    """Read the `devices.scopes` column, or raise `ValueError`."""
+    try:
+        scopes = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("device scopes column is not JSON") from exc
+    if not isinstance(scopes, list) or not all(
+        isinstance(scope, str) for scope in scopes
+    ):
+        raise ValueError("device scopes column is not a list of strings")
+    return tuple(scopes)
 
 
 def _expire(session: Session, model: type, primary_key: str) -> None:
@@ -147,7 +178,7 @@ def claim_enrollment_code(
         public_key=public_key_b64u,
         device_key_thumbprint=device_key_thumbprint(public_key_b64u),
         status="active",
-        scopes=repr(scopes),
+        scopes=encode_device_scopes(scopes),
         allowed_tools_version=allowed_tools_version,
         created_at=now,
     )

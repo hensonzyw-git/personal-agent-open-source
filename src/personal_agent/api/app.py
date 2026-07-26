@@ -35,6 +35,16 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from personal_agent.api import events
+from personal_agent.api.device_api import (
+    DeviceAuthRejected,
+    EnrollmentRejected,
+    claim_device,
+    issue_device_challenge,
+    issue_device_token,
+    list_devices,
+    revoke_device_by_id,
+    update_push_token,
+)
 from personal_agent.api.duplicate_flow import decide_duplicate
 from personal_agent.api.operation_store import (
     chat_request_fingerprint,
@@ -101,6 +111,11 @@ class AgentApiDeps:
     #: `None` means the review endpoints are not composed, and opening a card
     #: says so rather than rendering one with no values.
     read_record: RecordReader | None = None
+    #: The server's current `allowed_tools_version`, stamped onto a device at
+    #: enrollment (design 4.1 step 3). `None` means enrollment is not composed:
+    #: claiming a code then refuses, because a device enrolled against a version
+    #: nobody supplied would be granted no tools and look revoked instead.
+    enrollment_manifest_version: str | None = None
     #: HTTP waits no longer than this for an operation worker. Production uses
     #: the design's 30-second ceiling; tests may shorten it.
     sync_wait_seconds: float = 30.0
@@ -194,6 +209,65 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 internal_detail="Idempotency-Key must be a canonical UUIDv4",
             )
         return key
+
+    # --- the device identity surface (design 5.1) ----------------------------
+    #
+    # The first three endpoints are the only unauthenticated ones in the
+    # service. They are bodies-in, opaque-refusal-out; the handlers live in
+    # `device_api` so their failure shapes can be tested without HTTP.
+
+    @app.post("/v1/enrollments/claim")
+    async def post_enrollment_claim(request: Request):
+        body = await _json_body(request)
+        return await asyncio.to_thread(_claim_enrollment, deps, body)
+
+    @app.post("/v1/auth/challenges")
+    async def post_auth_challenge(request: Request):
+        body = await _json_body(request)
+        return await asyncio.to_thread(_issue_challenge, deps, body)
+
+    @app.post("/v1/auth/tokens")
+    async def post_auth_token(request: Request):
+        body = await _json_body(request)
+        return await asyncio.to_thread(_issue_token, deps, body)
+
+    @app.get("/v1/devices")
+    async def get_devices(request: Request):
+        with deps.session_factory() as session:
+            def work():
+                auth = authenticate(request, session)
+                return JSONResponse(
+                    list_devices(
+                        session, device_id=auth.device_id, scopes=auth.scopes
+                    )
+                )
+
+            return _commit(session, work)
+
+    @app.delete("/v1/devices/{device_id}")
+    async def delete_device(device_id: str, request: Request):
+        with deps.session_factory() as session:
+            def work():
+                auth = authenticate(request, session)
+                return JSONResponse(
+                    revoke_device_by_id(
+                        session,
+                        caller_device_id=auth.device_id,
+                        scopes=auth.scopes,
+                        device_id=device_id,
+                        now=deps.now(),
+                    )
+                )
+
+            return _commit(session, work)
+
+    @app.put("/v1/devices/{device_id}/push-token")
+    async def put_push_token(device_id: str, request: Request):
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        body = await _json_body(request)
+        return await asyncio.to_thread(
+            _update_push_token, deps, auth, device_id, body
+        )
 
     @app.post("/v1/chat/messages")
     async def post_message(request: Request):
@@ -392,6 +466,22 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             {"error": {"code": "UNAUTHENTICATED"}}, status_code=401
         )
 
+    @app.exception_handler(EnrollmentRejected)
+    async def _on_enrollment_rejected(request: Request, exc: EnrollmentRejected):
+        # Unknown, spent and expired codes are one answer. The operator sees the
+        # difference in the log line below; a caller cannot probe for it.
+        logger.info("enrollment refused: %s", exc)
+        return JSONResponse(
+            {"error": {"code": "ENROLLMENT_REJECTED"}}, status_code=403
+        )
+
+    @app.exception_handler(DeviceAuthRejected)
+    async def _on_device_auth_rejected(request: Request, exc: DeviceAuthRejected):
+        logger.info("device authentication refused: %s", exc)
+        return JSONResponse(
+            {"error": {"code": "DEVICE_AUTH_REJECTED"}}, status_code=401
+        )
+
     @app.exception_handler(AppError)
     async def _on_app_error(request: Request, exc: AppError):
         return _error_response(exc)
@@ -408,6 +498,82 @@ class _AnchoredChat:
 def _authenticate_once(request, deps, authenticate) -> AuthContext:
     with deps.session_factory() as session:
         return authenticate(request, session)
+
+
+def _claim_enrollment(deps: AgentApiDeps, body: dict[str, Any]) -> JSONResponse:
+    if deps.enrollment_manifest_version is None:
+        raise AppError(
+            ErrorCode.INTERNAL_ERROR,
+            internal_detail=(
+                "enrollment is not composed: no allowed_tools_version was wired"
+            ),
+        )
+    with deps.session_factory() as session:
+        def work():
+            return JSONResponse(
+                claim_device(
+                    session,
+                    body=body,
+                    allowed_tools_version=deps.enrollment_manifest_version,
+                    now=deps.now(),
+                ),
+                status_code=201,
+            )
+
+        return _commit(session, work)
+
+
+def _issue_challenge(deps: AgentApiDeps, body: dict[str, Any]) -> JSONResponse:
+    with deps.session_factory() as session:
+        def work():
+            return JSONResponse(
+                issue_device_challenge(session, body=body, now=deps.now())
+            )
+
+        return _commit(session, work)
+
+
+def _issue_token(deps: AgentApiDeps, body: dict[str, Any]) -> JSONResponse:
+    with deps.session_factory() as session:
+        try:
+            issued = issue_device_token(
+                session,
+                body=body,
+                token_ring=deps.token_ring,
+                now=deps.now(),
+            )
+        except DeviceAuthRejected:
+            # The counted failed attempt is what makes `MAX_CHALLENGE_ATTEMPTS`
+            # real, and it lives in this session. Rolling back here -- the
+            # reflex on any failed request -- would hand a stolen challenge id
+            # unlimited signature guesses, so a refusal commits its own
+            # bookkeeping and then propagates.
+            session.commit()
+            raise
+        except Exception:
+            session.rollback()
+            raise
+        session.commit()
+        return JSONResponse(issued.to_json())
+
+
+def _update_push_token(
+    deps: AgentApiDeps, auth: AuthContext, device_id: str, body: dict[str, Any]
+) -> JSONResponse:
+    with deps.session_factory() as session:
+        def work():
+            return JSONResponse(
+                update_push_token(
+                    session,
+                    deps.keyring,
+                    caller_device_id=auth.device_id,
+                    device_id=device_id,
+                    body=body,
+                    now=deps.now(),
+                )
+            )
+
+        return _commit(session, work)
 
 
 def _anchor_chat(

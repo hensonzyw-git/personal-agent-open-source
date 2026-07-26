@@ -1,0 +1,207 @@
+import Foundation
+import PersonalAgentKit
+import Observation
+
+/// The view state. All the interesting logic lives in `PersonalAgentKit`, which is
+/// tested headlessly; this type only turns results and errors into something a
+/// screen can render.
+@MainActor
+@Observable
+final class AppModel {
+    enum Phase: Equatable {
+        case loading
+        case needsEnrollment
+        case ready
+        /// The server will not issue tokens for this device any more.
+        case revoked
+    }
+
+    var phase: Phase = .loading
+    /// Where the backend is. On the Simulator the Mac's loopback works as-is; on
+    /// a real iPhone this is the Mac's LAN address until `DEV-033` puts the
+    /// service behind TLS on `agent.example.invalid`.
+    var baseURLText: String = "http://127.0.0.1:8810"
+    var enrollmentCode: String = ""
+    var deviceName: String = defaultDeviceName()
+
+    var deviceID: String?
+    var keyKind: String?
+    var capabilities: Capabilities?
+    var selfDevice: DeviceSummary?
+    var lastError: String?
+    var busy = false
+
+    private let store: CredentialStore = KeychainCredentialStore()
+    private var session: DeviceSession?
+
+    // --- lifecycle -----------------------------------------------------------
+
+    func start() async {
+        if let url = try? DeviceSession.storedBaseURL(in: store) {
+            baseURLText = url.absoluteString
+        }
+        guard let session = makeSession() else {
+            phase = .needsEnrollment
+            return
+        }
+        do {
+            let state = try await session.restore()
+            switch state {
+            case .notEnrolled:
+                phase = .needsEnrollment
+            case .enrolled(let id), .rejected(let id):
+                deviceID = id
+                keyKind = await session.deviceKeyKind?.rawValue
+                phase = .ready
+                await refresh()
+            }
+        } catch {
+            // A key blob that cannot be reopened is not something to paper over:
+            // the device has to enroll again, and it should say so.
+            lastError = describe(error)
+            phase = .needsEnrollment
+        }
+    }
+
+    func enroll() async {
+        lastError = nil
+        guard let session = makeSession() else {
+            lastError = "服务地址无效，请使用 http:// 或 https://"
+            return
+        }
+        let code = enrollmentCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            lastError = "请输入服务器生成的一次性注册码"
+            return
+        }
+        busy = true
+        defer { busy = false }
+        do {
+            let enrolled = try await session.enroll(code: code, displayName: deviceName)
+            deviceID = enrolled.deviceID
+            keyKind = await session.deviceKeyKind?.rawValue
+            enrollmentCode = ""
+            phase = .ready
+            await refresh()
+        } catch {
+            lastError = describe(error)
+        }
+    }
+
+    func refresh() async {
+        guard let session else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            capabilities = try await session.capabilities()
+            selfDevice = try await session.devices().devices.first { $0.isSelf }
+            phase = .ready
+            lastError = nil
+        } catch AgentClientError.deviceRejected {
+            phase = .revoked
+            // The last successful read is now unverifiable, and leaving it on
+            // screen would show `active` directly under "已被撤销". A stale value
+            // presented as current is worse than no value.
+            capabilities = nil
+            selfDevice = nil
+            lastError = "服务端已不再为本设备签发 token（设备被撤销或密钥不匹配）。"
+        } catch {
+            lastError = describe(error)
+        }
+    }
+
+    func revokeSelf() async {
+        guard let session else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            selfDevice = try await session.revokeSelf()
+            phase = .revoked
+            lastError = nil
+        } catch {
+            lastError = describe(error)
+        }
+    }
+
+    /// Forget the local enrollment. The server-side revocation is separate on
+    /// purpose: deleting the key here does not revoke anything, and pretending it
+    /// did would leave an active device row nobody can see.
+    func forgetLocally() async {
+        guard let session else { return }
+        do {
+            try await session.forgetLocally()
+            deviceID = nil
+            keyKind = nil
+            capabilities = nil
+            selfDevice = nil
+            // The previous phase's error described a device that no longer exists
+            // here; carrying it onto the enrollment screen would report a failure
+            // for a device that was just forgotten.
+            lastError = nil
+            phase = .needsEnrollment
+        } catch {
+            lastError = describe(error)
+        }
+    }
+
+    // --- helpers -------------------------------------------------------------
+
+    private func makeSession() -> DeviceSession? {
+        let text = baseURLText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: text), let client = try? AgentClient(baseURL: url) else {
+            return nil
+        }
+        if let session, client.baseURL == url { return session }
+        let built = DeviceSession(client: client, store: store)
+        session = built
+        return built
+    }
+
+    private func describe(_ error: Error) -> String {
+        switch error {
+        case AgentClientError.enrollmentRejected:
+            return "注册码无效、已使用或已过期，请在服务器重新生成。"
+        case AgentClientError.deviceRejected:
+            return "服务端拒绝为本设备签发 token。"
+        case AgentClientError.unauthenticated:
+            return "token 未被接受。"
+        case AgentClientError.badRequest(let code):
+            return "请求被拒绝（\(code ?? "INVALID_ARGUMENT")）。"
+        case AgentClientError.forbidden(let code):
+            return "权限不足（\(code ?? "SCOPE_DENIED")）。"
+        case AgentClientError.serverError(let status):
+            return "服务端错误 HTTP \(status)。"
+        case AgentClientError.transport(let detail):
+            return "无法连接服务：\(detail)"
+        case AgentClientError.malformedResponse:
+            return "服务返回的内容不符合约定，已拒绝当作成功处理。"
+        case AgentClientError.invalidBaseURL:
+            return "服务地址无效。"
+        case DeviceIdentityError.secureEnclaveUnavailable:
+            return "本设备无法创建 Secure Enclave 密钥。"
+        case DeviceSessionError.notEnrolled:
+            return "本设备尚未注册。"
+        case DeviceSessionError.challengeNotForThisDevice,
+             DeviceSessionError.unexpectedAudience,
+             DeviceSessionError.malformedNonce:
+            return "challenge 与本设备不匹配，已拒绝签名。"
+        case DeviceSessionError.storedEnrollmentMalformed:
+            return "本机设备凭证损坏，无法安全恢复；请先在服务器撤销旧设备，再重新注册。"
+        case DeviceSessionError.localPersistenceFailed(let deviceID, let revoked):
+            if revoked {
+                return "本机凭证保存失败；刚创建的服务端设备已自动撤销，请重新生成注册码。"
+            }
+            return "本机凭证保存失败，且未能自动撤销服务端设备 \(deviceID)。请先在服务器执行 revoke。"
+        default:
+            return String(describing: error)
+        }
+    }
+
+    private static func defaultDeviceName() -> String {
+        #if canImport(UIKit)
+        return "iPhone"
+        #else
+        return "device"
+        #endif
+    }
+}

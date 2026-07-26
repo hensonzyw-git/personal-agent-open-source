@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Simulator only, applied through `CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]`.
+
+	  A simulator build made without a signing team gets no entitlements at all,
+	  and the Keychain then refuses every call with errSecMissingEntitlement
+	  (-34018) -- which looks exactly like a bug in the credential store. A device
+	  build must NOT use this file: automatic signing supplies the real
+	  `application-identifier` from the Personal Team, and a hardcoded one here
+	  would fight it.
+	-->
+	<key>application-identifier</key>
+	<string>org.example.PersonalAgent</string>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>org.example.PersonalAgent</string>
+	</array>
+</dict>
+</plist>

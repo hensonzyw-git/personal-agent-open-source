@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Local networking only. `NSAllowsLocalNetworking` is what lets the app reach
+	  `http://127.0.0.1:8810` on the Simulator and the Mac's LAN address from a
+	  real iPhone; it does NOT weaken ATS for anything else, so the production
+	  `https://agent.example.invalid` path (DEV-033) still gets full ATS.
+	  Arbitrary loads are deliberately not enabled.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<!-- iOS 14+ asks the user before an app talks to the local network. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于连接你自己的 Personal Agent 后端服务（开发阶段在 Mac 上运行）。</string>
+</dict>
+</plist>

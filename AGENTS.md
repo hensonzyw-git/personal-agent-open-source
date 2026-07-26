@@ -1,6 +1,6 @@
 # Personal Agent — Agent Collaboration Guide
 
-> Last updated: 2026-07-23
+> Last updated: 2026-07-26
 >
 > `AGENTS.md` and `CLAUDE.md` must remain byte-for-byte equivalent. Update both
 > in the same change.
@@ -28,6 +28,19 @@ and action layer that works across phone, computers, and future Agent hosts.
   reconnects, tool allowlists, and audit.
 - iOS is a thin client. It must never contain long-lived Feishu, GitHub, model,
   or infrastructure credentials.
+- iOS signing is a free **Personal Team** (bundle id `org.example.PersonalAgent`).
+  That is enough for Secure Enclave, Keychain and Xcode direct install, and it
+  cannot grant APNs; the provisioning profile also expires every 7 days. Do not
+  write push code that looks usable, and do not add a capability a Personal Team
+  cannot sign. See `docs/iOS开发环境_Personal_Team_v0.1.md`.
+- The iPhone app's non-UI logic lives in `ios/PersonalAgentKit`, a SwiftPM package
+  testable with `swift test`. The device wire contract is verified against the same
+  frozen vector file the Python tests use; never copy that file.
+- This is a strictly single-user system and Henson personally manages every
+  enrolled device. New devices receive the current Phase 1 Finance,
+  capabilities, and self-service scopes by default; do not narrow those defaults
+  unless Henson changes this decision. `device.manage` remains an explicit
+  enrollment-CLI grant.
 - Default public access design: `HTTPS + registered-device identity + short
   lived access tokens`. Tailscale was validated but deliberately is not a
   mobile dependency because it can conflict with the user's existing VPN use.
@@ -105,7 +118,19 @@ fake counterparty answers instantly; the regression test is a real socket agains
 a deliberately slow server. The follow-up review also fixed the stale operation
 clock, recovered SDK HTTP 408s as `McpTimeoutError`, added encrypted Host-only
 duplicate summaries, gave review batches a size-aware timeout, and made local
-keys private from their first filesystem instant. Work continues in
+keys private from their first filesystem instant.
+
+`DEV-029` is built: the six device-identity endpoints of design 5.1, the
+`personal-agent-device` operator CLI, and an iPhone app (`ios/`) whose non-UI
+logic lives in a headlessly-tested SwiftPM package. **A device has enrolled for
+real** (2026-07-26, iOS Simulator): Secure Enclave key → one-time code → signed
+challenge → 10-minute token → `/v1/capabilities`, then a CLI revocation refused on
+the next refresh. That run found four defects, including a `devices.scopes` column
+written with `repr()` and read with `json.loads`, which would have left the first
+real iPhone enrolled and granted nothing while every test stayed green. iOS
+signing uses a **Personal Team**, which is sufficient for Secure Enclave, Keychain
+and direct install and **cannot** grant APNs; the push half of `DEV-028` therefore
+stays blocked and no code pretends otherwise. Work continues in
 `docs/Phase1开发拆解_v0.1.md`, following its dependency order and Gates G4-G6.
 
 Development authorization is not authorization for everything downstream. Each
@@ -292,4 +317,6 @@ conflict instead of silently choosing an old default.
   explicit development authorization.
 - `ECS安全加固实施记录_2026-07-23.md` — security, encryption, snapshot, and
   rollback record.
+- `docs/iOS开发环境_Personal_Team_v0.1.md` — Personal Team constraints, the iOS
+  project layout, and the manual Xcode steps.
 - `PROJECT_STATUS.md` — exact handoff point and ordered next work.

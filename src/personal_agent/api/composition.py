@@ -32,7 +32,6 @@ Two freshness properties are structural rather than incidental:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -62,6 +61,7 @@ from personal_agent.api.orchestrator import (
 )
 from personal_agent.api.intent import WriteIntent
 from personal_agent.api.recovery import FinanceExecutionStatus, recover_pending
+from personal_agent.auth.enrollment import decode_device_scopes
 from personal_agent.keys import (
     load_access_token_ring,
     load_agent_data_keyring,
@@ -169,15 +169,11 @@ def device_authorization(
     if device is None:
         return None
     try:
-        scopes = json.loads(device.scopes)
-    except json.JSONDecodeError as exc:
+        scopes = decode_device_scopes(device.scopes)
+    except ValueError as exc:
         raise CompositionError(
             f"device {device_id} has an unreadable scopes column"
         ) from exc
-    if not isinstance(scopes, list) or not all(
-        isinstance(scope, str) for scope in scopes
-    ):
-        raise CompositionError(f"device {device_id} has a malformed scopes column")
     granted = (
         enabled_tools
         if device.allowed_tools_version == manifest_version
@@ -568,6 +564,10 @@ async def agent_service(
                     capabilities=capabilities,
                     now=now,
                     read_record=record_reader(control),
+                    # A device is enrolled against the manifest this service is
+                    # actually running, so the version comes from the loaded
+                    # manifest and never from the enrolling client.
+                    enrollment_manifest_version=manifest_version,
                     sync_wait_seconds=config.sync_wait_seconds,
                 ),
                 bridge=bridge,

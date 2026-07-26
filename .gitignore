@@ -31,3 +31,12 @@ health-exports/
 *.sqlite3
 *.db
 *.log
+
+# iOS build artefacts. The app sources, the package and the shared scheme are
+# committed; SwiftPM/Xcode output and per-user Xcode state are not.
+ios/**/.build/
+ios/build/
+ios/**/.swiftpm/
+ios/**/*.xcodeproj/project.xcworkspace/
+ios/**/*.xcodeproj/xcuserdata/
+DerivedData/
