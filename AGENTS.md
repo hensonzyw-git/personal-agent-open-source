@@ -83,12 +83,20 @@ PRD v1.0.1 passed product review. Henson authorized Phase 1 technical design on
 2026-07-23, and authorized Phase 1 development on 2026-07-23. Gates G0 and G1
 are passed: `DEV-001` through `DEV-014` are complete and the MCP path runs on
 both transports without any credential. Gates G2 and G3 are also passed.
-`DEV-015` through `DEV-026` are complete, and `DEV-027` is now built end to end
-offline: model adapter, Finance dispatcher seam, and the Agent-side service
-composition root, so `personal-agent-api` starts and serves. One expense has run
-through both composition roots entirely offline, with deterministic model and
-Feishu boundaries. What it has never had is a current-code live model turn or a
-live Feishu write through both roots. Work continues from there in
+`DEV-015` through `DEV-026` are complete, and `DEV-027` is built end to end:
+model adapter, Finance dispatcher seam, and the Agent-side service composition
+root, so `personal-agent-api` starts and serves. One expense has run through both
+composition roots entirely offline, with deterministic model and Feishu
+boundaries. The **model boundary is verified live** on the current code
+(2026-07-26: 15 adversarial cases, four full runs, `docs/evidence/`), which found
+four prompt defects and fixed them. `DEV-028` (daily review, current-value
+control read, outbox, `personal-agent-review`) is built offline; its push half is
+blocked on the Apple entitlement, so the only sender shipped refuses rather than
+claiming delivery. Late-verified writes reopen their existing daily card,
+record identity is table-scoped, current fields are batch-read behind one fresh
+schema validation, and revoked devices are rechecked immediately before push.
+What has still never happened is a **live Feishu write through
+both roots in one request**. Work continues in
 `docs/Phase1开发拆解_v0.1.md`, following its dependency order and Gates G4-G6.
 
 Development authorization is not authorization for everything downstream. Each

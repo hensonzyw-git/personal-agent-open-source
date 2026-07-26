@@ -1035,3 +1035,116 @@ def _seed_finance_success(database: Path, key: str) -> None:
         )
         session.commit()
     engine.dispose()
+
+
+# --- the daily review surface (DEV-028) --------------------------------------
+
+
+def _seed_review_card(database: Path, *, known_record: str, unknown_record: str) -> str:
+    """One card with two items: one Finance wrote, one it never did."""
+    from personal_agent.storage.models import DailyReview, DailyReviewItem
+
+    review_id = str(uuid.uuid4())
+    engine = create_database_engine(database)
+    with session_factory(engine)() as session:
+        now = utc_now()
+        session.add(
+            DailyReview(
+                review_id=review_id,
+                review_date="2026-07-25",
+                status="pending",
+                created_at=now,
+            )
+        )
+        for record_id in (known_record, unknown_record):
+            session.add(
+                DailyReviewItem(
+                    item_id=str(uuid.uuid4()),
+                    review_id=review_id,
+                    tool="finance.log_expense",
+                    record_id=record_id,
+                    committed_at=now,
+                )
+            )
+        session.commit()
+    engine.dispose()
+    return review_id
+
+
+def test_opening_a_card_reaches_the_real_finance_control_plane(
+    keys, agent_db, tmp_path: Path
+) -> None:
+    """The composed reader is wired to the deployed endpoint, not to a fake.
+
+    The two items differ only in whether Finance holds a verified receipt, and
+    only Finance can tell them apart -- so two different answers on one card is
+    evidence the read really crossed the socket. Neither carries values: this
+    service has no ledger config, so it refuses to read Feishu rather than
+    inventing a card, which is the honest answer offline.
+    """
+    finance_db = tmp_path / "finance.sqlite"
+    key = str(uuid.uuid4())
+    _seed_finance_success(finance_db, key)
+    review_id = _seed_review_card(
+        agent_db, known_record=f"rec_{key}", unknown_record="recNeverWritten"
+    )
+
+    service = LoopbackFinanceService(
+        {
+            MCP_KID_ENV: "svc-test",
+            MCP_PEM_ENV: str(keys.service_public_pem),
+        },
+        database=finance_db,
+    )
+    try:
+
+        async def scenario():
+            async with agent_service(
+                config_for(agent_db, service),
+                build_gateway=lambda: FakeGateway(ProposedAnswer(text="hi")),
+            ) as composed:
+                async with http_for(composed.deps) as client:
+                    return await client.get(
+                        f"/v1/daily-reviews/{review_id}",
+                        headers={"Authorization": f"Bearer {access_token()}"},
+                    )
+
+        response = asyncio.run(scenario())
+    finally:
+        service.stop()
+
+    assert response.status_code == 200
+    by_record = {item["record_id"]: item for item in response.json()["items"]}
+    assert by_record[f"rec_{key}"]["unavailable"] == "source_unavailable"
+    assert by_record["recNeverWritten"]["unavailable"] == "no_receipt"
+
+
+def test_the_review_list_is_served_by_the_composed_app(
+    keys, agent_db, finance, tmp_path: Path
+) -> None:
+    review_id = _seed_review_card(
+        agent_db, known_record="recA", unknown_record="recB"
+    )
+
+    async def scenario():
+        async with agent_service(
+            config_for(agent_db, finance),
+            build_gateway=lambda: FakeGateway(ProposedAnswer(text="hi")),
+        ) as composed:
+            async with http_for(composed.deps) as client:
+                listed = await client.get(
+                    "/v1/daily-reviews",
+                    params={"status": "pending"},
+                    headers={"Authorization": f"Bearer {access_token()}"},
+                )
+                acked = await client.post(
+                    f"/v1/daily-reviews/{review_id}/ack",
+                    headers={"Authorization": f"Bearer {access_token()}"},
+                )
+                return listed, acked
+
+    listed, acked = asyncio.run(scenario())
+
+    assert [r["review_id"] for r in listed.json()["reviews"]] == [review_id]
+    assert listed.json()["reviews"][0]["item_count"] == 2
+    assert acked.json()["status"] == "reviewed"

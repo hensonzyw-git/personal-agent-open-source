@@ -36,7 +36,11 @@ from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.host_context import HOST_ONLY_FIELDS, ServiceKeyRing
 from personal_data_mcp.server.authz import Authorizer
 from personal_data_mcp.server.config import ServerConfig
-from personal_data_mcp.server.control import SessionFactory, build_control_app
+from personal_data_mcp.server.control import (
+    RecordReader,
+    SessionFactory,
+    build_control_app,
+)
 from personal_data_mcp.server.errors import (
     error_result,
     internal_error_result,
@@ -259,6 +263,7 @@ def build_app(
     *,
     verification_ring: ServiceKeyRing | None = None,
     session_factory: SessionFactory | None = None,
+    record_reader: RecordReader | None = None,
 ) -> Starlette:
     """The ASGI application: the MCP endpoint, and the control API if a database
     is wired.
@@ -278,7 +283,9 @@ def build_app(
         # on /mcp. Adding its routes to the same app keeps it one loopback
         # service while keeping it off the model's tool surface entirely.
         control = build_control_app(
-            verification_ring=ring, session_factory=session_factory
+            verification_ring=ring,
+            session_factory=session_factory,
+            record_reader=record_reader,
         )
         app.router.routes.extend(control.router.routes)
 

@@ -1,4 +1,4 @@
-"""The internal control API: two authenticated, read-only endpoints.
+"""The internal control API: authenticated, read-only endpoints.
 
 It is deliberately not an MCP tool and not on the `/mcp` path. Technical design
 7.6.1 is explicit that the execution-status endpoint "is not registered as an
@@ -18,8 +18,8 @@ no execution payload and no exception string reaches the wire.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Final
+from collections.abc import Awaitable, Callable
+from typing import Any, Final
 
 from sqlalchemy.orm import Session
 from starlette.applications import Starlette
@@ -29,6 +29,7 @@ from starlette.routing import Route
 
 from personal_agent_core.control_token import (
     ControlAction,
+    record_batch_resource,
     verify_control_token,
 )
 from personal_agent_core.errors import AppError, ErrorCode
@@ -38,12 +39,22 @@ from personal_data_mcp.server.control_queries import (
     get_execution_status,
     get_pending_duplicate_check,
     successful_writes_on,
+    verified_receipt_for,
 )
 
 
 CONTROL_PREFIX: Final[str] = "/internal/v1"
 
 SessionFactory = Callable[[], Session]
+
+#: `(table_kind, record_id) -> the record's current values`. Supplied only by
+#: Finance composition, because reading Feishu needs the credential, the bound
+#: source and the protected config -- none of which a control route may load.
+RecordReader = Callable[
+    [list[tuple[str, str]]], Awaitable[list[dict[str, Any]]]
+]
+
+MAX_RECORD_BATCH = 100
 
 _BEARER_PREFIX = "Bearer "
 
@@ -80,8 +91,15 @@ def build_control_app(
     *,
     verification_ring: ServiceKeyRing,
     session_factory: SessionFactory,
+    record_reader: RecordReader | None = None,
 ) -> Starlette:
-    """The control ASGI app. Verification keys only; never signs."""
+    """The control ASGI app. Verification keys only; never signs.
+
+    Without a `record_reader` the current-value route is still mounted but
+    refuses: a service started without a ledger config has no credential and no
+    protected config, and answering "not found" there would let a caller read a
+    missing capability as a missing record.
+    """
     ring = verification_ring.public_only()
 
     async def get_execution(request: Request) -> JSONResponse:
@@ -150,6 +168,135 @@ def build_control_app(
             writes = successful_writes_on(session, day)
         return JSONResponse({"write_date": raw_date, "writes": writes})
 
+    async def get_record_fields(request: Request) -> JSONResponse:
+        table_kind = request.path_params["table_kind"]
+        record_id = request.path_params["record_id"]
+        try:
+            token = _bearer(request)
+            verify_control_token(
+                ring,
+                token,
+                action=ControlAction.GET_RECORD_FIELDS,
+                resource=f"{table_kind}:{record_id}",
+            )
+        except AppError as error:
+            return _error_response(error)
+
+        with session_factory() as session:
+            receipt = verified_receipt_for(
+                session, table_kind=table_kind, record_id=record_id
+            )
+        if receipt is None:
+            # Not "no such row in Feishu": no *receipt*. This endpoint reads
+            # only records this service wrote and verified. The answer does not
+            # depend on whether a ledger reader is composed, so it is given
+            # first: it is true either way.
+            return JSONResponse({"status": "not_found"})
+
+        if record_reader is None:
+            # A record this service *did* write, on a service with no ledger
+            # config. Refusing keeps a missing capability from being read as a
+            # missing record.
+            return _error_response(
+                AppError(
+                    ErrorCode.SOURCE_UNAVAILABLE,
+                    internal_detail=(
+                        "this service was started without a ledger config, so "
+                        "no record can be read"
+                    ),
+                )
+            )
+
+        try:
+            results = await record_reader([(table_kind, record_id)])
+        except AppError as error:
+            return _error_response(error)
+        if len(results) != 1:
+            return _error_response(
+                AppError(
+                    ErrorCode.SOURCE_UNAVAILABLE,
+                    internal_detail="record reader returned the wrong result count",
+                )
+            )
+        result = results[0]
+        if result.get("status") != "found":
+            return _error_response(
+                AppError(
+                    ErrorCode.SOURCE_UNAVAILABLE,
+                    internal_detail="the current record could not be read",
+                )
+            )
+        return JSONResponse(result)
+
+    async def get_record_fields_batch(request: Request) -> JSONResponse:
+        try:
+            body = await request.json()
+        except Exception:
+            return _error_response(
+                AppError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    internal_detail="record batch body must be JSON",
+                )
+            )
+        try:
+            pointers = _record_pointers(body)
+            token = _bearer(request)
+            verify_control_token(
+                ring,
+                token,
+                action=ControlAction.GET_RECORD_FIELDS_BATCH,
+                resource=record_batch_resource(pointers),
+            )
+        except AppError as error:
+            return _error_response(error)
+
+        permitted: list[tuple[str, str]] = []
+        permitted_indexes: list[int] = []
+        response_items: list[dict[str, Any] | None] = [None] * len(pointers)
+        with session_factory() as session:
+            for index, (table_kind, record_id) in enumerate(pointers):
+                receipt = verified_receipt_for(
+                    session, table_kind=table_kind, record_id=record_id
+                )
+                if receipt is None:
+                    response_items[index] = {
+                        "status": "not_found",
+                        "table_kind": table_kind,
+                        "record_id": record_id,
+                    }
+                else:
+                    permitted.append((table_kind, record_id))
+                    permitted_indexes.append(index)
+
+        if permitted:
+            if record_reader is None:
+                read_results = [
+                    {
+                        "status": "unavailable",
+                        "table_kind": table_kind,
+                        "record_id": record_id,
+                    }
+                    for table_kind, record_id in permitted
+                ]
+            else:
+                try:
+                    read_results = await record_reader(permitted)
+                except AppError as error:
+                    return _error_response(error)
+                if len(read_results) != len(permitted):
+                    return _error_response(
+                        AppError(
+                            ErrorCode.SOURCE_UNAVAILABLE,
+                            internal_detail=(
+                                "record reader returned the wrong result count"
+                            ),
+                        )
+                    )
+            for index, result in zip(permitted_indexes, read_results, strict=True):
+                response_items[index] = result
+
+        return JSONResponse({"records": response_items})
+
     return Starlette(
         routes=[
             Route(
@@ -167,5 +314,50 @@ def build_control_app(
                 list_successful_writes,
                 methods=["GET"],
             ),
+            Route(
+                f"{CONTROL_PREFIX}/records/{{table_kind}}/{{record_id}}",
+                get_record_fields,
+                methods=["GET"],
+            ),
+            Route(
+                f"{CONTROL_PREFIX}/records:batch",
+                get_record_fields_batch,
+                methods=["POST"],
+            ),
         ]
     )
+
+
+def _record_pointers(body: Any) -> list[tuple[str, str]]:
+    if not isinstance(body, dict) or not isinstance(body.get("records"), list):
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail="record batch must carry a records list",
+        )
+    raw = body["records"]
+    if not raw or len(raw) > MAX_RECORD_BATCH:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=f"record batch size must be 1..{MAX_RECORD_BATCH}",
+        )
+    pointers: list[tuple[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail="record pointer must be an object",
+            )
+        table_kind = item.get("table_kind")
+        record_id = item.get("record_id")
+        if (
+            not isinstance(table_kind, str)
+            or not table_kind
+            or not isinstance(record_id, str)
+            or not record_id
+        ):
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail="record pointer fields must be non-empty strings",
+            )
+        pointers.append((table_kind, record_id))
+    return pointers

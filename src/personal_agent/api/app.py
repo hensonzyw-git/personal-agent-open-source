@@ -50,6 +50,13 @@ from personal_agent.api.orchestrator import (
     Interpreter,
     run_operation,
 )
+from personal_agent.api.review_view import (
+    RecordReader,
+    acknowledge,
+    defer,
+    list_reviews,
+    review_detail,
+)
 from personal_agent.api.request_payload import (
     ChatRequestPayload,
     continuation_context,
@@ -58,7 +65,7 @@ from personal_agent.api.request_payload import (
     with_clarification_question,
 )
 from personal_agent.auth.tokens import TokenError, TokenKeyRing, verify_access_token
-from personal_agent.storage.models import Device, Operation
+from personal_agent.storage.models import REVIEW_STATUSES, Device, Operation
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 
@@ -90,6 +97,10 @@ class AgentApiDeps:
     #: The tools genuinely available to this device (design 5.3 /capabilities).
     capabilities: Callable[[AuthContext], list[dict[str, Any]]]
     now: Callable[[], datetime]
+    #: Reads a reviewed record's *current* ledger values (design 7.7 step 5).
+    #: `None` means the review endpoints are not composed, and opening a card
+    #: says so rather than rendering one with no values.
+    read_record: RecordReader | None = None
     #: HTTP waits no longer than this for an operation worker. Production uses
     #: the design's 30-second ceiling; tests may shorten it.
     sync_wait_seconds: float = 30.0
@@ -309,6 +320,54 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                         "tools": deps.capabilities(auth),
                     }
                 )
+
+            return _commit(session, work)
+
+    @app.get("/v1/daily-reviews")
+    async def get_daily_reviews(request: Request):
+        status = request.query_params.get("status")
+        if status is not None and status not in REVIEW_STATUSES:
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail=f"unknown review status {status!r}",
+            )
+        with deps.session_factory() as session:
+            def work():
+                authenticate(request, session)
+                return JSONResponse(
+                    {
+                        "reviews": [
+                            summary.to_json()
+                            for summary in list_reviews(session, status=status)
+                        ]
+                    }
+                )
+
+            return _commit(session, work)
+
+    @app.get("/v1/daily-reviews/{review_id}")
+    async def get_daily_review(review_id: str, request: Request):
+        # Opening a card reads the ledger once per item, so the whole handler
+        # runs off the event loop rather than only the SQLite part.
+        return await asyncio.to_thread(_read_daily_review, deps, request, review_id, authenticate)
+
+    @app.post("/v1/daily-reviews/{review_id}/ack")
+    async def post_review_ack(review_id: str, request: Request):
+        with deps.session_factory() as session:
+            def work():
+                authenticate(request, session)
+                summary = acknowledge(session, review_id, now=deps.now())
+                return JSONResponse(summary.to_json())
+
+            return _commit(session, work)
+
+    @app.post("/v1/daily-reviews/{review_id}/defer")
+    async def post_review_defer(review_id: str, request: Request):
+        with deps.session_factory() as session:
+            def work():
+                authenticate(request, session)
+                summary = defer(session, review_id, now=deps.now())
+                return JSONResponse(summary.to_json())
 
             return _commit(session, work)
 
@@ -559,6 +618,25 @@ def _process_duplicate_decision(
                 session, duplicate_check_id, auth.device_id
             )
             return _operation_response(target)
+
+        return _commit(session, work)
+
+
+def _read_daily_review(deps: AgentApiDeps, request, review_id: str, authenticate):
+    """One card with live ledger values, entirely off the event loop."""
+    if deps.read_record is None:
+        raise AppError(
+            ErrorCode.SOURCE_UNAVAILABLE,
+            internal_detail=(
+                "the review surface is not composed: no ledger reader is wired"
+            ),
+        )
+    with deps.session_factory() as session:
+        def work():
+            authenticate(request, session)
+            return JSONResponse(
+                review_detail(session, review_id, deps.read_record)
+            )
 
         return _commit(session, work)
 

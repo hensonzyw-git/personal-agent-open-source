@@ -82,6 +82,17 @@ RECOVERABLE_OPERATION_STATES: Final[tuple[str, ...]] = (
 DEVICE_STATUSES: Final[tuple[str, ...]] = ("active", "revoked")
 REVIEW_STATUSES: Final[tuple[str, ...]] = ("pending", "deferred", "reviewed")
 
+#: What the push provider has said, which is never what the user has done.
+#: `provider_accepted` means APNs took the notification, nothing more; only an
+#: explicit `/ack` moves the review itself to `reviewed` (design 7.7 step 6).
+#: `undeliverable` is a permanent refusal (a rejected token, or attempts
+#: exhausted); `pending` is queued or awaiting its next attempt.
+NOTIFICATION_STATUSES: Final[tuple[str, ...]] = (
+    "pending",
+    "provider_accepted",
+    "undeliverable",
+)
+
 def _in_set(column: str, values: tuple[str, ...]) -> str:
     joined = ", ".join(f"'{value}'" for value in values)
     return f"{column} IN ({joined})"
@@ -330,7 +341,12 @@ class DailyReviewItem(Base):
     committed_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("review_id", "record_id", name="review_id_record_id"),
+        UniqueConstraint(
+            "review_id",
+            "tool",
+            "record_id",
+            name="review_id_tool_record_id",
+        ),
     )
 
 
@@ -354,6 +370,13 @@ class NotificationOutbox(Base):
 
     __table_args__ = (
         CheckConstraint("attempts >= 0", name="attempts_non_negative"),
+        CheckConstraint(
+            _in_set("provider_status", NOTIFICATION_STATUSES),
+            name="provider_status",
+        ),
+        # One notification per review per device: a retry updates the row it
+        # already has, so a redelivery can never become a second push.
+        UniqueConstraint("review_id", "device_id", name="review_id_device_id"),
     )
 
 

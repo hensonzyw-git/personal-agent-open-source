@@ -52,16 +52,21 @@ from personal_data_mcp.server.finance_write import (
     build_family_fund_handler,
     build_income_handler,
 )
+from personal_data_mcp.server.control import RecordReader
 from personal_data_mcp.server.handlers import ToolRegistry
+from personal_data_mcp.server.record_reader import build_record_reader
 from personal_data_mcp.server.app import build_registry
 
 
 @dataclass(frozen=True)
 class FinanceComposition:
-    """The live dependencies, and the registry that exposes them."""
+    """The live dependencies, the registry, and the control-plane record read."""
 
     dependencies: FinanceWriteDependencies
     registry: ToolRegistry
+    #: `DEV-028`: reads a written record's current values for a review card. It
+    #: is a control-plane read, never an MCP tool, so the model cannot reach it.
+    record_reader: RecordReader
 
 
 def load_protected_config(path: Path) -> LedgerConfig:
@@ -117,7 +122,9 @@ async def finance_tools(
             family_fund_handler=build_family_fund_handler(dependencies),
         )
         yield FinanceComposition(
-            dependencies=dependencies, registry=registry
+            dependencies=dependencies,
+            registry=registry,
+            record_reader=build_record_reader(dependencies),
         )
     finally:
         await fx.aclose()

@@ -23,6 +23,8 @@ helper here exists for the Agent API side and for tests.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Final
@@ -55,10 +57,30 @@ class ControlAction(StrEnum):
     #: model-facing channel, and design 5.2 requires the model never to see or
     #: forge a `duplicate_check_id`.
     GET_PENDING_DUPLICATE_CHECK = "get_pending_duplicate_check"
+    #: "What does the ledger hold for this record *now*?" Design 7.7 step 5: a
+    #: review card must show the current fields, so a correction made in Feishu
+    #: on the computer is visible immediately. The resource is
+    #: `table_kind:record_id`, so a token minted for one record cannot read
+    #: another, or the same id in another table.
+    GET_RECORD_FIELDS = "get_record_fields"
+    GET_RECORD_FIELDS_BATCH = "get_record_fields_batch"
 
 
 class ControlTokenError(Exception):
     """The control token could not be produced."""
+
+
+def record_batch_resource(records: list[tuple[str, str]]) -> str:
+    """Bind a batch token to the exact ordered record pointers in its body."""
+    canonical = json.dumps(
+        [
+            {"table_kind": table_kind, "record_id": record_id}
+            for table_kind, record_id in records
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
 
 def sign_control_token(

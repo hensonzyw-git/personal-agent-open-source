@@ -32,6 +32,27 @@ def test_prompt_keeps_original_finance_boundaries() -> None:
     assert "全量分页" in prompt
 
 
+def test_prompt_states_the_output_discipline_the_adapter_enforces() -> None:
+    """The 2026-07-26 live smoke found all three of these shapes on real GLM.
+
+    The gateway already fails closed on prose-as-a-question and on a tool call
+    mixed with text, so these lines are not the safety property; they exist so a
+    correct outcome is not lost to a preventable malformed turn.
+    """
+
+    prompt = build_system_prompt(today="2026-07-24")
+    assert "任何需要用户回答的问句都必须" in prompt
+    assert "不带任何解释文字" in prompt
+    assert "日期缺失永远不是澄清理由" in prompt
+
+
+def test_prompt_closes_the_expense_clarification_set() -> None:
+    prompt = build_system_prompt(today="2026-07-24")
+    assert "本工具只在四种情形澄清" in prompt
+    assert "没有写明充电宝是买的还是借/租的" in prompt
+    assert "不要另外追问" in prompt
+
+
 def test_prompt_contains_the_frozen_expense_classification_contract() -> None:
     prompt = build_system_prompt(today="2026-07-24")
     for rule in (

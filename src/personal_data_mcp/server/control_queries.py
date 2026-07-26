@@ -96,6 +96,25 @@ def get_pending_duplicate_check(
     }
 
 
+def verified_receipt_for(
+    session: Session, *, table_kind: str, record_id: str
+) -> ExternalReceipt | None:
+    """The verified receipt Finance holds for this record, or None.
+
+    This is what keeps the current-value read from being a general ledger
+    reader: the only records it can return are the ones this service wrote and
+    verified, which is exactly the set a review card can contain. A record id
+    from anywhere else has no receipt and is simply not found.
+    """
+    return session.scalars(
+        select(ExternalReceipt).where(
+            ExternalReceipt.record_id == record_id,
+            ExternalReceipt.table_kind == table_kind,
+            ExternalReceipt.verified_at.is_not(None),
+        )
+    ).first()
+
+
 def successful_writes_on(session: Session, day: date) -> list[dict[str, Any]]:
     """The verified successful writes whose commit instant falls on `day`.
 

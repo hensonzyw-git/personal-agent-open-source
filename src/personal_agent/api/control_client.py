@@ -1,8 +1,10 @@
 """The Agent's HTTP client for the Finance MCP internal control plane.
 
-Two reads live here, and neither is a tool call: "what state is the execution for
-this idempotency key in?" (crash recovery, design 7.6.1) and "which duplicate
-check is blocking this request?" (the `write anyway` flow, design 5.2).
+Four reads live here, and none is a tool call: "what state is the execution for
+this idempotency key in?" (crash recovery, design 7.6.1), "which duplicate check
+is blocking this request?" (the `write anyway` flow, design 5.2), and the two the
+daily review needs (design 7.7) -- "what was successfully written on this ledger
+day?" and "what does the ledger hold for this record now?".
 
 The second one is why this module exists at all. `finance.log_expense` reports a
 duplicate as a bare `POSSIBLE_DUPLICATE` error, because an MCP result is the
@@ -30,7 +32,11 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from personal_agent_core.control_token import ControlAction, sign_control_token
+from personal_agent_core.control_token import (
+    ControlAction,
+    record_batch_resource,
+    sign_control_token,
+)
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.host_context import ServiceKeyRing
 
@@ -77,6 +83,37 @@ def require_loopback_url(base_url: str) -> str:
 class PendingDuplicateCheck:
     duplicate_check_id: str
     expires_at: str
+
+
+@dataclass(frozen=True)
+class SuccessfulWrite:
+    """One verified write, as the review job sees it: a pointer, not values."""
+
+    tool: str
+    table_kind: str
+    record_id: str
+    committed_at: str
+
+
+@dataclass(frozen=True)
+class RecordFields:
+    """A record's current values, read at the moment the card was opened."""
+
+    table_kind: str
+    record_id: str
+    values: dict[str, Any]
+    #: Configured fields whose cell Finance could not parse. Kept rather than
+    #: dropped: a card that silently omits a field it failed to read looks the
+    #: same as a card for a record that never had one.
+    unreadable_fields: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RecordUnavailable:
+    """The receipt exists, but its current source values could not be read."""
+
+    table_kind: str
+    record_id: str
 
 
 class FinanceControlClient:
@@ -147,6 +184,51 @@ class FinanceControlClient:
             )
         return payload
 
+    async def _post(
+        self,
+        path: str,
+        *,
+        action: ControlAction,
+        resource: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        token = sign_control_token(self._ring, action=action, resource=resource)
+        try:
+            if self._client is not None:
+                response = await self._client.post(
+                    f"{self._base_url}{path}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json=body,
+                    timeout=self._timeout,
+                )
+            else:
+                async with httpx.AsyncClient(trust_env=False) as client:
+                    response = await client.post(
+                        f"{self._base_url}{path}",
+                        headers={"Authorization": f"Bearer {token}"},
+                        json=body,
+                        timeout=self._timeout,
+                    )
+        except httpx.HTTPError as exc:
+            raise ControlPlaneError(
+                f"control read {action} failed: {type(exc).__name__}"
+            ) from exc
+        if response.status_code != 200:
+            raise ControlPlaneError(
+                f"control read {action} returned HTTP {response.status_code}"
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ControlPlaneError(
+                f"control read {action} returned a non-JSON body"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ControlPlaneError(
+                f"control read {action} returned a non-object body"
+            )
+        return payload
+
     async def get_execution(self, idempotency_key: str) -> dict[str, Any] | None:
         """The Finance execution for this key, or None when it never existed."""
         payload = await self._get(
@@ -186,6 +268,131 @@ class FinanceControlClient:
         return PendingDuplicateCheck(
             duplicate_check_id=check_id, expires_at=expires_at
         )
+
+    async def list_successful_writes(self, write_date: str) -> list[SuccessfulWrite]:
+        """The verified writes committed on one Asia/Shanghai ledger day.
+
+        An empty list is a real answer -- "nothing was written that day" is
+        precisely the case where design 7.7 says to create no review and send no
+        push. Anything that cannot be understood raises instead, so a broken
+        control plane can never be mistaken for a quiet day.
+        """
+        payload = await self._get(
+            f"{CONTROL_PREFIX}/successful-writes?write_date={write_date}",
+            action=ControlAction.LIST_SUCCESSFUL_WRITES,
+            resource=write_date,
+        )
+        writes = payload.get("writes")
+        if not isinstance(writes, list):
+            raise ControlPlaneError("successful-writes body carried no list")
+        if payload.get("write_date") != write_date:
+            raise ControlPlaneError(
+                "successful-writes body answered for a different day"
+            )
+        return [_successful_write(item) for item in writes]
+
+    async def get_record_fields(
+        self, *, table_kind: str, record_id: str
+    ) -> RecordFields | None:
+        """The record's current values, or None when Finance has no receipt."""
+        payload = await self._get(
+            f"{CONTROL_PREFIX}/records/{table_kind}/{record_id}",
+            action=ControlAction.GET_RECORD_FIELDS,
+            resource=f"{table_kind}:{record_id}",
+        )
+        status = payload.get("status")
+        if status == "not_found":
+            return None
+        record = payload.get("record")
+        if status != "found" or not isinstance(record, dict):
+            raise ControlPlaneError("record body was not understood")
+        return _record_fields(
+            record, table_kind=table_kind, record_id=record_id
+        )
+
+    async def get_record_fields_batch(
+        self, records: list[tuple[str, str]]
+    ) -> list[RecordFields | RecordUnavailable | None]:
+        """Read one card's current values with one control request."""
+        body = {
+            "records": [
+                {"table_kind": table_kind, "record_id": record_id}
+                for table_kind, record_id in records
+            ]
+        }
+        payload = await self._post(
+            f"{CONTROL_PREFIX}/records:batch",
+            action=ControlAction.GET_RECORD_FIELDS_BATCH,
+            resource=record_batch_resource(records),
+            body=body,
+        )
+        raw_results = payload.get("records")
+        if not isinstance(raw_results, list) or len(raw_results) != len(records):
+            raise ControlPlaneError("record batch returned the wrong result count")
+
+        parsed: list[RecordFields | RecordUnavailable | None] = []
+        for raw, (table_kind, record_id) in zip(
+            raw_results, records, strict=True
+        ):
+            if not isinstance(raw, dict):
+                raise ControlPlaneError("record batch entry was not an object")
+            if (
+                raw.get("table_kind", table_kind) != table_kind
+                or raw.get("record_id", record_id) != record_id
+            ):
+                raise ControlPlaneError("record batch entry changed its pointer")
+            status = raw.get("status")
+            if status == "not_found":
+                parsed.append(None)
+            elif status == "unavailable":
+                parsed.append(RecordUnavailable(table_kind, record_id))
+            elif status == "found" and isinstance(raw.get("record"), dict):
+                parsed.append(
+                    _record_fields(
+                        raw["record"],
+                        table_kind=table_kind,
+                        record_id=record_id,
+                    )
+                )
+            else:
+                raise ControlPlaneError("record batch entry was not understood")
+        return parsed
+
+
+def _successful_write(item: Any) -> SuccessfulWrite:
+    if not isinstance(item, dict):
+        raise ControlPlaneError("a successful-writes entry was not an object")
+    fields = {}
+    for key in ("tool", "table_kind", "record_id", "committed_at"):
+        value = item.get(key)
+        if not isinstance(value, str) or not value:
+            raise ControlPlaneError(
+                f"a successful-writes entry carried no {key}"
+            )
+        fields[key] = value
+    return SuccessfulWrite(**fields)
+
+
+def _record_fields(
+    record: dict[str, Any], *, table_kind: str, record_id: str
+) -> RecordFields:
+    values = record.get("values")
+    unreadable = record.get("unreadable_fields")
+    if not isinstance(values, dict) or not isinstance(unreadable, list):
+        raise ControlPlaneError("record body carried no projected values")
+    if (
+        record.get("table_kind") != table_kind
+        or record.get("record_id") != record_id
+    ):
+        raise ControlPlaneError("record body described a different record")
+    if not all(isinstance(name, str) for name in unreadable):
+        raise ControlPlaneError("record body carried non-string unreadable fields")
+    return RecordFields(
+        table_kind=table_kind,
+        record_id=record_id,
+        values=values,
+        unreadable_fields=tuple(unreadable),
+    )
 
 
 def unavailable() -> AppError:

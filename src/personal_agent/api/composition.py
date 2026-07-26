@@ -45,6 +45,8 @@ from personal_agent.api.app import AgentApiDeps, AuthContext
 from personal_agent.api.control_client import (
     ControlPlaneError,
     FinanceControlClient,
+    RecordFields,
+    RecordUnavailable,
     require_loopback_url,
 )
 from personal_agent.api.finance_dispatcher import (
@@ -363,6 +365,39 @@ def _finance_status_reader(
     return read
 
 
+def build_review_control(*, finance_control_url: str) -> FinanceControlClient:
+    """The control client the scheduled review job runs on.
+
+    The job needs no model, no MCP connection and no data key -- only the
+    Host-to-Host control channel -- so it is composed separately rather than by
+    starting the whole service. The loopback rule and the signing ring are the
+    same ones the API uses; they are not restated here.
+    """
+    url = require_loopback_url(finance_control_url)
+    return FinanceControlClient(
+        base_url=url, signing_ring=load_service_signing_ring()
+    )
+
+
+def record_reader(
+    control: FinanceControlClient, run: Callable[[Any], Any] = asyncio.run
+) -> Callable[
+    [list[tuple[str, str]]],
+    list[RecordFields | RecordUnavailable | None],
+]:
+    """Bridge the async control read into the synchronous review projection.
+
+    Like every other control read from a worker thread, this drives its own
+    event loop; `FinanceControlClient` opens one short-lived HTTP client per
+    read precisely so that is safe.
+    """
+
+    def read(records: list[tuple[str, str]]):
+        return run(control.get_record_fields_batch(records))
+
+    return read
+
+
 def recover_at_startup(
     sessions: Callable[[], Any],
     control: FinanceControlClient,
@@ -532,6 +567,7 @@ async def agent_service(
                     build_authorizer=build_authorizer,
                     capabilities=capabilities,
                     now=now,
+                    read_record=record_reader(control),
                     sync_wait_seconds=config.sync_wait_seconds,
                 ),
                 bridge=bridge,
@@ -541,6 +577,8 @@ async def agent_service(
         finally:
             await control.aclose()
             await client.close()
+
+
 def _no_such_device(device_id: str) -> AppError:
     return AppError(
         ErrorCode.TOOL_NOT_ALLOWLISTED,
