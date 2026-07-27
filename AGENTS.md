@@ -1,6 +1,6 @@
 # Personal Agent — Agent Collaboration Guide
 
-> Last updated: 2026-07-26
+> Last updated: 2026-07-27
 >
 > `AGENTS.md` and `CLAUDE.md` must remain byte-for-byte equivalent. Update both
 > in the same change.
@@ -132,6 +132,27 @@ signing uses a **Personal Team**, which is sufficient for Secure Enclave, Keycha
 and direct install and **cannot** grant APNs; the push half of `DEV-028` therefore
 stays blocked and no code pretends otherwise. Work continues in
 `docs/Phase1开发拆解_v0.1.md`, following its dependency order and Gates G4-G6.
+
+On 2026-07-27 Henson added the cross-cutting Agent capability baseline. Before
+`DEV-030`, `CAP-001` must separate the user-visible Timeline from automatic
+semantic Sessions, add same-Session context compaction/checkpoints, enforce a
+bounded Context Builder, and paginate chat history. `CAP-001` is now a G4
+blocker; it is designed but not implemented. `CAP-002`–`CAP-008` cover later
+streaming, voice, memory, routing and multimodal work and do not enlarge the
+current Finance Phase. See `docs/Agent横向能力PRD_v1.0.md` and
+`docs/Agent横向能力技术方案_v1.0.md`. Henson froze the product and technical
+v1.0 contracts on
+2026-07-27: all enrolled devices share one Timeline; Session boundaries are
+lightweight and correctable; Checkpoints are source-bound and later inspectable;
+low-sensitive episodic memory may be automatic while inferred long-term memory
+requires confirmation; Memory, KB and chat deletion remain distinct; Router v1
+selects one primary domain/intent; raw voice is temporary while sent images/files
+follow Timeline retention; truthful streaming/cancel semantics apply; and after
+G4 `CAP-002` streaming precedes `CAP-003` voice. Technical v1.0 additionally
+freezes canonical Timeline aliases and monotonic sequence pagination, immutable
+Session lineage, Checkpoint CAS, typed context budgets, persist-before-emit SSE,
+temporary voice media, versioned APIs/migrations and field-encrypted Memory with
+an HMAC blind lexical index rather than plaintext FTS.
 
 Development authorization is not authorization for everything downstream. Each
 later gate still binds independently: do not create the Feishu application or
@@ -306,15 +327,21 @@ conflict instead of silently choosing an old default.
 - `docs/MCP工具IR_v0.1.md` — cross-domain IR baseline; archived Finance text is
   non-normative, while its Finance contract summary is current.
 - `docs/Finance MCP工具设计草案_v0.1.md` — canonical detailed Finance contract.
+- `docs/Agent横向能力PRD_v1.0.md` — frozen cross-cutting product contract for
+  Timeline/Session, context compaction, memory, routing, multimodal input and
+  streaming.
+- `docs/Agent横向能力技术方案_v1.0.md` — frozen framework-neutral architecture,
+  versioned data/API contracts, failure boundaries and CAP acceptance gates for
+  those capabilities.
 - `docs/Phase1技术方案设计计划_v0.1.md` — next-stage work order and the gate
   before implementation.
 - `docs/Phase1技术方案_v0.1.md` — current Phase 1 technical design;
   final review passed, but it does not authorize development.
 - `docs/Phase1技术方案评审结论_2026-07-23.md` — initial findings, resolved
   P0 contracts, and final design Go decision.
-- `docs/Phase1开发拆解_v0.1.md` — executable development tasks, dependencies,
-  gates, external inputs and completion definition; DEV-001 still requires
-  explicit development authorization.
+- `docs/Phase1开发拆解_v0.1.md` — executable DEV/CAP tasks, dependencies,
+  gates, external inputs and completion definition; development is authorised,
+  G0–G3 passed, and CAP-001 is next before DEV-030/G4.
 - `ECS安全加固实施记录_2026-07-23.md` — security, encryption, snapshot, and
   rollback record.
 - `docs/iOS开发环境_Personal_Team_v0.1.md` — Personal Team constraints, the iOS
