@@ -21,7 +21,8 @@ Phase 1 Agent 框架为 Google ADK，业务模型通过可替换 adapter 接入�
 - CAP-002–008 记录后续 streaming、voice、memory、routing 和 multimodal 路线，
   不扩大当前 Finance Phase；
 - Development Agent Loop 的 PRD、技术方案和 DAL-001–050 计划已落盘，
-  但 DAL-G0 未授权，尚无任何自动化实现；
+  其架构是 graph-orchestrated loop；但 Phase 1 Completion 前置尚未满足、
+  DAL-G0 未授权，尚无任何 preflight 或自动化实现；
 - 精确测试数、live evidence、已知限制和下一步以
   [PROJECT_STATUS.md](./PROJECT_STATUS.md) 为准。
 
@@ -100,8 +101,9 @@ uv run personal-agent-online-eval --framework claude --case-id FIN-021
    checkpoint、context hard limit 和历史分页。
 2. CAP-001 验收后进入 DEV-030 / DEV-031 和 G4 真机只读闭环。
 3. 继续遵守 G5：在单独授权前不接入生产 Finance 凭据或个人年度账本。
-4. Development Agent Loop 保持独立、非阻塞；只有 Henson 明确通过 DAL-G0 后，
-   才从合同、威胁模型和只读 planning 切片开始实施。
+4. Development Agent Loop 保持独立、非阻塞；Phase 1 满足全部开发完成定义后，
+   才可开始 DAL-001–006，随后由 Henson 单独通过 DAL-G0，再实现 DAL-007 起的
+   Workflow Service 和只读 planning 切片。
 
 ## 安全约定
 

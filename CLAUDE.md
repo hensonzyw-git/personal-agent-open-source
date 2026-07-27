@@ -165,7 +165,13 @@ until Henson verifies the account/device path through official channels. The
 baseline is documented in `docs/开发Agent闭环PRD_v1.0.md`,
 `docs/开发Agent闭环技术方案_v1.0.md` and
 `docs/开发Agent闭环开发拆解_v0.1.md`. It is not implemented or authorised and
-does not change CAP-001, DEV-030 or any Phase 1 gate.
+does not change CAP-001, DEV-030 or any Phase 1 gate. Its product name remains
+Development Agent Loop; technically it is a graph-orchestrated loop whose
+deterministic macro graph contains bounded coding and review/fix loops. The
+dependency is one-way: every Phase 1 completion condition in
+`docs/Phase1开发拆解_v0.1.md` §7 must pass before DAL-001 starts. Do not run DAL
+preflight, create its GitHub/Claude/Worker/provider resources or implement any
+DAL task in parallel with Phase 1.
 
 Development authorization is not authorization for everything downstream. Each
 later gate still binds independently: do not create the Feishu application or
@@ -348,10 +354,12 @@ conflict instead of silently choosing an old default.
   those capabilities.
 - `docs/开发Agent闭环PRD_v1.0.md` — confirmed product and Human-in-the-loop
   baseline for feature intake through reviewed PR, with manual high-risk gates.
-- `docs/开发Agent闭环技术方案_v1.0.md` — deterministic orchestration, GitHub and
-  Home Mac Worker architecture, provider routing, security and recovery design.
+- `docs/开发Agent闭环技术方案_v1.0.md` — graph-orchestrated deterministic
+  workflow, GitHub and Home Mac Worker architecture, provider routing, security
+  and recovery design.
 - `docs/开发Agent闭环开发拆解_v0.1.md` — separate DAL-001–050 implementation
-  track and gates; DAL-G0 is not authorised and no task has started.
+  track and gates; Phase 1 completion blocks DAL-001, DAL-G0 is not authorised,
+  and no task has started.
 - `docs/Phase1技术方案设计计划_v0.1.md` — next-stage work order and the gate
   before implementation.
 - `docs/Phase1技术方案_v0.1.md` — current Phase 1 technical design;
