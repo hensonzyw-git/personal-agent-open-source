@@ -157,11 +157,14 @@ an HMAC blind lexical index rather than plaintext FTS.
 On 2026-07-27 Henson also confirmed a separate Development Agent Loop product
 and technical baseline. Personal Agent is its intake, review and Human-in-the-loop
 UI; a deterministic Workflow Service, private GitHub control plane and outbound
-Home Mac Worker own execution and evidence. Codex Sol plans and independently
-reviews, Claude Cloud Routine with Opus is the preferred coder, standard
-GLM-5.2 API is the first paid coding fallback, Codex Terra is bounded last-resort
-capacity, and Kimi remains evaluation-only. Local Claude CLI stays disabled
-until Henson verifies the account/device path through official channels. The
+Home Mac Worker own execution and evidence. Claude Code + Kimi K3 standard API
+is the preferred coder; Claude Code must not log in to a Claude account. Codex
+Sol plans and independently reviews, then Codex directly fixes findings, a fresh
+read-only Codex run reviews the fix, and Codex creates a candidate commit only
+after the deterministic gates and a one-time capability pass. GLM-5.2 remains a
+future native OpenAI-compatible harness evaluation route, not a Claude Code
+fallback. Kimi K2.7 Code requires a no-UI Thinking compatibility preflight; K3
+is the default baseline. The
 baseline is documented in `docs/开发Agent闭环PRD_v1.0.md`,
 `docs/开发Agent闭环技术方案_v1.0.md` and
 `docs/开发Agent闭环开发拆解_v0.1.md`. It is not implemented or authorised and
