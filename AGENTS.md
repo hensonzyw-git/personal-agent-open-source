@@ -139,11 +139,12 @@ semantic Sessions, add same-Session context compaction/checkpoints, enforce a
 bounded Context Builder, and paginate chat history. `CAP-001` is now a G4
 blocker and implementation is in progress: typed configuration, the reversible
 legacy migration, canonical Timeline/alias/sequence pagination, and the
-foundational Session Manager are built and verified offline. The remaining
-production compact-state provider/classifier, Budgeter, Compactor/Checkpoint,
-Context Builder, eval and live adversarial evidence are not complete; Session
-classification fails closed without trusted semantic state, and every
-non-terminal operation now pins its Session.
+foundational Session Manager and standalone Budgeter are built and verified
+offline. The remaining production compact-state provider/classifier,
+Compactor/Checkpoint, Context Builder, eval and live adversarial evidence are
+not complete; Session classification fails closed without trusted semantic
+state, every non-terminal operation pins its Session, and the Budgeter preserves
+mandatory context/Checkpoints under a conservative UTF-8-byte fallback.
 `CAP-002`–`CAP-008` cover later streaming, voice, memory, routing and multimodal
 work and do not enlarge the current Finance Phase. See
 `docs/Agent横向能力PRD_v1.0.md` and

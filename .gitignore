@@ -1,6 +1,7 @@
 # OS and editor files
 .DS_Store
 .idea/
+.qoder/
 .vscode/
 .venv/
 .pytest_cache/
