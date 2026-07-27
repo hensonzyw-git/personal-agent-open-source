@@ -27,12 +27,13 @@ import json
 import logging
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import text as text_clause
 
 from personal_agent.api import events
 from personal_agent.api.device_api import (
@@ -75,6 +76,13 @@ from personal_agent.api.request_payload import (
     with_clarification_question,
 )
 from personal_agent.auth.tokens import TokenError, TokenKeyRing, verify_access_token
+from personal_agent.context.config import (
+    ContextConfig,
+    ContextConfigError,
+    default_context_config,
+)
+from personal_agent.context.session_manager import SessionManager
+from personal_agent.keys import HmacKey, HmacKeyRing
 from personal_agent.storage.models import REVIEW_STATUSES, Device, Operation
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
@@ -95,6 +103,11 @@ class AgentApiDeps:
     session_factory: Callable[[], Any]
     token_ring: TokenKeyRing
     keyring: KeyRing
+    #: `CAP-001`. The identifier/lineage HMAC resolves a legacy conversation id
+    #: onto the canonical Timeline; the cursor HMAC signs a page anchor. Design
+    #: 5.6 keeps them separate from the data key and from each other.
+    identifier_key: HmacKey | HmacKeyRing
+    cursor_key: HmacKey | HmacKeyRing
     #: Builds the per-device interpreter; it is bound to that device's visible
     #: tools, so it is constructed per request like the authorizer.
     build_interpreter: Callable[[AuthContext], Interpreter]
@@ -119,10 +132,18 @@ class AgentApiDeps:
     #: HTTP waits no longer than this for an operation worker. Production uses
     #: the design's 30-second ceiling; tests may shorten it.
     sync_wait_seconds: float = 30.0
+    #: `CAP-001`. The validated context budget and the Session Manager built on
+    #: it. Both default to the shipped provisional configuration with no
+    #: semantic classifier, which is the safe shape: every boundary decision is
+    #: then deterministic and every uncertain case continues the Session.
+    context_config: ContextConfig = field(default_factory=default_context_config)
+    session_manager: SessionManager | None = None
 
     def __post_init__(self) -> None:
         if self.sync_wait_seconds <= 0 or self.sync_wait_seconds > 30.0:
             raise ValueError("sync_wait_seconds must be within (0, 30]")
+        if self.session_manager is None:
+            self.session_manager = SessionManager(self.context_config)
 
 
 _STATUS_BY_CODE = {
@@ -131,6 +152,11 @@ _STATUS_BY_CODE = {
     ErrorCode.TOOL_NOT_ALLOWLISTED: 403,
     ErrorCode.HOST_CONTEXT_MISMATCH: 403,
     ErrorCode.INVALID_ARGUMENT: 400,
+    # `CAP-001`: an id that names no Timeline here. A `404` says so without
+    # confirming whether that id exists anywhere, and without ever being read as
+    # "so create it".
+    ErrorCode.TIMELINE_MISMATCH: 404,
+    ErrorCode.INVALID_CURSOR: 400,
 }
 
 _MAX_JSON_BODY_BYTES = 64 * 1024
@@ -359,16 +385,43 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
 
     @app.get("/v1/conversations/{conversation_id}/events")
     async def get_events(conversation_id: str, request: Request):
+        # `CAP-001` design 14: the first request returns the newest page and
+        # scrolling up follows `older_cursor`. Incremental sync is
+        # `direction=newer` and must carry a cursor.
+        cursor = request.query_params.get("cursor")
+        direction = request.query_params.get("direction", "older")
+        try:
+            limit = deps.context_config.page_limit(
+                _optional_int(request.query_params.get("limit"))
+            )
+        except ContextConfigError as exc:
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT, internal_detail="limit is not usable"
+            ) from exc
         with deps.session_factory() as session:
             def work():
                 authenticate(request, session)
-                timeline = events.list_timeline(
-                    session, deps.keyring, conversation_id=conversation_id
+                timeline_id = events.resolve_timeline(
+                    session,
+                    deps.identifier_key,
+                    client_conversation_id=conversation_id,
+                    now=deps.now(),
+                )
+                page = events.read_page(
+                    session,
+                    deps.keyring,
+                    deps.cursor_key,
+                    conversation_id=timeline_id,
+                    cursor=cursor,
+                    direction=direction,
+                    limit=limit,
                 )
                 return JSONResponse(
                     {
-                        "conversation_id": conversation_id,
+                        "conversation_id": timeline_id,
                         "events": [
+                            # `timeline_sequence`, `session_id` and the sealed
+                            # envelope stay server-side (design 14).
                             {
                                 "event_id": entry.event_id,
                                 "event_type": entry.event_type,
@@ -376,8 +429,12 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                                 "created_at": entry.created_at.isoformat(),
                                 "content": entry.content,
                             }
-                            for entry in timeline
+                            for entry in page.entries
                         ],
+                        "older_cursor": page.older_cursor,
+                        "newer_cursor": page.newer_cursor,
+                        "has_older": page.has_older,
+                        "has_newer": page.has_newer,
                     }
                 )
 
@@ -392,6 +449,12 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                     {
                         "allowed_tools_version": auth.allowed_tools_version,
                         "tools": deps.capabilities(auth),
+                        # Every enrolled device resolves to this one Timeline
+                        # (design 4.2.2). The field keeps its compatibility
+                        # name; renaming it is an API major version.
+                        "conversation_id": events.canonical_timeline_id(
+                            session, now=deps.now()
+                        ),
                     }
                 )
 
@@ -588,8 +651,18 @@ def _anchor_chat(
 
     with deps.session_factory() as session:
         try:
+            # `CAP-001` design 4.2.3: the client value is resolved onto the
+            # canonical Timeline *before* the fingerprint, the event and the
+            # operation, so it never decides a data boundary. An unknown id is
+            # a refusal, never a second Timeline.
+            timeline_id = events.resolve_timeline(
+                session,
+                deps.identifier_key,
+                client_conversation_id=conversation_id,
+                now=deps.now(),
+            )
             fingerprint = chat_request_fingerprint(
-                conversation_id=conversation_id,
+                conversation_id=timeline_id,
                 text=text,
                 clarification_of=clarification_of,
             )
@@ -624,7 +697,7 @@ def _anchor_chat(
                     request_id=source.request_id,
                     envelope=source.api_request.encrypted_request_payload,
                 )
-                if source_payload.conversation_id != conversation_id:
+                if source_payload.conversation_id != timeline_id:
                     raise AppError(
                         ErrorCode.INVALID_ARGUMENT,
                         internal_detail=(
@@ -642,7 +715,7 @@ def _anchor_chat(
                 )
 
             payload = ChatRequestPayload(
-                conversation_id=conversation_id,
+                conversation_id=timeline_id,
                 text=text,
                 clarification_of=clarification_of,
                 clarification_context=context,
@@ -652,10 +725,44 @@ def _anchor_chat(
                 request_id=operation.request_id,
                 payload=payload,
             )
+            # A clarification answer belongs to the Session its question was
+            # asked in, even though the source operation has just been parked.
+            pinned = None
+            if clarification_of is not None:
+                pinned = _session_of_operation(session, clarification_of)
+            decision = deps.session_manager.select_session(
+                session,
+                conversation_id=timeline_id,
+                user_text=text,
+                now=deps.now(),
+                pinned_session_id=pinned,
+            )
+            turn_id = events.new_turn_id()
+            if decision.is_boundary:
+                # A boundary is a Timeline fact with fixed wording, so every
+                # device renders the same divider. It is never fed back to the
+                # model as an instruction.
+                events.append_event(
+                    session,
+                    deps.keyring,
+                    conversation_id=timeline_id,
+                    session_id=decision.session_id,
+                    turn_id=turn_id,
+                    event_type=(
+                        events.SESSION_BOUNDARY_CORRECTED
+                        if decision.relation_kind == "corrects_boundary"
+                        else events.SESSION_DIVIDER
+                    ),
+                    content={"reason": decision.reason},
+                    operation_id=None,
+                    now=deps.now(),
+                )
             events.append_event(
                 session,
                 deps.keyring,
-                conversation_id=conversation_id,
+                conversation_id=timeline_id,
+                session_id=decision.session_id,
+                turn_id=turn_id,
                 event_type=events.USER_MESSAGE,
                 content={
                     "text": text,
@@ -667,6 +774,10 @@ def _anchor_chat(
                 },
                 operation_id=operation.operation_id,
                 now=deps.now(),
+            )
+            logger.info(
+                "session boundary %s",
+                json.dumps(decision.audit_record(), sort_keys=True),
             )
             session.commit()
             return _AnchoredChat(operation.operation_id, operation.state)
@@ -718,10 +829,15 @@ def _process_chat(
                     request_id=operation.request_id,
                     payload=with_clarification_question(payload, question),
                 )
+            # The result joins the user message's own turn and Session; a
+            # Session decision is made once per message, at anchoring time.
+            anchor = _anchor_event(session, operation.operation_id)
             events.append_event(
                 session,
                 deps.keyring,
                 conversation_id=payload.conversation_id,
+                session_id=anchor[0],
+                turn_id=anchor[1],
                 event_type=events.OPERATION_RESULT,
                 content=_result_content(result),
                 operation_id=operation.operation_id,
@@ -739,6 +855,34 @@ def _process_chat(
         except Exception:
             session.rollback()
             raise
+
+
+def _anchor_event(session, operation_id: str) -> tuple[str, str]:
+    """The Session and turn the operation's user message was written into."""
+    row = session.execute(
+        text_clause(
+            "SELECT session_id, turn_id FROM conversation_events "
+            "WHERE operation_id = :oid ORDER BY timeline_sequence LIMIT 1"
+        ),
+        {"oid": operation_id},
+    ).one_or_none()
+    if row is None:
+        raise AppError(
+            ErrorCode.INTERNAL_ERROR,
+            internal_detail="operation has no anchoring timeline event",
+        )
+    return (row[0], row[1])
+
+
+def _session_of_operation(session, operation_id: str) -> str | None:
+    row = session.execute(
+        text_clause(
+            "SELECT session_id FROM conversation_events "
+            "WHERE operation_id = :oid ORDER BY timeline_sequence LIMIT 1"
+        ),
+        {"oid": operation_id},
+    ).scalar_one_or_none()
+    return row
 
 
 def _load_operation_response(
@@ -910,6 +1054,18 @@ def _required(body: dict[str, Any], field: str) -> str:
             internal_detail=f"{field} is required",
         )
     return value
+
+
+def _optional_int(raw: str | None) -> int | None:
+    """Parse a query integer strictly; a malformed one is not a default."""
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT, internal_detail="limit must be an integer"
+        ) from exc
 
 
 def _optional_operation_id(body: dict[str, Any], field: str) -> str | None:

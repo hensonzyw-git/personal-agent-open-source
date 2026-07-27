@@ -23,22 +23,41 @@ from personal_agent.storage.engine import check_integrity, create_database_engin
 MIGRATIONS_PATH = Path(__file__).parent / "migrations"
 
 
-def alembic_config(engine: Engine) -> Config:
+def alembic_config(
+    engine: Engine, *, cap001_inputs: object | None = None
+) -> Config:
     config = Config()
     config.set_main_option("script_location", str(MIGRATIONS_PATH))
     # Alembic still wants a URL string present; the engine in `attributes` is
     # what actually gets used, and env.py refuses to run without it.
     config.set_main_option("sqlalchemy.url", str(engine.url))
     config.attributes["connection"] = engine
+    # `CAP-001` (revision 0003) needs key material and a verified backup to move
+    # existing conversation events. It is passed in rather than read from the
+    # environment inside the revision, so a migration cannot pick up whatever
+    # key happens to be exported in the shell that ran it.
+    if cap001_inputs is not None:
+        config.attributes["cap001_inputs"] = cap001_inputs
     return config
 
 
-def upgrade(engine: Engine, revision: str = "head") -> None:
-    command.upgrade(alembic_config(engine), revision)
+def upgrade(
+    engine: Engine,
+    revision: str = "head",
+    *,
+    cap001_inputs: object | None = None,
+) -> None:
+    command.upgrade(
+        alembic_config(engine, cap001_inputs=cap001_inputs), revision
+    )
 
 
-def downgrade(engine: Engine, revision: str) -> None:
-    command.downgrade(alembic_config(engine), revision)
+def downgrade(
+    engine: Engine, revision: str, *, cap001_inputs: object | None = None
+) -> None:
+    command.downgrade(
+        alembic_config(engine, cap001_inputs=cap001_inputs), revision
+    )
 
 
 def current(engine: Engine) -> None:
@@ -50,6 +69,15 @@ def main() -> None:
         description="Manage the Agent API database schema."
     )
     parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument(
+        "--backup",
+        type=Path,
+        default=None,
+        help=(
+            "the pre-migration encrypted backup, verified before CAP-001 moves "
+            "any existing conversation event"
+        ),
+    )
     subparsers = parser.add_subparsers(dest="action", required=True)
     subparsers.add_parser("current")
     upgrade_parser = subparsers.add_parser("upgrade")
@@ -65,7 +93,35 @@ def main() -> None:
 
     if args.action == "current":
         current(engine)
-    elif args.action == "upgrade":
-        upgrade(engine, args.revision)
+        return
+
+    inputs = _cap001_inputs(args.backup)
+    if args.action == "upgrade":
+        upgrade(engine, args.revision, cap001_inputs=inputs)
     else:
-        downgrade(engine, args.revision)
+        downgrade(engine, args.revision, cap001_inputs=inputs)
+
+
+def _cap001_inputs(backup: Path | None):
+    """Load `CAP-001` migration material, if this environment carries it.
+
+    Absent material is not an error here: a fresh database needs none, and the
+    revision itself refuses when it needs material it was not given. Loading it
+    optimistically would be worse -- a partially-configured environment would
+    then fail deep inside a schema change instead of before one.
+    """
+    from personal_agent.keys import (
+        AgentKeyConfigError,
+        load_agent_data_keyring,
+        load_identifier_key,
+    )
+    from personal_agent.storage.cap001_migration import MigrationInputs
+
+    try:
+        keyring = load_agent_data_keyring()
+        identifier_key = load_identifier_key()
+    except AgentKeyConfigError:
+        return None
+    return MigrationInputs(
+        keyring=keyring, identifier_key=identifier_key, backup_path=backup
+    )

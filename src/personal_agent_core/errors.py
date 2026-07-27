@@ -49,6 +49,15 @@ class ErrorCode(StrEnum):
     BATCH_ATOMICITY_UNAVAILABLE = "BATCH_ATOMICITY_UNAVAILABLE"
     BATCH_COMMIT_UNKNOWN = "BATCH_COMMIT_UNKNOWN"
 
+    # Timeline and context (`CAP-001`). The later cross-cutting codes
+    # (`MEMORY_POLICY_REJECTED`, `MEDIA_NOT_READY`, `UNSUPPORTED_MODALITY`,
+    # `INVALID_EVENT_CURSOR`) arrive with the CAP that serves their route; a
+    # code with no caller is surface, not readiness.
+    TIMELINE_MISMATCH = "TIMELINE_MISMATCH"
+    INVALID_CURSOR = "INVALID_CURSOR"
+    CONTEXT_BUDGET_EXCEEDED = "CONTEXT_BUDGET_EXCEEDED"
+    CONTEXT_UNAVAILABLE = "CONTEXT_UNAVAILABLE"
+
     # Internal
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -78,6 +87,10 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.SOURCE_COMMITTED_MISMATCH: "写入后回读的字段与预期不一致",
     ErrorCode.BATCH_ATOMICITY_UNAVAILABLE: "多笔写入尚未启用，一笔也没有记录",
     ErrorCode.BATCH_COMMIT_UNKNOWN: "多笔写入结果未知，正在按批次键核验",
+    ErrorCode.TIMELINE_MISMATCH: "该会话标识不属于当前对话记录",
+    ErrorCode.INVALID_CURSOR: "翻页游标无效或已过期",
+    ErrorCode.CONTEXT_BUDGET_EXCEEDED: "本轮必要上下文超出可用长度，未调用模型",
+    ErrorCode.CONTEXT_UNAVAILABLE: "暂时无法安全组装对话上下文",
     ErrorCode.INTERNAL_ERROR: "服务内部错误",
 }
 

@@ -20,6 +20,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
+from cap001_fixtures import CURSOR_KEY, IDENTIFIER_KEY
 from personal_agent.api.app import AgentApiDeps, build_app
 from personal_agent.api.control_client import RecordFields, RecordUnavailable
 from personal_agent.auth.tokens import SigningKey, TokenKeyRing, issue_access_token
@@ -143,6 +144,8 @@ def _client(engine, token_ring, keyring, *, read_record=None) -> TestClient:
         session_factory=session_factory(engine),
         token_ring=token_ring,
         keyring=keyring,
+        identifier_key=IDENTIFIER_KEY,
+        cursor_key=CURSOR_KEY,
         build_interpreter=lambda auth: None,
         build_dispatcher=lambda auth, trace_id: None,
         build_authorizer=lambda auth: (lambda *, tool, model_args: dict(model_args)),

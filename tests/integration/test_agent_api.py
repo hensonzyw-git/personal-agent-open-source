@@ -16,6 +16,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
+from cap001_fixtures import CURSOR_KEY, IDENTIFIER_KEY
 from personal_agent.api.app import AgentApiDeps, AuthContext, build_app
 from personal_agent.api.orchestrator import (
     Clarification,
@@ -36,7 +37,7 @@ from personal_agent.storage.engine import (
     create_database_engine,
     session_factory,
 )
-from personal_agent.storage.models import Device, Operation
+from personal_agent.storage.models import Conversation, Device, Operation
 from personal_agent_core.crypto import KeyRing, generate_key
 
 
@@ -103,6 +104,18 @@ def engine(tmp_path: Path):
                 created_at=NOW,
             )
         )
+        # `CAP-001`: a single-user deployment has exactly one canonical
+        # Timeline. Seeding it as `c1` keeps these tests reading naturally while
+        # making them exercise the real resolution path -- `c2` is then a
+        # genuinely unknown id, not a second Timeline.
+        session.add(
+            Conversation(
+                conversation_id="c1",
+                created_at=NOW,
+                next_sequence=1,
+                is_canonical=True,
+            )
+        )
         session.commit()
     yield engine
     engine.dispose()
@@ -143,6 +156,8 @@ def _client(
         session_factory=session_factory(engine),
         token_ring=token_ring,
         keyring=keyring,
+        identifier_key=IDENTIFIER_KEY,
+        cursor_key=CURSOR_KEY,
         build_interpreter=lambda auth: interpreter,
         build_dispatcher=build_dispatcher,
         build_authorizer=lambda auth: (lambda *, tool, model_args: dict(model_args)),
@@ -400,9 +415,12 @@ def test_a_structured_clarification_is_parked_and_resumed_by_link(
     assert old.json()["record_id"] is None
 
 
-def test_clarification_cannot_cross_conversations(
+def test_a_clarification_naming_an_unknown_timeline_is_refused(
     engine, token_ring, keyring
 ) -> None:
+    # Under `CAP-001` there is one canonical Timeline, so "another
+    # conversation" is now simply an id that resolves to nothing: a stable
+    # `TIMELINE_MISMATCH`, and never a second Timeline created on the way past.
     client = _client(
         engine,
         token_ring,
@@ -424,7 +442,10 @@ def test_clarification_cannot_cross_conversations(
         },
         headers=_auth(token_ring, key=REQUEST_ID_2),
     )
-    assert response.status_code == 400
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "TIMELINE_MISMATCH"
+    with session_factory(engine)() as session:
+        assert session.query(Conversation).count() == 1
 
 
 def test_slow_model_returns_202_and_finishes_in_the_worker(

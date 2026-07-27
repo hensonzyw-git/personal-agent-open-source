@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hmac
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
@@ -59,6 +61,23 @@ SERVICE_ACTIVE_KEY_ENV: Final[str] = (
     "PERSONAL_AGENT_SERVICE_ACTIVE_PRIVATE_KEY_PATH"
 )
 SERVICE_PREVIOUS_ENV: Final[str] = "PERSONAL_AGENT_SERVICE_PREVIOUS_PUBLIC_KEYS"
+
+#: `CAP-001`. Cross-cutting design 5.6 fixes five independent key purposes and
+#: forbids reusing one for another. Two of them are symmetric HMAC secrets the
+#: Agent holds: the pagination cursor signer, and the identifier/lineage HMAC
+#: that turns a legacy conversation id or an internal id into a fingerprint.
+#: They are separate because they have different blast radii -- a leaked cursor
+#: key lets someone forge a page request, while a leaked identifier key lets
+#: someone confirm guesses about which identifiers exist.
+CURSOR_ACTIVE_KID_ENV: Final[str] = "PERSONAL_AGENT_CURSOR_ACTIVE_KID"
+CURSOR_ACTIVE_KEY_ENV: Final[str] = "PERSONAL_AGENT_CURSOR_ACTIVE_KEY_PATH"
+CURSOR_PREVIOUS_ENV: Final[str] = "PERSONAL_AGENT_CURSOR_PREVIOUS_KEYS"
+
+IDENTIFIER_ACTIVE_KID_ENV: Final[str] = "PERSONAL_AGENT_IDENTIFIER_ACTIVE_KID"
+IDENTIFIER_ACTIVE_KEY_ENV: Final[str] = (
+    "PERSONAL_AGENT_IDENTIFIER_ACTIVE_KEY_PATH"
+)
+IDENTIFIER_PREVIOUS_ENV: Final[str] = "PERSONAL_AGENT_IDENTIFIER_PREVIOUS_KEYS"
 
 KEY_BYTES: Final[int] = 32
 
@@ -159,6 +178,162 @@ def load_agent_data_keyring(env: dict[str, str] | None = None) -> KeyRing:
             )
         )
     return KeyRing(entries, service=SERVICE)
+
+
+@dataclass(frozen=True)
+class HmacKey:
+    """One symmetric HMAC secret with the id that names it in trace."""
+
+    kid: str
+    secret: bytes
+
+    def __post_init__(self) -> None:
+        if len(self.secret) != KEY_BYTES:
+            raise AgentKeyConfigError(
+                f"HMAC key must be {KEY_BYTES} bytes, got {len(self.secret)}"
+            )
+
+
+@dataclass(frozen=True)
+class HmacKeyRing:
+    """One active HMAC key plus retired verification-only keys."""
+
+    active: HmacKey
+    previous: tuple[HmacKey, ...] = ()
+
+    def __post_init__(self) -> None:
+        entries = self.verification_keys
+        kids = [entry.kid for entry in entries]
+        if len(kids) != len(set(kids)):
+            raise AgentKeyConfigError("HMAC key ids must be unique")
+        for index, entry in enumerate(entries):
+            if any(
+                hmac.compare_digest(entry.secret, other.secret)
+                for other in entries[index + 1 :]
+            ):
+                raise AgentKeyConfigError(
+                    "active and retired HMAC keys must use distinct material"
+                )
+
+    @property
+    def verification_keys(self) -> tuple[HmacKey, ...]:
+        return (self.active, *self.previous)
+
+    @property
+    def kid(self) -> str:
+        return self.active.kid
+
+    @property
+    def secret(self) -> bytes:
+        return self.active.secret
+
+
+def _load_hmac_key(*, kid: str, path: str, purpose: str) -> HmacKey:
+    return HmacKey(kid=f"{purpose}:{kid}", secret=_load_symmetric(path))
+
+
+def _load_hmac_keyring(
+    env: dict[str, str],
+    kid_name: str,
+    path_name: str,
+    previous_name: str,
+    purpose: str,
+) -> HmacKeyRing:
+    kid, path = _require(env, kid_name, path_name)
+    return HmacKeyRing(
+        active=_load_hmac_key(kid=kid, path=path, purpose=purpose),
+        previous=tuple(
+            _load_hmac_key(kid=retired_kid, path=retired_path, purpose=purpose)
+            for retired_kid, retired_path in _entries(
+                env.get(previous_name), previous_name
+            )
+        ),
+    )
+
+
+def load_cursor_key(env: dict[str, str] | None = None) -> HmacKeyRing:
+    """The pagination cursor signer (`CAP-001`).
+
+    Separate material from every other purpose. Reusing the data key here would
+    mean a signature oracle over the same secret that seals the archive.
+    """
+    env = env if env is not None else dict(os.environ)
+    ring = _load_hmac_keyring(
+        env,
+        CURSOR_ACTIVE_KID_ENV,
+        CURSOR_ACTIVE_KEY_ENV,
+        CURSOR_PREVIOUS_ENV,
+        "cursor",
+    )
+    _require_distinct_symmetric(
+        env,
+        ring,
+        own_active_env=CURSOR_ACTIVE_KEY_ENV,
+        own_previous_env=CURSOR_PREVIOUS_ENV,
+    )
+    return ring
+
+
+def load_identifier_key(env: dict[str, str] | None = None) -> HmacKeyRing:
+    """The identifier and lineage fingerprint key (`CAP-001`)."""
+    env = env if env is not None else dict(os.environ)
+    ring = _load_hmac_keyring(
+        env,
+        IDENTIFIER_ACTIVE_KID_ENV,
+        IDENTIFIER_ACTIVE_KEY_ENV,
+        IDENTIFIER_PREVIOUS_ENV,
+        "identifier",
+    )
+    _require_distinct_symmetric(
+        env,
+        ring,
+        own_active_env=IDENTIFIER_ACTIVE_KEY_ENV,
+        own_previous_env=IDENTIFIER_PREVIOUS_ENV,
+    )
+    return ring
+
+
+def _require_distinct_symmetric(
+    env: dict[str, str],
+    ring: HmacKeyRing,
+    *,
+    own_active_env: str,
+    own_previous_env: str,
+) -> None:
+    """Refuse a symmetric key that is also serving another purpose.
+
+    Compared by material, not by path: copying one key file to a second name is
+    exactly how key separation quietly stops being real.
+    """
+    purpose_paths = (
+        (DATA_ACTIVE_KEY_ENV, DATA_PREVIOUS_ENV),
+        (CURSOR_ACTIVE_KEY_ENV, CURSOR_PREVIOUS_ENV),
+        (IDENTIFIER_ACTIVE_KEY_ENV, IDENTIFIER_PREVIOUS_ENV),
+    )
+    for active_name, previous_name in purpose_paths:
+        if (active_name, previous_name) == (
+            own_active_env,
+            own_previous_env,
+        ):
+            continue
+        paths: list[str] = []
+        active_path = env.get(active_name)
+        if active_path:
+            paths.append(active_path)
+        paths.extend(
+            path
+            for _, path in _entries(env.get(previous_name), previous_name)
+        )
+        for path in paths:
+            material = _load_symmetric(path)
+            if any(
+                hmac.compare_digest(material, entry.secret)
+                for entry in ring.verification_keys
+            ):
+                raise AgentKeyConfigError(
+                    f"the keys for {own_active_env} must be separate material "
+                    f"from the keys for {active_name}"
+                )
 
 
 def load_access_token_ring(env: dict[str, str] | None = None) -> TokenKeyRing:

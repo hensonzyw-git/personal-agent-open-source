@@ -137,9 +137,14 @@ On 2026-07-27 Henson added the cross-cutting Agent capability baseline. Before
 `DEV-030`, `CAP-001` must separate the user-visible Timeline from automatic
 semantic Sessions, add same-Session context compaction/checkpoints, enforce a
 bounded Context Builder, and paginate chat history. `CAP-001` is now a G4
-blocker; it is designed but not implemented. `CAP-002`–`CAP-008` cover later
-streaming, voice, memory, routing and multimodal work and do not enlarge the
-current Finance Phase. See `docs/Agent横向能力PRD_v1.0.md` and
+blocker and implementation is in progress: typed configuration, the reversible
+legacy migration, canonical Timeline/alias/sequence pagination, and the
+foundational Session Manager are built and verified offline. The remaining
+Session failure set, production classifier, Budgeter, Compactor/Checkpoint,
+Context Builder, eval and live adversarial evidence are not complete.
+`CAP-002`–`CAP-008` cover later streaming, voice, memory, routing and multimodal
+work and do not enlarge the current Finance Phase. See
+`docs/Agent横向能力PRD_v1.0.md` and
 `docs/Agent横向能力技术方案_v1.0.md`. Henson froze the product and technical
 v1.0 contracts on
 2026-07-27: all enrolled devices share one Timeline; Session boundaries are

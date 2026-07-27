@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
+from cap001_fixtures import CURSOR_KEY, IDENTIFIER_KEY
 from personal_agent.api.app import AgentApiDeps, build_app
 from personal_agent.api.composition import device_authorization
 from personal_agent.api.device_api import SELF_READ_SCOPE, SELF_REVOKE_SCOPE
@@ -103,6 +104,8 @@ class Harness:
             session_factory=self.sessions,
             token_ring=token_ring,
             keyring=keyring,
+            identifier_key=IDENTIFIER_KEY,
+            cursor_key=CURSOR_KEY,
             build_interpreter=lambda auth: None,
             build_dispatcher=lambda auth, trace_id: None,
             build_authorizer=lambda auth: (lambda *, tool, model_args: model_args),

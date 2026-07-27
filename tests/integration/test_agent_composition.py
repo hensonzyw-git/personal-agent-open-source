@@ -50,7 +50,11 @@ from personal_agent.api.operation_store import open_operation, transition_operat
 from personal_agent.auth.tokens import issue_access_token
 from personal_agent.keys import (
     DATA_ACTIVE_KEY_ENV,
+    CURSOR_ACTIVE_KEY_ENV,
+    CURSOR_ACTIVE_KID_ENV,
     DATA_ACTIVE_KID_ENV,
+    IDENTIFIER_ACTIVE_KEY_ENV,
+    IDENTIFIER_ACTIVE_KID_ENV,
     SERVICE_ACTIVE_KEY_ENV,
     SERVICE_ACTIVE_KID_ENV,
     TOKEN_ACTIVE_KEY_ENV,
@@ -67,7 +71,7 @@ from personal_agent.storage.engine import (
     create_database_engine,
     session_factory,
 )
-from personal_agent.storage.models import Device, Operation
+from personal_agent.storage.models import Conversation, Device, Operation
 from personal_agent_core.errors import ErrorCode
 from personal_agent_core.manifest import load_manifest
 from personal_agent_core.timeutil import utc_now
@@ -103,6 +107,12 @@ def write_keys(directory: Path) -> AgentKeyFiles:
     directory.mkdir(parents=True, exist_ok=True)
     data_key = directory / "data.key"
     data_key.write_text(base64.urlsafe_b64encode(b"k" * 32).decode("ascii"))
+    # `CAP-001` design 5.6: three distinct symmetric secrets, because the
+    # loaders compare material and refuse two purposes sharing one key.
+    cursor_key = directory / "cursor.key"
+    cursor_key.write_text(base64.urlsafe_b64encode(b"c" * 32).decode("ascii"))
+    identifier_key = directory / "identifier.key"
+    identifier_key.write_text(base64.urlsafe_b64encode(b"i" * 32).decode("ascii"))
 
     def private(path: Path) -> ec.EllipticCurvePrivateKey:
         key = ec.generate_private_key(ec.SECP256R1())
@@ -131,6 +141,10 @@ def write_keys(directory: Path) -> AgentKeyFiles:
         env={
             DATA_ACTIVE_KID_ENV: "agent-data-test",
             DATA_ACTIVE_KEY_ENV: str(data_key),
+            CURSOR_ACTIVE_KID_ENV: "agent-cursor-test",
+            CURSOR_ACTIVE_KEY_ENV: str(cursor_key),
+            IDENTIFIER_ACTIVE_KID_ENV: "agent-identifier-test",
+            IDENTIFIER_ACTIVE_KEY_ENV: str(identifier_key),
             TOKEN_ACTIVE_KID_ENV: "tok-test",
             TOKEN_ACTIVE_KEY_ENV: str(token_pem),
             SERVICE_ACTIVE_KID_ENV: "svc-test",
@@ -169,6 +183,17 @@ def agent_db(tmp_path: Path) -> Path:
                 scopes=json.dumps([CAPABILITY_SCOPE]),
                 allowed_tools_version=MANIFEST_VERSION,
                 created_at=utc_now(),
+            )
+        )
+        # `CAP-001`: the deployment's one canonical Timeline. A real client
+        # reads this id from `/v1/capabilities`; seeding it as `c1` keeps these
+        # tests focused on composition while still going through resolution.
+        session.add(
+            Conversation(
+                conversation_id="c1",
+                created_at=utc_now(),
+                next_sequence=1,
+                is_canonical=True,
             )
         )
         session.commit()
@@ -489,7 +514,7 @@ def test_an_expense_write_crosses_both_composition_roots_offline(
                     return await client.post(
                         "/v1/chat/messages",
                         json={
-                            "conversation_id": "c-write",
+                            "conversation_id": "c1",
                             "text": "午饭 20，个人支出",
                         },
                         headers={

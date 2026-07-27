@@ -36,6 +36,7 @@ from sqlalchemy import (
     MetaData,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -91,6 +92,42 @@ NOTIFICATION_STATUSES: Final[tuple[str, ...]] = (
     "pending",
     "provider_accepted",
     "undeliverable",
+)
+
+#: `CAP-001`. A Session is a continuous execution segment and is never
+#: reopened: continuing a topic creates a *new* Session that points back at the
+#: old one, so a closed segment's history can never be rewritten after the fact.
+SESSION_STATUSES: Final[tuple[str, ...]] = ("open", "closed")
+
+#: How a Session relates to the one it names as parent (design 5.1).
+SESSION_RELATION_KINDS: Final[tuple[str, ...]] = (
+    "new_topic",
+    "resumes",
+    "corrects_boundary",
+    "legacy",
+)
+
+#: The closed reason set of the Boundary Record (design 6.2). It is `NULL` for
+#: a Timeline's first Session and for a `legacy` Session created by migration:
+#: neither is the outcome of a boundary decision, and inventing a reason for
+#: them would make the audit read as though a classifier had run.
+SESSION_BOUNDARY_REASONS: Final[tuple[str, ...]] = (
+    "explicit_reset",
+    "explicit_resume",
+    "explicit_correction",
+    "task_boundary",
+    "idle_and_unrelated",
+    "previous_closed",
+)
+
+#: `CAP-001` checkpoint lifecycle (design 5.2). `building` never reaches the
+#: Context Builder; a build that loses the compare-and-swap becomes `invalid`
+#: rather than overwriting a newer version.
+CHECKPOINT_STATUSES: Final[tuple[str, ...]] = (
+    "building",
+    "active",
+    "superseded",
+    "invalid",
 )
 
 def _in_set(column: str, values: tuple[str, ...]) -> str:
@@ -177,12 +214,139 @@ class AuthChallenge(Base):
 
 
 class Conversation(Base):
+    """The canonical Timeline. `CAP-001` gives it a sequence allocator.
+
+    The physical table keeps its `conversations` name during the compatibility
+    period (design 4.2): renaming the public field is an API major version, and
+    a SQLite rebuild done purely for a rename would risk the archive for no
+    user-visible gain. `is_canonical` is what a single-user deployment actually
+    constrains -- a partial unique index allows exactly one canonical row, so an
+    unknown client id cannot quietly become a second Timeline.
+    """
+
     __tablename__ = "conversations"
 
     conversation_id: Mapped[str] = mapped_column(Text, primary_key=True)
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     last_event_at: Mapped[datetime | None] = mapped_column(
         UtcTimestamp, nullable=True
+    )
+    #: The next `timeline_sequence` to hand out. Allocation is a conditional
+    #: UPDATE on this column, so two devices appending at the same instant
+    #: cannot receive the same number; `created_at` and SQLite's `rowid` are
+    #: deliberately *not* the pagination contract (design 5.1).
+    next_sequence: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    is_canonical: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+
+    __table_args__ = (
+        CheckConstraint("next_sequence >= 1", name="next_sequence_positive"),
+        # SQLite honours the `WHERE` clause, so this bounds canonical rows at
+        # one without preventing a downgrade from restoring legacy rows.
+        Index(
+            "uq_conversations_canonical",
+            "is_canonical",
+            unique=True,
+            sqlite_where=text("is_canonical = 1"),
+        ),
+    )
+
+
+class ConversationAlias(Base):
+    """A pre-`CAP-001` conversation id, kept only as an HMAC.
+
+    Storing the alias in plaintext would defeat the point: these are historical
+    identifiers of the owner's private chat. The HMAC lets a device that still
+    remembers an old id resolve to the canonical Timeline, and lets nothing
+    else be recovered from the row.
+    """
+
+    __tablename__ = "conversation_aliases"
+
+    alias_hmac: Mapped[str] = mapped_column(Text, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.conversation_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    conversation: Mapped["Conversation"] = relationship()
+
+
+class ContextSession(Base):
+    """One automatically-created semantic segment of the Timeline.
+
+    The client never sends or stores a `session_id` (design 4.2.5). Sessions
+    exist so a long topic can be compacted without the user losing a continuous
+    Timeline, and so a new topic does not inherit an unrelated context.
+    """
+
+    __tablename__ = "context_sessions"
+
+    session_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.conversation_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="open")
+    boundary_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parent_session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("context_sessions.session_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    relation_kind: Mapped[str] = mapped_column(
+        Text, nullable=False, default="new_topic"
+    )
+    classifier_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
+    last_event_at: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
+
+    conversation: Mapped["Conversation"] = relationship()
+
+    __table_args__ = (
+        CheckConstraint(_in_set("status", SESSION_STATUSES), name="status"),
+        CheckConstraint(
+            _in_set("relation_kind", SESSION_RELATION_KINDS),
+            name="relation_kind",
+        ),
+        CheckConstraint(
+            "boundary_reason IS NULL OR "
+            + _in_set("boundary_reason", SESSION_BOUNDARY_REASONS),
+            name="boundary_reason",
+        ),
+        # `resumes` and `corrects_boundary` are meaningless without a target,
+        # and a self-parent is the shortest possible lineage cycle.
+        CheckConstraint(
+            "(relation_kind IN ('resumes', 'corrects_boundary')) "
+            "= (parent_session_id IS NOT NULL)",
+            name="lineage_requires_parent",
+        ),
+        CheckConstraint(
+            "parent_session_id IS NULL OR parent_session_id <> session_id",
+            name="parent_is_not_self",
+        ),
+        CheckConstraint(
+            "(status = 'closed') = (closed_at IS NOT NULL)",
+            name="closed_at_matches_status",
+        ),
+        # At most one open Session per Timeline. Two concurrent messages both
+        # deciding to open one is a real race (F-D10); the index, not the
+        # pre-check, is what makes only one of them win.
+        Index(
+            "uq_context_sessions_open",
+            "conversation_id",
+            unique=True,
+            sqlite_where=text("status = 'open'"),
+        ),
+        Index("ix_context_sessions_parent", "parent_session_id"),
     )
 
 
@@ -191,6 +355,10 @@ class ConversationEvent(Base):
 
     Permanent retention is not permission to feed the archive to a model. Only
     explicit export and deletion are supported in Phase 1.
+
+    `CAP-001` adds the ordering and grouping keys: `timeline_sequence` is the
+    stable pagination contract, `session_id` the semantic segment, and `turn_id`
+    groups one user message with the result of the operation it started.
     """
 
     __tablename__ = "conversation_events"
@@ -200,6 +368,18 @@ class ConversationEvent(Base):
         ForeignKey("conversations.conversation_id", ondelete="CASCADE"),
         nullable=False,
     )
+    #: Only set by migration, for events that predate the canonical Timeline.
+    #: Sealed, because it is a historical identifier of the owner's own chat and
+    #: because a downgrade has to be able to recover it exactly.
+    encrypted_legacy_conversation_id: Mapped[dict[str, Any] | None] = (
+        mapped_column(EncryptedEnvelope, nullable=True)
+    )
+    timeline_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("context_sessions.session_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    turn_id: Mapped[str] = mapped_column(Text, nullable=False)
     event_type: Mapped[str] = mapped_column(Text, nullable=False)
 
     encrypted_content: Mapped[dict[str, Any]] = mapped_column(
@@ -209,9 +389,107 @@ class ConversationEvent(Base):
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
 
     conversation: Mapped["Conversation"] = relationship()
+    session: Mapped["ContextSession"] = relationship()
 
     __table_args__ = (
         Index("ix_conversation_events_conversation_id", "conversation_id"),
+        # The pagination and checkpoint-range contract in one constraint.
+        UniqueConstraint(
+            "conversation_id",
+            "timeline_sequence",
+            name="conversation_id_timeline_sequence",
+        ),
+        CheckConstraint("timeline_sequence > 0", name="timeline_sequence_positive"),
+        Index("ix_conversation_events_session_id", "session_id"),
+        Index("ix_conversation_events_turn_id", "turn_id"),
+        Index("ix_conversation_events_operation_id", "operation_id"),
+    )
+
+
+class ContextCheckpoint(Base):
+    """One immutable compaction of a Session's context (design 5.2).
+
+    A checkpoint never replaces the raw archive; it summarises a closed range of
+    it. `source_hash` binds the summary to that exact range, so a correct
+    summary of one stretch of history can never be grafted onto another.
+    """
+
+    __tablename__ = "context_checkpoints"
+
+    checkpoint_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("context_sessions.session_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    parent_checkpoint_id: Mapped[str | None] = mapped_column(
+        ForeignKey("context_checkpoints.checkpoint_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="building")
+    covered_from_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    covered_through_sequence: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
+    encrypted_payload: Mapped[dict[str, Any]] = mapped_column(
+        EncryptedEnvelope, nullable=False
+    )
+    source_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    schema_version: Mapped[str] = mapped_column(Text, nullable=False)
+    compactor_version: Mapped[str] = mapped_column(Text, nullable=False)
+    estimated_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    session: Mapped["ContextSession"] = relationship()
+
+    __table_args__ = (
+        CheckConstraint(_in_set("status", CHECKPOINT_STATUSES), name="status"),
+        CheckConstraint(
+            "covered_from_sequence > 0", name="covered_from_positive"
+        ),
+        CheckConstraint(
+            "covered_through_sequence >= covered_from_sequence",
+            name="covered_range_monotonic",
+        ),
+        CheckConstraint("estimated_tokens >= 0", name="estimated_tokens_positive"),
+        CheckConstraint(
+            "parent_checkpoint_id IS NULL "
+            "OR parent_checkpoint_id <> checkpoint_id",
+            name="parent_is_not_self",
+        ),
+        # Exactly one active checkpoint per Session. Two concurrent Compactor
+        # runs are expected; the loser must not be able to replace the winner.
+        Index(
+            "uq_context_checkpoints_active",
+            "session_id",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+        ),
+    )
+
+
+class ContextCheckpointSource(Base):
+    """The ordered sources a checkpoint was built from, as HMACs only.
+
+    Deletion propagation needs to find every checkpoint derived from a deleted
+    event, which requires a stable per-source key; it does not require the
+    source id itself, so the row never holds one.
+    """
+
+    __tablename__ = "context_checkpoint_sources"
+
+    checkpoint_id: Mapped[str] = mapped_column(
+        ForeignKey("context_checkpoints.checkpoint_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_type: Mapped[str] = mapped_column(Text, nullable=False)
+    source_hmac: Mapped[str] = mapped_column(Text, nullable=False)
+
+    checkpoint: Mapped["ContextCheckpoint"] = relationship()
+
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0", name="ordinal_non_negative"),
+        Index("ix_context_checkpoint_sources_hmac", "source_hmac"),
     )
 
 

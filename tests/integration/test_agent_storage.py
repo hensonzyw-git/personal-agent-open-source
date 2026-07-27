@@ -23,6 +23,7 @@ from personal_agent.storage.models import (
     ApiRequest,
     AuthChallenge,
     Base,
+    ContextSession,
     Conversation,
     ConversationEvent,
     DailyReview,
@@ -330,10 +331,25 @@ def test_encrypted_columns_refuse_plaintext_hidden_in_an_extra_field(engine) -> 
 def test_a_sealed_envelope_is_accepted_and_round_trips(engine) -> None:
     with session_factory(engine)() as session:
         session.add(Conversation(conversation_id="conv-1", created_at=NOW))
+        # `CAP-001`: an event now carries its ordering and grouping keys, and
+        # the columns are `NOT NULL` precisely so an untracked event cannot
+        # exist.
+        session.add(
+            ContextSession(
+                session_id="ses-1",
+                conversation_id="conv-1",
+                status="open",
+                relation_kind="new_topic",
+                opened_at=NOW,
+            )
+        )
         session.add(
             ConversationEvent(
                 event_id="ev-3",
                 conversation_id="conv-1",
+                timeline_sequence=1,
+                session_id="ses-1",
+                turn_id="trn-1",
                 event_type="user_message",
                 encrypted_content=SEALED,
                 created_at=NOW,

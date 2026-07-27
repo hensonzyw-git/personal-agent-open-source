@@ -122,6 +122,37 @@ def glm_gateway_from_env(*, generate: Generate | None = None) -> GlmGateway:
     )
 
 
+MODEL_CONTEXT_TOKENS_ENV = "GLM_MODEL_CONTEXT_TOKENS"
+
+
+def declared_context_limit() -> int | None:
+    """The adapter's declared input-context limit, if the deployment states one.
+
+    `CAP-001` design 7.1 requires the context budget to fail closed when it
+    exceeds the adapter's declared `model_limit`. This adapter declares nothing
+    by default and returns `None`: the provider's window for a given model is a
+    fact to look up, not to guess, and an invented number would be worse than an
+    absent one. The product ceiling still bounds the budget on its own.
+
+    A deployment that knows the figure sets `GLM_MODEL_CONTEXT_TOKENS`, and a
+    malformed value is refused rather than ignored.
+    """
+    raw = os.environ.get(MODEL_CONTEXT_TOKENS_ENV)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ModelGatewayError(
+            f"{MODEL_CONTEXT_TOKENS_ENV} must be an integer"
+        ) from exc
+    if value <= 0:
+        raise ModelGatewayError(
+            f"{MODEL_CONTEXT_TOKENS_ENV} must be positive"
+        )
+    return value
+
+
 def _messages(
     user_text: str, clarification: ClarificationContext | None
 ) -> list[dict[str, str]]:

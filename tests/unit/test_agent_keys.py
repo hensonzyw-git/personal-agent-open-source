@@ -23,9 +23,15 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from personal_agent.auth.tokens import issue_access_token, verify_access_token
 from personal_agent.keys import (
     AgentKeyConfigError,
+    CURSOR_ACTIVE_KEY_ENV,
+    CURSOR_ACTIVE_KID_ENV,
+    CURSOR_PREVIOUS_ENV,
     DATA_ACTIVE_KEY_ENV,
     DATA_ACTIVE_KID_ENV,
     DATA_PREVIOUS_ENV,
+    IDENTIFIER_ACTIVE_KEY_ENV,
+    IDENTIFIER_ACTIVE_KID_ENV,
+    IDENTIFIER_PREVIOUS_ENV,
     SERVICE,
     SERVICE_ACTIVE_KEY_ENV,
     SERVICE_ACTIVE_KID_ENV,
@@ -35,6 +41,8 @@ from personal_agent.keys import (
     TOKEN_PREVIOUS_ENV,
     load_access_token_ring,
     load_agent_data_keyring,
+    load_cursor_key,
+    load_identifier_key,
     load_service_signing_ring,
 )
 from personal_agent_core.host_context import HostContext, sign_host_context
@@ -81,6 +89,8 @@ def test_every_ring_refuses_an_unconfigured_environment() -> None:
     for load in (
         load_agent_data_keyring,
         load_access_token_ring,
+        load_cursor_key,
+        load_identifier_key,
         load_service_signing_ring,
     ):
         with pytest.raises(AgentKeyConfigError):
@@ -93,6 +103,47 @@ def test_a_data_key_of_the_wrong_length_is_refused(tmp_path: Path) -> None:
         load_agent_data_keyring(
             {DATA_ACTIVE_KID_ENV: "k1", DATA_ACTIVE_KEY_ENV: str(path)}
         )
+
+
+@pytest.mark.parametrize(
+    ("load", "active_kid_env", "active_key_env", "previous_env"),
+    [
+        (
+            load_cursor_key,
+            CURSOR_ACTIVE_KID_ENV,
+            CURSOR_ACTIVE_KEY_ENV,
+            CURSOR_PREVIOUS_ENV,
+        ),
+        (
+            load_identifier_key,
+            IDENTIFIER_ACTIVE_KID_ENV,
+            IDENTIFIER_ACTIVE_KEY_ENV,
+            IDENTIFIER_PREVIOUS_ENV,
+        ),
+    ],
+)
+def test_retired_hmac_keys_remain_available_for_verification(
+    tmp_path: Path,
+    load,
+    active_kid_env: str,
+    active_key_env: str,
+    previous_env: str,
+) -> None:
+    active = tmp_path / "active.key"
+    retired = tmp_path / "retired.key"
+    active.write_text(base64.urlsafe_b64encode(b"a" * 32).decode("ascii"))
+    retired.write_text(base64.urlsafe_b64encode(b"r" * 32).decode("ascii"))
+
+    ring = load(
+        {
+            active_kid_env: "active",
+            active_key_env: str(active),
+            previous_env: f"retired={retired}",
+        }
+    )
+
+    assert ring.active.secret == b"a" * 32
+    assert [entry.secret for entry in ring.previous] == [b"r" * 32]
 
 
 def test_a_data_key_that_is_not_base64_is_refused(tmp_path: Path) -> None:

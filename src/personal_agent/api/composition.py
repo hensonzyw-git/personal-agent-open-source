@@ -62,9 +62,12 @@ from personal_agent.api.orchestrator import (
 from personal_agent.api.intent import WriteIntent
 from personal_agent.api.recovery import FinanceExecutionStatus, recover_pending
 from personal_agent.auth.enrollment import decode_device_scopes
+from personal_agent.context.config import ContextConfig, default_context_config
 from personal_agent.keys import (
     load_access_token_ring,
     load_agent_data_keyring,
+    load_cursor_key,
+    load_identifier_key,
     load_service_signing_ring,
 )
 from personal_agent.mcp_client.core import (
@@ -75,7 +78,10 @@ from personal_agent.mcp_client.core import (
 )
 from personal_agent.mcp_client.registry import ConnectorRegistry, TrustLevel
 from personal_agent.policy.bridge import DeviceAuthorization, GovernedToolBridge
-from personal_agent.runtime.glm_gateway import glm_gateway_from_env
+from personal_agent.runtime.glm_gateway import (
+    declared_context_limit,
+    glm_gateway_from_env,
+)
 from personal_agent.runtime.model_gateway import ModelGatewayError
 from personal_agent.runtime.interpreter import ModelInterpreter
 from personal_agent.runtime.prompt import build_system_prompt
@@ -468,6 +474,16 @@ async def agent_service(
     keyring = load_agent_data_keyring()
     token_ring = load_access_token_ring()
     service_ring = load_service_signing_ring()
+    # `CAP-001`. Loaded here for the same reason as the rings above: a service
+    # that cannot sign a page cursor would otherwise discover it on the first
+    # scroll, and one whose identifier key is missing could not tell a legacy
+    # conversation id from an unknown one.
+    cursor_key = load_cursor_key()
+    identifier_key = load_identifier_key()
+    context_config: ContextConfig = default_context_config()
+    # The budget is checked against what the adapter says it can accept, so a
+    # ceiling larger than the model's window fails at startup, not mid-turn.
+    context_config.require_within_model_limit(declared_context_limit())
     try:
         gateway = build_gateway()
     except ModelGatewayError as exc:
@@ -558,6 +574,9 @@ async def agent_service(
                     session_factory=sessions,
                     token_ring=token_ring,
                     keyring=keyring,
+                    identifier_key=identifier_key,
+                    cursor_key=cursor_key,
+                    context_config=context_config,
                     build_interpreter=build_interpreter,
                     build_dispatcher=build_dispatcher,
                     build_authorizer=build_authorizer,
