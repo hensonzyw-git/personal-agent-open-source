@@ -174,8 +174,11 @@ def downgrade() -> None:
     now = datetime.now(tz=timezone.utc)
     legacy = connection.execute(
         sa.text(
-            "SELECT COUNT(*) FROM conversation_events "
-            "WHERE encrypted_legacy_conversation_id IS NOT NULL"
+            "SELECT "
+            "(SELECT COUNT(*) FROM conversation_events "
+            " WHERE encrypted_legacy_conversation_id IS NOT NULL) + "
+            "(SELECT COUNT(*) FROM conversation_aliases "
+            " WHERE encrypted_legacy_conversation_id IS NOT NULL)"
         )
     ).scalar_one()
     if legacy:
@@ -205,6 +208,14 @@ def _create_new_tables() -> None:
         "conversation_aliases",
         sa.Column("alias_hmac", sa.Text(), nullable=False),
         sa.Column("conversation_id", sa.Text(), nullable=False),
+        # Runtime lookup uses only `alias_hmac`. This sealed value exists solely
+        # so downgrade can reconstruct an eventless legacy conversation; it is
+        # never exposed to clients or used for alias resolution.
+        sa.Column(
+            "encrypted_legacy_conversation_id",
+            personal_agent_core.sqlite.EncryptedEnvelope(),
+            nullable=True,
+        ),
         sa.Column(
             "created_at",
             personal_agent_core.sqlite.UtcTimestamp(),

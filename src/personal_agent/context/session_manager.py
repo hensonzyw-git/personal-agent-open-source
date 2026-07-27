@@ -8,9 +8,9 @@ The decision order in §6.1 is fixed, and the ordering is the safety property:
 
 1. resolve the canonical Timeline (the caller has already done this);
 2. read the Timeline's current open Session;
-3. look for a waiting operation belonging to this turn;
-4. **a waiting operation pins its Session** -- a parked clarification or
-   duplicate decision must never be answered inside a different segment;
+3. look for a non-terminal operation belonging to this Timeline;
+4. **a non-terminal operation pins its Session** -- an accepted/in-flight write
+   or a parked clarification/duplicate decision must never cross a segment;
 5. an explicit user reset / resume / correction outranks any classifier;
 6. a previous Session that is already closed forces a new one;
 7. only when still undecided, consider idle time and semantic continuity;
@@ -37,6 +37,7 @@ from sqlalchemy.exc import IntegrityError
 from personal_agent.context.config import ContextConfig
 from personal_agent.storage.models import (
     SESSION_BOUNDARY_REASONS,
+    TERMINAL_OPERATION_STATES,
     ContextSession,
 )
 from personal_agent_core.errors import AppError, ErrorCode
@@ -45,6 +46,14 @@ from personal_agent_core.errors import AppError, ErrorCode
 CLASSIFIER_VERSION: Final[str] = "session-boundary-v1"
 
 CONFIDENCE_BANDS: Final[frozenset[str]] = frozenset({"high", "medium", "low"})
+TASK_STATES: Final[frozenset[str]] = frozenset(
+    {"active", "completed", "blocked", "unknown"}
+)
+MAX_TOPIC_SUMMARY_CHARS: Final[int] = 512
+MAX_DOMAIN_CHARS: Final[int] = 64
+_TERMINAL_OPERATION_SQL: Final[str] = ", ".join(
+    f"'{state}'" for state in sorted(TERMINAL_OPERATION_STATES)
+)
 
 #: The explicit signals a user can give in words. Deliberately a closed literal
 #: set rather than a model judgement: design §6.1 makes a correction outrank the
@@ -95,16 +104,41 @@ def detect_explicit_signal(user_text: str) -> ExplicitSignal:
 
 
 @dataclass(frozen=True)
+class CompactSessionState:
+    """A bounded, de-identified account of the open Session.
+
+    The provider derives this from trusted Context Builder/Checkpoint state,
+    never from a classifier's own output. Explicit fields make it impossible to
+    mistake boundary metadata for the topic/domain/task evidence §6.1 requires.
+    """
+
+    topic_summary: str
+    domain: str | None
+    task_state: Literal["active", "completed", "blocked", "unknown"]
+
+    def __post_init__(self) -> None:
+        summary = self.topic_summary.strip()
+        if not summary or len(summary) > MAX_TOPIC_SUMMARY_CHARS:
+            raise ValueError("topic_summary must be non-empty and bounded")
+        if self.domain is not None:
+            domain = self.domain.strip()
+            if not domain or len(domain) > MAX_DOMAIN_CHARS:
+                raise ValueError("domain must be non-empty and bounded")
+        if self.task_state not in TASK_STATES:
+            raise ValueError("task_state is not recognised")
+
+
+@dataclass(frozen=True)
 class ClassifierInput:
     """What the semantic classifier is allowed to see (§6.1).
 
     Not in here, on purpose: tools, credentials, the full archive, and any
-    write capability. The classifier answers one closed question about two
-    short pieces of text.
+    write capability. The classifier answers one closed question about the new
+    input and one bounded, de-identified Session description.
     """
 
     user_text: str
-    open_session_summary: str
+    open_session_state: CompactSessionState
     minutes_since_last_event: int | None
 
 
@@ -121,6 +155,14 @@ class BoundaryClassifier(Protocol):
     """One bounded semantic judgement. May raise; may answer badly."""
 
     def classify(self, request: ClassifierInput) -> Any: ...
+
+
+class CompactSessionStateProvider(Protocol):
+    """Trusted semantic state assembled outside the model boundary."""
+
+    def compact_state(
+        self, db, *, session: ContextSession
+    ) -> CompactSessionState: ...
 
 
 @dataclass(frozen=True)
@@ -174,9 +216,11 @@ class SessionManager:
         config: ContextConfig,
         *,
         classifier: BoundaryClassifier | None = None,
+        state_provider: CompactSessionStateProvider | None = None,
     ) -> None:
         self._config = config
         self._classifier = classifier
+        self._state_provider = state_provider
 
     # -- reads ---------------------------------------------------------
 
@@ -190,8 +234,8 @@ class SessionManager:
             .one_or_none()
         )
 
-    def waiting_session_id(self, db, *, conversation_id: str) -> str | None:
-        """The Session holding a parked clarification or duplicate decision.
+    def non_terminal_session_id(self, db, *, conversation_id: str) -> str | None:
+        """The Session holding an operation whose state may still change.
 
         Read from the events, not from the operations table alone: an operation
         is only part of this Timeline through the event that anchored it, and
@@ -201,8 +245,8 @@ class SessionManager:
             text(
                 "SELECT e.session_id FROM conversation_events AS e "
                 "JOIN operations AS o ON o.operation_id = e.operation_id "
-                "WHERE e.conversation_id = :cid AND o.state IN "
-                "('waiting_for_clarification', 'waiting_for_duplicate_decision') "
+                "WHERE e.conversation_id = :cid "
+                f"AND o.state NOT IN ({_TERMINAL_OPERATION_SQL}) "
                 "ORDER BY e.timeline_sequence DESC LIMIT 1"
             ),
             {"cid": conversation_id},
@@ -222,11 +266,12 @@ class SessionManager:
         """Run the fixed §6.1 order and return a structured decision."""
         current = self.open_session(db, conversation_id=conversation_id)
 
-        # Steps 3-4. A waiting operation pins its Session outright. This is
-        # checked before every heuristic, including the user's own words: a
-        # parked duplicate decision answered in a fresh Session would lose the
-        # candidate set it refers to.
-        pinned = pinned_session_id or self.waiting_session_id(
+        # Steps 3-4. A non-terminal operation pins its Session outright. This
+        # is checked before every heuristic, including the user's own words:
+        # an in-flight result must land beside its request, and a parked
+        # duplicate decision answered in a fresh Session would lose its
+        # candidate set.
+        pinned = pinned_session_id or self.non_terminal_session_id(
             db, conversation_id=conversation_id
         )
         if pinned is not None:
@@ -271,11 +316,15 @@ class SessionManager:
                 confidence_band=None,
             )
 
-        # Step 7. Idle time and semantic continuity, in that order: an obvious
-        # gap does not need a model call.
+        # Step 7. Idle time, domain, task completion and semantic continuity
+        # are inputs to *one* judgement, not separate triggers. A long silence
+        # alone is deliberately not a boundary: the reason code §6.2 defines is
+        # `idle_and_unrelated`, and only the classifier can supply the second
+        # half of that. Someone who steps away for two hours and comes back to
+        # the same task keeps their context.
         idle_minutes = self._idle_minutes(current, now)
         outcome = self._classify(
-            current, user_text=user_text, idle_minutes=idle_minutes
+            db, current, user_text=user_text, idle_minutes=idle_minutes
         )
         if outcome is None or outcome.decision == "continue_session":
             # Step 9 lives here too: `None` is every uncertain case.
@@ -359,12 +408,6 @@ class SessionManager:
                 classifier_version=None,
                 confidence_band=None,
             )
-        if len(candidates) > 1:
-            # §6.1: an ambiguous target is asked about, never guessed at.
-            raise AppError(
-                ErrorCode.CLARIFICATION_REQUIRED,
-                internal_detail="more than one earlier topic could be resumed",
-            )
         return self._open_new(
             db,
             conversation_id=conversation_id,
@@ -380,22 +423,29 @@ class SessionManager:
     def _resume_candidates(
         self, db, conversation_id: str, current: ContextSession | None
     ) -> list[str]:
-        """Closed Sessions that ended within the resume window.
+        """The Session a bare resume marker names: the most recent closed one.
 
-        Bounded by the same idle threshold the classifier uses. "Continue the
-        last topic" means a recent one; reaching arbitrarily far back would make
-        the single-candidate rule meaningless.
+        Every phrase in `RESUME_MARKERS` names *the last* topic ("继续上次的
+        话题"), so the target is singular by construction and asking about it
+        would be asking a question the user already answered. The ambiguity
+        §6.1 requires a clarification for is the other case -- a user naming a
+        topic ("继续东京那个话题") -- which needs a resolver this version does
+        not have, and which the marker set deliberately does not match. That
+        wording therefore falls through to the ordinary decision rather than
+        being guessed at.
         """
-        rows = db.execute(
+        row = db.execute(
             text(
                 "SELECT session_id FROM context_sessions "
                 "WHERE conversation_id = :cid AND status = 'closed' "
                 "AND relation_kind <> 'legacy' "
-                "ORDER BY closed_at DESC, session_id DESC LIMIT 2"
+                "ORDER BY closed_at DESC, session_id DESC LIMIT 1"
             ),
             {"cid": conversation_id},
-        ).all()
-        return [row[0] for row in rows if current is None or row[0] != current.session_id]
+        ).scalar_one_or_none()
+        if row is None or (current is not None and row == current.session_id):
+            return []
+        return [row]
 
     def _correct_boundary(
         self,
@@ -559,22 +609,22 @@ class SessionManager:
             cursor = node.parent_session_id
 
     def close_session(self, db, session: ContextSession, *, now: datetime) -> None:
-        """Close a Session, unless something is still parked inside it."""
-        waiting = db.execute(
+        """Close a Session only after every operation in it is terminal."""
+        pending = db.execute(
             text(
                 "SELECT 1 FROM conversation_events AS e "
                 "JOIN operations AS o ON o.operation_id = e.operation_id "
-                "WHERE e.session_id = :sid AND o.state IN "
-                "('waiting_for_clarification', 'waiting_for_duplicate_decision') "
+                "WHERE e.session_id = :sid "
+                f"AND o.state NOT IN ({_TERMINAL_OPERATION_SQL}) "
                 "LIMIT 1"
             ),
             {"sid": session.session_id},
         ).scalar_one_or_none()
-        if waiting:
+        if pending:
             raise AppError(
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail=(
-                    "a session with a waiting operation must not be closed"
+                    "a session with a non-terminal operation must not be closed"
                 ),
             )
         session.status = "closed"
@@ -593,6 +643,7 @@ class SessionManager:
 
     def _classify(
         self,
+        db,
         current: ContextSession,
         *,
         user_text: str,
@@ -604,13 +655,16 @@ class SessionManager:
         low confidence band -- all one answer. That is step 9, and it is the
         reason a provider outage cannot fragment a conversation.
         """
-        if self._classifier is None:
+        if self._classifier is None or self._state_provider is None:
             return None
         try:
+            state = self._state_provider.compact_state(db, session=current)
+            if not isinstance(state, CompactSessionState):
+                return None
             raw = self._classifier.classify(
                 ClassifierInput(
                     user_text=user_text,
-                    open_session_summary=_compact_state(current),
+                    open_session_state=state,
                     minutes_since_last_event=idle_minutes,
                 )
             )
@@ -649,25 +703,15 @@ def parse_classifier_outcome(raw: Any) -> ClassifierOutcome | None:
     if reason not in SESSION_BOUNDARY_REASONS:
         return None
     if decision == "open_new_session":
-        # Only these two reasons are the classifier's to give; the explicit
-        # ones belong to the user and `previous_closed` to the store.
+        # Only these two reasons are the classifier's to give: it is told the
+        # elapsed gap and judges whether the new message is unrelated to it.
+        # The explicit reasons belong to the user and `previous_closed` to the
+        # store, so a classifier claiming either is answering a question it was
+        # not asked.
         if reason not in {"task_boundary", "idle_and_unrelated"}:
             return None
         if band != "high":
             return None
     return ClassifierOutcome(
         decision=decision, reason=reason, confidence_band=band
-    )
-
-
-def _compact_state(current: ContextSession) -> str:
-    """The de-identified state the classifier is allowed to see.
-
-    Enumerations and a coarse age only. The classifier decides whether a new
-    message continues a topic; it does not need, and must not receive, the
-    topic's contents.
-    """
-    return (
-        f"relation={current.relation_kind};"
-        f"reason={current.boundary_reason or 'none'}"
     )

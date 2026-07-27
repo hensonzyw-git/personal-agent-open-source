@@ -13,9 +13,10 @@ own:
   to its own row id, and the row id does not change, so only relation fields are
   written. The migration first proves that assumption is true of this database
   and stops if it is not (§15.7) -- guessing here would corrupt the archive;
-- every pre-migration `conversation_id` survives only as an HMAC alias, so an
-  old client id still resolves while the table itself holds no historical
-  identifier in the clear;
+- every pre-migration `conversation_id` resolves only through an HMAC alias, so
+  an old client id still works while the table holds no historical identifier
+  in the clear; a sealed copy exists only for downgrade, including eventless
+  legacy conversations;
 - nothing it raises or returns contains message text, a conversation id or key
   material (§15.10).
 """
@@ -40,6 +41,8 @@ from personal_agent_core.crypto import CryptoError, KeyRing
 EVENT_TABLE: Final[str] = "conversation_events"
 CONTENT_COLUMN: Final[str] = "encrypted_content"
 LEGACY_ID_COLUMN: Final[str] = "encrypted_legacy_conversation_id"
+ALIAS_TABLE: Final[str] = "conversation_aliases"
+ALIAS_LEGACY_ID_COLUMN: Final[str] = "encrypted_legacy_conversation_id"
 
 #: States after which no further transition is allowed. Duplicated as a literal
 #: tuple rather than imported from `models`, because a migration must keep
@@ -157,9 +160,9 @@ def verify_restore_fixture(
     """Prove the pre-migration backup opens, matches and decrypts.
 
     A backup whose existence was never tested is not a rollback path. This
-    refuses the live database itself, compares a complete logical digest of the
-    conversations and events being migrated, and decrypts every backed-up event
-    with the same key ring the migration is about to rely on.
+    refuses the live database itself, compares a complete logical digest of
+    every application table, and decrypts every backed-up event with the same
+    key ring the migration is about to rely on.
     """
     from personal_agent_core.sqlite import create_database_engine
 
@@ -202,25 +205,24 @@ def verify_restore_fixture(
 
 
 def _archive_digest(connection: Connection) -> str:
-    """A deterministic, non-logged identity for the archive being migrated."""
+    """A deterministic, non-logged identity for the complete rollback state."""
     digest = hashlib.sha256()
-    queries = (
-        (
-            "conversations",
-            "SELECT conversation_id, created_at, last_event_at "
-            "FROM conversations ORDER BY conversation_id",
-        ),
-        (
-            EVENT_TABLE,
-            "SELECT event_id, conversation_id, event_type, encrypted_content, "
-            "operation_id, created_at FROM conversation_events "
-            "ORDER BY event_id",
-        ),
-    )
-    for table_name, query in queries:
+    tables = connection.execute(
+        text(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        )
+    ).all()
+    for table_name, schema_sql in tables:
+        quoted = '"' + table_name.replace('"', '""') + '"'
         digest.update(table_name.encode("utf-8"))
         digest.update(b"\x00")
-        for row in connection.execute(text(query)).all():
+        digest.update((schema_sql or "").encode("utf-8"))
+        digest.update(b"\x00")
+        # All project tables are ordinary SQLite rowid tables. Ordering by
+        # rowid makes the digest deterministic without duplicating every
+        # table's schema in migration code.
+        for row in connection.execute(text(f"SELECT * FROM {quoted} ORDER BY rowid")):
             encoded = json.dumps(
                 list(row),
                 ensure_ascii=False,
@@ -369,15 +371,26 @@ def apply_plan(
                 "last": stamp,
             },
         )
+        stored_alias = alias_hmac(identifier_key, conversation_id)
+        sealed_alias = keyring.encrypt(
+            conversation_id.encode("utf-8"),
+            table=ALIAS_TABLE,
+            column=ALIAS_LEGACY_ID_COLUMN,
+            row_id=stored_alias,
+        )
         connection.execute(
             text(
                 "INSERT INTO conversation_aliases "
-                "(alias_hmac, conversation_id, created_at) "
-                "VALUES (:alias, :cid, :created)"
+                "(alias_hmac, conversation_id, "
+                " encrypted_legacy_conversation_id, created_at) "
+                "VALUES (:alias, :cid, :legacy, :created)"
             ),
             {
-                "alias": alias_hmac(identifier_key, conversation_id),
+                "alias": stored_alias,
                 "cid": plan.canonical_id,
+                "legacy": json.dumps(
+                    sealed_alias, ensure_ascii=False, sort_keys=True
+                ),
                 "created": stamp,
             },
         )
@@ -519,6 +532,25 @@ def verify_upgrade(
         raise Cap001MigrationError(
             "legacy conversation aliases do not match the migration plan"
         )
+    alias_rows = connection.execute(
+        text(
+            "SELECT alias_hmac, encrypted_legacy_conversation_id "
+            "FROM conversation_aliases"
+        )
+    ).all()
+    recovered_aliases = {
+        alias_hmac(
+            identifier_key,
+            _decrypt_legacy_alias(
+                keyring, alias=stored_alias, envelope=envelope
+            ),
+        )
+        for stored_alias, envelope in alias_rows
+    }
+    if recovered_aliases != expected_aliases:
+        raise Cap001MigrationError(
+            "legacy conversation recovery material does not match its aliases"
+        )
 
 
 def _alias_set(connection: Connection) -> set[str]:
@@ -544,13 +576,23 @@ def restore_legacy_conversations(
     remains readable, not that derived checkpoints survive.
     """
     stamp = _rfc3339(now)
+    alias_rows = connection.execute(
+        text(
+            "SELECT alias_hmac, encrypted_legacy_conversation_id, created_at "
+            "FROM conversation_aliases "
+            "WHERE encrypted_legacy_conversation_id IS NOT NULL"
+        )
+    ).all()
+    last_by_conversation: dict[str, str] = {
+        _decrypt_legacy_alias(keyring, alias=alias, envelope=envelope): created_at
+        for alias, envelope, created_at in alias_rows
+    }
     rows = connection.execute(
         text(
             f"SELECT event_id, {LEGACY_ID_COLUMN}, created_at "
             f"FROM {EVENT_TABLE} WHERE {LEGACY_ID_COLUMN} IS NOT NULL"
         )
     ).all()
-    last_by_conversation: dict[str, str] = {}
     restored: dict[str, str] = {}
     for event_id, legacy, created_at in rows:
         original = keyring.decrypt(
@@ -585,6 +627,37 @@ def restore_legacy_conversations(
             ),
             {"cid": conversation_id, "eid": event_id},
         )
+    # Keep the canonical row only when it owns events appended after CAP-001.
+    # If every event was restored (including the eventless-history case), the
+    # row is a migration artefact and the downgrade should restore the original
+    # conversation set exactly.
+    connection.execute(
+        text(
+            "DELETE FROM conversations WHERE is_canonical = 1 "
+            "AND NOT EXISTS ("
+            " SELECT 1 FROM conversation_events "
+            " WHERE conversation_events.conversation_id = "
+            " conversations.conversation_id"
+            ")"
+        )
+    )
+
+
+def _decrypt_legacy_alias(
+    keyring: KeyRing, *, alias: str, envelope: Any
+) -> str:
+    try:
+        parsed = json.loads(envelope) if isinstance(envelope, str) else envelope
+        return keyring.decrypt(
+            parsed,
+            table=ALIAS_TABLE,
+            column=ALIAS_LEGACY_ID_COLUMN,
+            row_id=alias,
+        ).decode("utf-8")
+    except (CryptoError, ValueError, TypeError, UnicodeDecodeError) as exc:
+        raise Cap001MigrationError(
+            "a legacy alias recovery envelope could not be decrypted"
+        ) from exc
 
 
 def _rfc3339(moment: datetime) -> str:

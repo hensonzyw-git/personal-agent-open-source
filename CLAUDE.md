@@ -140,8 +140,10 @@ bounded Context Builder, and paginate chat history. `CAP-001` is now a G4
 blocker and implementation is in progress: typed configuration, the reversible
 legacy migration, canonical Timeline/alias/sequence pagination, and the
 foundational Session Manager are built and verified offline. The remaining
-Session failure set, production classifier, Budgeter, Compactor/Checkpoint,
-Context Builder, eval and live adversarial evidence are not complete.
+production compact-state provider/classifier, Budgeter, Compactor/Checkpoint,
+Context Builder, eval and live adversarial evidence are not complete; Session
+classification fails closed without trusted semantic state, and every
+non-terminal operation now pins its Session.
 `CAP-002`–`CAP-008` cover later streaming, voice, memory, routing and multimodal
 work and do not enlarge the current Finance Phase. See
 `docs/Agent横向能力PRD_v1.0.md` and

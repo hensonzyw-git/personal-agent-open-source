@@ -276,6 +276,34 @@ def test_a_backup_of_a_different_database_is_refused(
     engine.dispose()
 
 
+def test_a_backup_with_stale_operation_state_is_refused(
+    tmp_path: Path, keyring: KeyRing
+) -> None:
+    path = tmp_path / "agent.sqlite"
+    engine = _legacy_database(
+        path,
+        keyring,
+        conversations={"conv-a": NOW},
+        events=[("evt-1", "conv-a", NOW, "op-1")],
+        operation_state="dispatching",
+    )
+    backup = _backup(engine, path, tmp_path)
+
+    # The live database is now quiescent, but the supplied rollback copy is
+    # older and would resurrect a recoverable write if accepted.
+    engine = create_database_engine(path)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE operations SET state = 'succeeded' "
+                "WHERE operation_id = 'op-1'"
+            )
+        )
+    with pytest.raises(Cap001MigrationError, match="backup"):
+        db.upgrade(engine, "head", cap001_inputs=_inputs(keyring, backup))
+    engine.dispose()
+
+
 def test_the_live_database_itself_is_not_a_backup(
     tmp_path: Path, keyring: KeyRing
 ) -> None:
@@ -690,10 +718,27 @@ def test_an_empty_legacy_conversation_is_aliased_and_merged(
             text("SELECT conversation_id FROM conversations")
         ).all()
         aliases = connection.execute(
-            text("SELECT alias_hmac FROM conversation_aliases")
-        ).scalars().all()
+            text(
+                "SELECT alias_hmac, encrypted_legacy_conversation_id "
+                "FROM conversation_aliases"
+            )
+        ).all()
     assert len(conversations) == 1
-    assert aliases == [alias_hmac(IDENTIFIER_KEY, "conv-empty")]
+    assert aliases[0][0] == alias_hmac(IDENTIFIER_KEY, "conv-empty")
+    assert "conv-empty" not in str(aliases[0][1])
+
+    db.downgrade(
+        engine,
+        BASE_REVISION,
+        cap001_inputs=MigrationInputs(
+            keyring=keyring, identifier_key=IDENTIFIER_KEY
+        ),
+    )
+    with engine.connect() as connection:
+        restored = connection.execute(
+            text("SELECT conversation_id FROM conversations")
+        ).scalars().all()
+    assert restored == ["conv-empty"]
     engine.dispose()
 
 

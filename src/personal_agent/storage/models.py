@@ -256,12 +256,13 @@ class Conversation(Base):
 
 
 class ConversationAlias(Base):
-    """A pre-`CAP-001` conversation id, kept only as an HMAC.
+    """A pre-`CAP-001` conversation id, resolved only through an HMAC.
 
     Storing the alias in plaintext would defeat the point: these are historical
     identifiers of the owner's private chat. The HMAC lets a device that still
-    remembers an old id resolve to the canonical Timeline, and lets nothing
-    else be recovered from the row.
+    remembers an old id resolve to the canonical Timeline. A sealed copy is
+    retained only as migration rollback material, including for an eventless
+    legacy conversation; runtime lookup never reads it.
     """
 
     __tablename__ = "conversation_aliases"
@@ -270,6 +271,9 @@ class ConversationAlias(Base):
     conversation_id: Mapped[str] = mapped_column(
         ForeignKey("conversations.conversation_id", ondelete="CASCADE"),
         nullable=False,
+    )
+    encrypted_legacy_conversation_id: Mapped[dict[str, Any] | None] = (
+        mapped_column(EncryptedEnvelope, nullable=True)
     )
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
 

@@ -9,7 +9,10 @@ import pytest
 
 from personal_agent.api import events
 from personal_agent.context.config import default_context_config
-from personal_agent.context.session_manager import SessionManager
+from personal_agent.context.session_manager import (
+    CompactSessionState,
+    SessionManager,
+)
 from personal_agent.storage.engine import (
     create_all,
     create_database_engine,
@@ -38,6 +41,15 @@ class ContinueClassifier:
             "reason": "task_boundary",
             "confidence_band": "high",
         }
+
+
+class SessionStateProvider:
+    def compact_state(self, db, *, session):
+        return CompactSessionState(
+            topic_summary="继续完成当前任务",
+            domain="general",
+            task_state="active",
+        )
 
 
 @pytest.fixture()
@@ -134,7 +146,11 @@ def test_appending_an_event_refreshes_the_session_activity(
 
 def test_idle_time_is_input_not_a_boundary_by_itself(engine) -> None:
     classifier = ContinueClassifier()
-    manager = SessionManager(default_context_config(), classifier=classifier)
+    manager = SessionManager(
+        default_context_config(),
+        classifier=classifier,
+        state_provider=SessionStateProvider(),
+    )
 
     with session_factory(engine)() as session:
         decision = manager.select_session(
