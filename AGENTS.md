@@ -154,6 +154,19 @@ Session lineage, Checkpoint CAS, typed context budgets, persist-before-emit SSE,
 temporary voice media, versioned APIs/migrations and field-encrypted Memory with
 an HMAC blind lexical index rather than plaintext FTS.
 
+On 2026-07-27 Henson also confirmed a separate Development Agent Loop product
+and technical baseline. Personal Agent is its intake, review and Human-in-the-loop
+UI; a deterministic Workflow Service, private GitHub control plane and outbound
+Home Mac Worker own execution and evidence. Codex Sol plans and independently
+reviews, Claude Cloud Routine with Opus is the preferred coder, standard
+GLM-5.2 API is the first paid coding fallback, Codex Terra is bounded last-resort
+capacity, and Kimi remains evaluation-only. Local Claude CLI stays disabled
+until Henson verifies the account/device path through official channels. The
+baseline is documented in `docs/开发Agent闭环PRD_v1.0.md`,
+`docs/开发Agent闭环技术方案_v1.0.md` and
+`docs/开发Agent闭环开发拆解_v0.1.md`. It is not implemented or authorised and
+does not change CAP-001, DEV-030 or any Phase 1 gate.
+
 Development authorization is not authorization for everything downstream. Each
 later gate still binds independently: do not create the Feishu application or
 access any real Base before G2; do not write to a Feishu test table before G3;
@@ -333,6 +346,12 @@ conflict instead of silently choosing an old default.
 - `docs/Agent横向能力技术方案_v1.0.md` — frozen framework-neutral architecture,
   versioned data/API contracts, failure boundaries and CAP acceptance gates for
   those capabilities.
+- `docs/开发Agent闭环PRD_v1.0.md` — confirmed product and Human-in-the-loop
+  baseline for feature intake through reviewed PR, with manual high-risk gates.
+- `docs/开发Agent闭环技术方案_v1.0.md` — deterministic orchestration, GitHub and
+  Home Mac Worker architecture, provider routing, security and recovery design.
+- `docs/开发Agent闭环开发拆解_v0.1.md` — separate DAL-001–050 implementation
+  track and gates; DAL-G0 is not authorised and no task has started.
 - `docs/Phase1技术方案设计计划_v0.1.md` — next-stage work order and the gate
   before implementation.
 - `docs/Phase1技术方案_v0.1.md` — current Phase 1 technical design;
