@@ -17,6 +17,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
+from envelope_factory import envelope_factory
 from cap001_fixtures import CURSOR_KEY, IDENTIFIER_KEY
 from personal_agent.api import events
 from personal_agent.api.app import AgentApiDeps, build_app
@@ -593,7 +594,7 @@ def test_an_unknown_direction_is_refused(
 
 
 class _Answering:
-    def interpret(self, *, text: str, conversation_id: str):
+    def interpret(self, *, envelope, clarification_context=None):
         return DirectAnswer("ok")
 
 
@@ -618,6 +619,7 @@ def client(engine, token_ring, keyring) -> TestClient:
         identifier_key=IDENTIFIER_KEY,
         cursor_key=CURSOR_KEY,
         build_interpreter=lambda auth: _Answering(),
+        build_envelope=envelope_factory(keyring),
         build_dispatcher=lambda auth, trace: None,
         build_authorizer=lambda auth: (lambda *, tool, model_args: model_args),
         capabilities=lambda auth: [],

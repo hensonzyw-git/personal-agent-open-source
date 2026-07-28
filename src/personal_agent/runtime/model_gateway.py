@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from personal_agent.policy.bridge import VisibleTool
+from personal_agent.context.builder import ContextEnvelope
 
 
 class ModelGatewayError(RuntimeError):
@@ -80,7 +80,14 @@ ModelProposal = (
 
 
 class ModelGateway(Protocol):
-    """One model turn: a system instruction, the user text, and the visible tools.
+    """One model turn, built from exactly one budget-validated `ContextEnvelope`.
+
+    `CAP-001` design §9 makes the Context Builder the only assembly point: the
+    system instruction, the history, the exact pending state and the tool
+    declarations all arrive already rendered and already measured, and the
+    gateway may not add context of its own. Anything it appends unmeasured (the
+    two internal, side-effect-free declarations below) lives inside
+    `CONTEXT_RESERVED_TOOL_TOKENS`, which is reserved outside the hard limit.
 
     The implementation must return exactly one proposal and must not execute a
     tool. A response containing multiple tool calls is malformed and fails
@@ -90,28 +97,6 @@ class ModelGateway(Protocol):
     def propose(
         self,
         *,
-        system: str,
-        user_text: str,
-        tools: list[VisibleTool],
+        envelope: ContextEnvelope,
         clarification: ClarificationContext | None = None,
     ) -> ModelProposal: ...
-
-
-def tool_declarations(tools: list[VisibleTool]) -> list[dict[str, Any]]:
-    """Translate the governed catalog into OpenAI-style function declarations.
-
-    The description and schema come from the trusted manifest (via `VisibleTool`),
-    never from a connector's own metadata, so a server cannot smuggle instructions
-    to the model through a tool description.
-    """
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": tool.alias,
-                "description": tool.description,
-                "parameters": tool.input_schema,
-            },
-        }
-        for tool in tools
-    ]

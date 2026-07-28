@@ -62,6 +62,8 @@ from personal_agent.api.orchestrator import (
 from personal_agent.api.intent import WriteIntent
 from personal_agent.api.recovery import FinanceExecutionStatus, recover_pending
 from personal_agent.auth.enrollment import decode_device_scopes
+from personal_agent.context.builder import ContextBuilder, ContextEnvelope
+from personal_agent.context.compactor import Compactor
 from personal_agent.context.config import ContextConfig, default_context_config
 from personal_agent.keys import (
     load_access_token_ring,
@@ -452,6 +454,7 @@ async def agent_service(
     *,
     now: Callable[[], datetime] = utc_now,
     build_gateway: Callable[[], Any] = glm_gateway_from_env,
+    context_config: ContextConfig | None = None,
 ) -> AsyncIterator[ComposedAgentService]:
     """Compose the Agent API for the lifetime of the service."""
     # Both internal channels are checked here, before a key is read or a socket
@@ -480,10 +483,18 @@ async def agent_service(
     # conversation id from an unknown one.
     cursor_key = load_cursor_key()
     identifier_key = load_identifier_key()
-    context_config: ContextConfig = default_context_config()
+    context_config = context_config or default_context_config()
     # The budget is checked against what the adapter says it can accept, so a
     # ceiling larger than the model's window fails at startup, not mid-turn.
     context_config.require_within_model_limit(declared_context_limit())
+    # `CAP-001`. The one assembly point for model context. Its Compactor has no
+    # provider: this service can *read and verify* an existing Checkpoint, and
+    # cannot build one. Compaction itself arrives with the model-backed provider,
+    # and until then the soft-limit signal on each envelope is recorded, not
+    # acted on.
+    context_builder = ContextBuilder(
+        context_config, compactor=Compactor(context_config)
+    )
     try:
         gateway = build_gateway()
     except ModelGatewayError as exc:
@@ -521,14 +532,39 @@ async def agent_service(
                     )
 
             def build_interpreter(auth: AuthContext) -> ModelInterpreter:
+                return ModelInterpreter(gateway)
+
+            def build_envelope(
+                session,
+                auth: AuthContext,
+                *,
+                conversation_id: str,
+                session_id: str,
+                current_event_id: str,
+                user_text: str,
+            ) -> ContextEnvelope:
+                """Assemble this turn's context (`CAP-001` design §9).
+
+                The effective tool set is re-read here, at assembly time, from
+                the same governed bridge the authorizer uses. A device revoked
+                between anchoring and the model turn therefore sees an envelope
+                with no declarations rather than the catalog it had a moment
+                earlier -- and the write would still be refused downstream.
+                """
                 device = device_for(auth)
                 tools = [] if device is None else bridge.visible_tools(device)
-                return ModelInterpreter(
-                    gateway,
-                    tools=tools,
-                    system=build_system_prompt(
+                return context_builder.build(
+                    session,
+                    keyring,
+                    identifier_key,
+                    conversation_id=conversation_id,
+                    session_id=session_id,
+                    current_event_id=current_event_id,
+                    system_instruction=build_system_prompt(
                         today=format_ledger_date(ledger_date(now()))
                     ),
+                    user_text=user_text,
+                    effective_tools=tools,
                 )
 
             def build_authorizer(auth: AuthContext):
@@ -578,6 +614,7 @@ async def agent_service(
                     cursor_key=cursor_key,
                     context_config=context_config,
                     build_interpreter=build_interpreter,
+                    build_envelope=build_envelope,
                     build_dispatcher=build_dispatcher,
                     build_authorizer=build_authorizer,
                     capabilities=capabilities,

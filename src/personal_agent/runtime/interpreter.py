@@ -2,10 +2,12 @@
 
 `DEV-027`. The orchestrator's `Interpreter` protocol preserves direct answers,
 one tool call, structured clarification and fixed fail-closed outcomes. This
-binds a `ModelGateway`, the device's visible tools, and a system instruction into
-that protocol. It is deliberately per-request: the tool catalog is the
-*device's* effective tools (design 5.3), so a fresh interpreter is built for
-each request with that device's catalog.
+binds a `ModelGateway` into that protocol.
+
+Since `CAP-001` it carries no per-request state at all: the system instruction
+and the device's effective tool declarations arrive inside the turn's
+`ContextEnvelope`, already measured against the budget. An interpreter that also
+held its own catalog would be a second, unmeasured source of the same facts.
 
 The mapping is intentionally faithful, not corrective. A proposed tool call is
 handed on as-is -- even a tool the device cannot see -- because rejecting it is
@@ -23,7 +25,7 @@ from personal_agent.api.orchestrator import (
     InterpreterError,
     ToolCall,
 )
-from personal_agent.policy.bridge import VisibleTool
+from personal_agent.context.builder import ContextEnvelope
 from personal_agent.runtime.model_gateway import (
     ClarificationContext,
     ModelGateway,
@@ -36,32 +38,19 @@ from personal_agent.runtime.model_gateway import (
 
 
 class ModelInterpreter:
-    """A `ModelGateway`-backed interpreter for one device's request."""
+    """A `ModelGateway`-backed interpreter over one assembled turn."""
 
-    def __init__(
-        self,
-        gateway: ModelGateway,
-        *,
-        tools: list[VisibleTool],
-        system: str,
-    ) -> None:
+    def __init__(self, gateway: ModelGateway) -> None:
         self._gateway = gateway
-        self._tools = tools
-        self._system = system
 
     def interpret(
         self,
         *,
-        text: str,
-        conversation_id: str,
+        envelope: ContextEnvelope,
         clarification_context: ClarificationContext | None = None,
     ) -> Interpretation:
         try:
-            kwargs = {
-                "system": self._system,
-                "user_text": text,
-                "tools": self._tools,
-            }
+            kwargs: dict[str, object] = {"envelope": envelope}
             if clarification_context is not None:
                 kwargs["clarification"] = clarification_context
             proposal = self._gateway.propose(**kwargs)

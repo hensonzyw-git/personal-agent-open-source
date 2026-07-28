@@ -7,12 +7,18 @@ never corrects a bad tool name (policy owns that).
 
 from __future__ import annotations
 
+import json
+
+import pytest
+
+from context_envelopes import envelope_for
 from personal_agent.api.orchestrator import (
     Clarification,
     DirectAnswer,
     FailSafeInterpretation,
     ToolCall,
 )
+from personal_agent.context.budget import ComponentKind
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.runtime.interpreter import ModelInterpreter
 from personal_agent.runtime.model_gateway import (
@@ -21,7 +27,6 @@ from personal_agent.runtime.model_gateway import (
     ProposedClarification,
     ProposedFailure,
     ProposedToolCall,
-    tool_declarations,
 )
 
 
@@ -39,45 +44,47 @@ class FakeGateway:
         self.proposal = proposal
         self.seen: dict | None = None
 
-    def propose(self, *, system, user_text, tools, clarification=None):
-        self.seen = {
-            "system": system,
-            "user_text": user_text,
-            "tools": tools,
-            "clarification": clarification,
-        }
+    def propose(self, *, envelope, clarification=None):
+        self.seen = {"envelope": envelope, "clarification": clarification}
         return self.proposal
 
 
-def _interpreter(proposal, *, tools=(_EXPENSE,), system="SYS") -> ModelInterpreter:
-    return ModelInterpreter(
-        FakeGateway(proposal), tools=list(tools), system=system
-    )
+@pytest.fixture()
+def envelope(tmp_path):
+    return envelope_for(tmp_path, system="SYS", tools=[_EXPENSE])
 
 
-def test_a_proposed_answer_becomes_a_direct_answer() -> None:
+def _interpreter(proposal) -> ModelInterpreter:
+    return ModelInterpreter(FakeGateway(proposal))
+
+
+def test_a_proposed_answer_becomes_a_direct_answer(envelope) -> None:
     interp = _interpreter(ProposedAnswer("你好"))
-    result = interp.interpret(text="午饭 45", conversation_id="c1")
+    result = interp.interpret(envelope=envelope)
     assert isinstance(result, DirectAnswer)
     assert result.text == "你好"
 
 
-def test_structured_non_write_proposals_keep_their_state_meaning() -> None:
+def test_structured_non_write_proposals_keep_their_state_meaning(
+    envelope,
+) -> None:
     clarification = _interpreter(ProposedClarification("个人还是家庭支出？"))
-    assert clarification.interpret(
-        text="午饭 45", conversation_id="c1"
-    ) == Clarification("个人还是家庭支出？")
+    assert clarification.interpret(envelope=envelope) == Clarification(
+        "个人还是家庭支出？"
+    )
 
     failure = _interpreter(ProposedFailure("BATCH_ATOMICITY_UNAVAILABLE"))
-    assert failure.interpret(
-        text="午饭 45，晚饭 60", conversation_id="c1"
-    ) == FailSafeInterpretation("BATCH_ATOMICITY_UNAVAILABLE")
+    assert failure.interpret(envelope=envelope) == FailSafeInterpretation(
+        "BATCH_ATOMICITY_UNAVAILABLE"
+    )
 
 
-def test_a_proposed_tool_call_becomes_a_tool_call_with_copied_args() -> None:
+def test_a_proposed_tool_call_becomes_a_tool_call_with_copied_args(
+    envelope,
+) -> None:
     args = {"name": "午饭", "input_amount": "45"}
     interp = _interpreter(ProposedToolCall("finance.log_expense", args))
-    result = interp.interpret(text="午饭 45 个人", conversation_id="c1")
+    result = interp.interpret(envelope=envelope)
     assert isinstance(result, ToolCall)
     assert result.tool == "finance.log_expense"
     assert result.model_args == args
@@ -85,39 +92,54 @@ def test_a_proposed_tool_call_becomes_a_tool_call_with_copied_args() -> None:
     assert result.model_args is not args
 
 
-def test_an_off_catalog_tool_is_passed_through_for_policy_to_reject() -> None:
+def test_an_off_catalog_tool_is_passed_through_for_policy_to_reject(
+    envelope,
+) -> None:
     # The interpreter does not repair or drop a tool the device cannot see; the
     # orchestrator's authorize step turns this into a safe policy denial.
     interp = _interpreter(ProposedToolCall("finance.delete_everything", {}))
-    result = interp.interpret(text="删掉所有记录", conversation_id="c1")
+    result = interp.interpret(envelope=envelope)
     assert isinstance(result, ToolCall)
     assert result.tool == "finance.delete_everything"
 
 
-def test_the_gateway_receives_the_bound_system_and_tools() -> None:
+def test_the_gateway_receives_the_assembled_envelope(tmp_path) -> None:
+    """The instruction and the catalog reach the model only through the envelope.
+
+    The interpreter holds neither any more: a second copy of the system prompt
+    or of the tool list would be an input nobody measured against the budget.
+    """
     gateway = FakeGateway(ProposedAnswer("ok"))
-    interp = ModelInterpreter(gateway, tools=[_EXPENSE], system="RULES")
-    interp.interpret(text="hi", conversation_id="c1")
-    assert gateway.seen["system"] == "RULES"
-    assert gateway.seen["user_text"] == "hi"
-    assert gateway.seen["tools"] == [_EXPENSE]
+    built = envelope_for(tmp_path, system="RULES", tools=[_EXPENSE], user_text="hi")
+    ModelInterpreter(gateway).interpret(envelope=built)
+    assert gateway.seen["envelope"] is built
+    assert built.system_instruction == "RULES"
+    assert built.user_text == "hi"
+    assert built.tool_aliases == ("finance.log_expense",)
 
 
-def test_the_gateway_receives_only_an_explicit_clarification_context() -> None:
+def test_the_gateway_receives_only_an_explicit_clarification_context(
+    envelope,
+) -> None:
     gateway = FakeGateway(ProposedAnswer("ok"))
-    interp = ModelInterpreter(gateway, tools=[_EXPENSE], system="RULES")
     context = ClarificationContext("午饭 45", "个人还是家庭？")
-    interp.interpret(
-        text="个人支出",
-        conversation_id="c1",
-        clarification_context=context,
+    ModelInterpreter(gateway).interpret(
+        envelope=envelope, clarification_context=context
     )
     assert gateway.seen["clarification"] == context
 
 
-def test_tool_declarations_use_the_trusted_manifest_shape() -> None:
-    decls = tool_declarations([_EXPENSE])
-    assert decls == [
+def test_tool_declarations_use_the_trusted_manifest_shape(tmp_path) -> None:
+    """One place shapes a declaration, and it is the measured one.
+
+    The description and schema come from the trusted manifest through
+    `VisibleTool`, so a connector cannot smuggle instructions to the model
+    through its own metadata.
+    """
+    built = envelope_for(tmp_path, tools=[_EXPENSE])
+    assert [json.loads(text) for text in built.texts_of(
+        ComponentKind.TOOL_DECLARATION
+    )] == [
         {
             "type": "function",
             "function": {

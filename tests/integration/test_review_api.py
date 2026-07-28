@@ -20,6 +20,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
+from envelope_factory import envelope_factory
 from cap001_fixtures import CURSOR_KEY, IDENTIFIER_KEY
 from personal_agent.api.app import AgentApiDeps, build_app
 from personal_agent.api.control_client import RecordFields, RecordUnavailable
@@ -147,6 +148,7 @@ def _client(engine, token_ring, keyring, *, read_record=None) -> TestClient:
         identifier_key=IDENTIFIER_KEY,
         cursor_key=CURSOR_KEY,
         build_interpreter=lambda auth: None,
+        build_envelope=envelope_factory(keyring),
         build_dispatcher=lambda auth, trace_id: None,
         build_authorizer=lambda auth: (lambda *, tool, model_args: dict(model_args)),
         capabilities=lambda auth: [],

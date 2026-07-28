@@ -48,6 +48,11 @@ from personal_agent.api.intent import WriteIntent
 from personal_agent.api.orchestrator import CommitFailedSafe, ResolveFailedSafe
 from personal_agent.api.operation_store import open_operation, transition_operation
 from personal_agent.auth.tokens import issue_access_token
+from personal_agent.context.budget import ComponentKind
+from personal_agent.context.config import (
+    CAP001_PROVISIONAL_VALUES,
+    ContextConfig,
+)
 from personal_agent.keys import (
     DATA_ACTIVE_KEY_ENV,
     CURSOR_ACTIVE_KEY_ENV,
@@ -466,7 +471,99 @@ def test_a_read_tool_call_runs_through_the_real_governed_path(
     assert answer["status"] == "ok"
     assert [tool["name"] for tool in answer["tools"]] == ["meta.capabilities"]
     # The model saw the trusted manifest's catalog, not the server's own text.
-    assert [tool.alias for tool in gateway.calls[0]["tools"]] == ["meta.capabilities"]
+    # The catalog reached the model through the assembled envelope, which is the
+    # only path context may take since `CAP-001`.
+    assert gateway.calls[0]["envelope"].tool_aliases == ("meta.capabilities",)
+
+
+def test_a_second_message_reaches_the_model_with_the_first_turn_in_context(
+    keys, agent_db, finance
+) -> None:
+    """`CAP-001` wiring: the composed service assembles a real turn context.
+
+    This is the property that separates "the Context Builder exists" from "the
+    running service uses it". Both messages go through the real composition
+    root, and the second one has to carry the first message *and* its recorded
+    outcome as untrusted history -- while the system instruction stays free of
+    both.
+    """
+    gateway = FakeGateway(ProposedAnswer("好的"))
+
+    async def scenario():
+        async with agent_service(
+            config_for(agent_db, finance), build_gateway=lambda: gateway
+        ) as composed:
+            async with http_for(composed.deps) as client:
+                first = await client.post(
+                    "/v1/chat/messages",
+                    json={"conversation_id": "c1", "text": "我在整理这个月的支出"},
+                    headers=chat_headers(),
+                )
+                second = await client.post(
+                    "/v1/chat/messages",
+                    json={"conversation_id": "c1", "text": "刚才说到哪了？"},
+                    headers=chat_headers(),
+                )
+                return first, second
+
+    first, second = asyncio.run(scenario())
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+
+    opening, follow_up = gateway.calls[0]["envelope"], gateway.calls[1]["envelope"]
+    # Turn one had no history at all.
+    assert opening.texts_of(ComponentKind.RAW_EVENT) == ()
+    assert opening.user_text == "我在整理这个月的支出"
+
+    history = "\n".join(follow_up.texts_of(ComponentKind.RAW_EVENT))
+    assert "我在整理这个月的支出" in history
+    assert "好的" in history  # the recorded operation result, not model memory
+    # The current message appears once, as the current message.
+    assert follow_up.user_text == "刚才说到哪了？"
+    assert "刚才说到哪了？" not in history
+    # History is data. It never becomes instruction.
+    assert "我在整理这个月的支出" not in follow_up.system_instruction
+    assert history.count("<untrusted_data") == 2
+    # One Timeline, one Session, and the envelope says which.
+    assert follow_up.timeline_id == opening.timeline_id
+    assert follow_up.session_id == opening.session_id
+
+
+def test_a_turn_that_cannot_be_assembled_fails_safe_without_calling_the_model(
+    keys, agent_db, finance
+) -> None:
+    """An unbuildable context is a clean pre-submit failure, not a crash.
+
+    The budget here is too small for the mandatory context alone, which is the
+    `CONTEXT_BUDGET_EXCEEDED` refusal of design §7.3 step 5. The operation must
+    end `failed_safe` with that reason, and the model must never be asked.
+    """
+    gateway = FakeGateway(ProposedAnswer("不该被调用"))
+    values = dict(CAP001_PROVISIONAL_VALUES)
+    values.update(
+        {"CONTEXT_SOFT_LIMIT_TOKENS": 8, "CONTEXT_HARD_LIMIT_TOKENS": 16}
+    )
+    impossible = ContextConfig.from_mapping("ctx-impossible", values)
+
+    async def scenario():
+        async with agent_service(
+            config_for(agent_db, finance),
+            build_gateway=lambda: gateway,
+            context_config=impossible,
+        ) as composed:
+            async with http_for(composed.deps) as client:
+                return await client.post(
+                    "/v1/chat/messages",
+                    json={"conversation_id": "c1", "text": "记一笔咖啡 18 个人支出"},
+                    headers=chat_headers(),
+                )
+
+    response = asyncio.run(scenario())
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == "failed_safe"
+    assert body["failure_reason"] == "CONTEXT_BUDGET_EXCEEDED"
+    assert gateway.calls == []
 
 
 def test_an_expense_write_crosses_both_composition_roots_offline(
@@ -685,7 +782,7 @@ def test_a_tool_outside_the_configured_allowlist_is_invisible(
     assert chat["state"] == "failed_safe"
     assert chat["failure_reason"] == "policy_denied"
     assert capabilities["tools"] == []
-    assert gateway.calls[0]["tools"] == []
+    assert gateway.calls[0]["envelope"].tool_aliases == ()
 
 
 # --- device freshness --------------------------------------------------------
@@ -797,7 +894,7 @@ def test_a_device_bound_to_another_manifest_sees_nothing(
     assert capabilities["tools"] == []
     assert chat["state"] == "failed_safe"
     assert chat["failure_reason"] == "policy_denied"
-    assert gateway.calls[0]["tools"] == []
+    assert gateway.calls[0]["envelope"].tool_aliases == ()
 
 
 def test_capabilities_reports_the_effective_tools_without_schemas(

@@ -37,6 +37,7 @@ from personal_agent.storage.engine import (
     create_database_engine,
     session_factory,
 )
+from envelope_factory import envelope_factory
 from personal_agent.storage.models import Conversation, Device, Operation
 from personal_agent_core.crypto import KeyRing, generate_key
 
@@ -51,7 +52,8 @@ class FakeInterpreter:
     def __init__(self, result) -> None:
         self.result = result
 
-    def interpret(self, *, text: str, conversation_id: str):
+    def interpret(self, *, envelope, clarification_context=None):
+        self.envelope = envelope
         return self.result
 
 
@@ -159,6 +161,7 @@ def _client(
         identifier_key=IDENTIFIER_KEY,
         cursor_key=CURSOR_KEY,
         build_interpreter=lambda auth: interpreter,
+        build_envelope=envelope_factory(keyring),
         build_dispatcher=build_dispatcher,
         build_authorizer=lambda auth: (lambda *, tool, model_args: dict(model_args)),
         capabilities=lambda auth: [{"alias": "finance.log_expense"}],
@@ -362,14 +365,10 @@ def test_a_structured_clarification_is_parked_and_resumed_by_link(
                 ToolCall("finance.log_expense", {"name": "午饭"}),
             ]
 
-        def interpret(
-            self,
-            *,
-            text,
-            conversation_id,
-            clarification_context=None,
-        ):
-            self.calls.append((text, conversation_id, clarification_context))
+        def interpret(self, *, envelope, clarification_context=None):
+            self.calls.append(
+                (envelope.user_text, envelope.timeline_id, clarification_context)
+            )
             return self.results.pop(0)
 
     interpreter = SequencedInterpreter()
@@ -452,7 +451,7 @@ def test_slow_model_returns_202_and_finishes_in_the_worker(
     engine, token_ring, keyring
 ) -> None:
     class SlowInterpreter:
-        def interpret(self, *, text, conversation_id):
+        def interpret(self, *, envelope, clarification_context=None):
             time.sleep(0.1)
             return DirectAnswer("完成")
 

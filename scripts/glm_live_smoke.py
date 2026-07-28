@@ -10,10 +10,16 @@ the happy path: a missing family scope, indirect family wording, two entries in
 one message, an ambiguous power bank, a prompt-injection attempt, a multi-turn
 clarification answer, and a tampered endpoint.
 
+Since `CAP-001` it also drives the real `ContextBuilder`: each case assembles a
+genuine, budget-validated `ContextEnvelope` over a throwaway SQLite database, so
+what reaches GLM is the same shape the composed service sends -- system
+instruction, the untrusted-data context message, and the measured declarations.
+
 It exercises **only the model boundary**. No MCP call, no Feishu call, no write,
-no personal data: every case input is synthetic. The report records what the
-model actually proposed; a failed expectation is a finding about the prompt or
-the adapter, not something for this script to repair.
+no personal data: every case input is synthetic, and the temporary database is
+deleted with the run. The report records what the model actually proposed; a
+failed expectation is a finding about the prompt or the adapter, not something
+for this script to repair.
 
 Usage (the operator supplies the credential; this file never reads `.env.local`):
 
@@ -31,7 +37,9 @@ import json
 import os
 import sys
 import time
-from collections.abc import Callable
+import tempfile
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -47,13 +55,30 @@ from personal_agent.api.orchestrator import (
     InterpreterError,
     ToolCall,
 )
+from personal_agent.api.events import USER_MESSAGE, append_event
+from personal_agent.context.builder import ContextBuilder, ContextEnvelope
+from personal_agent.context.compactor import Compactor
+from personal_agent.context.config import default_context_config
+from personal_agent.keys import HmacKey
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.runtime.glm_gateway import glm_gateway_from_env
 from personal_agent.runtime.interpreter import ModelInterpreter
 from personal_agent.runtime.model_gateway import ClarificationContext, ModelGatewayError
 from personal_agent.runtime.prompt import build_system_prompt
+from personal_agent.storage.engine import (
+    create_all,
+    create_database_engine,
+    session_factory,
+)
+from personal_agent.storage.models import ContextSession, Conversation
+from personal_agent_core.crypto import KeyRing, generate_key
 from personal_agent_core.manifest import build_manifest
 from personal_agent_core.timeutil import format_ledger_date, ledger_date, utc_now
+
+
+#: The smoke's own canonical Timeline. It exists only inside the temporary
+#: database this script creates and deletes.
+SMOKE_TIMELINE = "tl_glm_smoke"
 
 
 # What a composed `personal-data-mcp` actually advertises today: the three write
@@ -381,14 +406,101 @@ def schema_problems(tools: list[VisibleTool], result: Interpretation) -> list[st
     ]
 
 
+@contextmanager
+def smoke_context(
+    *, system: str, tools: list[VisibleTool]
+) -> Iterator[Callable[[str, str], ContextEnvelope]]:
+    """Assemble each case's turn with the production `ContextBuilder`.
+
+    The database is a throwaway in a temporary directory and is removed with the
+    run. Each case gets its own Session, so one case's message is never another
+    case's history: the point of this smoke is the model's behaviour on the
+    given input, not on an accumulated transcript.
+    """
+    with tempfile.TemporaryDirectory(prefix="glm-smoke-") as directory:
+        engine = create_database_engine(Path(directory) / "smoke.sqlite")
+        create_all(engine)
+        keyring = KeyRing(
+            [generate_key("glm-smoke", state="active")],
+            service="personal-agent-api",
+        )
+        identifier_key = HmacKey(kid="glm-smoke-identifier", secret=b"\x5a" * 32)
+        config = default_context_config()
+        builder = ContextBuilder(config, compactor=Compactor(config))
+        moment = utc_now()
+        try:
+            with session_factory(engine)() as db:
+                db.add(
+                    Conversation(
+                        conversation_id=SMOKE_TIMELINE,
+                        created_at=moment,
+                        next_sequence=1,
+                        is_canonical=True,
+                    )
+                )
+                db.commit()
+
+                def assemble(case_id: str, text: str) -> ContextEnvelope:
+                    session_id = f"ses-smoke-{case_id}"
+                    open_row = (
+                        db.query(ContextSession)
+                        .filter_by(
+                            conversation_id=SMOKE_TIMELINE, status="open"
+                        )
+                        .one_or_none()
+                    )
+                    if open_row is not None:
+                        open_row.status = "closed"
+                        open_row.closed_at = moment
+                    db.add(
+                        ContextSession(
+                            session_id=session_id,
+                            conversation_id=SMOKE_TIMELINE,
+                            status="open",
+                            relation_kind="new_topic",
+                            opened_at=moment,
+                        )
+                    )
+                    db.flush()
+                    event_id = append_event(
+                        db,
+                        keyring,
+                        conversation_id=SMOKE_TIMELINE,
+                        session_id=session_id,
+                        turn_id=f"trn-{case_id}",
+                        event_type=USER_MESSAGE,
+                        content={"text": text},
+                        operation_id=None,
+                        now=moment,
+                    )
+                    db.commit()
+                    return builder.build(
+                        db,
+                        keyring,
+                        identifier_key,
+                        conversation_id=SMOKE_TIMELINE,
+                        session_id=session_id,
+                        current_event_id=event_id,
+                        system_instruction=system,
+                        user_text=text,
+                        effective_tools=tools,
+                    )
+
+                yield assemble
+        finally:
+            engine.dispose()
+
+
 def run_case(
-    case: Case, interpreter: ModelInterpreter, tools: list[VisibleTool]
+    case: Case,
+    interpreter: ModelInterpreter,
+    tools: list[VisibleTool],
+    envelope: ContextEnvelope,
 ) -> Outcome:
     started = time.monotonic()
     try:
         result = interpreter.interpret(
-            text=case.text,
-            conversation_id=f"smoke-{case.id}",
+            envelope=envelope,
             clarification_context=case.clarification,
         )
     except InterpreterError as exc:
@@ -467,16 +579,21 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         tools = visible_tools(COMPOSED_ALIASES)
         gateway = glm_gateway_from_env()
-        for case in cases:
-            interpreter = ModelInterpreter(
-                gateway, tools=tools, system=build_system_prompt(today=today)
-            )
-            outcome = run_case(case, interpreter, tools)
-            outcomes.append(outcome)
-            mark = "PASS" if outcome.passed else "FAIL"
-            print(f"[{mark}] {outcome.case_id:26} {outcome.kind:16} {outcome.seconds}s")
-            for problem in outcome.problems:
-                print(f"         - {problem}")
+        interpreter = ModelInterpreter(gateway)
+        system = build_system_prompt(today=today)
+        with smoke_context(system=system, tools=tools) as assemble:
+            for case in cases:
+                outcome = run_case(
+                    case, interpreter, tools, assemble(case.id, case.text)
+                )
+                outcomes.append(outcome)
+                mark = "PASS" if outcome.passed else "FAIL"
+                print(
+                    f"[{mark}] {outcome.case_id:26} {outcome.kind:16} "
+                    f"{outcome.seconds}s"
+                )
+                for problem in outcome.problems:
+                    print(f"         - {problem}")
 
     failed = [outcome for outcome in outcomes if not outcome.passed]
     print(f"\n{len(outcomes) - len(failed)}/{len(outcomes)} cases passed")

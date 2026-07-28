@@ -34,6 +34,7 @@ from typing import Any, Protocol
 from personal_agent.api.duplicate_flow import record_possible_duplicate
 from personal_agent.api.intent import WriteIntent, open_intent
 from personal_agent.api.operation_store import transition_operation
+from personal_agent.context.builder import ContextEnvelope
 from personal_agent.storage.models import Operation
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
@@ -87,10 +88,16 @@ class Interpreter(Protocol):
     def interpret(
         self,
         *,
-        text: str,
-        conversation_id: str,
+        envelope: ContextEnvelope,
         clarification_context: Any | None = None,
     ) -> Interpretation: ...
+
+
+#: Assembles this turn's context, called at the moment the model is about to be
+#: consulted. It is a callable rather than a value so the override path -- which
+#: never asks a model -- builds nothing, and so the assembly cost is paid inside
+#: the orchestrator's own failure handling.
+ContextFactory = Callable[[], ContextEnvelope]
 
 
 # --- dispatcher results ------------------------------------------------------
@@ -216,13 +223,19 @@ class RunResult:
 
 Clock = datetime | Callable[[], datetime]
 
+#: Context failures that are the operation's own safe outcome rather than a bug:
+#: the mandatory input does not fit the budget, or the Timeline/Session state
+#: cannot be read consistently. Both mean zero model calls and zero writes.
+_CONTEXT_FAILURES: frozenset[ErrorCode] = frozenset(
+    {ErrorCode.CONTEXT_BUDGET_EXCEEDED, ErrorCode.CONTEXT_UNAVAILABLE}
+)
+
 
 def run_operation(
     session,
     operation: Operation,
     *,
-    text: str,
-    conversation_id: str,
+    build_context: ContextFactory | None = None,
     clarification_context: Any | None = None,
     interpreter: Interpreter,
     dispatcher: Dispatcher,
@@ -243,8 +256,35 @@ def run_operation(
             session, operation, dispatcher=dispatcher, keyring=keyring, now=now
         )
 
+    if build_context is None:
+        # There is no fallback shape for "ask the model with whatever we have".
+        # A turn without an assembled, budget-validated envelope is a wiring
+        # error, and guessing one here would put an unmeasured input in front of
+        # the model exactly where `CAP-001` says one may never appear.
+        raise AppError(
+            ErrorCode.INTERNAL_ERROR,
+            internal_detail="an interpreted turn needs a context envelope",
+        )
     try:
-        kwargs = {"text": text, "conversation_id": conversation_id}
+        envelope = build_context()
+    except AppError as refused:
+        if refused.code not in _CONTEXT_FAILURES:
+            raise
+        # The context could not be assembled safely: no model was called and
+        # nothing was written, so this is a clean pre-submit failure with the
+        # reason the builder gave.
+        _step(session, operation, "interpreting", now)
+        _step(
+            session,
+            operation,
+            "failed_safe",
+            now,
+            failure_reason=refused.code.value,
+        )
+        return RunResult(state="failed_safe", failure_reason=refused.code.value)
+
+    try:
+        kwargs: dict[str, Any] = {"envelope": envelope}
         if clarification_context is not None:
             kwargs["clarification_context"] = clarification_context
         interpretation = interpreter.interpret(**kwargs)

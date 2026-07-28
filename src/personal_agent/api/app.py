@@ -29,7 +29,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -76,6 +76,7 @@ from personal_agent.api.request_payload import (
     with_clarification_question,
 )
 from personal_agent.auth.tokens import TokenError, TokenKeyRing, verify_access_token
+from personal_agent.context.builder import ContextEnvelope
 from personal_agent.context.config import (
     ContextConfig,
     ContextConfigError,
@@ -98,6 +99,27 @@ class AuthContext:
     allowed_tools_version: str
 
 
+class EnvelopeFactory(Protocol):
+    """Assembles one turn's model context from already-persisted state.
+
+    It takes the worker's own database session: the anchor event, the Session,
+    the Checkpoints and the pending operations all have to be read inside the
+    transaction that is driving this operation, not from a second connection
+    that could see a different moment.
+    """
+
+    def __call__(
+        self,
+        session: Any,
+        auth: AuthContext,
+        *,
+        conversation_id: str,
+        session_id: str,
+        current_event_id: str,
+        user_text: str,
+    ) -> ContextEnvelope: ...
+
+
 @dataclass
 class AgentApiDeps:
     session_factory: Callable[[], Any]
@@ -108,9 +130,14 @@ class AgentApiDeps:
     #: 5.6 keeps them separate from the data key and from each other.
     identifier_key: HmacKey | HmacKeyRing
     cursor_key: HmacKey | HmacKeyRing
-    #: Builds the per-device interpreter; it is bound to that device's visible
-    #: tools, so it is constructed per request like the authorizer.
+    #: Builds the per-device interpreter. Since `CAP-001` it carries no catalog
+    #: of its own: the tools and the instruction travel inside the envelope.
     build_interpreter: Callable[[AuthContext], Interpreter]
+    #: `CAP-001`. Assembles one turn's `ContextEnvelope` (design §9). It is the
+    #: only way context reaches a model, and it is composed here rather than
+    #: inside the interpreter because assembly is database work owned by the
+    #: worker's own session.
+    build_envelope: EnvelopeFactory
     #: Builds the per-operation Finance dispatcher. Like the interpreter it is
     #: bound to the calling device -- it signs a Host Context naming that device
     #: -- so it is constructed per request and never shared between them.
@@ -805,11 +832,17 @@ def _process_chat(
                 request_id=operation.request_id,
                 envelope=operation.api_request.encrypted_request_payload,
             )
+            anchor = _anchor_event(session, operation.operation_id)
             result = run_operation(
                 session,
                 operation,
-                text=payload.text,
-                conversation_id=payload.conversation_id,
+                build_context=_context_factory(
+                    deps,
+                    auth,
+                    session,
+                    payload=payload,
+                    anchor=anchor,
+                ),
                 clarification_context=payload.clarification_context,
                 interpreter=deps.build_interpreter(auth),
                 dispatcher=deps.build_dispatcher(auth, operation.trace_id),
@@ -831,13 +864,12 @@ def _process_chat(
                 )
             # The result joins the user message's own turn and Session; a
             # Session decision is made once per message, at anchoring time.
-            anchor = _anchor_event(session, operation.operation_id)
             events.append_event(
                 session,
                 deps.keyring,
                 conversation_id=payload.conversation_id,
-                session_id=anchor[0],
-                turn_id=anchor[1],
+                session_id=anchor.session_id,
+                turn_id=anchor.turn_id,
                 event_type=events.OPERATION_RESULT,
                 content=_result_content(result),
                 operation_id=operation.operation_id,
@@ -857,11 +889,20 @@ def _process_chat(
             raise
 
 
-def _anchor_event(session, operation_id: str) -> tuple[str, str]:
-    """The Session and turn the operation's user message was written into."""
+@dataclass(frozen=True)
+class _Anchor:
+    """The persisted user message this operation belongs to."""
+
+    session_id: str
+    turn_id: str
+    event_id: str
+
+
+def _anchor_event(session, operation_id: str) -> _Anchor:
+    """The Session, turn and event the operation's user message was written into."""
     row = session.execute(
         text_clause(
-            "SELECT session_id, turn_id FROM conversation_events "
+            "SELECT session_id, turn_id, event_id FROM conversation_events "
             "WHERE operation_id = :oid ORDER BY timeline_sequence LIMIT 1"
         ),
         {"oid": operation_id},
@@ -871,7 +912,35 @@ def _anchor_event(session, operation_id: str) -> tuple[str, str]:
             ErrorCode.INTERNAL_ERROR,
             internal_detail="operation has no anchoring timeline event",
         )
-    return (row[0], row[1])
+    return _Anchor(session_id=row[0], turn_id=row[1], event_id=row[2])
+
+
+def _context_factory(
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    session,
+    *,
+    payload: ChatRequestPayload,
+    anchor: _Anchor,
+) -> Callable[[], ContextEnvelope]:
+    """Bind this turn's assembly, to be run when the model is about to be asked.
+
+    The envelope is built from the persisted anchor event rather than from the
+    request body: the archived message is the one the model must answer, and a
+    caller-supplied string that disagrees with it is refused by the builder.
+    """
+
+    def build() -> ContextEnvelope:
+        return deps.build_envelope(
+            session,
+            auth,
+            conversation_id=payload.conversation_id,
+            session_id=anchor.session_id,
+            current_event_id=anchor.event_id,
+            user_text=payload.text,
+        )
+
+    return build
 
 
 def _session_of_operation(session, operation_id: str) -> str | None:
@@ -916,8 +985,9 @@ def _process_duplicate_decision(
                 run_operation(
                     session,
                     new_op,
-                    text="",
-                    conversation_id="",
+                    # A `write anyway` operation carries its resolved intent and
+                    # never reaches the model, so it assembles no context.
+                    build_context=None,
                     interpreter=deps.build_interpreter(auth),
                     dispatcher=deps.build_dispatcher(auth, new_op.trace_id),
                     authorize=deps.build_authorizer(auth),

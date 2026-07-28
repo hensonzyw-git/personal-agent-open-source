@@ -8,11 +8,14 @@ ones that do not depend on a real model or a live Base -- the state walk, the
 
 from __future__ import annotations
 
+import tempfile
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
 
+from context_envelopes import envelope_for
 from personal_agent.api.duplicate_flow import decide_duplicate
 from personal_agent.api.intent import WriteIntent, open_intent
 from personal_agent.api.operation_store import (
@@ -81,11 +84,23 @@ def keyring() -> KeyRing:
 # --- fakes -------------------------------------------------------------------
 
 
+@lru_cache(maxsize=None)
+def _envelope(text: str):
+    """One real, budget-validated envelope per distinct message.
+
+    Built by the production `ContextBuilder` over its own throwaway database: an
+    envelope cannot be constructed directly, and a hand-made stand-in would let
+    these tests pass against a shape the builder never produces.
+    """
+    return envelope_for(Path(tempfile.mkdtemp()), user_text=text)
+
+
 class FakeInterpreter:
     def __init__(self, result) -> None:
         self.result = result
 
-    def interpret(self, *, text: str, conversation_id: str):
+    def interpret(self, *, envelope, clarification_context=None):
+        self.envelope = envelope
         return self.result
 
 
@@ -132,12 +147,13 @@ def _fresh_operation(session, key="req-1") -> Operation:
 
 
 def _run(session, op, *, interpreter, dispatcher, keyring, authorize=allow,
-         text="午饭 45 个人支出"):
+         text="午饭 45 个人支出", build_context=None):
     return run_operation(
         session,
         op,
-        text=text,
-        conversation_id="conv-1",
+        # The orchestrator only ever sees an already-assembled turn; the builder
+        # itself is exercised in `test_cap001_builder.py` and in the API tests.
+        build_context=build_context or (lambda: _envelope(text)),
         interpreter=interpreter,
         dispatcher=dispatcher,
         authorize=authorize,
@@ -164,7 +180,7 @@ def test_a_direct_answer_succeeds_with_no_tool(session, keyring) -> None:
 
 
 class RaisingInterpreter:
-    def interpret(self, *, text, conversation_id):
+    def interpret(self, *, envelope, clarification_context=None):
         from personal_agent.api.orchestrator import InterpreterError
 
         raise InterpreterError("model down")
@@ -225,8 +241,7 @@ def test_each_state_transition_records_its_actual_time(session, keyring) -> None
     result = run_operation(
         session,
         op,
-        text="午饭 45 个人支出",
-        conversation_id="conv-1",
+        build_context=lambda: _envelope("午饭 45 个人支出"),
         interpreter=FakeInterpreter(
             ToolCall("finance.log_expense", {"name": "午饭"})
         ),
@@ -493,8 +508,8 @@ def test_write_anyway_spawns_an_override_operation_that_writes(session, keyring)
     dispatcher = FakeDispatcher(resolve=None, commit=Written("recDUP"))
     result = run_operation(
         session, new_op,
-        text="(resumed)",
-        conversation_id="conv-1",
+        # An override never asks a model, so it assembles no context at all.
+        build_context=None,
         interpreter=FakeInterpreter(DirectAnswer("unused")),
         dispatcher=dispatcher,
         authorize=allow,
