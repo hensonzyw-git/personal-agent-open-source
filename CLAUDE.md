@@ -317,6 +317,44 @@ assumptions, and one small happy-path live check was mistaken for validation.
   Surface the conflict and the trade-off; let Henson decide. Never describe an
   architecture the code does not actually implement.
 
+### 5.2 Structural rules for dispatchers, validators and compare-and-swap
+
+These rules were derived from a CAP-001 slice F review that found six defects
+behind a passing plan. They are structural rather than incidental, so they live
+next to §5.1 instead of in a commit message.
+
+- **Uniform signatures for co-dispatched functions.** A set of functions called
+  by the same dispatcher (validators, handlers, callbacks) must share the
+  identical signature. A function that does not need every parameter must still
+  accept every parameter. Do not adapt signatures with lambdas at the dispatch
+  site: adaptation inevitably leaves one function un-adapted, and the dispatch
+  site cannot statically detect the mismatch. The CAP-001 Compactor had two
+  validators that took only `payload` while the rest took `(payload, sources)`;
+  the lambda bridge failed silently on the first and crashed on the second.
+- **Leak checks precede correctness checks.** In a validation pipeline that
+  carries a leak risk, secret/credential scanning must run before fact/semantic
+  checks. A credential string often contains numbers, dates or identifiers, so
+  a fact check that runs first will mis-classify a leaked secret as an invented
+  fact, return the wrong failure code, and hide the real exposure. Order is a
+  safety property, not a style choice.
+- **CAS lineage reference is not the supersede target.** In any
+  compare-and-swap build, "which record the new row names as parent" (lineage
+  / source chain) and "which old row the CAS supersedes" (replacement target)
+  are two independent concepts and must travel as two independent parameters.
+  They coincide for an incremental build; they diverge for a full rebuild,
+  where the lineage chain is broken (`parent = None`) but the old active row
+  still has to be replaced. Binding them into one parameter makes full rebuild
+  and incremental build unable to be correct at the same time, and only a
+  concurrent or full-rebuild test exposes it.
+- **Cross-session state reads bypass the ORM identity map.** SQLAlchemy's
+  `Session.get()` and `Session.query().get()` return the identity-map cached
+  object, which cannot see status changes another session has already
+  committed. Any pre-CAS check, stale-parent check or concurrency guard that
+  must read the database's current real state must use a raw `SELECT` (or
+  `session.expire_all()` before the read). Concurrent tests are the only
+  reliable way to expose this; a single-session test will always see its own
+  writes.
+
 ## 6. Source-of-truth precedence
 
 When documents conflict, use this order:
