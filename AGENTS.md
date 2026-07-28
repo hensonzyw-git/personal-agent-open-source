@@ -26,47 +26,13 @@ and action layer that works across phone, computers, and future Agent hosts.
 - The backend, not iOS, is the first-class MCP Host/Client. It must support
   stdio and remote Streamable HTTP MCP, discovery, cancellation, timeouts,
   reconnects, tool allowlists, and audit.
-- iOS is a thin client. It must never contain long-lived Feishu, GitHub, model,
-  or infrastructure credentials.
-- iOS signing is a free **Personal Team** (bundle id `org.example.PersonalAgent`).
-  That is enough for Secure Enclave, Keychain and Xcode direct install, and it
-  cannot grant APNs; the provisioning profile also expires every 7 days. Do not
-  write push code that looks usable, and do not add a capability a Personal Team
-  cannot sign. See `docs/iOS开发环境_Personal_Team_v0.1.md`.
-- The iPhone app's non-UI logic lives in `ios/PersonalAgentKit`, a SwiftPM package
-  testable with `swift test`. The device wire contract is verified against the same
-  frozen vector file the Python tests use; never copy that file.
-- This is a strictly single-user system and Henson personally manages every
-  enrolled device. New devices receive the current Phase 1 Finance,
-  capabilities, and self-service scopes by default; do not narrow those defaults
-  unless Henson changes this decision. `device.manage` remains an explicit
-  enrollment-CLI grant.
 - Default public access design: `HTTPS + registered-device identity + short
   lived access tokens`. Tailscale was validated but deliberately is not a
   mobile dependency because it can conflict with the user's existing VPN use.
-- The first accounting fact source remains Feishu Bitable. Do not migrate it to
-  a self-hosted database during the MVP.
-- Finance has separate annual expense and income tables. `finance.log_income`
-  writes only income amount, name, date, and the `工资` / `其他` category. The
-  user does not provide the income category: explicit salary wording maps to
-  category/name `工资`; all other clear income maps to `其他` and retains its
-  extracted subject (for example `公积金入账 -> 公积金`). It must not infer a
-  family attribute or reuse expense refund/AA semantics.
-- `finance.update_family_fund` is a separate R2 ledger-write tool. It may write
-  a positive recharge amount directly, or reconcile a user-provided target
-  balance by writing half the positive difference because the verified table
-  formula doubles recharge. It never transfers bank money, writes formula or
-  initial-balance fields, writes a negative top-up, or re-applies a failed
-  reconciliation automatically.
-- Finance MCP uses one dedicated self-built Feishu app and fixed, minimal
-  OpenAPI access to the active annual ledger. The existing broad-permission bot
-  app may be used only for early connectivity checks against a synthetic test
-  Base; it must not be the production Finance credential or access the personal
-  ledger through this project. Do not expose generic Feishu tools, arbitrary
-  HTTP, SQL, shell, or filesystem access to the model.
-- Each annual ledger is a protected server-side configuration change (Base,
-  table, field IDs, allowed categories), not a new application or a prompt
-  change. Validate schema before enabling writes.
+
+iOS-specific constraints, device enrollment rules, and lost-device handling
+live in `.qoder/rules/ios-device.md` (loaded when touching `ios/` or device
+auth code).
 
 ## 3. Product scope and sequencing
 
@@ -74,8 +40,8 @@ P0 is the shared Agent/MCP/security foundation plus:
 
 1. The approved Finance surface: expense, income, family fund, query, and
    daily human review.
-2. Chat, device permissions, audit, the service-side allowed tool set, and the
-   Finance daily review job. Full pending-action confirmation is later work.
+2. Chat, device permissions, audit, the service-side allowed tool set, and
+   the Finance daily review job. Full pending-action confirmation is later work.
 
 Knowledge Base, HealthKit, and Wardrobe/OOTD are later-phase directions. Their
 detailed product contracts belong to their own later PRDs, not the current PRD
@@ -83,201 +49,27 @@ detailed product contracts belong to their own later PRDs, not the current PRD
 accessed from the home development machine. Asset data is high-sensitive,
 read-only later work; it is not MVP scope.
 
-## 4. Finance MCP decisions that override older drafts
+## 4. Finance MCP decisions and phase gate
 
-`docs/Finance MCP工具设计草案_v0.1.md` is the canonical detailed Finance
-contract. Its approved product semantics have been reconciled into the PRD and
-`MCP工具IR_v0.1`; only its explicitly implementation-level parameters remain
-for Phase 1 technical design. Do not reintroduce superseded Finance rules.
+The detailed Finance MCP contract, expense write rules, category mapping, and
+gate authorization live in `.qoder/rules/finance.md` (loaded when touching
+Finance MCP code, dispatcher, or docs).
 
-## 4.1 Current phase gate
+The current phase gate, CAP-001 baseline, and Development Agent Loop baseline
+live in `.qoder/rules/phase-gates.md` (loaded when touching `PROJECT_STATUS.md`,
+Phase 1 docs, or agent runtime code).
 
-PRD v1.0.1 passed product review. Henson authorized Phase 1 technical design on
-2026-07-23, and authorized Phase 1 development on 2026-07-23. Gates G0 and G1
-are passed: `DEV-001` through `DEV-014` are complete and the MCP path runs on
-both transports without any credential. Gates G2 and G3 are also passed.
-`DEV-015` through `DEV-026` are complete, and `DEV-027` is built end to end:
-model adapter, Finance dispatcher seam, and the Agent-side service composition
-root, so `personal-agent-api` starts and serves. One expense has run through both
-composition roots entirely offline, with deterministic model and Feishu
-boundaries. The **model boundary is verified live** on the current code
-(2026-07-26: 15 adversarial cases, four full runs, `docs/evidence/`), which found
-four prompt defects and fixed them. `DEV-028` (daily review, current-value
-control read, outbox, `personal-agent-review`) is built offline; its push half is
-blocked on the Apple entitlement, so the only sender shipped refuses rather than
-claiming delivery. Late-verified writes reopen their existing daily card,
-record identity is table-scoped, current fields are batch-read behind one fresh
-schema validation, and revoked devices are rechecked immediately before push.
-The **composed path has now run live end to end** (2026-07-26): one message went
-real GLM → policy → real MCP → a verified Feishu write on the synthetic test
-Base, and an identical repeat parked on the duplicate gate with zero writes. That
-run found and fixed the worst defect so far — an already-succeeded write reported
-as `source_commit_unknown`, caused by an inherited 5-second httpx read timeout
-that tore the stream down mid-call. No offline test could see it, because every
-fake counterparty answers instantly; the regression test is a real socket against
-a deliberately slow server. The follow-up review also fixed the stale operation
-clock, recovered SDK HTTP 408s as `McpTimeoutError`, added encrypted Host-only
-duplicate summaries, gave review batches a size-aware timeout, and made local
-keys private from their first filesystem instant.
-
-`DEV-029` is built: the six device-identity endpoints of design 5.1, the
-`personal-agent-device` operator CLI, and an iPhone app (`ios/`) whose non-UI
-logic lives in a headlessly-tested SwiftPM package. **A device has enrolled for
-real** (2026-07-26, iOS Simulator): Secure Enclave key → one-time code → signed
-challenge → 10-minute token → `/v1/capabilities`, then a CLI revocation refused on
-the next refresh. That run found four defects, including a `devices.scopes` column
-written with `repr()` and read with `json.loads`, which would have left the first
-real iPhone enrolled and granted nothing while every test stayed green. iOS
-signing uses a **Personal Team**, which is sufficient for Secure Enclave, Keychain
-and direct install and **cannot** grant APNs; the push half of `DEV-028` therefore
-stays blocked and no code pretends otherwise. Work continues in
-`docs/Phase1开发拆解_v0.1.md`, following its dependency order and Gates G4-G6.
-
-On 2026-07-27 Henson added the cross-cutting Agent capability baseline. Before
-`DEV-030`, `CAP-001` must separate the user-visible Timeline from automatic
-semantic Sessions, add same-Session context compaction/checkpoints, enforce a
-bounded Context Builder, and paginate chat history. `CAP-001` is now a G4
-blocker and implementation is in progress: typed configuration, the reversible
-legacy migration, canonical Timeline/alias/sequence pagination, and the
-foundational Session Manager, standalone Budgeter and framework-neutral
-Compactor/Checkpoint are built and verified offline. The Compactor failure set
-now covers complete exact operation projections, source-hash revalidation,
-provider deadlines, CAS/full rebuilds and recursive deletion propagation. The
-Context Builder and the production compact-state provider are also built and
-verified offline: one immutable budget-validated `ContextEnvelope` per turn,
-untrusted framing for history/Checkpoints/memories, structurally projected exact
-pending state, a bounded lineage that stops at the last trusted node, tool
-declarations that can only narrow the governed set, and no `superseded_items` or
-plaintext in the model input or trace. The remaining model-backed
-classifier/Compactor providers, the runtime wiring that makes a composed turn
-consume an envelope, the eval and the live adversarial evidence are not
-complete; Session classification fails closed without trusted semantic state,
-every non-terminal operation pins its Session, and the Budgeter preserves
-mandatory context/Checkpoints under a conservative UTF-8-byte fallback.
-`CAP-002`–`CAP-008` cover later streaming, voice, memory, routing and multimodal
-work and do not enlarge the current Finance Phase. See
-`docs/Agent横向能力PRD_v1.0.md` and
-`docs/Agent横向能力技术方案_v1.0.md`. Henson froze the product and technical
-v1.0 contracts on
-2026-07-27: all enrolled devices share one Timeline; Session boundaries are
-lightweight and correctable; Checkpoints are source-bound and later inspectable;
-low-sensitive episodic memory may be automatic while inferred long-term memory
-requires confirmation; Memory, KB and chat deletion remain distinct; Router v1
-selects one primary domain/intent; raw voice is temporary while sent images/files
-follow Timeline retention; truthful streaming/cancel semantics apply; and after
-G4 `CAP-002` streaming precedes `CAP-003` voice. Technical v1.0 additionally
-freezes canonical Timeline aliases and monotonic sequence pagination, immutable
-Session lineage, Checkpoint CAS, typed context budgets, persist-before-emit SSE,
-temporary voice media, versioned APIs/migrations and field-encrypted Memory with
-an HMAC blind lexical index rather than plaintext FTS.
-
-On 2026-07-27 Henson also confirmed a separate Development Agent Loop product
-and technical baseline. Personal Agent is its intake, review and Human-in-the-loop
-UI; a deterministic Workflow Service, private GitHub control plane and outbound
-Home Mac Worker own execution and evidence. Claude Code + Kimi K3 standard API
-is the preferred coder; Claude Code must not log in to a Claude account. Codex
-Sol plans and independently reviews, then Codex directly fixes findings, a fresh
-read-only Codex run reviews the fix, and Codex creates a candidate commit only
-after the deterministic gates and a one-time capability pass. GLM-5.2 remains a
-future native OpenAI-compatible harness evaluation route, not a Claude Code
-fallback. Kimi K2.7 Code requires a no-UI Thinking compatibility preflight; K3
-is the default baseline. The
-baseline is documented in `docs/开发Agent闭环PRD_v1.0.md`,
-`docs/开发Agent闭环技术方案_v1.0.md` and
-`docs/开发Agent闭环开发拆解_v0.1.md`. It is not implemented or authorised and
-does not change CAP-001, DEV-030 or any Phase 1 gate. Its product name remains
-Development Agent Loop; technically it is a graph-orchestrated loop whose
-deterministic macro graph contains bounded coding and review/fix loops. The
-dependency is one-way: every Phase 1 completion condition in
-`docs/Phase1开发拆解_v0.1.md` §7 must pass before DAL-001 starts. Do not run DAL
-preflight, create its GitHub/Claude/Worker/provider resources or implement any
-DAL task in parallel with Phase 1.
-
-Development authorization is not authorization for everything downstream. Each
-later gate still binds independently: do not create the Feishu application or
-access any real Base before G2; do not write to a Feishu test table before G3;
-do not connect production Finance credentials or the personal annual ledger
-before G5; and do not enable `finance.log_expense_batch` until its separate
-atomicity gate passes. The production package skeleton and offline fixtures
-require no credentials. Keep the existing `personal_agent_spike` package as
-historical evidence only; production code must not import its obsolete Finance
-tools, policy, or contracts.
-
-Already confirmed:
-
-- Tool is provisionally `finance.log_expense`; it receives structured semantic
-  fields, not raw user text. The Host injects request, identity, device,
-  timezone, trace, and idempotency data.
-- The write destination is the Feishu annual `支出记录` table. Only the stored
-  amount, name, date, family flag, and category fields may be written; formula
-  fields and auto-number fields may not be written.
-- `occurred_on` is the actual payment/entry date, not the future consumption
-  date. Missing date means message day; paying today for a future trip is still
-  recorded today. `昨天` and `前天` resolve before the MCP call.
-- Every new entry must explicitly state `个人支出` or `家庭支出`. There is no
-  default and history must not be used to infer this attribute. Missing scope
-  means ask before writing. Indirect wording such as `给家里` or `全家` does not
-  count as explicit: Henson confirmed he states `家庭支出` when he means it, so
-  asking one extra time is correct and inferring is not.
-- Normal expenses are positive; refunds and AA receipts are negative. Users do
-  not need to type `-`; normalize from explicit semantics. Refund/AA category
-  may inherit only from a unique, high-confidence matching original record;
-  family scope never inherits. Ambiguous matches must ask.
-- Preserve the user-provided name. Do not silently normalize, rename, correct,
-  or restore text the user later removed in Feishu. Internal normalized names
-  may be used only for matching/audit.
-- Travel records are category `旅行` and retain the trip tag in the displayed
-  name, for example `机票 #东京02`. An explicit tag is used as written. When a
-  clear destination lacks a tag, query the active ledger's distinct trip tags:
-  use the sole matching root, create the basic root if none exists, and ask if
-  multiple same-destination trip instances exist. Never guess an abbreviation
-  or numbered trip.
-- Foreign currency is converted to CNY using the current Frankfurter `ECB`
-  reference rate at entry time, not a historical occurrence-date rate. Do not
-  guess a rate. The original currency expression is temporarily appended to the
-  displayed name; Henson may later replace the estimated CNY amount in Feishu
-  with the actual settlement amount, and the Agent must not overwrite it.
-- The agent writes directly for this R2 action and returns the external Feishu
-  `record_id`. Before expense and income writes, an exact same-day duplicate
-  check compares the final stored amount, name and category. Expense family
-  scope is displayed for judgment but does not decide whether to prompt. A
-  match causes zero writes and asks Henson whether to continue;
-  only Host-bound confirmation can override it. This heuristic does not replace
-  request idempotency or unknown-commit recovery. Daily review itself only
-  presents that day's writes for human field inspection and performs neither
-  duplicate detection nor data mutation; final corrections remain available in
-  Feishu on the computer.
-- `finance.log_expense` is the frozen single-entry business tool. When one
-  message contains two or more fully resolved entries, use
-  `finance.log_expense_batch`: it is all-or-none, returns every `record_id`,
-  and must refuse before writing if source-side batch atomicity cannot be
-  proven.
-- Category mapping is evidence-based and conservative. Travel tags override
-  item keywords; activity contexts (Disney/F1/concert etc.) can override food
-  keywords to `玩乐`. Confirmed rules include `搓澡 -> 玩乐`, `网球场地` and
-  `网球拍穿线 -> 日常生活`, and non-activity-context `饮料 -> 餐饮`.
-  `买充电宝 -> 购物`; borrowed/rented `充电宝 -> 日常生活`. Ask only when a
-  new input does not reveal whether the power bank was bought or borrowed.
-
-The finance mapping derived from the current ledger is approved but remains
-conservative; it is not permission to invent new mappings. Add representative
-redacted evaluations before implementation.
-
-Phase 1 does not implement automated lost-device recovery, remote-wipe
-integration, or recovery codes. Henson owns lost-device handling through
-existing wipe mechanisms and manual ECS administration. Encrypted conversation
-events are retained permanently by default as a potential future long-term
-memory source, with explicit export/delete support; permanent retention does not
-authorize automatically injecting the full archive into model context.
+The authoritative handoff point and ordered next work is always
+`PROJECT_STATUS.md`.
 
 ## 5. Engineering and safety rules
 
 - Keep business policy outside ADK and outside any individual model SDK:
   `Agent -> tool intent -> policy -> MCP client -> connector -> fact source`.
 - Every write needs a stable idempotency key, policy decision, audit envelope,
-  and external success evidence. A model saying “done” is never success.
+  and external success evidence. A model saying "done" is never success.
 - Read operations must paginate or aggregate server-side; do not call a default
-  first page “all data”.
+  first page "all data".
 - Preserve `raw/` versus `wiki/` boundaries for knowledge work. Automated
   capture writes only to `raw/inbox/`; wiki edits and destructive changes use
   a pending-action / human confirmation flow.
@@ -361,27 +153,31 @@ next to §5.1 instead of in a commit message.
   reliable way to expose this; a single-session test will always see its own
   writes.
 
-### 5.3 Structural rules for Context Builder boundaries
+### 5.3 Context economy — keeping per-request input small
 
-These rules were derived from the slice G review. All three defects passed the
-original tests because the fixtures repeated the implementation's assumptions
-instead of reproducing the production composition order.
+These rules exist because a long coding session can spend millions of input
+tokens on repeated prefixes (system prompt + tool schemas + AGENTS.md + full
+conversation history) even when most of that prefix is cache-hit at a discount.
+Cache hits are not free; they are discounted, so a large prefix still costs.
 
-- **The current message is a persisted anchor, not history plus a free string.**
-  The API persists the user event before model work. A Context Builder must bind
-  `USER_INPUT` to that exact event, validate Timeline/Session/type/text, and
-  exclude the same event from the raw-history window. Inferring "current" from
-  newest text or reading every Session event sends the message twice and can
-  change both the budget and the model's action.
-- **A validation type needs an unforgeable construction path.** Comparing a
-  caller-supplied token estimate with a caller-supplied hard limit does not prove
-  that an envelope passed the Budgeter. The validated envelope constructor must
-  require an internal identity-only witness (or an equivalent private factory);
-  direct construction and dataclass replacement fail closed.
-- **Delimiter metadata is input too.** Escaping only the body of an untrusted
-  block leaves `kind`, `ref`, filenames and similar marker metadata able to close
-  the frame. Every interpolated metadata field must use a closed safe grammar or
-  a fixed encoding before it reaches the marker.
+- **Read large files through a subagent.** Files over ~200 lines should be read
+  via the `Explore` agent (or a custom subagent with `tools: [Read, Grep, Glob]`),
+  not directly with `Read` in the main context. The file contents stay in the
+  subagent's isolated context and only the summary returns to the main session.
+  A 1000-line file read directly adds ~10K tokens to every subsequent request in
+  that session; read through a subagent it adds near-zero.
+- **Shrink the active tool set per session.** Launch read-heavy sessions with a
+  limited tool set (e.g. `--tools Read Grep Glob Agent`) instead of the full
+  30+ tool registry. Each tool's JSON schema travels on every request; 30 tools
+  cost ~15-20K tokens/round. Define coding and research profiles and switch.
+- **Compact proactively.** Run `/compact <focus>` before auto-compaction fires
+  so you control what is retained. Monitor with `/usage`. A lower
+  `model.contextWindow` (400000 instead of 1000000) makes auto-compaction
+  trigger sooner and keeps the per-request prefix smaller.
+- **Prefer scoped rules over monolithic AGENTS.md.** Area-specific context
+  (Finance, iOS, phase gates) belongs in `.qoder/rules/*.md` with `paths`
+  frontmatter, loaded only when matching files are touched. AGENTS.md keeps
+  only cross-cutting rules that every turn needs.
 
 ## 6. Source-of-truth precedence
 
