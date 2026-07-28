@@ -99,7 +99,7 @@ class FakeInterpreter:
     def __init__(self, result) -> None:
         self.result = result
 
-    def interpret(self, *, envelope, clarification_context=None):
+    def interpret(self, *, envelope):
         self.envelope = envelope
         return self.result
 
@@ -180,7 +180,7 @@ def test_a_direct_answer_succeeds_with_no_tool(session, keyring) -> None:
 
 
 class RaisingInterpreter:
-    def interpret(self, *, envelope, clarification_context=None):
+    def interpret(self, *, envelope):
         from personal_agent.api.orchestrator import InterpreterError
 
         raise InterpreterError("model down")

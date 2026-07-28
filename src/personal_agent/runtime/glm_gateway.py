@@ -22,8 +22,8 @@ from urllib.parse import urlsplit
 
 from personal_agent.context.budget import ComponentKind
 from personal_agent.context.builder import ContextEnvelope
+from personal_agent.context.continuation import MAX_CLARIFICATION_QUESTION_CHARS
 from personal_agent.runtime.model_gateway import (
-    ClarificationContext,
     ModelGatewayError,
     ModelProposal,
     ProposedAnswer,
@@ -76,9 +76,8 @@ class GlmGateway:
         self,
         *,
         envelope: ContextEnvelope,
-        clarification: ClarificationContext | None = None,
     ) -> ModelProposal:
-        messages = _messages(envelope, clarification)
+        messages = _messages(envelope)
         declarations = _declarations(envelope) + _internal_declarations()
         try:
             response = self._generate(
@@ -161,6 +160,7 @@ _CONTEXT_ORDER: Final[tuple[ComponentKind, ...]] = (
     ComponentKind.RAW_EVENT,
     ComponentKind.PENDING_STATE,
     ComponentKind.MEMORY,
+    ComponentKind.CLARIFICATION_CONTEXT,
 )
 
 _CONTEXT_PREAMBLE = (
@@ -169,9 +169,7 @@ _CONTEXT_PREAMBLE = (
 )
 
 
-def _messages(
-    envelope: ContextEnvelope, clarification: ClarificationContext | None
-) -> list[dict[str, str]]:
+def _messages(envelope: ContextEnvelope) -> list[dict[str, str]]:
     """Render one envelope as the provider's message list.
 
     Everything except the system instruction and the current message travels in
@@ -192,13 +190,6 @@ def _messages(
         messages.append(
             {"role": "user", "content": "\n\n".join([_CONTEXT_PREAMBLE, *blocks])}
         )
-    if clarification is not None:
-        # The exact parked turn, kept structured rather than left to be
-        # recognised inside the history block.
-        messages.append(
-            {"role": "user", "content": clarification.original_user_text}
-        )
-        messages.append({"role": "model", "content": clarification.question})
     messages.append({"role": "user", "content": envelope.user_text})
     return messages
 
@@ -241,7 +232,7 @@ def _internal_declarations() -> list[dict[str, Any]]:
                         "question": {
                             "type": "string",
                             "minLength": 1,
-                            "maxLength": 160,
+                            "maxLength": MAX_CLARIFICATION_QUESTION_CHARS,
                         }
                     },
                 },
@@ -309,9 +300,17 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
             raise ModelGatewayError("tool call had no name")
         arguments = _parse_arguments(getattr(call, "args", None))
         if name == _ASK_CLARIFICATION:
+            if set(arguments) != {"question"}:
+                raise ModelGatewayError(
+                    "clarification had unexpected arguments"
+                )
             question = arguments.get("question")
             if not isinstance(question, str) or not question.strip():
                 raise ModelGatewayError("clarification had no question")
+            if len(question) > MAX_CLARIFICATION_QUESTION_CHARS:
+                raise ModelGatewayError(
+                    "clarification question exceeded its schema limit"
+                )
             return ProposedClarification(question=question.strip())
         if name == _FAIL_BATCH:
             if arguments:

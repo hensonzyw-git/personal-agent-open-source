@@ -33,7 +33,7 @@ from typing import Any, Protocol
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import text as text_clause
+from sqlalchemy import delete, text as text_clause
 
 from personal_agent.api import events
 from personal_agent.api.device_api import (
@@ -77,6 +77,7 @@ from personal_agent.api.request_payload import (
 )
 from personal_agent.auth.tokens import TokenError, TokenKeyRing, verify_access_token
 from personal_agent.context.builder import ContextEnvelope
+from personal_agent.context.continuation import ClarificationContext
 from personal_agent.context.config import (
     ContextConfig,
     ContextConfigError,
@@ -84,7 +85,12 @@ from personal_agent.context.config import (
 )
 from personal_agent.context.session_manager import SessionManager
 from personal_agent.keys import HmacKey, HmacKeyRing
-from personal_agent.storage.models import REVIEW_STATUSES, Device, Operation
+from personal_agent.storage.models import (
+    REVIEW_STATUSES,
+    ApiRequest,
+    Device,
+    Operation,
+)
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 
@@ -117,6 +123,7 @@ class EnvelopeFactory(Protocol):
         session_id: str,
         current_event_id: str,
         user_text: str,
+        clarification_context: ClarificationContext | None,
     ) -> ContextEnvelope: ...
 
 
@@ -677,6 +684,7 @@ def _anchor_chat(
     """Persist request, encrypted payload and user event before model work."""
 
     with deps.session_factory() as session:
+        created: tuple[str, str] | None = None
         try:
             # `CAP-001` design 4.2.3: the client value is resolved onto the
             # canonical Timeline *before* the fingerprint, the event and the
@@ -703,6 +711,7 @@ def _anchor_chat(
             operation = opened.operation
             if not opened.created:
                 return _AnchoredChat(operation.operation_id, operation.state)
+            created = (operation.operation_id, operation.request_id)
 
             context = None
             if clarification_of is not None:
@@ -731,7 +740,10 @@ def _anchor_chat(
                             "clarification must stay in the source conversation"
                         ),
                     )
-                context = continuation_context(source_payload)
+                context = continuation_context(
+                    source_payload,
+                    source_operation_id=source.operation_id,
+                )
                 transition_operation(
                     session,
                     operation_id=source.operation_id,
@@ -807,10 +819,43 @@ def _anchor_chat(
                 json.dumps(decision.audit_record(), sort_keys=True),
             )
             session.commit()
+            created = None
             return _AnchoredChat(operation.operation_id, operation.state)
+        except StaleOperationVersionError as exc:
+            session.rollback()
+            _discard_unanchored_operation(session, created)
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail=(
+                    "clarification source was already answered by another request"
+                ),
+            ) from exc
         except Exception:
             session.rollback()
+            _discard_unanchored_operation(session, created)
             raise
+
+
+def _discard_unanchored_operation(
+    session, created: tuple[str, str] | None
+) -> None:
+    """Remove a request whose source-validation transaction never anchored it.
+
+    `open_operation` uses a SAVEPOINT to resolve idempotency races. SQLite may
+    persist that SAVEPOINT even when a later source-clarification CAS loses, so
+    rollback alone is not sufficient evidence that the new request disappeared.
+    The ids here were created by this call and have no Timeline event yet.
+    """
+    if created is None:
+        return
+    operation_id, request_id = created
+    session.execute(
+        delete(Operation).where(Operation.operation_id == operation_id)
+    )
+    session.execute(
+        delete(ApiRequest).where(ApiRequest.request_id == request_id)
+    )
+    session.commit()
 
 
 def _process_chat(
@@ -843,7 +888,6 @@ def _process_chat(
                     payload=payload,
                     anchor=anchor,
                 ),
-                clarification_context=payload.clarification_context,
                 interpreter=deps.build_interpreter(auth),
                 dispatcher=deps.build_dispatcher(auth, operation.trace_id),
                 authorize=deps.build_authorizer(auth),
@@ -938,6 +982,7 @@ def _context_factory(
             session_id=anchor.session_id,
             current_event_id=anchor.event_id,
             user_text=payload.text,
+            clarification_context=payload.clarification_context,
         )
 
     return build

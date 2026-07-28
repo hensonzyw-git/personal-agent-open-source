@@ -27,11 +27,13 @@ from personal_agent.api.orchestrator import (
     Written,
 )
 from personal_agent.api.intent import WriteIntent
+from personal_agent.api.operation_state import StaleOperationVersionError
 from personal_agent.auth.tokens import (
     SigningKey,
     TokenKeyRing,
     issue_access_token,
 )
+from personal_agent.context.budget import ComponentKind
 from personal_agent.storage.engine import (
     create_all,
     create_database_engine,
@@ -52,7 +54,7 @@ class FakeInterpreter:
     def __init__(self, result) -> None:
         self.result = result
 
-    def interpret(self, *, envelope, clarification_context=None):
+    def interpret(self, *, envelope):
         self.envelope = envelope
         return self.result
 
@@ -354,7 +356,7 @@ def test_the_same_key_with_a_different_body_conflicts(engine, token_ring, keyrin
     assert resp.status_code == 409
 
 
-def test_a_structured_clarification_is_parked_and_resumed_by_link(
+def test_repeated_clarification_is_exact_budgeted_and_not_duplicated(
     engine, token_ring, keyring
 ) -> None:
     class SequencedInterpreter:
@@ -362,13 +364,12 @@ def test_a_structured_clarification_is_parked_and_resumed_by_link(
             self.calls = []
             self.results = [
                 Clarification("个人还是家庭支出？"),
+                Clarification("现金还是刷卡？"),
                 ToolCall("finance.log_expense", {"name": "午饭"}),
             ]
 
-        def interpret(self, *, envelope, clarification_context=None):
-            self.calls.append(
-                (envelope.user_text, envelope.timeline_id, clarification_context)
-            )
+        def interpret(self, *, envelope):
+            self.calls.append(envelope)
             return self.results.pop(0)
 
     interpreter = SequencedInterpreter()
@@ -391,7 +392,7 @@ def test_a_structured_clarification_is_parked_and_resumed_by_link(
     assert parked.json()["state"] == "waiting_for_clarification"
     assert parked.json()["clarification"] == "个人还是家庭支出？"
 
-    resumed = client.post(
+    clarified_once = client.post(
         "/v1/chat/messages",
         json={
             "conversation_id": "c1",
@@ -400,11 +401,38 @@ def test_a_structured_clarification_is_parked_and_resumed_by_link(
         },
         headers=_auth(token_ring, key=REQUEST_ID_2),
     )
+    assert clarified_once.status_code == 202
+    assert clarified_once.json()["clarification"] == "现金还是刷卡？"
+
+    resumed = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "刷卡",
+            "clarification_of": clarified_once.json()["operation_id"],
+        },
+        headers=_auth(token_ring, key=REQUEST_ID_3),
+    )
     assert resumed.status_code == 200
     assert resumed.json()["record_id"] == "recCLARIFY"
-    context = interpreter.calls[1][2]
-    assert context.original_user_text == "午饭 45"
-    assert context.question == "个人还是家庭支出？"
+    continuation = interpreter.calls[2]
+    context = "\n".join(
+        continuation.texts_of(ComponentKind.CLARIFICATION_CONTEXT)
+    )
+    history = "\n".join(continuation.texts_of(ComponentKind.RAW_EVENT))
+    pending = "\n".join(
+        continuation.texts_of(ComponentKind.PENDING_STATE)
+    )
+    assert continuation.user_text == "刷卡"
+    assert context.count("午饭 45") == 1
+    assert context.count("个人还是家庭支出？") == 1
+    assert context.count("个人支出") == 1
+    assert context.count("现金还是刷卡？") == 1
+    assert "午饭 45" not in history
+    assert "个人还是家庭支出？" not in history
+    assert "个人支出" not in history
+    assert "现金还是刷卡？" not in history
+    assert resumed.json()["operation_id"] in pending
 
     old = client.get(
         f"/v1/operations/{parked.json()['operation_id']}",
@@ -412,6 +440,46 @@ def test_a_structured_clarification_is_parked_and_resumed_by_link(
     )
     assert old.json()["state"] == "cancelled_pre_submit"
     assert old.json()["record_id"] is None
+
+
+def test_two_answers_to_one_clarification_return_a_stable_client_error(
+    engine, token_ring, keyring, monkeypatch
+) -> None:
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=FakeInterpreter(Clarification("个人还是家庭支出？")),
+        dispatcher=FakeDispatcher(),
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    assert parked.status_code == 202
+
+    def lose_source_cas(*args, **kwargs):
+        raise StaleOperationVersionError("another answer won")
+
+    monkeypatch.setattr(
+        "personal_agent.api.app.transition_operation",
+        lose_source_cas,
+    )
+    losing = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "个人",
+            "clarification_of": parked.json()["operation_id"],
+        },
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+
+    assert losing.status_code == 400
+    assert losing.json()["error"]["code"] == "INVALID_ARGUMENT"
+    with session_factory(engine)() as session:
+        assert session.query(Operation).count() == 1
 
 
 def test_a_clarification_naming_an_unknown_timeline_is_refused(
@@ -451,7 +519,7 @@ def test_slow_model_returns_202_and_finishes_in_the_worker(
     engine, token_ring, keyring
 ) -> None:
     class SlowInterpreter:
-        def interpret(self, *, envelope, clarification_context=None):
+        def interpret(self, *, envelope):
             time.sleep(0.1)
             return DirectAnswer("完成")
 

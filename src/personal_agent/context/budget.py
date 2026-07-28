@@ -44,6 +44,7 @@ class ComponentKind(StrEnum):
     RAW_EVENT = "raw_event"
     PENDING_STATE = "pending_state"
     MEMORY = "memory"
+    CLARIFICATION_CONTEXT = "clarification_context"
     USER_INPUT = "user_input"
     TOOL_DECLARATION = "tool_declaration"
 
@@ -58,6 +59,7 @@ MANDATORY_KINDS: Final[frozenset[ComponentKind]] = frozenset(
     {
         ComponentKind.SYSTEM_POLICY,
         ComponentKind.CHECKPOINT,
+        ComponentKind.CLARIFICATION_CONTEXT,
         ComponentKind.USER_INPUT,
         ComponentKind.PENDING_STATE,
     }

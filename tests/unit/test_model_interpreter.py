@@ -22,7 +22,6 @@ from personal_agent.context.budget import ComponentKind
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.runtime.interpreter import ModelInterpreter
 from personal_agent.runtime.model_gateway import (
-    ClarificationContext,
     ProposedAnswer,
     ProposedClarification,
     ProposedFailure,
@@ -44,8 +43,8 @@ class FakeGateway:
         self.proposal = proposal
         self.seen: dict | None = None
 
-    def propose(self, *, envelope, clarification=None):
-        self.seen = {"envelope": envelope, "clarification": clarification}
+    def propose(self, *, envelope):
+        self.seen = {"envelope": envelope}
         return self.proposal
 
 
@@ -116,17 +115,6 @@ def test_the_gateway_receives_the_assembled_envelope(tmp_path) -> None:
     assert built.system_instruction == "RULES"
     assert built.user_text == "hi"
     assert built.tool_aliases == ("finance.log_expense",)
-
-
-def test_the_gateway_receives_only_an_explicit_clarification_context(
-    envelope,
-) -> None:
-    gateway = FakeGateway(ProposedAnswer("ok"))
-    context = ClarificationContext("午饭 45", "个人还是家庭？")
-    ModelInterpreter(gateway).interpret(
-        envelope=envelope, clarification_context=context
-    )
-    assert gateway.seen["clarification"] == context
 
 
 def test_tool_declarations_use_the_trusted_manifest_shape(tmp_path) -> None:

@@ -77,7 +77,7 @@ from personal_agent.storage.engine import (
     session_factory,
 )
 from personal_agent.storage.models import Conversation, Device, Operation
-from personal_agent_core.errors import ErrorCode
+from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.manifest import load_manifest
 from personal_agent_core.timeutil import utc_now
 from personal_data_mcp.server.keys import (
@@ -563,6 +563,42 @@ def test_a_turn_that_cannot_be_assembled_fails_safe_without_calling_the_model(
     body = response.json()
     assert body["state"] == "failed_safe"
     assert body["failure_reason"] == "CONTEXT_BUDGET_EXCEEDED"
+    assert gateway.calls == []
+
+
+def test_unavailable_context_fails_safe_without_calling_the_model(
+    keys, agent_db, finance, monkeypatch
+) -> None:
+    gateway = FakeGateway(ProposedAnswer("不该被调用"))
+
+    def refuse_context(*args, **kwargs):
+        raise AppError(
+            ErrorCode.CONTEXT_UNAVAILABLE,
+            internal_detail="fixture refused inconsistent Timeline state",
+        )
+
+    monkeypatch.setattr(
+        "personal_agent.api.composition.ContextBuilder.build",
+        refuse_context,
+    )
+
+    async def scenario():
+        async with agent_service(
+            config_for(agent_db, finance),
+            build_gateway=lambda: gateway,
+        ) as composed:
+            async with http_for(composed.deps) as client:
+                return await client.post(
+                    "/v1/chat/messages",
+                    json={"conversation_id": "c1", "text": "记一笔咖啡 18"},
+                    headers=chat_headers(),
+                )
+
+    response = asyncio.run(scenario())
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == "failed_safe"
+    assert body["failure_reason"] == "CONTEXT_UNAVAILABLE"
     assert gateway.calls == []
 
 

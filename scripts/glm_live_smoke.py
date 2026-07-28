@@ -55,22 +55,24 @@ from personal_agent.api.orchestrator import (
     InterpreterError,
     ToolCall,
 )
-from personal_agent.api.events import USER_MESSAGE, append_event
+from personal_agent.api.events import OPERATION_RESULT, USER_MESSAGE, append_event
+from personal_agent.api.operation_store import open_operation
 from personal_agent.context.builder import ContextBuilder, ContextEnvelope
 from personal_agent.context.compactor import Compactor
 from personal_agent.context.config import default_context_config
+from personal_agent.context.continuation import ClarificationContext
 from personal_agent.keys import HmacKey
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.runtime.glm_gateway import glm_gateway_from_env
 from personal_agent.runtime.interpreter import ModelInterpreter
-from personal_agent.runtime.model_gateway import ClarificationContext, ModelGatewayError
+from personal_agent.runtime.model_gateway import ModelGatewayError
 from personal_agent.runtime.prompt import build_system_prompt
 from personal_agent.storage.engine import (
     create_all,
     create_database_engine,
     session_factory,
 )
-from personal_agent.storage.models import ContextSession, Conversation
+from personal_agent.storage.models import ContextSession, Conversation, Device
 from personal_agent_core.crypto import KeyRing, generate_key
 from personal_agent_core.manifest import build_manifest
 from personal_agent_core.timeutil import format_ledger_date, ledger_date, utc_now
@@ -409,7 +411,7 @@ def schema_problems(tools: list[VisibleTool], result: Interpretation) -> list[st
 @contextmanager
 def smoke_context(
     *, system: str, tools: list[VisibleTool]
-) -> Iterator[Callable[[str, str], ContextEnvelope]]:
+) -> Iterator[Callable[[Case], ContextEnvelope]]:
     """Assemble each case's turn with the production `ContextBuilder`.
 
     The database is a throwaway in a temporary directory and is removed with the
@@ -431,6 +433,18 @@ def smoke_context(
         try:
             with session_factory(engine)() as db:
                 db.add(
+                    Device(
+                        device_id="dev_glm_smoke",
+                        display_name="GLM smoke",
+                        public_key="smoke-public-key",
+                        device_key_thumbprint="smoke-thumbprint",
+                        status="active",
+                        scopes="[]",
+                        allowed_tools_version="smoke-v1",
+                        created_at=moment,
+                    )
+                )
+                db.add(
                     Conversation(
                         conversation_id=SMOKE_TIMELINE,
                         created_at=moment,
@@ -440,8 +454,8 @@ def smoke_context(
                 )
                 db.commit()
 
-                def assemble(case_id: str, text: str) -> ContextEnvelope:
-                    session_id = f"ses-smoke-{case_id}"
+                def assemble(case: Case) -> ContextEnvelope:
+                    session_id = f"ses-smoke-{case.id}"
                     open_row = (
                         db.query(ContextSession)
                         .filter_by(
@@ -462,14 +476,56 @@ def smoke_context(
                         )
                     )
                     db.flush()
+                    clarification = case.clarification
+                    if clarification is not None:
+                        source = open_operation(
+                            db,
+                            device_id="dev_glm_smoke",
+                            client_request_id=f"source-{case.id}",
+                            request_fingerprint=f"source-{case.id}",
+                            now=moment,
+                        ).operation
+                        append_event(
+                            db,
+                            keyring,
+                            conversation_id=SMOKE_TIMELINE,
+                            session_id=session_id,
+                            turn_id=f"trn-source-{case.id}",
+                            event_type=USER_MESSAGE,
+                            content={"text": clarification.original_user_text},
+                            operation_id=source.operation_id,
+                            now=moment,
+                        )
+                        append_event(
+                            db,
+                            keyring,
+                            conversation_id=SMOKE_TIMELINE,
+                            session_id=session_id,
+                            turn_id=f"trn-source-{case.id}",
+                            event_type=OPERATION_RESULT,
+                            content={
+                                "state": "waiting_for_clarification",
+                                "clarification": clarification.question,
+                            },
+                            operation_id=source.operation_id,
+                            now=moment,
+                        )
+                        source.state = "cancelled_pre_submit"
+                        source.state_version = 2
+                        source.safe_result = clarification.question
+                        clarification = ClarificationContext(
+                            original_user_text=clarification.original_user_text,
+                            question=clarification.question,
+                            source_operation_ids=(source.operation_id,),
+                        )
                     event_id = append_event(
                         db,
                         keyring,
                         conversation_id=SMOKE_TIMELINE,
                         session_id=session_id,
-                        turn_id=f"trn-{case_id}",
+                        turn_id=f"trn-{case.id}",
                         event_type=USER_MESSAGE,
-                        content={"text": text},
+                        content={"text": case.text},
                         operation_id=None,
                         now=moment,
                     )
@@ -482,8 +538,9 @@ def smoke_context(
                         session_id=session_id,
                         current_event_id=event_id,
                         system_instruction=system,
-                        user_text=text,
+                        user_text=case.text,
                         effective_tools=tools,
+                        clarification_context=clarification,
                     )
 
                 yield assemble
@@ -501,7 +558,6 @@ def run_case(
     try:
         result = interpreter.interpret(
             envelope=envelope,
-            clarification_context=case.clarification,
         )
     except InterpreterError as exc:
         return Outcome(
@@ -584,7 +640,7 @@ def main(argv: list[str] | None = None) -> int:
         with smoke_context(system=system, tools=tools) as assemble:
             for case in cases:
                 outcome = run_case(
-                    case, interpreter, tools, assemble(case.id, case.text)
+                    case, interpreter, tools, assemble(case)
                 )
                 outcomes.append(outcome)
                 mark = "PASS" if outcome.passed else "FAIL"

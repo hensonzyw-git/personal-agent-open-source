@@ -1,9 +1,10 @@
 """Sealed chat request payload and controlled clarification continuation.
 
 The raw request is persisted before model work, as required by design 5.2.1,
-but never in plaintext. A clarification continuation carries only the previous
-unresolved user turn and the exact question; the permanent conversation archive
-is not replayed into the model.
+but never in plaintext. A clarification continuation carries the exact
+unresolved transcript -- the original message, every completed question/answer
+exchange and the pending question. The permanent conversation archive is not
+substituted for that non-compressible state.
 """
 
 from __future__ import annotations
@@ -12,7 +13,10 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from personal_agent.runtime.model_gateway import ClarificationContext
+from personal_agent.context.continuation import (
+    ClarificationContext,
+    ClarificationExchange,
+)
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.manifest import canonical_json
@@ -46,6 +50,11 @@ def seal_chat_request(
             {
                 "original_user_text": context.original_user_text,
                 "question": context.question,
+                "completed_exchanges": [
+                    {"question": item.question, "answer": item.answer}
+                    for item in context.completed_exchanges
+                ],
+                "source_operation_ids": list(context.source_operation_ids),
             }
             if context is not None
             else None
@@ -86,7 +95,36 @@ def open_chat_request(
         question = raw_context.get("question")
         if not isinstance(original, str) or not isinstance(question, str):
             raise _invalid("sealed clarification context is malformed")
-        context = ClarificationContext(original_user_text=original, question=question)
+        raw_exchanges = raw_context.get("completed_exchanges", [])
+        raw_source_ids = raw_context.get("source_operation_ids", [])
+        if not isinstance(raw_exchanges, list) or not isinstance(
+            raw_source_ids, list
+        ):
+            raise _invalid("sealed clarification context is malformed")
+        exchanges: list[ClarificationExchange] = []
+        for raw_exchange in raw_exchanges:
+            if not isinstance(raw_exchange, dict):
+                raise _invalid("sealed clarification context is malformed")
+            exchange_question = raw_exchange.get("question")
+            answer = raw_exchange.get("answer")
+            if not isinstance(exchange_question, str) or not isinstance(
+                answer, str
+            ):
+                raise _invalid("sealed clarification context is malformed")
+            exchanges.append(
+                ClarificationExchange(
+                    question=exchange_question,
+                    answer=answer,
+                )
+            )
+        if any(not isinstance(item, str) for item in raw_source_ids):
+            raise _invalid("sealed clarification context is malformed")
+        context = ClarificationContext(
+            original_user_text=original,
+            question=question,
+            completed_exchanges=tuple(exchanges),
+            source_operation_ids=tuple(raw_source_ids),
+        )
     return ChatRequestPayload(
         conversation_id=conversation_id,
         text=text,
@@ -108,17 +146,39 @@ def with_clarification_question(
     )
 
 
-def continuation_context(payload: ChatRequestPayload) -> ClarificationContext:
+def continuation_context(
+    payload: ChatRequestPayload, *, source_operation_id: str
+) -> ClarificationContext:
     question = payload.clarification_question
     if not isinstance(question, str) or not question.strip():
         raise _invalid("clarification source has no pending question")
-    original = payload.text
-    if payload.clarification_context is not None:
-        original = (
-            f"{payload.clarification_context.original_user_text}\n"
-            f"用户补充：{payload.text}"
+    previous = payload.clarification_context
+    if previous is None:
+        return ClarificationContext(
+            original_user_text=payload.text,
+            question=question,
+            source_operation_ids=(source_operation_id,),
         )
-    return ClarificationContext(original_user_text=original, question=question)
+    return ClarificationContext(
+        original_user_text=previous.original_user_text,
+        question=question,
+        completed_exchanges=(
+            *previous.completed_exchanges,
+            ClarificationExchange(
+                question=previous.question,
+                answer=payload.text,
+            ),
+        ),
+        # A legacy v1 context has no source refs. Keep the whole upgraded chain
+        # in that conservative mode: adding only the newest ref would make the
+        # transcript/reference cardinality inconsistent and could hide part of
+        # the old raw history.
+        source_operation_ids=(
+            (*previous.source_operation_ids, source_operation_id)
+            if previous.source_operation_ids
+            else ()
+        ),
+    )
 
 
 def _optional_str(value: Any) -> str | None:

@@ -27,7 +27,6 @@ from personal_agent.api.orchestrator import (
 )
 from personal_agent.context.builder import ContextEnvelope
 from personal_agent.runtime.model_gateway import (
-    ClarificationContext,
     ModelGateway,
     ModelGatewayError,
     ProposedAnswer,
@@ -47,13 +46,9 @@ class ModelInterpreter:
         self,
         *,
         envelope: ContextEnvelope,
-        clarification_context: ClarificationContext | None = None,
     ) -> Interpretation:
         try:
-            kwargs: dict[str, object] = {"envelope": envelope}
-            if clarification_context is not None:
-                kwargs["clarification"] = clarification_context
-            proposal = self._gateway.propose(**kwargs)
+            proposal = self._gateway.propose(envelope=envelope)
         except ModelGatewayError as exc:
             # Translate the gateway's failure into the seam's neutral error, so
             # the orchestrator stays decoupled from any model SDK.

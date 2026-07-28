@@ -11,6 +11,7 @@ system/policy instruction
 -> recent raw events after the checkpoint
 -> exact pending state
 -> retrieved memories
+-> exact clarification continuation, when present
 -> current user input
 -> candidate tool declarations
 ```
@@ -49,6 +50,8 @@ from dataclasses import InitVar, dataclass, field
 from types import MappingProxyType
 from typing import Any, Final, Iterable, Mapping, Sequence
 
+from sqlalchemy import or_
+
 from personal_agent.api import events as timeline_events
 from personal_agent.context.budget import (
     ComponentKind,
@@ -58,6 +61,10 @@ from personal_agent.context.budget import (
 )
 from personal_agent.context.compactor import Compactor, extract_record_id
 from personal_agent.context.config import ContextConfig
+from personal_agent.context.continuation import (
+    MAX_CLARIFICATION_QUESTION_CHARS,
+    ClarificationContext,
+)
 from personal_agent.keys import HmacKey, HmacKeyRing
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.storage.models import (
@@ -265,6 +272,20 @@ class ContextEnvelope:
                         f"a context envelope needs exactly one {kind.value}"
                     ),
                 )
+        if (
+            sum(
+                1
+                for item in self.components
+                if item.kind is ComponentKind.CLARIFICATION_CONTEXT
+            )
+            > 1
+        ):
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail=(
+                    "a context envelope may carry at most one clarification context"
+                ),
+            )
         if self.lineage_stop_reason is not None and (
             self.lineage_stop_reason not in LINEAGE_STOP_REASONS
         ):
@@ -410,6 +431,7 @@ class ContextBuilder:
         system_instruction: str,
         user_text: str,
         effective_tools: Sequence[VisibleTool],
+        clarification_context: ClarificationContext | None = None,
         candidate_tools: Iterable[str] | None = None,
         essential_tools: Iterable[str] = (),
         preferences: Sequence[str] = (),
@@ -455,11 +477,18 @@ class ContextBuilder:
         components.extend(self._preferences(preferences))
         components.extend(self._checkpoint_components(lineage, checkpoint))
 
+        source_operation_ids = (
+            clarification_context.source_operation_ids
+            if clarification_context is not None
+            else ()
+        )
+        clarification = self._clarification_components(clarification_context)
         raw, capped = self._raw_events(
             db,
             keyring,
             session_id=session_id,
             exclude_event_id=current_event.event_id,
+            exclude_operation_ids=source_operation_ids,
         )
         components.extend(raw)
 
@@ -474,6 +503,7 @@ class ContextBuilder:
             )
 
         components.extend(self._memories(memories))
+        components.extend(clarification)
         components.append(
             self._budgeter.component(
                 ComponentKind.USER_INPUT, user_text, label="user_input"
@@ -530,6 +560,9 @@ class ContextBuilder:
                     "timeline_id": conversation_id,
                     "session_id": session_id,
                     "current_event_id": current_event.event_id,
+                    "clarification_source_operation_ids": list(
+                        source_operation_ids
+                    ),
                     "checkpoint_id": checkpoint_id,
                     "lineage": list(surviving_lineage),
                     "components": [
@@ -769,6 +802,72 @@ class ContextBuilder:
             )
         return row
 
+    def _clarification_components(
+        self, context: ClarificationContext | None
+    ) -> list[ContextComponent]:
+        if context is None:
+            return []
+        if (
+            not isinstance(context.original_user_text, str)
+            or not context.original_user_text.strip()
+            or not isinstance(context.question, str)
+            or not context.question.strip()
+            or len(context.question) > MAX_CLARIFICATION_QUESTION_CHARS
+        ):
+            raise AppError(
+                ErrorCode.CONTEXT_UNAVAILABLE,
+                internal_detail="sealed clarification context is malformed",
+            )
+        exchanges: list[dict[str, str]] = []
+        for exchange in context.completed_exchanges:
+            if (
+                not isinstance(exchange.question, str)
+                or not exchange.question.strip()
+                or len(exchange.question) > MAX_CLARIFICATION_QUESTION_CHARS
+                or not isinstance(exchange.answer, str)
+                or not exchange.answer.strip()
+            ):
+                raise AppError(
+                    ErrorCode.CONTEXT_UNAVAILABLE,
+                    internal_detail="sealed clarification exchange is malformed",
+                )
+            exchanges.append(
+                {"question": exchange.question, "answer": exchange.answer}
+            )
+        if len(set(context.source_operation_ids)) != len(
+            context.source_operation_ids
+        ) or (
+            context.source_operation_ids
+            and len(context.source_operation_ids)
+            != len(context.completed_exchanges) + 1
+        ):
+            raise AppError(
+                ErrorCode.CONTEXT_UNAVAILABLE,
+                internal_detail="clarification source operation ids are malformed",
+            )
+        body = canonical_json(
+            {
+                "original_user_text": context.original_user_text,
+                "completed_exchanges": exchanges,
+                "pending_question": context.question,
+            }
+        )
+        return [
+            self._budgeter.component(
+                ComponentKind.CLARIFICATION_CONTEXT,
+                _frame(
+                    "clarification_context",
+                    (
+                        context.source_operation_ids[-1]
+                        if context.source_operation_ids
+                        else "legacy"
+                    ),
+                    body,
+                ),
+                label="clarification_context",
+            )
+        ]
+
     def _raw_events(
         self,
         db,
@@ -776,23 +875,63 @@ class ContextBuilder:
         *,
         session_id: str,
         exclude_event_id: str,
+        exclude_operation_ids: Sequence[str] = (),
     ) -> tuple[list[ContextComponent], bool]:
         """This Session's prior model-visible events, newest-bounded, oldest-first.
 
         Dividers are excluded: they are presentation, and design §6.1 is
         explicit that neither divider event enters the model context. The
         persisted event supplying this turn's separate `USER_INPUT` is excluded
-        too, so it cannot be sent twice.
+        too, so it cannot be sent twice. Events belonging to the unresolved
+        clarification chain are represented by the mandatory exact
+        `CLARIFICATION_CONTEXT` component and are excluded before the scan limit,
+        so they cannot be duplicated or crowd out older usable history.
         """
-        rows = (
-            db.query(ConversationEvent)
-            .filter(
-                ConversationEvent.session_id == session_id,
-                ConversationEvent.event_id != exclude_event_id,
-                ConversationEvent.event_type.in_(
-                    timeline_events.MODEL_VISIBLE_EVENT_TYPES
-                ),
+        excluded = tuple(exclude_operation_ids)
+        if len(set(excluded)) != len(excluded) or any(
+            not isinstance(item, str) or not item for item in excluded
+        ):
+            raise AppError(
+                ErrorCode.CONTEXT_UNAVAILABLE,
+                internal_detail="clarification source operation ids are malformed",
             )
+        query = db.query(ConversationEvent).filter(
+            ConversationEvent.session_id == session_id,
+            ConversationEvent.event_id != exclude_event_id,
+            ConversationEvent.event_type.in_(
+                timeline_events.MODEL_VISIBLE_EVENT_TYPES
+            ),
+        )
+        if excluded:
+            found = {
+                row[0]
+                for row in db.query(ConversationEvent.operation_id)
+                .filter(
+                    ConversationEvent.session_id == session_id,
+                    ConversationEvent.operation_id.in_(excluded),
+                    ConversationEvent.event_type.in_(
+                        timeline_events.MODEL_VISIBLE_EVENT_TYPES
+                    ),
+                )
+                .distinct()
+                .all()
+            }
+            if found != set(excluded):
+                raise AppError(
+                    ErrorCode.CONTEXT_UNAVAILABLE,
+                    internal_detail=(
+                        "clarification source operations do not belong to this "
+                        "Session"
+                    ),
+                )
+            query = query.filter(
+                or_(
+                    ConversationEvent.operation_id.is_(None),
+                    ConversationEvent.operation_id.not_in(excluded),
+                )
+            )
+        rows = (
+            query
             .order_by(ConversationEvent.timeline_sequence.desc())
             .limit(self._max_scan + 1)
             .all()

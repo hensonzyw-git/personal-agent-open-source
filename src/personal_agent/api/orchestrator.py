@@ -89,7 +89,6 @@ class Interpreter(Protocol):
         self,
         *,
         envelope: ContextEnvelope,
-        clarification_context: Any | None = None,
     ) -> Interpretation: ...
 
 
@@ -236,7 +235,6 @@ def run_operation(
     operation: Operation,
     *,
     build_context: ContextFactory | None = None,
-    clarification_context: Any | None = None,
     interpreter: Interpreter,
     dispatcher: Dispatcher,
     authorize: Authorizer,
@@ -284,10 +282,7 @@ def run_operation(
         return RunResult(state="failed_safe", failure_reason=refused.code.value)
 
     try:
-        kwargs: dict[str, Any] = {"envelope": envelope}
-        if clarification_context is not None:
-            kwargs["clarification_context"] = clarification_context
-        interpretation = interpreter.interpret(**kwargs)
+        interpretation = interpreter.interpret(envelope=envelope)
     except InterpreterError:
         # A model or transport failure is a safe failure, never a write. The
         # operation is still pre-submit, so this cannot hide a side effect.

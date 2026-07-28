@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -9,22 +10,29 @@ from google.genai import types
 
 from context_envelopes import envelope_for
 from personal_agent.api.orchestrator import InterpreterError
+from personal_agent.context.budget import ComponentKind, ContextComponent
+from personal_agent.context.continuation import (
+    MAX_CLARIFICATION_QUESTION_CHARS,
+    ClarificationContext,
+    ClarificationExchange,
+)
+from personal_agent.context.config import CAP001_PROVISIONAL_VALUES, ContextConfig
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.runtime.glm_gateway import (
     GlmGateway,
     _generate_with_adk,
+    _messages,
     glm_gateway_from_env,
 )
 from personal_agent.runtime.interpreter import ModelInterpreter
 from personal_agent.runtime.model_gateway import (
-    ClarificationContext,
     ModelGatewayError,
     ProposedAnswer,
     ProposedClarification,
     ProposedFailure,
     ProposedToolCall,
 )
-from personal_agent_core.errors import ErrorCode
+from personal_agent_core.errors import AppError, ErrorCode
 
 
 _PINNED = "https://open.bigmodel.cn/api/paas/v4/"
@@ -93,8 +101,8 @@ def envelope(tmp_path):
     )
 
 
-def _propose(gateway, envelope, *, clarification=None):
-    return gateway.propose(envelope=envelope, clarification=clarification)
+def _propose(gateway, envelope):
+    return gateway.propose(envelope=envelope)
 
 
 def test_a_tool_call_response_becomes_one_proposed_tool_call(envelope) -> None:
@@ -177,22 +185,204 @@ def test_the_declarations_sent_are_the_ones_the_budget_measured(
     gateway, generate = _gateway(_response(_text("ok")))
     _propose(gateway, built)
     business = [
-        item["function"]["name"]
+        item
         for item in generate.kwargs["declarations"]
         if not item["function"]["name"].startswith("agent.")
     ]
-    assert business == list(built.tool_aliases)
-
-
-def test_only_the_controlled_unresolved_turn_is_sent_for_clarification(envelope) -> None:
-    gateway, generate = _gateway(_response(_text("ok")))
-    context = ClarificationContext("午饭 45", "个人还是家庭支出？")
-    _propose(gateway, envelope, clarification=context)
-    assert generate.kwargs["messages"][-3:] == [
-        {"role": "user", "content": "午饭 45"},
-        {"role": "model", "content": "个人还是家庭支出？"},
-        {"role": "user", "content": "午饭 45 个人"},
+    measured = [
+        json.loads(text)
+        for text in built.texts_of(ComponentKind.TOOL_DECLARATION)
     ]
+    assert business == measured
+    assert business == [
+        {
+            "type": "function",
+            "function": {
+                "name": "finance.log_expense",
+                "description": "记一笔支出",
+                "parameters": _EXPENSE.input_schema,
+            },
+        }
+    ]
+    internal = [
+        item["function"]
+        for item in generate.kwargs["declarations"]
+        if item["function"]["name"].startswith("agent.")
+    ]
+    assert internal == [
+        {
+            "name": "agent.ask_clarification",
+            "description": "缺少执行所需信息时，只提出一个澄清问题。",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["question"],
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": MAX_CLARIFICATION_QUESTION_CHARS,
+                    }
+                },
+            },
+        },
+        {
+            "name": "agent.fail_batch_unavailable",
+            "description": (
+                "消息包含两笔及以上记录且批量原子性能力尚未启用时，"
+                "以零写入方式拒绝。"
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+            },
+        },
+    ]
+
+
+def test_every_envelope_data_component_reaches_the_provider_in_fixed_order() -> None:
+    kinds = (
+        ComponentKind.CAPABILITY_SUMMARY,
+        ComponentKind.PREFERENCES,
+        ComponentKind.CHECKPOINT,
+        ComponentKind.RAW_EVENT,
+        ComponentKind.PENDING_STATE,
+        ComponentKind.MEMORY,
+        ComponentKind.CLARIFICATION_CONTEXT,
+    )
+    assert set(kinds) == set(ComponentKind) - {
+        ComponentKind.SYSTEM_POLICY,
+        ComponentKind.USER_INPUT,
+        ComponentKind.TOOL_DECLARATION,
+    }
+    components = (
+        ContextComponent(ComponentKind.SYSTEM_POLICY, "DO-NOT-SEND-AS-DATA"),
+        *(ContextComponent(kind, f"SENTINEL-{kind.value}") for kind in kinds),
+        ContextComponent(ComponentKind.USER_INPUT, "DO-NOT-DUPLICATE"),
+        ContextComponent(
+            ComponentKind.TOOL_DECLARATION,
+            "DO-NOT-SEND-AS-MESSAGE",
+        ),
+    )
+    envelope = SimpleNamespace(components=components, user_text="CURRENT")
+
+    messages = _messages(envelope)
+
+    assert len(messages) == 2
+    assert messages[-1] == {"role": "user", "content": "CURRENT"}
+    leading = messages[0]["content"]
+    positions = [leading.index(f"SENTINEL-{kind.value}") for kind in kinds]
+    assert positions == sorted(positions)
+    for kind in kinds:
+        assert leading.count(f"SENTINEL-{kind.value}") == 1
+    assert "DO-NOT-SEND-AS-DATA" not in leading
+    assert "DO-NOT-DUPLICATE" not in leading
+    assert "DO-NOT-SEND-AS-MESSAGE" not in leading
+
+
+def test_only_the_budgeted_unresolved_turn_is_sent_for_clarification(
+    tmp_path,
+) -> None:
+    gateway, generate = _gateway(_response(_text("ok")))
+    context = ClarificationContext(
+        "午饭 45",
+        "现金还是刷卡？",
+        completed_exchanges=(
+            ClarificationExchange("个人还是家庭支出？", "个人支出"),
+        ),
+    )
+    envelope = envelope_for(
+        tmp_path,
+        user_text="刷卡",
+        tools=[_EXPENSE],
+        clarification=context,
+    )
+    _propose(gateway, envelope)
+    messages = generate.kwargs["messages"]
+    assert messages[-1] == {"role": "user", "content": "刷卡"}
+    assert "<untrusted_data kind=\"clarification_context\"" in messages[0]["content"]
+    assert messages[0]["content"].count("午饭 45") == 1
+    assert messages[0]["content"].count("个人还是家庭支出？") == 1
+    assert messages[0]["content"].count("个人支出") == 1
+    assert messages[0]["content"].count("现金还是刷卡？") == 1
+    assert envelope.texts_of(ComponentKind.RAW_EVENT) == ()
+    assert envelope.component_tokens["clarification_context"] > 0
+
+
+def test_clarification_context_is_mandatory_and_refuses_an_over_budget_turn(
+    tmp_path,
+) -> None:
+    values = dict(CAP001_PROVISIONAL_VALUES)
+    values.update(
+        {"CONTEXT_SOFT_LIMIT_TOKENS": 100, "CONTEXT_HARD_LIMIT_TOKENS": 120}
+    )
+    config = ContextConfig.from_mapping("clarification-hard-limit", values)
+    with pytest.raises(AppError) as caught:
+        envelope_for(
+            tmp_path,
+            user_text="个人",
+            clarification=ClarificationContext(
+                original_user_text="午" * 100,
+                question="个人还是家庭？",
+            ),
+            config=config,
+        )
+    assert caught.value.code is ErrorCode.CONTEXT_BUDGET_EXCEEDED
+
+
+def test_legacy_clarification_is_budgeted_without_hiding_raw_history(
+    tmp_path,
+) -> None:
+    envelope = envelope_for(
+        tmp_path,
+        user_text="个人",
+        history=["午饭 45", "个人还是家庭？"],
+        clarification=ClarificationContext("午饭 45", "个人还是家庭？"),
+        materialize_clarification_sources=False,
+    )
+
+    assert envelope.texts_of(ComponentKind.CLARIFICATION_CONTEXT)
+    assert len(envelope.texts_of(ComponentKind.RAW_EVENT)) == 2
+    assert envelope.component_tokens["clarification_context"] > 0
+
+
+def test_malformed_clarification_source_cardinality_fails_closed(
+    tmp_path,
+) -> None:
+    with pytest.raises(AppError) as caught:
+        envelope_for(
+            tmp_path,
+            user_text="个人",
+            clarification=ClarificationContext(
+                "午饭 45",
+                "个人还是家庭？",
+                source_operation_ids=(
+                    "op_00000000000000000000000000000001",
+                    "op_00000000000000000000000000000002",
+                ),
+            ),
+            materialize_clarification_sources=False,
+        )
+    assert caught.value.code is ErrorCode.CONTEXT_UNAVAILABLE
+
+
+def test_clarification_sources_are_excluded_before_the_raw_scan_limit(
+    tmp_path,
+) -> None:
+    envelope = envelope_for(
+        tmp_path,
+        user_text="个人",
+        history=["更早历史一", "更早历史二"],
+        clarification=ClarificationContext("午饭 45", "个人还是家庭？"),
+        max_session_event_scan=2,
+    )
+
+    history = "\n".join(envelope.texts_of(ComponentKind.RAW_EVENT))
+    assert "更早历史一" in history
+    assert "更早历史二" in history
+    assert "午饭 45" not in history
+    assert "个人还是家庭？" not in history
 
 
 def test_structured_clarification_and_batch_gate_are_not_direct_answers(envelope) -> None:
@@ -205,6 +395,47 @@ def test_structured_clarification_and_batch_gate_are_not_direct_answers(envelope
     assert _propose(batch, envelope) == ProposedFailure(
         ErrorCode.BATCH_ATOMICITY_UNAVAILABLE.value
     )
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "问" * (MAX_CLARIFICATION_QUESTION_CHARS + 1),
+        "   ",
+        123,
+    ],
+)
+def test_invalid_clarification_questions_fail_closed(envelope, question) -> None:
+    gateway, _ = _gateway(
+        _response(_call("agent.ask_clarification", {"question": question}))
+    )
+    with pytest.raises(ModelGatewayError):
+        _propose(gateway, envelope)
+
+
+def test_clarification_schema_boundary_and_extra_fields(envelope) -> None:
+    accepted, _ = _gateway(
+        _response(
+            _call(
+                "agent.ask_clarification",
+                {"question": "问" * MAX_CLARIFICATION_QUESTION_CHARS},
+            )
+        )
+    )
+    assert len(_propose(accepted, envelope).question) == (
+        MAX_CLARIFICATION_QUESTION_CHARS
+    )
+
+    extra, _ = _gateway(
+        _response(
+            _call(
+                "agent.ask_clarification",
+                {"question": "个人还是家庭？", "unexpected": True},
+            )
+        )
+    )
+    with pytest.raises(ModelGatewayError, match="unexpected arguments"):
+        _propose(extra, envelope)
 
 
 @pytest.mark.parametrize(
@@ -340,7 +571,11 @@ def test_production_generator_uses_the_adk_model_contract(monkeypatch) -> None:
     request = captured["request"]
     assert request.config.system_instruction == "SYS"
     assert request.contents[0].role == "user"
-    assert (
-        request.config.tools[0].function_declarations[0].name
-        == "meta.capabilities"
-    )
+    assert request.contents[0].parts[0].text == "hi"
+    declaration = request.config.tools[0].function_declarations[0]
+    assert declaration.name == "meta.capabilities"
+    assert declaration.description == "能力"
+    assert declaration.parameters_json_schema == {
+        "type": "object",
+        "properties": {},
+    }

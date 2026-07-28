@@ -21,22 +21,25 @@ from typing import Any, Iterator, Sequence
 
 from cap001_fixtures import IDENTIFIER_KEY
 from personal_agent.api import events
+from personal_agent.api.operation_store import open_operation
 from personal_agent.context.builder import ContextBuilder, ContextEnvelope
 from personal_agent.context.compactor import Compactor
 from personal_agent.context.config import default_context_config
+from personal_agent.context.continuation import ClarificationContext
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.storage.engine import (
     create_all,
     create_database_engine,
     session_factory,
 )
-from personal_agent.storage.models import ContextSession, Conversation
+from personal_agent.storage.models import ContextSession, Conversation, Device
 from personal_agent_core.crypto import KeyRing, generate_key
 
 
 ENVELOPE_NOW = datetime(2026, 7, 28, 2, 0, tzinfo=timezone.utc)
 ENVELOPE_TIMELINE = "tl_envelope_fixture"
 ENVELOPE_SESSION = "ses_envelope_fixture"
+ENVELOPE_DEVICE = "dev_envelope_fixture"
 
 
 def envelope_for(
@@ -46,6 +49,9 @@ def envelope_for(
     system: str = "SYS",
     tools: Sequence[VisibleTool] = (),
     history: Sequence[str] = (),
+    clarification: ClarificationContext | None = None,
+    materialize_clarification_sources: bool = True,
+    max_session_event_scan: int = 400,
     config=None,
 ) -> ContextEnvelope:
     """One envelope built by the production builder over a fresh database."""
@@ -62,6 +68,63 @@ def envelope_for(
                 operation_id=None,
                 now=ENVELOPE_NOW + timedelta(seconds=index),
             )
+        resolved_clarification = clarification
+        if clarification is not None and materialize_clarification_sources:
+            source_ids: list[str] = []
+            source_texts = [
+                clarification.original_user_text,
+                *(item.answer for item in clarification.completed_exchanges),
+            ]
+            source_questions = [
+                *(item.question for item in clarification.completed_exchanges),
+                clarification.question,
+            ]
+            for index, (source_text, question) in enumerate(
+                zip(source_texts, source_questions, strict=True)
+            ):
+                opened = open_operation(
+                    session,
+                    device_id=ENVELOPE_DEVICE,
+                    client_request_id=f"envelope-source-{index}",
+                    request_fingerprint=f"source-fingerprint-{index}",
+                    now=ENVELOPE_NOW + timedelta(seconds=10 + index),
+                )
+                source = opened.operation
+                source_ids.append(source.operation_id)
+                events.append_event(
+                    session,
+                    keyring,
+                    conversation_id=ENVELOPE_TIMELINE,
+                    session_id=ENVELOPE_SESSION,
+                    turn_id=f"trn-source-{index}",
+                    event_type=events.USER_MESSAGE,
+                    content={"text": source_text},
+                    operation_id=source.operation_id,
+                    now=ENVELOPE_NOW + timedelta(seconds=10 + index),
+                )
+                events.append_event(
+                    session,
+                    keyring,
+                    conversation_id=ENVELOPE_TIMELINE,
+                    session_id=ENVELOPE_SESSION,
+                    turn_id=f"trn-source-{index}",
+                    event_type=events.OPERATION_RESULT,
+                    content={
+                        "state": "waiting_for_clarification",
+                        "clarification": question,
+                    },
+                    operation_id=source.operation_id,
+                    now=ENVELOPE_NOW + timedelta(seconds=11 + index),
+                )
+                source.state = "cancelled_pre_submit"
+                source.state_version = 2
+                source.safe_result = question
+            resolved_clarification = ClarificationContext(
+                original_user_text=clarification.original_user_text,
+                question=clarification.question,
+                completed_exchanges=clarification.completed_exchanges,
+                source_operation_ids=tuple(source_ids),
+            )
         current = events.append_event(
             session,
             keyring,
@@ -75,7 +138,11 @@ def envelope_for(
         )
         session.commit()
         resolved = config or default_context_config()
-        builder = ContextBuilder(resolved, compactor=Compactor(resolved))
+        builder = ContextBuilder(
+            resolved,
+            compactor=Compactor(resolved),
+            max_session_event_scan=max_session_event_scan,
+        )
         return builder.build(
             session,
             keyring,
@@ -86,6 +153,7 @@ def envelope_for(
             system_instruction=system,
             user_text=user_text,
             effective_tools=list(tools),
+            clarification_context=resolved_clarification,
         )
 
 
@@ -99,6 +167,18 @@ def _database(tmp_path: Path) -> Iterator[tuple[Any, KeyRing]]:
     )
     try:
         with session_factory(engine)() as session:
+            session.add(
+                Device(
+                    device_id=ENVELOPE_DEVICE,
+                    display_name="Envelope fixture",
+                    public_key="fixture-public-key",
+                    device_key_thumbprint="fixture-thumbprint",
+                    status="active",
+                    scopes="[]",
+                    allowed_tools_version="fixture-v1",
+                    created_at=ENVELOPE_NOW,
+                )
+            )
             session.add(
                 Conversation(
                     conversation_id=ENVELOPE_TIMELINE,

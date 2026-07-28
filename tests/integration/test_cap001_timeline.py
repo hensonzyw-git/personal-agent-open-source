@@ -594,7 +594,7 @@ def test_an_unknown_direction_is_refused(
 
 
 class _Answering:
-    def interpret(self, *, envelope, clarification_context=None):
+    def interpret(self, *, envelope):
         return DirectAnswer("ok")
 
 

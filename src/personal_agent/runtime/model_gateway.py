@@ -66,14 +66,6 @@ class ProposedFailure:
     reason: str
 
 
-@dataclass(frozen=True)
-class ClarificationContext:
-    """Only the previous unresolved turn, never the conversation archive."""
-
-    original_user_text: str
-    question: str
-
-
 ModelProposal = (
     ProposedAnswer | ProposedToolCall | ProposedClarification | ProposedFailure
 )
@@ -98,5 +90,4 @@ class ModelGateway(Protocol):
         self,
         *,
         envelope: ContextEnvelope,
-        clarification: ClarificationContext | None = None,
     ) -> ModelProposal: ...
