@@ -1160,7 +1160,7 @@ class Compactor:
                 state=op.state,
                 state_version=op.state_version,
                 tool=op.tool,
-                record_id=_extract_record_id(op.safe_result),
+                record_id=extract_record_id(op.safe_result),
                 duplicate_check_id=op.duplicate_check_id,
                 safe_result=op.safe_result,
                 idempotency_key=op.idempotency_key,
@@ -1251,7 +1251,7 @@ class Compactor:
         )
 
 
-def _extract_record_id(safe_result: str | None) -> str | None:
+def extract_record_id(safe_result: str | None) -> str | None:
     """The external record id, if the safe result carries one."""
     if not safe_result:
         return None

@@ -143,11 +143,17 @@ foundational Session Manager, standalone Budgeter and framework-neutral
 Compactor/Checkpoint are built and verified offline. The Compactor failure set
 now covers complete exact operation projections, source-hash revalidation,
 provider deadlines, CAS/full rebuilds and recursive deletion propagation. The
-remaining production compact-state provider/classifier, Context Builder, eval
-and live adversarial evidence are not complete; Session classification fails
-closed without trusted semantic state, every non-terminal operation pins its
-Session, and the Budgeter preserves mandatory context/Checkpoints under a
-conservative UTF-8-byte fallback.
+Context Builder and the production compact-state provider are also built and
+verified offline: one immutable budget-validated `ContextEnvelope` per turn,
+untrusted framing for history/Checkpoints/memories, structurally projected exact
+pending state, a bounded lineage that stops at the last trusted node, tool
+declarations that can only narrow the governed set, and no `superseded_items` or
+plaintext in the model input or trace. The remaining model-backed
+classifier/Compactor providers, the runtime wiring that makes a composed turn
+consume an envelope, the eval and the live adversarial evidence are not
+complete; Session classification fails closed without trusted semantic state,
+every non-terminal operation pins its Session, and the Budgeter preserves
+mandatory context/Checkpoints under a conservative UTF-8-byte fallback.
 `CAP-002`–`CAP-008` cover later streaming, voice, memory, routing and multimodal
 work and do not enlarge the current Finance Phase. See
 `docs/Agent横向能力PRD_v1.0.md` and
