@@ -1,6 +1,6 @@
 # Personal Agent — Agent Collaboration Guide
 
-> Last updated: 2026-07-27
+> Last updated: 2026-07-28
 >
 > `AGENTS.md` and `CLAUDE.md` must remain byte-for-byte equivalent. Update both
 > in the same change.
@@ -360,6 +360,28 @@ next to §5.1 instead of in a commit message.
   `session.expire_all()` before the read). Concurrent tests are the only
   reliable way to expose this; a single-session test will always see its own
   writes.
+
+### 5.3 Structural rules for Context Builder boundaries
+
+These rules were derived from the slice G review. All three defects passed the
+original tests because the fixtures repeated the implementation's assumptions
+instead of reproducing the production composition order.
+
+- **The current message is a persisted anchor, not history plus a free string.**
+  The API persists the user event before model work. A Context Builder must bind
+  `USER_INPUT` to that exact event, validate Timeline/Session/type/text, and
+  exclude the same event from the raw-history window. Inferring "current" from
+  newest text or reading every Session event sends the message twice and can
+  change both the budget and the model's action.
+- **A validation type needs an unforgeable construction path.** Comparing a
+  caller-supplied token estimate with a caller-supplied hard limit does not prove
+  that an envelope passed the Budgeter. The validated envelope constructor must
+  require an internal identity-only witness (or an equivalent private factory);
+  direct construction and dataclass replacement fail closed.
+- **Delimiter metadata is input too.** Escaping only the body of an untrusted
+  block leaves `kind`, `ref`, filenames and similar marker metadata able to close
+  the frame. Every interpolated metadata field must use a closed safe grammar or
+  a fixed encoding before it reaches the marker.
 
 ## 6. Source-of-truth precedence
 

@@ -44,7 +44,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from dataclasses import dataclass, field
+import re
+from dataclasses import InitVar, dataclass, field
 from typing import Any, Final, Iterable, Mapping, Sequence
 
 from personal_agent.api import events as timeline_events
@@ -78,6 +79,17 @@ SCHEMA_VERSION: Final[str] = "context_envelope_v1"
 UNTRUSTED_OPEN: Final[str] = "<untrusted_data kind=\"{kind}\" ref=\"{ref}\">"
 UNTRUSTED_CLOSE: Final[str] = "</untrusted_data>"
 _FORGERY_PATTERNS: Final[tuple[str, ...]] = ("<untrusted_data", "</untrusted_data>")
+_FRAME_ATTRIBUTE_RE: Final[re.Pattern[str]] = re.compile(
+    r"[A-Za-z0-9_.:-]{1,160}"
+)
+
+#: `ContextEnvelope` is the model adapter's proof that the Context Budgeter
+#: accepted the complete rendered input. Python cannot make a constructor truly
+#: private, so the module keeps an identity-only witness out of the stored
+#: dataclass fields. Direct construction and `dataclasses.replace()` do not carry
+#: the witness and therefore fail closed instead of trusting caller-supplied
+#: token totals.
+_BUDGET_VALIDATION_WITNESS: Final[object] = object()
 
 #: The relations that make an earlier Session part of this one's context. A
 #: `new_topic` Session inherits nothing, which is the whole point of a boundary.
@@ -202,8 +214,9 @@ class ContextEnvelope:
     compaction_requested: bool
     trimmed: tuple[str, ...] = ()
     dropped_counts: Mapping[str, int] = field(default_factory=dict)
+    _budget_validation_witness: InitVar[object | None] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _budget_validation_witness: object | None) -> None:
         """Re-check what makes an envelope safe to send.
 
         The Budgeter enforces all of this on the way in. Repeating it here is
@@ -211,6 +224,14 @@ class ContextEnvelope:
         a property of one call site: no other construction path can hand a model
         adapter an over-limit or headless input.
         """
+        if _budget_validation_witness is not _BUDGET_VALIDATION_WITNESS:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail=(
+                    "a context envelope may only be created from a validated "
+                    "Budgeter outcome"
+                ),
+            )
         if self.schema_version != SCHEMA_VERSION:
             raise AppError(
                 ErrorCode.INTERNAL_ERROR,
@@ -296,9 +317,19 @@ def _frame(kind: str, ref: str, body: str) -> str:
     """Wrap recorded content as untrusted data the model may read, not obey.
 
     Any attempt to close the frame from inside is neutralised before wrapping.
-    Without that, a user message containing the closing marker would end the
-    block early and the rest of that message would read as trusted context.
+    The marker metadata is restricted to a fixed safe grammar too: escaping the
+    body alone would still let a forged Memory id close the opening tag before
+    the body begins.
     """
+    for label, value in (("kind", kind), ("ref", ref)):
+        if (
+            not isinstance(value, str)
+            or _FRAME_ATTRIBUTE_RE.fullmatch(value) is None
+        ):
+            raise AppError(
+                ErrorCode.CONTEXT_UNAVAILABLE,
+                internal_detail=f"untrusted frame {label} is malformed",
+            )
     safe = body
     for pattern in _FORGERY_PATTERNS:
         safe = safe.replace(pattern, pattern.replace("<", "﹤"))
@@ -346,6 +377,7 @@ class ContextBuilder:
         *,
         conversation_id: str,
         session_id: str,
+        current_event_id: str,
         system_instruction: str,
         user_text: str,
         effective_tools: Sequence[VisibleTool],
@@ -360,6 +392,14 @@ class ContextBuilder:
                 ErrorCode.CONTEXT_UNAVAILABLE,
                 internal_detail="session does not belong to this Timeline",
             )
+        current_event = self._current_user_event(
+            db,
+            keyring,
+            conversation_id=conversation_id,
+            session_id=session_id,
+            event_id=current_event_id,
+            expected_text=user_text,
+        )
 
         checkpoint = self._compactor.active_checkpoint(
             db, keyring, session_id=session_id
@@ -386,7 +426,12 @@ class ContextBuilder:
         components.extend(self._preferences(preferences))
         components.extend(self._checkpoint_components(lineage, checkpoint))
 
-        raw, capped = self._raw_events(db, keyring, session_id=session_id)
+        raw, capped = self._raw_events(
+            db,
+            keyring,
+            session_id=session_id,
+            exclude_event_id=current_event.event_id,
+        )
         components.extend(raw)
 
         pending = self._pending_state(db, session_id=session_id)
@@ -440,6 +485,7 @@ class ContextBuilder:
                 {
                     "timeline_id": conversation_id,
                     "session_id": session_id,
+                    "current_event_id": current_event.event_id,
                     "checkpoint_id": checkpoint_id,
                     "lineage": [row.checkpoint_id for _, row in lineage],
                     "components": [
@@ -452,6 +498,7 @@ class ContextBuilder:
             compaction_requested=outcome.compaction_requested,
             trimmed=trimmed,
             dropped_counts=dict(outcome.dropped_counts),
+            _budget_validation_witness=_BUDGET_VALIDATION_WITNESS,
         )
 
     # -- sections -------------------------------------------------------
@@ -569,18 +616,78 @@ class ContextBuilder:
         chain.reverse()
         return chain, stop_reason
 
+    def _current_user_event(
+        self,
+        db,
+        keyring: KeyRing,
+        *,
+        conversation_id: str,
+        session_id: str,
+        event_id: str,
+        expected_text: str,
+    ) -> ConversationEvent:
+        """Return the persisted anchor for this turn, or refuse any mismatch.
+
+        The API seals the current message before model work. Binding the separate
+        `USER_INPUT` component to that exact immutable event prevents both a
+        free-floating caller string and the same message appearing once as raw
+        history and once as current input.
+        """
+        row = db.get(ConversationEvent, event_id)
+        if (
+            row is None
+            or row.conversation_id != conversation_id
+            or row.session_id != session_id
+            or row.event_type != timeline_events.USER_MESSAGE
+        ):
+            raise AppError(
+                ErrorCode.CONTEXT_UNAVAILABLE,
+                internal_detail=(
+                    "current user event does not belong to this Timeline and "
+                    "Session"
+                ),
+            )
+        plaintext = keyring.decrypt(
+            row.encrypted_content,
+            table="conversation_events",
+            column="encrypted_content",
+            row_id=row.event_id,
+        )
+        content = json.loads(plaintext.decode("utf-8"))
+        persisted_text = content.get("text") if isinstance(content, dict) else None
+        if (
+            not isinstance(expected_text, str)
+            or not expected_text.strip()
+            or persisted_text != expected_text
+        ):
+            raise AppError(
+                ErrorCode.CONTEXT_UNAVAILABLE,
+                internal_detail=(
+                    "current user input does not match its persisted event"
+                ),
+            )
+        return row
+
     def _raw_events(
-        self, db, keyring: KeyRing, *, session_id: str
+        self,
+        db,
+        keyring: KeyRing,
+        *,
+        session_id: str,
+        exclude_event_id: str,
     ) -> tuple[list[ContextComponent], bool]:
-        """This Session's model-visible events, newest-bounded, oldest-first.
+        """This Session's prior model-visible events, newest-bounded, oldest-first.
 
         Dividers are excluded: they are presentation, and design §6.1 is
-        explicit that neither divider event enters the model context.
+        explicit that neither divider event enters the model context. The
+        persisted event supplying this turn's separate `USER_INPUT` is excluded
+        too, so it cannot be sent twice.
         """
         rows = (
             db.query(ConversationEvent)
             .filter(
                 ConversationEvent.session_id == session_id,
+                ConversationEvent.event_id != exclude_event_id,
                 ConversationEvent.event_type.in_(
                     timeline_events.MODEL_VISIBLE_EVENT_TYPES
                 ),
