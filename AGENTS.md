@@ -152,6 +152,20 @@ next to §5.1 instead of in a commit message.
   `session.expire_all()` before the read). Concurrent tests are the only
   reliable way to expose this; a single-session test will always see its own
   writes.
+- **`begin_nested()` on this engine commits; it is not a savepoint.** pysqlite
+  opens a transaction before DML but not before `SAVEPOINT`, so a *released*
+  nested block is written to disk immediately and a later `Session.rollback()`
+  cannot undo it. (An exception *inside* the block is still discarded
+  correctly.) Consequences to code around, not to assume away: a failed request
+  can leave rows a nested block already finished — `_discard_unanchored_operation`
+  in `api/app.py` compensates for exactly one such case — and design §6.2's
+  "Boundary Record and event in one transaction" is not literally true today.
+  Do not rely on an outer rollback to erase nested work; make the compensation
+  explicit and test it. Fixing this centrally (pysqlite `isolation_level=None`
+  plus an explicit `BEGIN`) is a real option but changes the concurrency model
+  of both services: real transactions mean a session that reads, then writes
+  after another session committed, gets `SQLITE_BUSY_SNAPSHOT` and must retry.
+  That is Henson's call, not a refactor to slip into another change.
 
 ### 5.3 Context economy — keeping per-request input small
 
