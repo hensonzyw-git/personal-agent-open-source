@@ -46,6 +46,7 @@ import hmac
 import json
 import re
 from dataclasses import InitVar, dataclass, field
+from types import MappingProxyType
 from typing import Any, Final, Iterable, Mapping, Sequence
 
 from personal_agent.api import events as timeline_events
@@ -116,6 +117,14 @@ LINEAGE_STOP_REASONS: Final[frozenset[str]] = frozenset(
 #: `raw_window_scan_capped` rather than quietly shortening the window.
 MAX_SESSION_EVENT_SCAN: Final[int] = 400
 RAW_WINDOW_CAPPED: Final[str] = "raw_window_scan_capped"
+
+#: Recorded when an *ancestor* Session's Checkpoint had to go to fit the budget.
+#: This Session's own Checkpoint is never in that set: it is what replaces this
+#: Session's raw history, so dropping it would enlarge the input it exists to
+#: shrink. An ancestor's summary is additive -- its raw events are not in the
+#: input at all -- so losing it costs recall, while refusing the turn costs the
+#: user the whole conversation.
+LINEAGE_CHECKPOINTS_TRIMMED: Final[str] = "dropped_lineage_checkpoints"
 
 #: The Checkpoint fields that may be shown to the model. `superseded_items` is
 #: absent by design: it records decisions the user has already withdrawn, and
@@ -214,6 +223,9 @@ class ContextEnvelope:
     compaction_requested: bool
     trimmed: tuple[str, ...] = ()
     dropped_counts: Mapping[str, int] = field(default_factory=dict)
+    #: Estimated tokens per component kind, before the safety margin. §16.1
+    #: requires the per-component numbers in trace, not only the total.
+    component_tokens: Mapping[str, int] = field(default_factory=dict)
     _budget_validation_witness: InitVar[object | None] = None
 
     def __post_init__(self, _budget_validation_witness: object | None) -> None:
@@ -260,6 +272,17 @@ class ContextEnvelope:
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail="unknown lineage stop reason",
             )
+        # "Immutable" has to be true of the containers too, or a caller holding
+        # the envelope could still edit what a model was told it may send.
+        if not isinstance(self.components, tuple):
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="envelope components must be a tuple",
+            )
+        for name in ("dropped_counts", "component_tokens"):
+            object.__setattr__(
+                self, name, MappingProxyType(dict(getattr(self, name)))
+            )
 
     # -- accessors ------------------------------------------------------
 
@@ -294,7 +317,8 @@ class ContextEnvelope:
             per_kind[item.kind.value] = per_kind.get(item.kind.value, 0) + 1
         return {
             "schema_version": self.schema_version,
-            "session_fingerprint": self.source_fingerprint,
+            "source_fingerprint": self.source_fingerprint,
+            "component_tokens": dict(self.component_tokens),
             "checkpoint_present": self.checkpoint_id is not None,
             "lineage_depth": len(self.lineage_checkpoint_ids),
             "lineage_stop_reason": self.lineage_stop_reason,
@@ -336,6 +360,11 @@ def _frame(kind: str, ref: str, body: str) -> str:
     return "\n".join(
         (UNTRUSTED_OPEN.format(kind=kind, ref=ref), safe, UNTRUSTED_CLOSE)
     )
+
+
+def _checkpoint_label(checkpoint_id: str) -> str:
+    """The component label a Checkpoint is identified by inside one envelope."""
+    return f"checkpoint:{checkpoint_id}"
 
 
 def _visible_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -462,17 +491,32 @@ class ContextBuilder:
                 mark_covered(components, through_sequence=covered_through)
             )
 
-        outcome = self._budgeter.fit(components)
-        trimmed = tuple(outcome.trimmed) + ((RAW_WINDOW_CAPPED,) if capped else ())
+        outcome, lineage_dropped = self._fit(
+            components,
+            ancestor_labels=[
+                _checkpoint_label(row.checkpoint_id) for _, row in lineage
+            ],
+        )
+        trimmed = (
+            tuple(outcome.trimmed)
+            + ((RAW_WINDOW_CAPPED,) if capped else ())
+            + ((LINEAGE_CHECKPOINTS_TRIMMED,) if lineage_dropped else ())
+        )
+        surviving_labels = {item.label for item in outcome.components}
+        surviving_lineage = tuple(
+            row.checkpoint_id
+            for _, row in lineage
+            if _checkpoint_label(row.checkpoint_id) in surviving_labels
+        )
 
         return ContextEnvelope(
             schema_version=SCHEMA_VERSION,
             timeline_id=conversation_id,
             session_id=session_id,
             checkpoint_id=checkpoint_id,
-            lineage_checkpoint_ids=tuple(
-                row.checkpoint_id for _, row in lineage
-            ),
+            # What is actually in the input, not what the walk found: a trace
+            # that names a Checkpoint the model never saw is a false record.
+            lineage_checkpoint_ids=surviving_lineage,
             lineage_stop_reason=stop_reason,
             components=outcome.components,
             estimated_input_tokens=outcome.estimated_input_tokens,
@@ -487,7 +531,7 @@ class ContextBuilder:
                     "session_id": session_id,
                     "current_event_id": current_event.event_id,
                     "checkpoint_id": checkpoint_id,
-                    "lineage": [row.checkpoint_id for _, row in lineage],
+                    "lineage": list(surviving_lineage),
                     "components": [
                         [item.kind.value, item.label, item.ordinal]
                         for item in outcome.components
@@ -498,8 +542,55 @@ class ContextBuilder:
             compaction_requested=outcome.compaction_requested,
             trimmed=trimmed,
             dropped_counts=dict(outcome.dropped_counts),
+            component_tokens=self._tokens_by_kind(outcome.components),
             _budget_validation_witness=_BUDGET_VALIDATION_WITNESS,
         )
+
+    # -- budget ---------------------------------------------------------
+
+    def _fit(
+        self, components: list[ContextComponent], *, ancestor_labels: list[str]
+    ) -> tuple[Any, int]:
+        """Fit the candidate context, giving up ancestor summaries before the turn.
+
+        The Budgeter never drops a Checkpoint, and for this Session's own
+        Checkpoint that is exactly right: it is the only retained form of history
+        the raw window no longer carries. An *ancestor* Session's Checkpoint is a
+        different thing -- none of its raw events are in this input, so dropping
+        it loses recall and nothing else. Without this step a deep lineage of
+        large summaries makes every turn in that Session refuse with
+        `CONTEXT_BUDGET_EXCEEDED`, which the user has no way to clear.
+
+        Oldest ancestor first, one at a time, and the refusal still stands once
+        only this Session's Checkpoint is left.
+        """
+        remaining = list(components)
+        droppable = list(ancestor_labels)
+        dropped = 0
+        while True:
+            try:
+                return self._budgeter.fit(remaining), dropped
+            except AppError as refused:
+                if (
+                    refused.code is not ErrorCode.CONTEXT_BUDGET_EXCEEDED
+                    or not droppable
+                ):
+                    raise
+                oldest = droppable.pop(0)
+                remaining = [
+                    item for item in remaining if item.label != oldest
+                ]
+                dropped += 1
+
+    def _tokens_by_kind(
+        self, components: Iterable[ContextComponent]
+    ) -> dict[str, int]:
+        totals: dict[str, int] = {}
+        for item in components:
+            totals[item.kind.value] = totals.get(
+                item.kind.value, 0
+            ) + self._budgeter.estimate(item.text)
+        return totals
 
     # -- sections -------------------------------------------------------
 
@@ -533,17 +624,27 @@ class ContextBuilder:
         Phase 1 has no preference store, so this is normally empty. It exists as
         a parameter rather than a `CAP-004` import so the builder never learns
         how to retrieve anything by itself.
+
+        A malformed entry is refused rather than skipped. Silently dropping one
+        preference out of a supplied list is the failure that looks exactly like
+        the preference having been honoured.
         """
-        return [
-            self._budgeter.component(
-                ComponentKind.PREFERENCES,
-                _frame("preference", f"pref-{index}", value),
-                ordinal=index,
-                label=f"preference:{index}",
+        components = []
+        for index, value in enumerate(preferences):
+            if not isinstance(value, str) or not value.strip():
+                raise AppError(
+                    ErrorCode.CONTEXT_UNAVAILABLE,
+                    internal_detail="a preference must be non-empty text",
+                )
+            components.append(
+                self._budgeter.component(
+                    ComponentKind.PREFERENCES,
+                    _frame("preference", f"pref-{index}", value),
+                    ordinal=index,
+                    label=f"preference:{index}",
+                )
             )
-            for index, value in enumerate(preferences)
-            if isinstance(value, str) and value.strip()
-        ]
+        return components
 
     def _checkpoint_components(
         self,
@@ -563,7 +664,7 @@ class ContextBuilder:
                     canonical_json(_visible_checkpoint(payload)),
                 ),
                 ordinal=index,
-                label=f"checkpoint:{row.checkpoint_id}",
+                label=_checkpoint_label(row.checkpoint_id),
             )
             for index, (payload, row) in enumerate(ordered)
         ]
@@ -817,6 +918,13 @@ class ContextBuilder:
             for tool in effective_tools
             if candidates is None or tool.alias in candidates
         ]
+        # The caller's order is relevance order: the Router puts its best
+        # candidate first, and the governed catalog puts the business tool ahead
+        # of `meta.*`. The Budgeter drops the *lowest* weight first, so relevance
+        # has to be inverted into weight here. Leaving every tool at weight 0
+        # would trim by ordinal instead, which drops the tool the user is
+        # actually trying to use and keeps the least useful one.
+        total = len(selected)
         return [
             self._budgeter.component(
                 ComponentKind.TOOL_DECLARATION,
@@ -829,6 +937,7 @@ class ContextBuilder:
                     },
                 },
                 ordinal=index,
+                weight=total - index,
                 essential=tool.alias in essential,
                 label=tool.alias,
             )
