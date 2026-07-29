@@ -23,6 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Final
 
+from personal_agent.context.budget import HeuristicTokenEstimator
 from personal_agent.runtime.glm_gateway import (
     ZHIPU_API_BASE,
     Generate,
@@ -30,6 +31,7 @@ from personal_agent.runtime.glm_gateway import (
     require_env,
     validated_api_base,
 )
+from personal_agent_core.manifest import canonical_json
 
 
 #: Both auxiliary calls are bounded well inside the 25-second turn budget: they
@@ -68,6 +70,7 @@ class StructuredModelClient:
         *,
         model: str,
         api_key: str,
+        input_budget_tokens: int,
         api_base: str = ZHIPU_API_BASE,
         generate: Generate | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
@@ -76,10 +79,19 @@ class StructuredModelClient:
             raise StructuredCallError(
                 "structured call timeout must be within the 25-second budget"
             )
+        if (
+            isinstance(input_budget_tokens, bool)
+            or not isinstance(input_budget_tokens, int)
+            or input_budget_tokens <= 0
+        ):
+            raise StructuredCallError(
+                "structured input budget must be a positive token count"
+            )
         self._model = model
         self._api_key = api_key
         self._api_base = validated_api_base(api_base)
         self._timeout = timeout
+        self._input_budget_tokens = input_budget_tokens
         self._generate = generate or generate_with_adk
 
     def call(self, request: StructuredRequest) -> dict[str, Any]:
@@ -93,6 +105,25 @@ class StructuredModelClient:
                 "parameters": request.parameters_schema,
             },
         }
+        estimated_input_tokens = HeuristicTokenEstimator().estimate(
+            canonical_json(
+                {
+                    "system": request.system,
+                    "messages": [
+                        {"role": "user", "content": request.user_content}
+                    ],
+                    "declarations": [declaration],
+                    "tool_config": {
+                        "mode": "ANY",
+                        "allowed_function_names": [request.function_name],
+                    },
+                }
+            )
+        )
+        if estimated_input_tokens > self._input_budget_tokens:
+            raise StructuredCallError(
+                "structured model input exceeded the configured budget"
+            )
         try:
             response = self._generate(
                 model=self._model,
@@ -104,6 +135,7 @@ class StructuredModelClient:
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
                 timeout=self._timeout,
+                required_function_name=request.function_name,
             )
         except StructuredCallError:
             raise
@@ -115,7 +147,10 @@ class StructuredModelClient:
 
 
 def structured_client_from_env(
-    *, generate: Generate | None = None, timeout: float = DEFAULT_TIMEOUT_SECONDS
+    *,
+    input_budget_tokens: int,
+    generate: Generate | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> StructuredModelClient:
     """Build the production client from an already-loaded environment."""
     import os
@@ -123,6 +158,7 @@ def structured_client_from_env(
     return StructuredModelClient(
         model=f"openai/{os.environ.get('GLM_MODEL', 'glm-5.2')}",
         api_key=require_env("ZAI_API_KEY"),
+        input_budget_tokens=input_budget_tokens,
         api_base=os.environ.get("GLM_OPENAI_BASE_URL", ZHIPU_API_BASE),
         generate=generate,
         timeout=timeout,

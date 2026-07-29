@@ -27,6 +27,7 @@ from personal_agent.context.compactor import (
     SCHEMA_VERSION,
     CompactorRequest,
 )
+from personal_agent.context.untrusted import frame_untrusted_data
 from personal_agent.runtime.structured import (
     StructuredModelClient,
     StructuredRequest,
@@ -147,6 +148,19 @@ def _exact_refs(request: CompactorRequest) -> list[dict[str, Any]]:
     return refs
 
 
+def _evidence_refs(request: CompactorRequest) -> list[dict[str, Any]]:
+    """Project verified terminal summaries without asking the model to copy them."""
+    return [
+        {
+            "kind": "operation",
+            "id": operation.operation_id,
+            "safe_summary": operation.safe_result,
+        }
+        for operation in request.operation_projections
+        if operation.state in _TERMINAL_STATES and operation.safe_result is not None
+    ]
+
+
 class GlmCompactorProvider:
     """A `CompactorProvider` backed by one structured model call."""
 
@@ -173,7 +187,7 @@ class GlmCompactorProvider:
         payload["covered_from_sequence"] = request.covered_from_sequence
         payload["covered_through_sequence"] = request.covered_through_sequence
         payload["exact_refs"] = _exact_refs(request)
-        payload["evidence_refs"] = []
+        payload["evidence_refs"] = _evidence_refs(request)
         return payload
 
     def _content(self, request: CompactorRequest) -> str:
@@ -203,7 +217,5 @@ class GlmCompactorProvider:
         )
         return (
             f"{_INPUT_PREAMBLE}\n"
-            '<untrusted_data kind="compaction_sources">\n'
-            f"{body}\n"
-            "</untrusted_data>"
+            f"{frame_untrusted_data('compaction_sources', None, body)}"
         )

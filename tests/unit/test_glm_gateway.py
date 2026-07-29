@@ -563,6 +563,7 @@ def test_production_generator_uses_the_adk_model_contract(monkeypatch) -> None:
         temperature=0.1,
         max_tokens=512,
         timeout=25.0,
+        required_function_name="meta.capabilities",
     )
     assert actual is expected
     assert captured["init"]["api_base"] == _PINNED
@@ -572,6 +573,9 @@ def test_production_generator_uses_the_adk_model_contract(monkeypatch) -> None:
     assert request.config.system_instruction == "SYS"
     assert request.contents[0].role == "user"
     assert request.contents[0].parts[0].text == "hi"
+    function_calling = request.config.tool_config.function_calling_config
+    assert function_calling.mode == types.FunctionCallingConfigMode.ANY
+    assert function_calling.allowed_function_names == ["meta.capabilities"]
     declaration = request.config.tools[0].function_declarations[0]
     assert declaration.name == "meta.capabilities"
     assert declaration.description == "能力"

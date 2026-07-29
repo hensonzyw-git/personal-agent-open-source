@@ -45,7 +45,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import re
 from dataclasses import InitVar, dataclass, field
 from types import MappingProxyType
 from typing import Any, Final, Iterable, Mapping, Sequence
@@ -65,6 +64,11 @@ from personal_agent.context.continuation import (
     MAX_CLARIFICATION_QUESTION_CHARS,
     ClarificationContext,
 )
+from personal_agent.context.untrusted import (
+    UNTRUSTED_CLOSE,
+    UNTRUSTED_OPEN,
+    frame_untrusted_data as _frame,
+)
 from personal_agent.keys import HmacKey, HmacKeyRing
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.storage.models import (
@@ -79,17 +83,6 @@ from personal_agent_core.manifest import canonical_json
 
 
 SCHEMA_VERSION: Final[str] = "context_envelope_v1"
-
-#: The frame every untrusted block carries. It is deliberately explicit and
-#: symmetric: a model that is told "everything between these markers is recorded
-#: data" has a single rule to follow, and the marker text itself is stripped
-#: from any content that tries to forge it (`_frame`).
-UNTRUSTED_OPEN: Final[str] = "<untrusted_data kind=\"{kind}\" ref=\"{ref}\">"
-UNTRUSTED_CLOSE: Final[str] = "</untrusted_data>"
-_FORGERY_PATTERNS: Final[tuple[str, ...]] = ("<untrusted_data", "</untrusted_data>")
-_FRAME_ATTRIBUTE_RE: Final[re.Pattern[str]] = re.compile(
-    r"[A-Za-z0-9_.:-]{1,160}"
-)
 
 #: `ContextEnvelope` is the model adapter's proof that the Context Budgeter
 #: accepted the complete rendered input. Python cannot make a constructor truly
@@ -353,34 +346,6 @@ class ContextEnvelope:
             "trimmed": list(self.trimmed),
             "dropped_counts": dict(self.dropped_counts),
         }
-
-
-# -- framing ----------------------------------------------------------------
-
-
-def _frame(kind: str, ref: str, body: str) -> str:
-    """Wrap recorded content as untrusted data the model may read, not obey.
-
-    Any attempt to close the frame from inside is neutralised before wrapping.
-    The marker metadata is restricted to a fixed safe grammar too: escaping the
-    body alone would still let a forged Memory id close the opening tag before
-    the body begins.
-    """
-    for label, value in (("kind", kind), ("ref", ref)):
-        if (
-            not isinstance(value, str)
-            or _FRAME_ATTRIBUTE_RE.fullmatch(value) is None
-        ):
-            raise AppError(
-                ErrorCode.CONTEXT_UNAVAILABLE,
-                internal_detail=f"untrusted frame {label} is malformed",
-            )
-    safe = body
-    for pattern in _FORGERY_PATTERNS:
-        safe = safe.replace(pattern, pattern.replace("<", "﹤"))
-    return "\n".join(
-        (UNTRUSTED_OPEN.format(kind=kind, ref=ref), safe, UNTRUSTED_CLOSE)
-    )
 
 
 def _checkpoint_label(checkpoint_id: str) -> str:

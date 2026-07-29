@@ -390,6 +390,57 @@ def test_no_classifier_at_all_continues_the_session(db) -> None:
     assert decision.decision == "continue_session"
 
 
+def test_a_prepared_answer_is_rejected_after_a_same_timestamp_event(
+    db, engine, keyring
+) -> None:
+    """The Timeline sequence, not a collision-prone clock, is the CAS version."""
+
+    current = _open_session(db)
+    db.commit()
+    classifier = _Classifier(
+        {
+            "decision": "open_new_session",
+            "reason": "task_boundary",
+            "confidence_band": "high",
+        }
+    )
+    manager = _manager(classifier)
+    prepared = manager.prepare_classification(
+        db,
+        conversation_id=CANONICAL,
+        user_text="开始另一件事",
+        now=NOW,
+    )
+    db.commit()
+    resolved = manager.resolve_classification(prepared)
+
+    # Another request appends at the exact same injected clock instant. The
+    # Session timestamp therefore cannot distinguish the snapshots.
+    with session_factory(engine)() as concurrent:
+        events.append_event(
+            concurrent,
+            keyring,
+            conversation_id=CANONICAL,
+            session_id=current.session_id,
+            turn_id=events.new_turn_id(),
+            event_type=events.USER_MESSAGE,
+            content={"text": "并发消息"},
+            operation_id=None,
+            now=NOW,
+        )
+        concurrent.commit()
+
+    decision = manager.select_session(
+        db,
+        conversation_id=CANONICAL,
+        user_text="开始另一件事",
+        now=NOW,
+        resolved_classification=resolved,
+    )
+    assert decision.decision == "continue_session"
+    assert decision.session_id == current.session_id
+
+
 @pytest.mark.parametrize("reason", ["task_boundary", "idle_and_unrelated"])
 def test_a_well_formed_new_topic_opens_a_session(db, reason: str) -> None:
     _open_session(db, "ses-1")

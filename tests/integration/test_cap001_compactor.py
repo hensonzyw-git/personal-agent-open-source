@@ -428,6 +428,21 @@ class _BlockingCompactor:
         return _good_payload(_bundle_from_request(request))
 
 
+class _ControlledHangingCompactor:
+    """A provider that ignores the caller's deadline until the test releases it."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.calls = 0
+
+    def compact(self, request: CompactorRequest) -> dict[str, Any]:
+        self.calls += 1
+        self.entered.set()
+        self.release.wait()
+        return _good_payload(_bundle_from_request(request))
+
+
 class _RangeMismatchCompactor:
     def compact(self, request: CompactorRequest) -> dict[str, Any]:
         payload = _good_payload(_bundle_from_request(request))
@@ -669,7 +684,7 @@ def test_provider_failures_leave_no_partial_checkpoint(
         assert db.query(ConversationEvent).count() == event_count_before
 
 
-def test_provider_that_never_returns_is_stopped_by_the_deadline(
+def test_provider_wait_returns_by_deadline_without_claiming_thread_cancellation(
     db, keyring, identifier_key
 ) -> None:
     _seed_events(db, keyring, count=1)
@@ -685,6 +700,55 @@ def test_provider_that_never_returns_is_stopped_by_the_deadline(
     assert time.monotonic() - started < 0.5
     assert result.status == "provider_failed"
     assert db.query(ContextCheckpoint).count() == 0
+
+
+def test_a_permanently_hung_provider_uses_one_worker_and_later_calls_fail_fast(
+    db, keyring, identifier_key
+) -> None:
+    _seed_events(db, keyring, count=1)
+    provider = _ControlledHangingCompactor()
+    compactor = Compactor(
+        _config(),
+        provider=provider,
+        provider_timeout_seconds=0.05,
+    )
+
+    try:
+        first = compactor.build_checkpoint(
+            db, keyring, identifier_key, session_id=SESSION_ID, now=NOW
+        )
+        assert provider.entered.wait(0.2)
+        assert first.status == "provider_failed"
+
+        started = time.monotonic()
+        later = [
+            compactor.build_checkpoint(
+                db, keyring, identifier_key, session_id=SESSION_ID, now=NOW
+            )
+            for _ in range(10)
+        ]
+        elapsed = time.monotonic() - started
+
+        # Ten fresh deadline waits would take at least 0.5 s. The quarantined
+        # worker makes every later attempt return without another wait.
+        assert elapsed < 0.2
+        assert {result.status for result in later} == {"provider_failed"}
+        assert provider.calls == 1
+        workers = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name == compactor._provider_worker_name
+        ]
+        assert len(workers) == 1
+        assert workers[0].is_alive()
+        assert db.query(ContextCheckpoint).count() == 0
+    finally:
+        # Python cannot cancel the worker. Release the fake so this test itself
+        # does not leave a daemon behind after proving the bounded lifecycle.
+        provider.release.set()
+        worker = compactor._provider_worker
+        if worker is not None:
+            worker.join(0.5)
 
 
 # -- F-F7: tampered source hash/range --------------------------------------

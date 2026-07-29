@@ -400,8 +400,14 @@ def generate_with_adk(
     temperature: float,
     max_tokens: int,
     timeout: float,
+    required_function_name: str | None = None,
 ) -> Any:
-    """Generate one non-streaming turn through Google ADK's model contract."""
+    """Generate one non-streaming turn through Google ADK's model contract.
+
+    Chat leaves function selection automatic because a direct answer is legal.
+    A structured auxiliary call supplies ``required_function_name`` and is
+    transported as ADK ``ANY`` with exactly that one allowed name.
+    """
 
     # Lazy imports keep the base package importable when the optional runtime is
     # not installed. Production composition must install the ``adk`` extra.
@@ -417,6 +423,19 @@ def generate_with_adk(
         )
         for item in declarations
     ]
+    tool_config = None
+    if required_function_name is not None:
+        declared_names = [function.name for function in functions]
+        if declared_names != [required_function_name]:
+            raise ModelGatewayError(
+                "required function must be the only declared function"
+            )
+        tool_config = types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(
+                mode=types.FunctionCallingConfigMode.ANY,
+                allowed_function_names=[required_function_name],
+            )
+        )
     llm = LiteLlm(
         model=model,
         api_key=api_key,
@@ -438,6 +457,7 @@ def generate_with_adk(
             temperature=temperature,
             max_output_tokens=max_tokens,
             tools=[types.Tool(function_declarations=functions)],
+            tool_config=tool_config,
         ),
     )
 

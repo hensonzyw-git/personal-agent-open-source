@@ -27,6 +27,7 @@ import json
 import logging
 import uuid
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
@@ -83,9 +84,17 @@ from personal_agent.context.config import (
     ContextConfigError,
     default_context_config,
 )
-from personal_agent.context.session_manager import SessionManager
+from personal_agent.context.session_manager import (
+    ResolvedClassification,
+    SessionManager,
+)
 from personal_agent.keys import HmacKey, HmacKeyRing
-from personal_agent.storage.models import REVIEW_STATUSES, Device, Operation
+from personal_agent.storage.models import (
+    REVIEW_STATUSES,
+    ApiRequest,
+    Device,
+    Operation,
+)
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.sqlite import run_write_transaction
@@ -212,10 +221,60 @@ class _Unauthenticated(Exception):
 
 
 def build_app(deps: AgentApiDeps) -> FastAPI:
-    app = FastAPI()
-    operation_tasks: dict[str, asyncio.Task[JSONResponse]] = {}
+    operation_tasks: dict[str, asyncio.Task[_ProcessedChat]] = {}
+    compaction_tasks: set[asyncio.Task[None]] = set()
 
-    def forget_task(operation_id: str, done: asyncio.Task[JSONResponse]) -> None:
+    async def drain_background_tasks() -> None:
+        """Let accepted operations and their follow-up compactions finish.
+
+        Production ASGI shutdown runs this before composition closes the MCP and
+        control clients. Operation callbacks may enqueue compaction, so drain the
+        operation set first and then the compaction set it produced.
+        """
+
+        async def bounded(tasks: tuple[asyncio.Task[Any], ...]) -> None:
+            if not tasks:
+                return
+            _done, pending = await asyncio.wait(tasks, timeout=30.0)
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        await bounded(tuple(operation_tasks.values()))
+        # Task done callbacks enqueue compaction with call_soon semantics. Give
+        # those callbacks one loop turn before snapshotting the compaction set.
+        await asyncio.sleep(0)
+        await bounded(tuple(compaction_tasks))
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        await drain_background_tasks()
+
+    app = FastAPI(lifespan=lifespan)
+    # Tests and embedded hosts that do not drive ASGI lifespan can still perform
+    # a truthful, deterministic drain instead of sleeping and guessing.
+    app.state.drain_background_tasks = drain_background_tasks
+
+    def finish_compaction(done: asyncio.Task[None]) -> None:
+        compaction_tasks.discard(done)
+        if not done.cancelled():
+            error = done.exception()
+            if error is not None:
+                logger.warning(
+                    "compaction after a turn failed",
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+
+    def schedule_compaction(session_id: str) -> None:
+        task = asyncio.create_task(
+            asyncio.to_thread(_compact_session_in_background, deps, session_id)
+        )
+        compaction_tasks.add(task)
+        task.add_done_callback(finish_compaction)
+
+    def forget_task(operation_id: str, done: asyncio.Task[_ProcessedChat]) -> None:
         if operation_tasks.get(operation_id) is done:
             operation_tasks.pop(operation_id, None)
         if not done.cancelled():
@@ -225,6 +284,10 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                     "operation worker failed before producing a safe projection",
                     exc_info=(type(error), error, error.__traceback__),
                 )
+            else:
+                session_id = done.result().compact_session_id
+                if session_id is not None:
+                    schedule_compaction(session_id)
 
     def authenticate(request: Request, session) -> AuthContext:
         raw = request.headers.get("authorization", "")
@@ -341,7 +404,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         clarification_of = _optional_operation_id(body, "clarification_of")
 
         anchored = await asyncio.to_thread(
-            _anchor_chat,
+            _preflight_chat_replay,
             deps,
             auth,
             key,
@@ -349,6 +412,24 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             text,
             clarification_of,
         )
+        if anchored is None:
+            resolved_classification = await asyncio.to_thread(
+                _classify_chat_boundary,
+                deps,
+                conversation_id,
+                text,
+                clarification_of,
+            )
+            anchored = await asyncio.to_thread(
+                _anchor_chat,
+                deps,
+                auth,
+                key,
+                conversation_id,
+                text,
+                clarification_of,
+                resolved_classification,
+            )
         if anchored.state != "accepted":
             return await asyncio.to_thread(
                 _load_operation_response,
@@ -374,9 +455,10 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 )
             )
         try:
-            return await asyncio.wait_for(
+            processed = await asyncio.wait_for(
                 asyncio.shield(task), timeout=deps.sync_wait_seconds
             )
+            return processed.response
         except TimeoutError:
             # The worker owns its session and continues. The client polls this
             # durable operation id; timeout never means the write was cancelled.
@@ -592,6 +674,12 @@ class _AnchoredChat:
     state: str
 
 
+@dataclass(frozen=True)
+class _ProcessedChat:
+    response: JSONResponse
+    compact_session_id: str | None = None
+
+
 def _authenticate_once(request, deps, authenticate) -> AuthContext:
     with deps.session_factory() as session:
         return authenticate(request, session)
@@ -673,6 +761,109 @@ def _update_push_token(
         return _commit(session, work)
 
 
+def _preflight_chat_replay(
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    key: str,
+    conversation_id: str,
+    text: str,
+    clarification_of: str | None,
+) -> _AnchoredChat | None:
+    """Return an existing idempotent chat before spending a classifier call."""
+
+    with deps.session_factory() as session:
+        try:
+            timeline_id = events.resolve_timeline(
+                session,
+                deps.identifier_key,
+                client_conversation_id=conversation_id,
+                now=deps.now(),
+            )
+            fingerprint = chat_request_fingerprint(
+                conversation_id=timeline_id,
+                text=text,
+                clarification_of=clarification_of,
+            )
+            request_row = (
+                session.query(ApiRequest)
+                .filter(
+                    ApiRequest.device_id == auth.device_id,
+                    ApiRequest.client_request_id == key,
+                )
+                .one_or_none()
+            )
+            if request_row is None:
+                session.commit()
+                return None
+            if request_row.request_fingerprint != fingerprint:
+                raise AppError(
+                    ErrorCode.IDEMPOTENCY_CONFLICT,
+                    internal_detail=(
+                        f"client_request_id {key} is already bound to a "
+                        "different request"
+                    ),
+                )
+            operation = (
+                session.query(Operation)
+                .filter(Operation.request_id == request_row.request_id)
+                .one_or_none()
+            )
+            if operation is None:
+                raise AppError(
+                    ErrorCode.IDEMPOTENCY_CONFLICT,
+                    internal_detail=(
+                        f"client_request_id {key} is already bound "
+                        "to a non-chat request"
+                    ),
+                )
+            result = _AnchoredChat(operation.operation_id, operation.state)
+            session.commit()
+            return result
+        except Exception:
+            session.rollback()
+            raise
+
+
+def _classify_chat_boundary(
+    deps: AgentApiDeps,
+    conversation_id: str,
+    text: str,
+    clarification_of: str | None,
+) -> ResolvedClassification:
+    """Prepare under SQLite, then call the classifier with no transaction open.
+
+    The write transaction has not started yet: a crash or timeout here leaves no
+    durable accepted operation without its anchoring event. A concurrent request
+    may change the Session while the model runs; `select_session` compares the
+    prepared Session snapshot in the fresh write transaction and fails closed.
+    """
+
+    with deps.session_factory() as session:
+        try:
+            timeline_id = events.resolve_timeline(
+                session,
+                deps.identifier_key,
+                client_conversation_id=conversation_id,
+                now=deps.now(),
+            )
+            prepared = deps.session_manager.prepare_classification(
+                session,
+                conversation_id=timeline_id,
+                user_text=text,
+                now=deps.now(),
+                # Clarification answers are pinned by their source operation in
+                # the write phase. They never need a semantic classifier.
+                pinned_session_id=(
+                    "clarification-pinned" if clarification_of is not None else None
+                ),
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+    return deps.session_manager.resolve_classification(prepared)
+
+
 def _anchor_chat(
     deps: AgentApiDeps,
     auth: AuthContext,
@@ -680,6 +871,7 @@ def _anchor_chat(
     conversation_id: str,
     text: str,
     clarification_of: str | None,
+    resolved_classification: ResolvedClassification,
 ) -> _AnchoredChat:
     """Persist request, encrypted payload and user event before model work."""
 
@@ -773,6 +965,7 @@ def _anchor_chat(
                 user_text=text,
                 now=deps.now(),
                 pinned_session_id=pinned,
+                resolved_classification=resolved_classification,
             )
             turn_id = events.new_turn_id()
             if decision.is_boundary:
@@ -838,7 +1031,7 @@ def _process_chat(
     deps: AgentApiDeps,
     auth: AuthContext,
     operation_id: str,
-) -> JSONResponse:
+) -> _ProcessedChat:
     """Run one accepted operation in a worker-owned database session."""
 
     with deps.session_factory() as session:
@@ -847,7 +1040,7 @@ def _process_chat(
                 session, operation_id, device_id=auth.device_id
             )
             if operation.state != "accepted":
-                return _operation_response(operation)
+                return _ProcessedChat(_operation_response(operation))
             payload = open_chat_request(
                 deps.keyring,
                 request_id=operation.request_id,
@@ -898,14 +1091,25 @@ def _process_chat(
             )
             session.commit()
             session.refresh(operation)
-            _compact_if_requested(deps, session, turn_context, anchor.session_id)
-            return _operation_response(operation, extra=_transient(result))
+            compact_session_id = (
+                anchor.session_id
+                if (
+                    deps.compact_session is not None
+                    and turn_context.envelope is not None
+                    and turn_context.envelope.compaction_requested
+                )
+                else None
+            )
+            return _ProcessedChat(
+                _operation_response(operation, extra=_transient(result)),
+                compact_session_id=compact_session_id,
+            )
         except StaleOperationVersionError:
             session.rollback()
             operation = _owned_operation(
                 session, operation_id, device_id=auth.device_id
             )
-            return _operation_response(operation)
+            return _ProcessedChat(_operation_response(operation))
         except Exception:
             session.rollback()
             raise
@@ -955,31 +1159,20 @@ class _TurnContext:
         return self.envelope
 
 
-def _compact_if_requested(
+def _compact_session_in_background(
     deps: AgentApiDeps,
-    session,
-    turn: _TurnContext,
     session_id: str,
 ) -> None:
-    """Compact after answering, never before.
+    """Run post-response compaction in a worker-owned database session."""
 
-    Doing it inside the turn would add a second model call to the user's wait
-    for a benefit that only the *next* turn collects. A failure here is logged
-    and dropped: the raw archive is intact, the next turn simply carries more
-    history, and nothing about this turn's outcome changes.
-    """
-    envelope = turn.envelope
-    if (
-        deps.compact_session is None
-        or envelope is None
-        or not envelope.compaction_requested
-    ):
+    if deps.compact_session is None:
         return
-    try:
-        deps.compact_session(session, session_id)
-    except Exception:  # noqa: BLE001 - compaction is never the turn's problem
-        session.rollback()
-        logger.warning("compaction after a turn failed", exc_info=True)
+    with deps.session_factory() as session:
+        try:
+            deps.compact_session(session, session_id)
+        except Exception:
+            session.rollback()
+            raise
 
 
 def _context_factory(

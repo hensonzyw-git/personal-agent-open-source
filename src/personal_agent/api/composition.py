@@ -463,7 +463,7 @@ async def agent_service(
     *,
     now: Callable[[], datetime] = utc_now,
     build_gateway: Callable[[], Any] = glm_gateway_from_env,
-    build_structured_client: Callable[[], Any] = structured_client_from_env,
+    build_structured_client: Callable[..., Any] = structured_client_from_env,
     context_config: ContextConfig | None = None,
 ) -> AsyncIterator[ComposedAgentService]:
     """Compose the Agent API for the lifetime of the service."""
@@ -503,7 +503,9 @@ async def agent_service(
         # endpoint as Chat, one declared function per call. Built here beside
         # the gateway so a deployment that cannot reach the model fails at
         # startup rather than on the first boundary decision.
-        structured = build_structured_client()
+        structured = build_structured_client(
+            input_budget_tokens=context_config.hard_limit_tokens
+        )
     except (ModelGatewayError, StructuredCallError) as exc:
         # A missing model credential or a tampered endpoint is a deployment
         # failure, not something to discover on the first message.

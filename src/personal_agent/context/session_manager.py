@@ -151,6 +151,32 @@ class ClassifierOutcome:
     confidence_band: str
 
 
+@dataclass(frozen=True)
+class PreparedClassification:
+    """The database-bound half of one optional semantic boundary decision.
+
+    The API prepares this value in a short transaction, ends that transaction,
+    and only then calls the non-deterministic classifier.  The observed Session
+    identity and event clock make a returned answer unusable if another request
+    changed the open segment while the model was running.
+    """
+
+    expected_session_id: str | None
+    expected_last_event_at: datetime | None
+    expected_timeline_sequence: int
+    request: ClassifierInput | None
+
+
+@dataclass(frozen=True)
+class ResolvedClassification:
+    """A classifier answer obtained with no database transaction held."""
+
+    expected_session_id: str | None
+    expected_last_event_at: datetime | None
+    expected_timeline_sequence: int
+    outcome: ClassifierOutcome | None
+
+
 class BoundaryClassifier(Protocol):
     """One bounded semantic judgement. May raise; may answer badly."""
 
@@ -262,6 +288,7 @@ class SessionManager:
         user_text: str,
         now: datetime,
         pinned_session_id: str | None = None,
+        resolved_classification: ResolvedClassification | None = None,
     ) -> SessionDecision:
         """Run the fixed §6.1 order and return a structured decision."""
         current = self.open_session(db, conversation_id=conversation_id)
@@ -323,9 +350,20 @@ class SessionManager:
         # half of that. Someone who steps away for two hours and comes back to
         # the same task keeps their context.
         idle_minutes = self._idle_minutes(current, now)
-        outcome = self._classify(
-            db, current, user_text=user_text, idle_minutes=idle_minutes
-        )
+        if resolved_classification is None:
+            # Compatibility path for standalone callers. The production API
+            # always supplies a resolved value so no model call occurs while its
+            # write transaction is open.
+            outcome = self._classify(
+                db, current, user_text=user_text, idle_minutes=idle_minutes
+            )
+        else:
+            outcome = self._outcome_for_current(
+                db,
+                conversation_id,
+                current,
+                resolved_classification,
+            )
         if outcome is None or outcome.decision == "continue_session":
             # Step 9 lives here too: `None` is every uncertain case.
             return self._continue(
@@ -347,6 +385,116 @@ class SessionManager:
             classifier_version=CLASSIFIER_VERSION,
             confidence_band=outcome.confidence_band,
         )
+
+    def prepare_classification(
+        self,
+        db,
+        *,
+        conversation_id: str,
+        user_text: str,
+        now: datetime,
+        pinned_session_id: str | None = None,
+    ) -> PreparedClassification:
+        """Read the bounded classifier input without calling the classifier.
+
+        This deliberately mirrors the gates before step 7. Returning a prepared
+        value even when no call is possible is important: the fresh write phase
+        must fail closed rather than discover a newly available Checkpoint and
+        make a remote call from inside that transaction.
+        """
+
+        current = self.open_session(db, conversation_id=conversation_id)
+        expected_session_id = current.session_id if current is not None else None
+        expected_last_event_at = (
+            current.last_event_at if current is not None else None
+        )
+        expected_timeline_sequence = db.execute(
+            text(
+                "SELECT next_sequence FROM conversations "
+                "WHERE conversation_id = :cid"
+            ),
+            {"cid": conversation_id},
+        ).scalar_one()
+        pinned = pinned_session_id or self.non_terminal_session_id(
+            db, conversation_id=conversation_id
+        )
+        signal = detect_explicit_signal(user_text)
+        if (
+            pinned is not None
+            or signal is not None
+            or current is None
+            or self._classifier is None
+            or self._state_provider is None
+        ):
+            return PreparedClassification(
+                expected_session_id,
+                expected_last_event_at,
+                expected_timeline_sequence,
+                None,
+            )
+        try:
+            state = self._state_provider.compact_state(db, session=current)
+        except Exception:  # noqa: BLE001 - unavailable state means no split
+            state = None
+        request = (
+            ClassifierInput(
+                user_text=user_text,
+                open_session_state=state,
+                minutes_since_last_event=self._idle_minutes(current, now),
+            )
+            if isinstance(state, CompactSessionState)
+            else None
+        )
+        return PreparedClassification(
+            expected_session_id,
+            expected_last_event_at,
+            expected_timeline_sequence,
+            request,
+        )
+
+    def resolve_classification(
+        self, prepared: PreparedClassification
+    ) -> ResolvedClassification:
+        """Call the model half after the caller has ended its DB transaction."""
+
+        outcome = None
+        if prepared.request is not None and self._classifier is not None:
+            try:
+                outcome = parse_classifier_outcome(
+                    self._classifier.classify(prepared.request)
+                )
+            except Exception:  # noqa: BLE001 - any provider failure continues
+                outcome = None
+        return ResolvedClassification(
+            prepared.expected_session_id,
+            prepared.expected_last_event_at,
+            prepared.expected_timeline_sequence,
+            outcome,
+        )
+
+    @staticmethod
+    def _outcome_for_current(
+        db,
+        conversation_id: str,
+        current: ContextSession,
+        resolved: ResolvedClassification,
+    ) -> ClassifierOutcome | None:
+        """Use a model answer only for the exact Session snapshot it saw."""
+
+        current_sequence = db.execute(
+            text(
+                "SELECT next_sequence FROM conversations "
+                "WHERE conversation_id = :cid"
+            ),
+            {"cid": conversation_id},
+        ).scalar_one()
+        if (
+            current.session_id != resolved.expected_session_id
+            or current.last_event_at != resolved.expected_last_event_at
+            or current_sequence != resolved.expected_timeline_sequence
+        ):
+            return None
+        return resolved.outcome
 
     # -- branches ------------------------------------------------------
 

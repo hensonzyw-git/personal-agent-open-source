@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import threading
 import uuid
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -544,19 +545,69 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
     """`CAP-001` §7.3: the soft limit triggers the Compactor, nothing else.
 
     The composed service is given a small soft limit and a structured client
-    that returns a valid checkpoint. The turn must answer first, and the
-    Checkpoint must exist afterwards, in the *same* Session -- compaction is
-    never a boundary.
+    that returns valid checkpoints. Both the synchronous 200 path and a detached
+    202 path must answer before their Compactor runs. The second turn also proves
+    the classifier runs without holding SQLite and that idempotent replay spends
+    no second classifier call.
     """
-    gateway = FakeGateway(ProposedAnswer("好的"))
+    block_gateway = threading.Event()
+    gateway_started = threading.Event()
+    release_gateway = threading.Event()
+
+    def before_gateway() -> None:
+        if block_gateway.is_set():
+            gateway_started.set()
+            assert release_gateway.wait(5), "test did not release the model turn"
+
+    gateway = FakeGateway(ProposedAnswer("好的"), before=before_gateway)
     values = dict(CAP001_PROVISIONAL_VALUES)
     values.update(
         {"CONTEXT_SOFT_LIMIT_TOKENS": 200, "CONTEXT_HARD_LIMIT_TOKENS": 24000}
     )
     eager = ContextConfig.from_mapping("ctx-eager-compaction", values)
+    compaction_started = threading.Event()
+    release_compaction = threading.Event()
+    classifier_committed = threading.Event()
+    classifier_calls: list[str] = []
 
-    def structured_client():
+    def structured_client(*, input_budget_tokens: int):
         def generate(**kwargs):
+            function_name = kwargs["declarations"][0]["function"]["name"]
+            if function_name == "session_boundary_decision":
+                classifier_calls.append(function_name)
+                # A second SQLite connection must be able to commit while the
+                # classifier is running. The old wiring held the anchoring
+                # transaction's writer lock across this callback.
+                concurrent_engine = create_database_engine(agent_db)
+                try:
+                    with session_factory(concurrent_engine)() as concurrent:
+                        device = concurrent.get(Device, DEVICE_ID)
+                        device.display_name = "Classifier concurrent write"
+                        concurrent.commit()
+                finally:
+                    concurrent_engine.dispose()
+                classifier_committed.set()
+                return SimpleNamespace(
+                    error_code=None,
+                    content=SimpleNamespace(
+                        parts=[
+                            SimpleNamespace(
+                                text=None,
+                                thought=False,
+                                function_call=SimpleNamespace(
+                                    name=function_name,
+                                    args={
+                                        "decision": "open_new_session",
+                                        "reason": "task_boundary",
+                                        "confidence_band": "high",
+                                    },
+                                ),
+                            )
+                        ]
+                    ),
+                )
+            compaction_started.set()
+            assert release_compaction.wait(5), "test did not release compaction"
             sources = json.loads(
                 kwargs["messages"][0]["content"].split("\n", 1)[1]
                 .removeprefix('<untrusted_data kind="compaction_sources">\n')
@@ -597,6 +648,7 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
             api_key="k",
             api_base="https://open.bigmodel.cn/api/paas/v4/",
             generate=generate,
+            input_budget_tokens=input_budget_tokens,
         )
 
     async def scenario():
@@ -606,16 +658,56 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
             build_structured_client=structured_client,
             context_config=eager,
         ) as composed:
-            async with http_for(composed.deps) as client:
-                return await client.post(
+            app = build_app(composed.deps)
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://agent.local",
+            ) as client:
+                response = await client.post(
                     "/v1/chat/messages",
                     json={"conversation_id": "c1", "text": "帮我记一下这个月的支出"},
                     headers=chat_headers(),
                 )
+                # The HTTP response is already available while the second model
+                # call is blocked. No sleep: the provider itself is the barrier.
+                assert response.status_code == 200, response.text
+                assert await asyncio.to_thread(compaction_started.wait, 5)
+                release_compaction.set()
+                await app.state.drain_background_tasks()
+                # The detached (202) path uses the same completion callback. It
+                # must enqueue compaction after the operation finishes, without
+                # relying on the original request still awaiting that worker.
+                composed.deps.sync_wait_seconds = 0.05
+                compaction_started.clear()
+                release_compaction.clear()
+                block_gateway.set()
+                second_headers = chat_headers()
+                detached = await client.post(
+                    "/v1/chat/messages",
+                    json={"conversation_id": "c1", "text": "继续整理这些支出"},
+                    headers=second_headers,
+                )
+                assert gateway_started.is_set()
+                assert classifier_committed.is_set()
+                assert detached.status_code == 202, detached.text
+                assert not compaction_started.is_set()
+                release_gateway.set()
+                assert await asyncio.to_thread(compaction_started.wait, 5)
+                release_compaction.set()
+                await app.state.drain_background_tasks()
+                replayed = await client.post(
+                    "/v1/chat/messages",
+                    json={"conversation_id": "c1", "text": "继续整理这些支出"},
+                    headers=second_headers,
+                )
+                assert replayed.status_code == 200, replayed.text
+                assert classifier_calls == ["session_boundary_decision"]
+                return response, detached
 
-    response = asyncio.run(scenario())
+    response, detached = asyncio.run(scenario())
     assert response.status_code == 200, response.text
     assert response.json()["state"] == "succeeded"
+    assert detached.json()["state"] == "accepted"
 
     engine = create_database_engine(agent_db)
     try:
@@ -626,11 +718,13 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
     finally:
         engine.dispose()
 
-    # One Checkpoint, in the one Session, and the raw archive is untouched.
-    assert [row.status for row in checkpoints] == ["active"]
-    assert len(sessions) == 1
-    assert checkpoints[0].session_id == sessions[0].session_id
-    assert events == 2
+    # Each semantically distinct Session has one Checkpoint; raw events remain.
+    assert [row.status for row in checkpoints] == ["active", "active"]
+    assert len(sessions) == 2
+    assert {row.session_id for row in checkpoints} == {
+        row.session_id for row in sessions
+    }
+    assert events == 5
 
 
 def test_a_turn_that_cannot_be_assembled_fails_safe_without_calling_the_model(

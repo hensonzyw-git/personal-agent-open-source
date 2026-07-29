@@ -770,6 +770,15 @@ class Compactor:
         self._config = config
         self._provider = provider
         self._provider_timeout_seconds = provider_timeout_seconds
+        # Python cannot safely kill a thread whose provider ignored its own
+        # timeout. Keep at most one in-flight provider worker per Compactor: if
+        # it outlives our wait budget it is quarantined, and later builds fail
+        # closed without spawning another thread until that worker returns.
+        self._provider_worker_lock = threading.Lock()
+        self._provider_worker: threading.Thread | None = None
+        self._provider_worker_name = (
+            f"personal-agent-compactor-provider-{id(self):x}"
+        )
 
     def active_checkpoint(
         self, db, keyring: KeyRing, *, session_id: str
@@ -953,11 +962,14 @@ class Compactor:
         return run_write_transaction(db, finalise)
 
     def _call_provider(self, request: CompactorRequest) -> Any | None:
-        """Call the non-deterministic boundary behind a hard wall-clock limit.
+        """Wait a bounded time for the non-deterministic provider boundary.
 
-        A provider should still enforce its own HTTP timeout and cancellation.
-        The daemon worker is the last-resort process boundary: even a broken
-        adapter that never returns cannot hold the request open indefinitely.
+        The provider must still enforce its own HTTP timeout and cancellation.
+        Python threads cannot be forcibly terminated: when a broken adapter
+        ignores those controls, this method stops *waiting*, not the underlying
+        call. The still-running daemon worker is quarantined as this Compactor's
+        one in-flight call. Later builds fail closed immediately rather than
+        accumulating one abandoned worker per deadline.
         """
         assert self._provider is not None
         outcome: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
@@ -968,16 +980,26 @@ class Compactor:
             except BaseException as exc:
                 outcome.put((False, exc))
 
-        worker = threading.Thread(
-            target=invoke,
-            name="personal-agent-compactor-provider",
-            daemon=True,
-        )
-        worker.start()
+        with self._provider_worker_lock:
+            worker = self._provider_worker
+            if worker is not None and worker.is_alive():
+                return None
+            worker = threading.Thread(
+                target=invoke,
+                name=self._provider_worker_name,
+                daemon=True,
+            )
+            self._provider_worker = worker
+            worker.start()
         worker.join(self._provider_timeout_seconds)
         if worker.is_alive():
             return None
-        succeeded, value = outcome.get_nowait()
+        try:
+            succeeded, value = outcome.get_nowait()
+        except queue.Empty:
+            # Defensive fail-closed branch for an impossible worker/result
+            # disagreement; never turn an absent provider result into a payload.
+            return None
         return value if succeeded else None
 
     def _commit_checkpoint(

@@ -26,6 +26,7 @@ from personal_agent.context.session_manager import (
     CONFIDENCE_BANDS,
     ClassifierInput,
 )
+from personal_agent.context.untrusted import frame_untrusted_data
 from personal_agent.runtime.structured import (
     StructuredModelClient,
     StructuredRequest,
@@ -111,4 +112,7 @@ class GlmBoundaryClassifier:
                 "new_message": request.user_text,
             }
         )
-        return f"{_INPUT_PREAMBLE}\n<untrusted_data kind=\"boundary_input\">\n{body}\n</untrusted_data>"
+        return (
+            f"{_INPUT_PREAMBLE}\n"
+            f"{frame_untrusted_data('boundary_input', None, body)}"
+        )
