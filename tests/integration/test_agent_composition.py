@@ -25,6 +25,7 @@ import base64
 import json
 import uuid
 from dataclasses import dataclass
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -76,7 +77,15 @@ from personal_agent.storage.engine import (
     create_database_engine,
     session_factory,
 )
-from personal_agent.storage.models import Conversation, Device, Operation
+from personal_agent.runtime.structured import StructuredModelClient
+from personal_agent.storage.models import (
+    ContextCheckpoint,
+    ContextSession,
+    Conversation,
+    ConversationEvent,
+    Device,
+    Operation,
+)
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.manifest import load_manifest
 from personal_agent_core.timeutil import utc_now
@@ -527,6 +536,101 @@ def test_a_second_message_reaches_the_model_with_the_first_turn_in_context(
     # One Timeline, one Session, and the envelope says which.
     assert follow_up.timeline_id == opening.timeline_id
     assert follow_up.session_id == opening.session_id
+
+
+def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
+    keys, agent_db, finance
+) -> None:
+    """`CAP-001` §7.3: the soft limit triggers the Compactor, nothing else.
+
+    The composed service is given a small soft limit and a structured client
+    that returns a valid checkpoint. The turn must answer first, and the
+    Checkpoint must exist afterwards, in the *same* Session -- compaction is
+    never a boundary.
+    """
+    gateway = FakeGateway(ProposedAnswer("好的"))
+    values = dict(CAP001_PROVISIONAL_VALUES)
+    values.update(
+        {"CONTEXT_SOFT_LIMIT_TOKENS": 200, "CONTEXT_HARD_LIMIT_TOKENS": 24000}
+    )
+    eager = ContextConfig.from_mapping("ctx-eager-compaction", values)
+
+    def structured_client():
+        def generate(**kwargs):
+            sources = json.loads(
+                kwargs["messages"][0]["content"].split("\n", 1)[1]
+                .removeprefix('<untrusted_data kind="compaction_sources">\n')
+                .removesuffix("\n</untrusted_data>")
+            )
+            first = sources["events"][0]["event_id"]
+            return SimpleNamespace(
+                error_code=None,
+                content=SimpleNamespace(
+                    parts=[
+                        SimpleNamespace(
+                            text=None,
+                            thought=False,
+                            function_call=SimpleNamespace(
+                                name="context_checkpoint",
+                                args={
+                                    "goal": {
+                                        "value": "记录支出",
+                                        "source_refs": [first],
+                                    },
+                                    "constraints": [],
+                                    "decisions": [],
+                                    "entities": [],
+                                    "completed_steps": [],
+                                    "open_items": [],
+                                    "superseded_items": [],
+                                    "evidence_refs": [],
+                                    "exact_refs": [],
+                                },
+                            ),
+                        )
+                    ]
+                ),
+            )
+
+        return StructuredModelClient(
+            model="openai/glm-5.2",
+            api_key="k",
+            api_base="https://open.bigmodel.cn/api/paas/v4/",
+            generate=generate,
+        )
+
+    async def scenario():
+        async with agent_service(
+            config_for(agent_db, finance),
+            build_gateway=lambda: gateway,
+            build_structured_client=structured_client,
+            context_config=eager,
+        ) as composed:
+            async with http_for(composed.deps) as client:
+                return await client.post(
+                    "/v1/chat/messages",
+                    json={"conversation_id": "c1", "text": "帮我记一下这个月的支出"},
+                    headers=chat_headers(),
+                )
+
+    response = asyncio.run(scenario())
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "succeeded"
+
+    engine = create_database_engine(agent_db)
+    try:
+        with session_factory(engine)() as session:
+            checkpoints = session.query(ContextCheckpoint).all()
+            sessions = session.query(ContextSession).all()
+            events = session.query(ConversationEvent).count()
+    finally:
+        engine.dispose()
+
+    # One Checkpoint, in the one Session, and the raw archive is untouched.
+    assert [row.status for row in checkpoints] == ["active"]
+    assert len(sessions) == 1
+    assert checkpoints[0].session_id == sessions[0].session_id
+    assert events == 2
 
 
 def test_a_turn_that_cannot_be_assembled_fails_safe_without_calling_the_model(

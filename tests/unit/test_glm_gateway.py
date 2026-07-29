@@ -20,7 +20,7 @@ from personal_agent.context.config import CAP001_PROVISIONAL_VALUES, ContextConf
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.runtime.glm_gateway import (
     GlmGateway,
-    _generate_with_adk,
+    generate_with_adk,
     _messages,
     glm_gateway_from_env,
 )
@@ -544,7 +544,7 @@ def test_production_generator_uses_the_adk_model_contract(monkeypatch) -> None:
         "google.adk.models.lite_llm.LiteLlm",
         FakeLiteLlm,
     )
-    actual = _generate_with_adk(
+    actual = generate_with_adk(
         model="openai/glm-5.2",
         api_key="secret",
         api_base=_PINNED,

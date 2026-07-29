@@ -153,6 +153,10 @@ class AgentApiDeps:
     #: Reads a reviewed record's *current* ledger values (design 7.7 step 5).
     #: `None` means the review endpoints are not composed, and opening a card
     #: says so rather than rendering one with no values.
+    #: `CAP-001` design §7.3/§8. Runs the Compactor for one Session after a turn
+    #: whose input crossed the soft limit. `None` means no Compactor provider is
+    #: composed, and the signal is then recorded and not acted on.
+    compact_session: Callable[[Any, str], None] | None = None
     read_record: RecordReader | None = None
     #: The server's current `allowed_tools_version`, stamped onto a device at
     #: enrollment (design 4.1 step 3). `None` means enrollment is not composed:
@@ -850,16 +854,17 @@ def _process_chat(
                 envelope=operation.api_request.encrypted_request_payload,
             )
             anchor = _anchor_event(session, operation.operation_id)
+            turn_context = _context_factory(
+                deps,
+                auth,
+                session,
+                payload=payload,
+                anchor=anchor,
+            )
             result = run_operation(
                 session,
                 operation,
-                build_context=_context_factory(
-                    deps,
-                    auth,
-                    session,
-                    payload=payload,
-                    anchor=anchor,
-                ),
+                build_context=turn_context,
                 interpreter=deps.build_interpreter(auth),
                 dispatcher=deps.build_dispatcher(auth, operation.trace_id),
                 authorize=deps.build_authorizer(auth),
@@ -893,6 +898,7 @@ def _process_chat(
             )
             session.commit()
             session.refresh(operation)
+            _compact_if_requested(deps, session, turn_context, anchor.session_id)
             return _operation_response(operation, extra=_transient(result))
         except StaleOperationVersionError:
             session.rollback()
@@ -931,6 +937,51 @@ def _anchor_event(session, operation_id: str) -> _Anchor:
     return _Anchor(session_id=row[0], turn_id=row[1], event_id=row[2])
 
 
+class _TurnContext:
+    """Assembles this turn's envelope and remembers what it decided.
+
+    The Compactor's trigger is a property of the assembled input (§7.3: crossing
+    the soft limit triggers compaction, never a Session split), so the caller
+    needs the envelope after the turn -- and only the envelope, not a second
+    measurement that could disagree with it.
+    """
+
+    def __init__(self, build: Callable[[], ContextEnvelope]) -> None:
+        self._build = build
+        self.envelope: ContextEnvelope | None = None
+
+    def __call__(self) -> ContextEnvelope:
+        self.envelope = self._build()
+        return self.envelope
+
+
+def _compact_if_requested(
+    deps: AgentApiDeps,
+    session,
+    turn: _TurnContext,
+    session_id: str,
+) -> None:
+    """Compact after answering, never before.
+
+    Doing it inside the turn would add a second model call to the user's wait
+    for a benefit that only the *next* turn collects. A failure here is logged
+    and dropped: the raw archive is intact, the next turn simply carries more
+    history, and nothing about this turn's outcome changes.
+    """
+    envelope = turn.envelope
+    if (
+        deps.compact_session is None
+        or envelope is None
+        or not envelope.compaction_requested
+    ):
+        return
+    try:
+        deps.compact_session(session, session_id)
+    except Exception:  # noqa: BLE001 - compaction is never the turn's problem
+        session.rollback()
+        logger.warning("compaction after a turn failed", exc_info=True)
+
+
 def _context_factory(
     deps: AgentApiDeps,
     auth: AuthContext,
@@ -938,7 +989,7 @@ def _context_factory(
     *,
     payload: ChatRequestPayload,
     anchor: _Anchor,
-) -> Callable[[], ContextEnvelope]:
+) -> _TurnContext:
     """Bind this turn's assembly, to be run when the model is about to be asked.
 
     The envelope is built from the persisted anchor event rather than from the
@@ -957,7 +1008,7 @@ def _context_factory(
             clarification_context=payload.clarification_context,
         )
 
-    return build
+    return _TurnContext(build)
 
 
 def _session_of_operation(session, operation_id: str) -> str | None:

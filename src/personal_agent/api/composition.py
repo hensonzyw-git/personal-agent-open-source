@@ -85,9 +85,17 @@ from personal_agent.runtime.glm_gateway import (
     declared_context_limit,
     glm_gateway_from_env,
 )
+from personal_agent.context.compact_state import CheckpointCompactStateProvider
+from personal_agent.context.session_manager import SessionManager
+from personal_agent.runtime.compactor_provider import GlmCompactorProvider
 from personal_agent.runtime.model_gateway import ModelGatewayError
 from personal_agent.runtime.interpreter import ModelInterpreter
 from personal_agent.runtime.prompt import build_system_prompt
+from personal_agent.runtime.session_classifier import GlmBoundaryClassifier
+from personal_agent.runtime.structured import (
+    StructuredCallError,
+    structured_client_from_env,
+)
 from personal_agent.storage.engine import (
     check_integrity,
     create_database_engine,
@@ -455,6 +463,7 @@ async def agent_service(
     *,
     now: Callable[[], datetime] = utc_now,
     build_gateway: Callable[[], Any] = glm_gateway_from_env,
+    build_structured_client: Callable[[], Any] = structured_client_from_env,
     context_config: ContextConfig | None = None,
 ) -> AsyncIterator[ComposedAgentService]:
     """Compose the Agent API for the lifetime of the service."""
@@ -488,20 +497,22 @@ async def agent_service(
     # The budget is checked against what the adapter says it can accept, so a
     # ceiling larger than the model's window fails at startup, not mid-turn.
     context_config.require_within_model_limit(declared_context_limit())
-    # `CAP-001`. The one assembly point for model context. Its Compactor has no
-    # provider: this service can *read and verify* an existing Checkpoint, and
-    # cannot build one. Compaction itself arrives with the model-backed provider,
-    # and until then the soft-limit signal on each envelope is recorded, not
-    # acted on.
-    context_builder = ContextBuilder(
-        context_config, compactor=Compactor(context_config)
-    )
     try:
         gateway = build_gateway()
-    except ModelGatewayError as exc:
+        # `CAP-001`. The auxiliary structured model path: the same pinned
+        # endpoint as Chat, one declared function per call. Built here beside
+        # the gateway so a deployment that cannot reach the model fails at
+        # startup rather than on the first boundary decision.
+        structured = build_structured_client()
+    except (ModelGatewayError, StructuredCallError) as exc:
         # A missing model credential or a tampered endpoint is a deployment
         # failure, not something to discover on the first message.
         raise CompositionError(f"the model gateway could not be built: {exc}") from exc
+    compactor = Compactor(
+        context_config, provider=GlmCompactorProvider(structured)
+    )
+    # The one assembly point for model context.
+    context_builder = ContextBuilder(context_config, compactor=compactor)
 
     with _engine_for(config.database) as engine:
         sessions = session_factory(engine)
@@ -570,6 +581,20 @@ async def agent_service(
                     clarification_context=clarification_context,
                 )
 
+            def compact_session(session, session_id: str) -> None:
+                """Compact one Session, after its turn has already answered."""
+                result = compactor.build_checkpoint(
+                    session,
+                    keyring,
+                    identifier_key,
+                    session_id=session_id,
+                    now=now(),
+                )
+                # Enumerations only: a build outcome names no content.
+                logger.info(
+                    "compaction after a turn: %s", result.status
+                )
+
             def build_authorizer(auth: AuthContext):
                 def authorize(*, tool: str, model_args: dict[str, Any]):
                     device = device_for(auth)
@@ -616,8 +641,19 @@ async def agent_service(
                     identifier_key=identifier_key,
                     cursor_key=cursor_key,
                     context_config=context_config,
+                    # `CAP-001` design 6.1 step 7. The classifier only ever runs
+                    # when a verified Checkpoint can supply the compact state,
+                    # and every uncertain answer still continues the Session.
+                    session_manager=SessionManager(
+                        context_config,
+                        classifier=GlmBoundaryClassifier(structured),
+                        state_provider=CheckpointCompactStateProvider(
+                            compactor, keyring
+                        ),
+                    ),
                     build_interpreter=build_interpreter,
                     build_envelope=build_envelope,
+                    compact_session=compact_session,
                     build_dispatcher=build_dispatcher,
                     build_authorizer=build_authorizer,
                     capabilities=capabilities,

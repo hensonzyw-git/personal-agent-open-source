@@ -34,12 +34,14 @@ from personal_agent.runtime.model_gateway import (
 from personal_agent_core.errors import ErrorCode
 
 
-_ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4/"
+ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4/"
+#: Kept as the module-private spelling used throughout this file.
+_ZHIPU_API_BASE = ZHIPU_API_BASE
 _ASK_CLARIFICATION = "agent.ask_clarification"
 _FAIL_BATCH = "agent.fail_batch_unavailable"
 _SUPPORTED_PART_FIELDS = frozenset({"function_call", "text", "thought"})
 
-# Injected only by offline tests. Production always uses `_generate_with_adk`.
+# Injected only by offline tests. Production always uses `generate_with_adk`.
 Generate = Callable[..., Any]
 
 
@@ -66,11 +68,11 @@ class GlmGateway:
             raise ModelGatewayError("GLM timeout must be within the 25-second budget")
         self._model = model
         self._api_key = api_key
-        self._api_base = _validated_api_base(api_base)
+        self._api_base = validated_api_base(api_base)
         self._timeout = timeout
         self._max_tokens = max_tokens
         self._temperature = temperature
-        self._generate = generate or _generate_with_adk
+        self._generate = generate or generate_with_adk
 
     def propose(
         self,
@@ -108,7 +110,7 @@ def glm_gateway_from_env(*, generate: Generate | None = None) -> GlmGateway:
     to another host or path is rejected before any network call.
     """
 
-    api_key = _require_env("ZAI_API_KEY")
+    api_key = require_env("ZAI_API_KEY")
     api_base = os.environ.get("GLM_OPENAI_BASE_URL", _ZHIPU_API_BASE)
     model = os.environ.get("GLM_MODEL", "glm-5.2")
     return GlmGateway(
@@ -357,7 +359,7 @@ def _parse_arguments(raw: Any) -> dict[str, Any]:
     return parsed
 
 
-def _validated_api_base(value: str) -> str:
+def validated_api_base(value: str) -> str:
     try:
         parsed = urlsplit(value)
         port = parsed.port
@@ -380,14 +382,14 @@ def _validated_api_base(value: str) -> str:
     return _ZHIPU_API_BASE
 
 
-def _require_env(name: str) -> str:
+def require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
         raise ModelGatewayError(f"{name} is not set in the environment")
     return value
 
 
-def _generate_with_adk(
+def generate_with_adk(
     *,
     model: str,
     api_key: str,
