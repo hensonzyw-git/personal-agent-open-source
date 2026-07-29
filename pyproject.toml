@@ -63,5 +63,5 @@ packages = [
 
 [tool.pytest.ini_options]
 addopts = "-q"
-pythonpath = ["src", "tests"]
+pythonpath = ["src", "tests", "scripts"]
 testpaths = ["tests"]
