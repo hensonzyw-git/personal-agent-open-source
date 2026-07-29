@@ -30,8 +30,12 @@ Usage (the operator supplies the credential; this file never reads `.env.local`)
     uv run python scripts/cap001_provider_smoke.py --out docs/evidence/cap001_providers.json
 
 `--list` prints the cases, `--case ID` runs a subset, and `--dry-run` runs the
-checks that make no network call. Exit code is 0 only when every selected case
-passed.
+checks that make no network call. `--check-model` makes one small call to verify
+that `GLM_CLASSIFIER_MODEL` names a model this account can actually use --
+worth doing first, because a rejected model id is indistinguishable from a
+provider outage once the case runners treat it as a legitimate refusal.
+
+Exit code is 0 only when every selected case passed.
 """
 
 from __future__ import annotations
@@ -438,13 +442,66 @@ def endpoint_pinning_holds() -> tuple[bool, str]:
     return False, "a tampered host was accepted"
 
 
+def check_model() -> int:
+    """One minimal call that answers "does this model id work at all?".
+
+    A wrong `GLM_CLASSIFIER_MODEL` reaches the case runners as an ordinary
+    provider failure, which they record as a legitimate refusal and score as a
+    pass -- correct for the contract, useless for configuration. This asks the
+    question directly and fails loudly, so a typo cannot hide behind the
+    fail-closed behaviour it is supposed to be tested against.
+    """
+    model = os.environ.get(CLASSIFIER_MODEL_ENV) or os.environ.get(
+        "GLM_MODEL", "glm-5.2"
+    )
+    print(f"classifier model: {model}")
+    classifier = GlmBoundaryClassifier(
+        structured_client_from_env(
+            input_budget_tokens=32_768,
+            timeout=CLASSIFIER_TIMEOUT_SECONDS,
+            model_env=CLASSIFIER_MODEL_ENV,
+        )
+    )
+    started = time.monotonic()
+    try:
+        raw = classifier.classify(
+            ClassifierInput(
+                user_text="再记一笔，午饭 32，个人支出",
+                open_session_state=FINANCE_STATE,
+                minutes_since_last_event=3,
+            )
+        )
+    except StructuredCallError as exc:
+        print(f"[FAIL] the model did not answer: {exc}")
+        print(
+            "        A rejected model id and a provider outage look the same "
+            "from here; check the id in the console before retrying."
+        )
+        return 1
+    seconds = round(time.monotonic() - started, 3)
+    outcome = parse_classifier_outcome(raw)
+    if outcome is None:
+        print(f"[FAIL] answered in {seconds}s but outside the contract: {raw}")
+        return 1
+    print(f"[PASS] answered in {seconds}s: {outcome.decision} / {outcome.reason}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--case", action="append", dest="cases", default=None)
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--check-model",
+        action="store_true",
+        help="one small call that verifies the classifier model id works",
+    )
     args = parser.parse_args(argv)
+
+    if args.check_model:
+        return check_model()
 
     classifier_all = classifier_cases()
     compactor_all = compactor_cases()
