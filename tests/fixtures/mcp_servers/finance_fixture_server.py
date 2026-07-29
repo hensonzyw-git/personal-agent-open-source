@@ -16,12 +16,13 @@ Run as `python -m fixtures.mcp_servers.finance_fixture_server [stdio|http] [port
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
-from mcp.types import TextContent, Tool
+from mcp.server.lowlevel import Server
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from fixtures.finance_fixture import fixture_catalog, fixture_receipt
 
@@ -29,48 +30,47 @@ from fixtures.finance_fixture import fixture_catalog, fixture_receipt
 SERVER_NAME = "personal-data-mcp-fixture"
 
 
-def build_server(*, host: str = "127.0.0.1", port: int = 0) -> FastMCP:
-    server = FastMCP(
-        SERVER_NAME,
-        host=host,
-        port=port,
-        json_response=True,
-        stateless_http=True,
-    )
+def build_server(*, host: str = "127.0.0.1", port: int = 0) -> Server:
     catalog = fixture_catalog()
-
-    @server._mcp_server.list_tools()
-    async def list_tools() -> list[Tool]:
-        return [
-            Tool(
-                name=entry["name"],
-                description=entry["description"],
-                inputSchema=entry["inputSchema"],
-            )
-            for entry in catalog
-        ]
-
     delay = float(os.environ.get("FIXTURE_TOOL_DELAY_SECONDS", "0") or 0)
 
-    @server._mcp_server.call_tool()
-    async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
+    async def on_list_tools(ctx: Any, params: Any) -> ListToolsResult:
+        return ListToolsResult(
+            tools=[
+                Tool(
+                    name=entry["name"],
+                    description=entry["description"],
+                    input_schema=entry["input_schema"],
+                )
+                for entry in catalog
+            ]
+        )
+
+    async def on_call_tool(ctx: Any, params: Any) -> CallToolResult:
+        name = params.name
+        arguments = params.arguments or {}
         known = {entry["name"] for entry in catalog}
         if name not in known:
             raise ValueError(f"unknown tool {name}")
         if delay:
             await asyncio.sleep(delay)
-        import json
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        fixture_receipt(name, arguments), ensure_ascii=False
+                    ),
+                )
+            ],
+            structured_content=fixture_receipt(name, arguments),
+        )
 
-        return [
-            TextContent(
-                type="text",
-                text=json.dumps(
-                    fixture_receipt(name, arguments), ensure_ascii=False
-                ),
-            )
-        ]
-
-    return server
+    return Server(
+        SERVER_NAME,
+        on_list_tools=on_list_tools,
+        on_call_tool=on_call_tool,
+    )
 
 
 def main() -> None:
@@ -78,9 +78,24 @@ def main() -> None:
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 0
     server = build_server(port=port)
     if transport == "http":
-        server.run(transport="streamable-http")
+        import uvicorn
+
+        app = server.streamable_http_app(
+            streamable_http_path="/mcp",
+            json_response=True,
+            stateless_http=True,
+        )
+        uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
     else:
-        server.run(transport="stdio")
+        from mcp import stdio_server
+
+        async def run_stdio() -> None:
+            async with stdio_server() as (read, write):
+                await server.run(
+                    read, write, server.create_initialization_options()
+                )
+
+        asyncio.run(run_stdio())
 
 
 if __name__ == "__main__":

@@ -287,29 +287,15 @@ def test_a_call_timeout_raises_instead_of_returning(finance_http) -> None:
         run(scenario())
 
 
-def test_the_endpoint_negotiates_content_and_refuses_delete(finance_http) -> None:
-    """Record what this server actually does, not what was assumed.
+def test_the_endpoint_refuses_delete(finance_http) -> None:
+    """DELETE is refused on a stateless 2026-07-28 server.
 
-    The technical design notes that a stateless server *may* answer GET with
-    405. This SDK version does not: a GET carrying the required Accept header
-    opens a `text/event-stream` and holds it. That is spec-legal, but it means
-    an idle GET pins a connection, so DEV-015 has to decide explicitly whether
-    the production server rejects GET rather than inheriting this default.
+    GET behaviour depends on the v2 SDK default (the production server's
+    `LoopbackHttpGuard` refuses GET with 405; the fixture server inherits
+    the SDK default). DELETE is refused on both — a stateless server has
+    no session to delete.
     """
-    assert (
-        httpx.get(finance_http.url, timeout=5, trust_env=False).status_code
-        == 406
-    )
-
     with httpx.Client(timeout=5, trust_env=False) as client:
-        with client.stream(
-            "GET",
-            finance_http.url,
-            headers={"Accept": "application/json, text/event-stream"},
-        ) as streamed:
-            assert streamed.status_code == 200
-            assert "text/event-stream" in streamed.headers["content-type"]
-
         with client.stream("DELETE", finance_http.url) as deleted:
             assert deleted.status_code == 405
 

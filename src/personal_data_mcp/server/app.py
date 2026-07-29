@@ -27,8 +27,8 @@ from contextvars import ContextVar
 from typing import Any, Final
 
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
-from mcp.server.fastmcp import FastMCP
-from mcp.types import CallToolResult, Tool
+from mcp.server.lowlevel import Server
+from mcp.types import CallToolResult, ListToolsResult, Tool
 from starlette.applications import Starlette
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -219,43 +219,40 @@ def build_server(
     authorizer: Authorizer | None = None,
     *,
     verification_ring: ServiceKeyRing | None = None,
-) -> FastMCP:
+) -> Server:
     config = config or ServerConfig()
     registry = registry if registry is not None else build_registry()
     if authorizer is None:
         ring = verification_ring or load_verification_ring()
         authorizer = Authorizer(ring)
 
-    server = FastMCP(
-        SERVER_NAME,
-        host=config.host,
-        port=config.port,
-        streamable_http_path=config.mcp_path,
-        json_response=True,
-        stateless_http=True,
-    )
-
-    @server._mcp_server.list_tools()
-    async def list_tools() -> list[Tool]:
-        return [
-            Tool(
-                name=entry["name"],
-                description=entry["description"],
-                inputSchema=entry["inputSchema"],
-            )
-            for entry in registry.catalog()
-        ]
-
-    # `validate_input=False` because the SDK's own validation failure is a
-    # free-text message, not a stable code. Arguments are validated inside the
-    # dispatch path instead, so every rejection has the same shape.
-    @server._mcp_server.call_tool(validate_input=False)
-    async def call_tool(name: str, arguments: dict[str, Any]) -> CallToolResult:
-        return await dispatch(
-            registry, authorizer, name, arguments, current_request_headers()
+    async def on_list_tools(
+        ctx: Any, params: Any
+    ) -> ListToolsResult:
+        return ListToolsResult(
+            tools=[
+                Tool(
+                    name=entry["name"],
+                    description=entry["description"],
+                    input_schema=entry["input_schema"],
+                )
+                for entry in registry.catalog()
+            ]
         )
 
-    return server
+    async def on_call_tool(
+        ctx: Any, params: Any
+    ) -> CallToolResult:
+        return await dispatch(
+            registry, authorizer, params.name, params.arguments,
+            current_request_headers(),
+        )
+
+    return Server(
+        SERVER_NAME,
+        on_list_tools=on_list_tools,
+        on_call_tool=on_call_tool,
+    )
 
 
 def build_app(
@@ -278,7 +275,11 @@ def build_app(
     config = config or ServerConfig()
     ring = verification_ring or load_verification_ring()
     server = build_server(config, registry, Authorizer(ring))
-    app = server.streamable_http_app()
+    app = server.streamable_http_app(
+        streamable_http_path=config.mcp_path,
+        json_response=True,
+        stateless_http=True,
+    )
 
     if session_factory is not None:
         # The control API is a sibling on /internal, never an MCP tool and never

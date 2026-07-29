@@ -88,7 +88,7 @@ class ToolRegistry:
             {
                 "name": entry["name"],
                 "description": entry["summary"],
-                "inputSchema": entry["model_input_schema"],
+                "input_schema": entry["model_input_schema"],
             }
             for name, entry in self._contracts.items()
             if name in self._handlers

@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 from pydantic import BaseModel
 
 from personal_agent_spike.policy import (
@@ -15,7 +15,7 @@ from personal_agent_spike.policy import (
 )
 
 
-mcp = FastMCP("personal-agent-fixture", json_response=True)
+mcp = MCPServer("personal-agent-fixture")
 
 
 class FixtureRecord(BaseModel):

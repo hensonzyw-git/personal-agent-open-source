@@ -8,9 +8,19 @@ import warnings
 from importlib.metadata import version
 from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
-from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
-from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+try:
+    from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+except ImportError:
+    ClaudeAgentOptions = None  # type: ignore[assignment,misc]
+    ClaudeSDKClient = None  # type: ignore[assignment,misc]
+
+try:
+    from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+    from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+except ImportError:
+    StdioConnectionParams = None  # type: ignore[assignment,misc]
+    McpToolset = None  # type: ignore[assignment,misc]
+
 from mcp import StdioServerParameters
 
 
@@ -18,6 +28,13 @@ FIXTURE_ARGS = ["-m", "personal_agent_spike.fixture_server"]
 
 
 async def probe_adk_mcp() -> dict[str, Any]:
+    if McpToolset is None:
+        return {
+            "mcp_tool_discovery": False,
+            "tool_names": [],
+            "model_call_attempted": False,
+            "error": "ADK McpToolset not available with mcp v2",
+        }
     connection = StdioConnectionParams(
         server_params=StdioServerParameters(
             command=sys.executable,
@@ -41,6 +58,13 @@ async def probe_adk_mcp() -> dict[str, Any]:
 
 
 def probe_claude_sdk_config() -> dict[str, Any]:
+    if ClaudeAgentOptions is None:
+        return {
+            "client_constructed": False,
+            "client_connected": False,
+            "model_call_attempted": False,
+            "error": "claude-agent-sdk not installed",
+        }
     options = ClaudeAgentOptions(
         mcp_servers={
             "personal-agent-fixture": {

@@ -29,12 +29,12 @@ async def run_probe() -> dict[str, Any]:
                     "is_family_expense": False,
                 },
             )
-            if call_result.isError:
+            if call_result.is_error:
                 raise RuntimeError("fixture MCP tool returned an error")
             return {
                 "initialized": True,
                 "tool_names": tool_names,
-                "structured_result": call_result.structuredContent,
+                "structured_result": call_result.structured_content,
             }
 
 

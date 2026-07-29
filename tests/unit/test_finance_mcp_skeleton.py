@@ -109,8 +109,8 @@ def test_error_result_carries_only_the_stable_code_and_fixed_message() -> None:
     result = error_result(
         AppError(ErrorCode.SOURCE_SCHEMA_CHANGED, internal_detail=detail)
     )
-    assert result.isError is True
-    assert result.structuredContent is None
+    assert result.is_error is True
+    assert result.structured_content is None
     body = json.loads(result.content[0].text)
     assert body["error"]["code"] == "SOURCE_SCHEMA_CHANGED"
     # The internal detail, which names Base/table/field ids, never serialises.
@@ -138,7 +138,7 @@ def test_an_unexpected_handler_exception_becomes_internal_error() -> None:
     result = run(
         dispatch(registry, caller.authorizer(), "meta.capabilities", {}, headers)
     )
-    assert result.isError is True
+    assert result.is_error is True
     body = json.loads(result.content[0].text)
     assert body["error"]["code"] == "INTERNAL_ERROR"
     assert "secret path" not in result.content[0].text
@@ -188,6 +188,6 @@ def test_the_server_refuses_to_build_without_a_verification_key() -> None:
 
 def test_success_result_carries_structured_and_text() -> None:
     result = success_result({"status": "ok", "value": 1})
-    assert result.isError is False
-    assert result.structuredContent == {"status": "ok", "value": 1}
+    assert result.is_error is False
+    assert result.structured_content == {"status": "ok", "value": 1}
     assert json.loads(result.content[0].text) == {"status": "ok", "value": 1}

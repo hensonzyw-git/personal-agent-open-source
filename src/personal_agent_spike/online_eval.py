@@ -14,21 +14,36 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    ResultMessage,
-    TextBlock,
-    ToolResultBlock,
-    ToolUseBlock,
-    UserMessage,
-)
+try:
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ClaudeAgentOptions,
+        ClaudeSDKClient,
+        ResultMessage,
+        TextBlock,
+        ToolResultBlock,
+        ToolUseBlock,
+        UserMessage,
+    )
+except ImportError:
+    AssistantMessage = None  # type: ignore[assignment,misc]
+    ClaudeAgentOptions = None  # type: ignore[assignment,misc]
+    ClaudeSDKClient = None  # type: ignore[assignment,misc]
+    ResultMessage = None  # type: ignore[assignment,misc]
+    TextBlock = None  # type: ignore[assignment,misc]
+    ToolResultBlock = None  # type: ignore[assignment,misc]
+    ToolUseBlock = None  # type: ignore[assignment,misc]
+    UserMessage = None  # type: ignore[assignment,misc]
+
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.runners import InMemoryRunner
-from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
-from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+try:
+    from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+    from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+except ImportError:
+    StdioConnectionParams = None  # type: ignore[assignment,misc]
+    McpToolset = None  # type: ignore[assignment,misc]
 from google.genai import types
 from mcp import StdioServerParameters
 
@@ -356,6 +371,10 @@ def sanitize_error(exc: Exception) -> tuple[str, str]:
 
 class AdkEvaluator:
     def __init__(self) -> None:
+        if McpToolset is None:
+            raise RuntimeError(
+                "ADK McpToolset is not available with mcp v2"
+            )
         self.toolset = McpToolset(
             connection_params=StdioConnectionParams(
                 server_params=StdioServerParameters(
@@ -507,6 +526,8 @@ def _claude_env() -> dict[str, str]:
 
 
 async def run_claude_case(case: EvalCase) -> Observation:
+    if ClaudeAgentOptions is None:
+        raise RuntimeError("claude-agent-sdk is not installed")
     model_name = os.environ["ANTHROPIC_DEFAULT_SONNET_MODEL"]
     options = ClaudeAgentOptions(
         tools=[],

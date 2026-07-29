@@ -162,7 +162,7 @@ def test_a_rejected_call_creates_no_execution_row(
             headers,
         )
     )
-    assert result.isError is True
+    assert result.is_error is True
     assert json.loads(result.content[0].text)["error"]["code"] == expected.value
     # The whole point: the write probe never ran.
     assert execution_count(finance_session) == 0
@@ -187,7 +187,7 @@ def test_tampered_arguments_create_no_execution_row(
             headers,
         )
     )
-    assert result.isError is True
+    assert result.is_error is True
     assert (
         json.loads(result.content[0].text)["error"]["code"]
         == ErrorCode.HOST_CONTEXT_MISMATCH.value
@@ -213,7 +213,7 @@ def test_host_only_arguments_are_rejected_before_the_handler(
             headers,
         )
     )
-    assert result.isError is True
+    assert result.is_error is True
     assert (
         json.loads(result.content[0].text)["error"]["code"]
         == ErrorCode.HOST_CONTEXT_MISMATCH.value
@@ -241,7 +241,7 @@ def test_signed_but_schema_invalid_arguments_are_rejected(
             headers,
         )
     )
-    assert result.isError is True
+    assert result.is_error is True
     assert (
         json.loads(result.content[0].text)["error"]["code"]
         == ErrorCode.INVALID_ARGUMENT.value
@@ -273,8 +273,8 @@ def test_a_verified_call_runs_the_handler_and_creates_one_row(
             headers,
         )
     )
-    assert result.isError is False
-    assert result.structuredContent["status"] == "created"
+    assert result.is_error is False
+    assert result.structured_content["status"] == "created"
     # The gate passed, so the handler ran exactly once.
     assert execution_count(finance_session) == 1
     assert finance_session.get(ToolExecution, expected_key) is not None
@@ -313,8 +313,8 @@ def test_a_meta_call_with_a_valid_context_succeeds(caller) -> None:
     result = run(
         dispatch(registry, caller.authorizer(), "meta.capabilities", {}, headers)
     )
-    assert result.isError is False
-    assert result.structuredContent["status"] == "ok"
+    assert result.is_error is False
+    assert result.structured_content["status"] == "ok"
 
 
 def test_a_stale_allowed_tools_version_is_refused(caller) -> None:
@@ -339,7 +339,7 @@ def test_a_stale_allowed_tools_version_is_refused(caller) -> None:
             headers,
         )
     )
-    assert result.isError is True
+    assert result.is_error is True
     assert (
         json.loads(result.content[0].text)["error"]["code"]
         == ErrorCode.SCOPE_DENIED.value

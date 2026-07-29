@@ -29,7 +29,7 @@ def test_catalog_carries_no_obsolete_names() -> None:
 def test_catalog_schemas_are_the_generated_ones() -> None:
     manifest = {tool["name"]: tool for tool in load_manifest()["tools"]}
     for tool in fixture_catalog():
-        assert tool["inputSchema"] == manifest[tool["name"]]["model_input_schema"]
+        assert tool["input_schema"] == manifest[tool["name"]]["model_input_schema"]
 
 
 def test_receipts_are_deterministic_so_replay_is_distinguishable() -> None:

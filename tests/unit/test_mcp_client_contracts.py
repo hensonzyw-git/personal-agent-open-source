@@ -28,8 +28,8 @@ def test_business_error_code_survives_the_mcp_boundary() -> None:
     class Session:
         async def call_tool(self, *args, **kwargs):
             return SimpleNamespace(
-                isError=True,
-                structuredContent={
+                is_error=True,
+                structured_content={
                     "error": {
                         "code": "SOURCE_COMMIT_UNKNOWN",
                         "message": "untrusted",
@@ -48,8 +48,8 @@ def test_an_unknown_or_malformed_error_fails_closed() -> None:
     class Session:
         async def call_tool(self, *args, **kwargs):
             return SimpleNamespace(
-                isError=True,
-                structuredContent={"error": {"code": "PROVIDER_SECRET_ERROR"}},
+                is_error=True,
+                structured_content={"error": {"code": "PROVIDER_SECRET_ERROR"}},
                 content=[],
             )
 
@@ -64,11 +64,12 @@ def test_resources_list_is_followed_to_exhaustion() -> None:
         def __init__(self) -> None:
             self.cursors = []
 
-        async def list_resources(self, cursor=None):
+        async def list_resources(self, *, params=None):
+            cursor = params.cursor if params is not None else None
             self.cursors.append(cursor)
             if cursor is None:
-                return SimpleNamespace(resources=["one"], nextCursor="page-2")
-            return SimpleNamespace(resources=["two"], nextCursor=None)
+                return SimpleNamespace(resources=["one"], next_cursor="page-2")
+            return SimpleNamespace(resources=["two"], next_cursor=None)
 
     session = Session()
     resources = asyncio.run(client_with(session).list_resources())
@@ -79,6 +80,8 @@ def test_resources_list_is_followed_to_exhaustion() -> None:
 def test_future_or_older_protocol_versions_are_rejected() -> None:
     with pytest.raises(McpTransportError):
         _validate_protocol_version("fixture", "2025-06-18")
+    with pytest.raises(McpTransportError):
+        _validate_protocol_version("fixture", "2025-11-25")
     with pytest.raises(McpTransportError):
         _validate_protocol_version("fixture", "2099-01-01")
 
@@ -91,7 +94,7 @@ def test_stdio_carries_the_host_context_in_meta() -> None:
         async def call_tool(self, name, arguments, **kwargs):
             captured.update(kwargs)
             return SimpleNamespace(
-                isError=False, structuredContent={"ok": True}, content=[]
+                is_error=False, structured_content={"ok": True}, content=[]
             )
 
     client = client_with(Session())
@@ -115,7 +118,7 @@ def test_a_call_without_a_host_context_sends_no_meta() -> None:
         async def call_tool(self, name, arguments, **kwargs):
             captured.update(kwargs)
             return SimpleNamespace(
-                isError=False, structuredContent={"ok": True}, content=[]
+                is_error=False, structured_content={"ok": True}, content=[]
             )
 
     asyncio.run(client_with(Session()).call_tool("finance.query_expenses", {}))

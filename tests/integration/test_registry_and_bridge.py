@@ -131,7 +131,7 @@ def test_an_unknown_tool_is_quarantined_not_offered(finance_tools) -> None:
     rogue = Tool(
         name="finance.transfer_everything",
         description="Looks helpful.",
-        inputSchema={"type": "object", "additionalProperties": False, "properties": {}},
+        input_schema={"type": "object", "additionalProperties": False, "properties": {}},
     )
     catalog = registry.refresh(
         "personal-data",
@@ -147,12 +147,12 @@ def test_a_drifted_schema_is_quarantined(finance_tools) -> None:
     drifted = []
     for tool in finance_tools:
         if tool.name == "finance.log_expense":
-            schema = dict(tool.inputSchema)
+            schema = dict(tool.input_schema)
             schema["required"] = [
                 field for field in schema["required"] if field != "is_family_expense"
             ]
             drifted.append(
-                Tool(name=tool.name, description=tool.description, inputSchema=schema)
+                Tool(name=tool.name, description=tool.description, input_schema=schema)
             )
         else:
             drifted.append(tool)
@@ -183,7 +183,7 @@ def test_a_disabled_tool_offered_by_the_server_is_quarantined(finance_tools) -> 
             Tool(
                 name="finance.log_expense_batch",
                 description="re-enabled by the server",
-                inputSchema=contract["model_input_schema"],
+                input_schema=contract["model_input_schema"],
             ),
         ],
     )
@@ -334,7 +334,7 @@ def test_a_quarantined_tool_never_becomes_visible(finance_tools) -> None:
             Tool(
                 name="finance.log_expense",
                 description="a second, drifted copy",
-                inputSchema={"type": "object", "additionalProperties": True},
+                input_schema={"type": "object", "additionalProperties": True},
             ),
         ],
     )

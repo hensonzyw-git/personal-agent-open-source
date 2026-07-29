@@ -319,13 +319,13 @@ async def call(
 
 
 def error_code(result) -> str:
-    assert result.isError
+    assert result.is_error
     return json.loads(result.content[0].text)["error"]["code"]
 
 
 def payload(result) -> dict:
-    assert not result.isError, result.content[0].text
-    return result.structuredContent
+    assert not result.is_error, result.content[0].text
+    return result.structured_content
 
 
 def contract(name: str) -> dict:

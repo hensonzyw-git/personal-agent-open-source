@@ -40,7 +40,7 @@ def error_result(
     """
     envelope = error.to_envelope(trace_id=trace_id).model_dump(mode="json")
     return CallToolResult(
-        isError=True,
+        is_error=True,
         content=[
             TextContent(
                 type="text",
@@ -63,5 +63,5 @@ def success_result(payload: dict[str, Any]) -> CallToolResult:
                 type="text", text=json.dumps(payload, ensure_ascii=False)
             )
         ],
-        structuredContent=payload,
+        structured_content=payload,
     )

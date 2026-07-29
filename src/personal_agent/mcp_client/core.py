@@ -6,7 +6,7 @@ framework, because PRD 7.1 requires those to be observable and testable on their
 own, and because the framework is meant to be replaceable without migrating the
 connectors.
 
-Two behaviours follow the 2025-11-25 spec rather than intuition:
+Two behaviours follow the 2026-07-28 spec rather than intuition:
 
 - pagination is followed to exhaustion. A first page is not a catalog, and a
   server is free to return one tool per page;
@@ -19,23 +19,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sys
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Final, Literal
 
 import anyio
-import httpx
-from mcp import ClientSession, StdioServerParameters
+import httpx2
+from mcp import ClientSession, MCPError, StdioServerParameters
+from mcp.client.client import negotiate_auto
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
-from mcp.shared.exceptions import McpError
-from mcp.types import Tool
+from mcp.types import PaginatedRequestParams, Tool
 
 from personal_agent_core.errors import AppError, ErrorCode
 
 
-PROTOCOL_VERSION: Final[str] = "2025-11-25"
+PROTOCOL_VERSION: Final[str] = "2026-07-28"
 
 DEFAULT_INITIALIZE_TIMEOUT: Final[timedelta] = timedelta(seconds=5)
 DEFAULT_LIST_TIMEOUT: Final[timedelta] = timedelta(seconds=5)
@@ -69,7 +71,7 @@ MAX_CATALOG_PAGES: Final[int] = 100
 
 def _error_payload(result: Any) -> dict[str, Any] | None:
     """Extract the stable error envelope without trusting free-form text."""
-    candidates: list[Any] = [result.structuredContent]
+    candidates: list[Any] = [result.structured_content]
     candidates.extend(result.content or [])
     for candidate in candidates:
         payload: Any = candidate
@@ -168,12 +170,16 @@ class McpClientCore:
         try:
             async with stack:
                 if isinstance(self.transport, StdioTransport):
+                    env = dict(self.transport.env)
+                    env.setdefault(
+                        "PYTHONPATH", os.pathsep.join(sys.path)
+                    )
                     read_stream, write_stream = await stack.enter_async_context(
                         stdio_client(
                             StdioServerParameters(
                                 command=self.transport.command,
                                 args=self.transport.args,
-                                env=self.transport.env or None,
+                                env=env or None,
                             )
                         )
                     )
@@ -189,16 +195,16 @@ class McpClientCore:
                     # real governed write takes, and a stream torn down early
                     # turns a *completed* write into an unknown commit.
                     http_client = await stack.enter_async_context(
-                        httpx.AsyncClient(
+                        httpx2.AsyncClient(
                             headers=self.transport.headers,
                             trust_env=False,
-                            timeout=httpx.Timeout(
+                            timeout=httpx2.Timeout(
                                 TRANSPORT_READ_TIMEOUT.total_seconds(),
                                 connect=TRANSPORT_CONNECT_TIMEOUT.total_seconds(),
                             ),
                         )
                     )
-                    read_stream, write_stream, _ = await stack.enter_async_context(
+                    read_stream, write_stream = await stack.enter_async_context(
                         streamable_http_client(
                             self.transport.url, http_client=http_client
                         )
@@ -209,17 +215,22 @@ class McpClientCore:
                 with anyio.fail_after(
                     DEFAULT_INITIALIZE_TIMEOUT.total_seconds()
                 ):
-                    result = await session.initialize()
+                    await negotiate_auto(session)
                 _validate_protocol_version(
-                    self.connector_id, result.protocolVersion
+                    self.connector_id, session.protocol_version
                 )
 
                 self._session = session
+                info = session.server_info
                 self._identity = ServerIdentity(
-                    name=result.serverInfo.name,
-                    version=result.serverInfo.version,
-                    protocol_version=result.protocolVersion,
-                    capabilities=result.capabilities.model_dump(exclude_none=True),
+                    name=info.name if info is not None else "",
+                    version=info.version if info is not None else "",
+                    protocol_version=session.protocol_version,
+                    capabilities=(
+                        session.server_capabilities.model_dump(exclude_none=True)
+                        if session.server_capabilities is not None
+                        else {}
+                    ),
                 )
                 ready.set()
                 await self._shutdown.wait()
@@ -296,13 +307,17 @@ class McpClientCore:
         for _ in range(MAX_CATALOG_PAGES):
             try:
                 with anyio.fail_after(DEFAULT_LIST_TIMEOUT.total_seconds()):
-                    page = await session.list_tools(cursor=cursor)
+                    page = await session.list_tools(
+                        params=PaginatedRequestParams(cursor=cursor)
+                        if cursor
+                        else None
+                    )
             except TimeoutError as exc:
                 raise McpTimeoutError(
                     f"{self.connector_id} tools/list timed out"
                 ) from exc
             tools.extend(page.tools)
-            cursor = page.nextCursor
+            cursor = page.next_cursor
             if not cursor:
                 return tools
         raise McpTransportError(
@@ -360,18 +375,18 @@ class McpClientCore:
             result = await session.call_tool(
                 name,
                 arguments,
-                read_timeout_seconds=timeout,
+                read_timeout_seconds=timeout.total_seconds(),
                 meta=meta,
             )
         except TimeoutError as exc:
             raise McpTimeoutError(
                 f"{self.connector_id}.{name} exceeded {timeout}"
             ) from exc
-        except McpError as exc:
-            # The SDK catches its internal TimeoutError and re-raises McpError
-            # with HTTP 408 as the stable code. Without this branch every HTTP
-            # request-budget expiry is mislabeled as a transport failure.
-            if exc.error.code == httpx.codes.REQUEST_TIMEOUT:
+        except MCPError as exc:
+            # v2 raises MCPError with code -32001 (REQUEST_TIMEOUT) when a
+            # call exceeds its budget. Without this branch every budget
+            # expiry is mislabeled as a transport failure.
+            if exc.code == -32001:
                 raise McpTimeoutError(
                     f"{self.connector_id}.{name} exceeded {timeout}"
                 ) from exc
@@ -388,7 +403,7 @@ class McpClientCore:
                 f"{self.connector_id}.{name} failed: {type(exc).__name__}"
             ) from exc
 
-        if result.isError:
+        if result.is_error:
             payload = _error_payload(result)
             if payload is not None:
                 try:
@@ -400,7 +415,7 @@ class McpClientCore:
             raise AppError(
                 code,
                 internal_detail=(
-                    f"{self.connector_id}.{name} returned isError"
+                    f"{self.connector_id}.{name} returned is_error"
                     + (
                         f" with stable code {payload['code']}"
                         if payload is not None
@@ -408,7 +423,7 @@ class McpClientCore:
                     )
                 ),
             )
-        return result.structuredContent or result.content
+        return result.structured_content or result.content
 
     async def list_resources(self) -> list[Any]:
         """Read the complete resource catalog, following every cursor."""
@@ -418,13 +433,17 @@ class McpClientCore:
         for _ in range(MAX_CATALOG_PAGES):
             try:
                 with anyio.fail_after(DEFAULT_LIST_TIMEOUT.total_seconds()):
-                    page = await session.list_resources(cursor=cursor)
+                    page = await session.list_resources(
+                        params=PaginatedRequestParams(cursor=cursor)
+                        if cursor
+                        else None
+                    )
             except TimeoutError as exc:
                 raise McpTimeoutError(
                     f"{self.connector_id} resources/list timed out"
                 ) from exc
             resources.extend(page.resources)
-            cursor = page.nextCursor
+            cursor = page.next_cursor
             if not cursor:
                 return resources
         raise McpTransportError(
@@ -432,10 +451,8 @@ class McpClientCore:
         )
 
     async def read_resource(self, uri: str) -> Any:
-        from pydantic import AnyUrl
-
         with anyio.fail_after(DEFAULT_LIST_TIMEOUT.total_seconds()):
-            result = await self._require_session().read_resource(AnyUrl(uri))
+            result = await self._require_session().read_resource(uri)
         return result.contents
 
     async def __aenter__(self) -> "McpClientCore":

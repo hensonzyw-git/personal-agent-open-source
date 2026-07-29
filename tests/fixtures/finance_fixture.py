@@ -30,7 +30,7 @@ def fixture_catalog() -> list[dict[str, Any]]:
         {
             "name": entry["name"],
             "description": entry["summary"],
-            "inputSchema": entry["model_input_schema"],
+            "input_schema": entry["model_input_schema"],
         }
         for entry in manifest["tools"]
         if entry["enabled"]

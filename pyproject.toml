@@ -9,13 +9,14 @@ description = "Henson's single-user Personal Agent backend and Personal Data MCP
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-  "mcp>=1.27,<2",
-  "pydantic>=2.11,<3",
+  "mcp>=2,<3",
+  "pydantic>=2.12,<3",
   "fastapi>=0.139,<1",
   "uvicorn>=0.51,<1",
   "sqlalchemy>=2.0,<3",
   "alembic>=1.18,<2",
   "httpx>=0.28,<1",
+  "httpx2>=2.5,<3",
   "cryptography>=49,<50",
   "pyjwt>=2.13,<3",
   "jsonschema>=4.23,<5",
@@ -25,9 +26,6 @@ dependencies = [
 adk = [
   "google-adk",
   "litellm>=1.83,<1.92",
-]
-claude = [
-  "claude-agent-sdk",
 ]
 
 [dependency-groups]

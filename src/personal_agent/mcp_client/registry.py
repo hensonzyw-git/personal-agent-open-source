@@ -120,7 +120,7 @@ class ConnectorRegistry:
 
         for tool in discovered:
             alias = self._alias_for(connector_id, trust_level, tool.name)
-            observed_hash = schema_hash(tool.inputSchema)
+            observed_hash = schema_hash(tool.input_schema)
 
             if trust_level is TrustLevel.PERSONAL_DATA:
                 contract = self._by_name.get(tool.name)
@@ -160,7 +160,7 @@ class ConnectorRegistry:
                 remote_name=tool.name,
                 alias=alias,
                 schema_hash=observed_hash,
-                input_schema=tool.inputSchema,
+                input_schema=tool.input_schema,
                 description=tool.description or "",
             )
 
