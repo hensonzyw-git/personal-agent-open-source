@@ -205,8 +205,13 @@ def build_cases(today: str) -> list[Case]:
         Case(
             id="expense_indirect_family",
             text="给家里买了个电饭煲 399",
-            why="`给家里` is explicitly not an explicit family declaration",
-            expect=expect_clarification(),
+            why="`给家里` with a purchase counts as family expense (Henson 2026-07-29)",
+            expect=expect_tool(
+                "finance.log_expense",
+                input_amount="399",
+                is_family_expense=True,
+                entry_kind="expense",
+            ),
         ),
         Case(
             id="expense_power_bank_ambiguous",
