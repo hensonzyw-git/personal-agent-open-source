@@ -219,17 +219,39 @@ class StructuredModelClient:
             ) from exc
 
 
+#: The classifier may run on a smaller, faster model than Chat. The 2026-07-29
+#: live run measured 8.3s, 12.2s and 16.7s for the flagship, with one 20s
+#: timeout, on a call that sits in the request path before the message is
+#: anchored -- unusable as latency, however correct the answers were. This is a
+#: closed-schema judgement, not a conversation, so the deployment names a fast
+#: model here. It is **not** given a default of its own: inventing a model id
+#: that may not exist would fail at runtime, so an unset value keeps today's
+#: behaviour and the operator opts in.
+CLASSIFIER_MODEL_ENV: Final[str] = "GLM_CLASSIFIER_MODEL"
+
+#: The in-path deadline. Shorter than the Compactor's on purpose: a classifier
+#: that does not answer in time continues the current Session (§6.1 step 9),
+#: which costs some irrelevance, while a slow one costs the user every message.
+CLASSIFIER_TIMEOUT_SECONDS: Final[float] = 8.0
+
+
 def structured_client_from_env(
     *,
     input_budget_tokens: int,
     generate: Generate | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    model_env: str = "GLM_MODEL",
 ) -> StructuredModelClient:
-    """Build the production client from an already-loaded environment."""
+    """Build the production client from an already-loaded environment.
+
+    `model_env` lets one deployment run the two auxiliary calls on different
+    models. It falls back to `GLM_MODEL`, so an unset override changes nothing.
+    """
     import os
 
+    model = os.environ.get(model_env) or os.environ.get("GLM_MODEL", "glm-5.2")
     return StructuredModelClient(
-        model=f"openai/{os.environ.get('GLM_MODEL', 'glm-5.2')}",
+        model=f"openai/{model}",
         api_key=require_env("ZAI_API_KEY"),
         input_budget_tokens=input_budget_tokens,
         api_base=os.environ.get("GLM_OPENAI_BASE_URL", ZHIPU_API_BASE),

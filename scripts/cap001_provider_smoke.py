@@ -59,6 +59,8 @@ from personal_agent.keys import HmacKey
 from personal_agent.runtime.compactor_provider import GlmCompactorProvider
 from personal_agent.runtime.session_classifier import GlmBoundaryClassifier
 from personal_agent.runtime.structured import (
+    CLASSIFIER_MODEL_ENV,
+    CLASSIFIER_TIMEOUT_SECONDS,
     StructuredCallError,
     StructuredModelClient,
     structured_client_from_env,
@@ -475,7 +477,11 @@ def main(argv: list[str] | None = None) -> int:
         # call per client, and the two providers must not queue behind each
         # other in a smoke run.
         classifier = GlmBoundaryClassifier(
-            structured_client_from_env(input_budget_tokens=32_768)
+            structured_client_from_env(
+                input_budget_tokens=32_768,
+                timeout=CLASSIFIER_TIMEOUT_SECONDS,
+                model_env=CLASSIFIER_MODEL_ENV,
+            )
         )
         compactor_client = structured_client_from_env(input_budget_tokens=32_768)
         for case in classifier_all:
@@ -496,6 +502,9 @@ def main(argv: list[str] | None = None) -> int:
             "kind": "cap001_provider_smoke",
             "generated_at": utc_now().isoformat(),
             "model": os.environ.get("GLM_MODEL", "glm-5.2"),
+            "classifier_model": os.environ.get(CLASSIFIER_MODEL_ENV)
+            or os.environ.get("GLM_MODEL", "glm-5.2"),
+            "classifier_timeout_seconds": CLASSIFIER_TIMEOUT_SECONDS,
             "endpoint_pinning_refused_tampered_host": pinned,
             "cases": [
                 {

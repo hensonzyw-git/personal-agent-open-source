@@ -93,6 +93,8 @@ from personal_agent.runtime.interpreter import ModelInterpreter
 from personal_agent.runtime.prompt import build_system_prompt
 from personal_agent.runtime.session_classifier import GlmBoundaryClassifier
 from personal_agent.runtime.structured import (
+    CLASSIFIER_MODEL_ENV,
+    CLASSIFIER_TIMEOUT_SECONDS,
     StructuredCallError,
     structured_client_from_env,
 )
@@ -503,15 +505,25 @@ async def agent_service(
         # endpoint as Chat, one declared function per call. Built here beside
         # the gateway so a deployment that cannot reach the model fails at
         # startup rather than on the first boundary decision.
-        structured = build_structured_client(
+        # Two clients, not one. The deadline guard keeps a single in-flight
+        # call per client, so sharing one would let a background compaction
+        # disable classification for every message that arrived while it ran.
+        # They also run on different models and deadlines: classification is in
+        # the request path, compaction is not.
+        compactor_client = build_structured_client(
             input_budget_tokens=context_config.hard_limit_tokens
+        )
+        classifier_client = build_structured_client(
+            input_budget_tokens=context_config.hard_limit_tokens,
+            timeout=CLASSIFIER_TIMEOUT_SECONDS,
+            model_env=CLASSIFIER_MODEL_ENV,
         )
     except (ModelGatewayError, StructuredCallError) as exc:
         # A missing model credential or a tampered endpoint is a deployment
         # failure, not something to discover on the first message.
         raise CompositionError(f"the model gateway could not be built: {exc}") from exc
     compactor = Compactor(
-        context_config, provider=GlmCompactorProvider(structured)
+        context_config, provider=GlmCompactorProvider(compactor_client)
     )
     # The one assembly point for model context.
     context_builder = ContextBuilder(context_config, compactor=compactor)
@@ -648,7 +660,7 @@ async def agent_service(
                     # and every uncertain answer still continues the Session.
                     session_manager=SessionManager(
                         context_config,
-                        classifier=GlmBoundaryClassifier(structured),
+                        classifier=GlmBoundaryClassifier(classifier_client),
                         state_provider=CheckpointCompactStateProvider(
                             compactor, keyring
                         ),

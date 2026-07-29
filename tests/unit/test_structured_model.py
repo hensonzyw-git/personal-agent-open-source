@@ -31,9 +31,12 @@ from personal_agent.context.session_manager import (
 from personal_agent.runtime.compactor_provider import GlmCompactorProvider
 from personal_agent.runtime.session_classifier import GlmBoundaryClassifier
 from personal_agent.runtime.structured import (
+    CLASSIFIER_MODEL_ENV,
+    CLASSIFIER_TIMEOUT_SECONDS,
     StructuredCallError,
     StructuredModelClient,
     StructuredRequest,
+    structured_client_from_env,
 )
 
 
@@ -188,6 +191,68 @@ def test_a_provider_that_never_returns_is_bounded() -> None:
             client.call(_request())
     finally:
         release.set()
+
+
+def test_two_clients_do_not_share_one_in_flight_slot() -> None:
+    """The classifier must not be disabled by a background compaction.
+
+    The deadline guard keeps one in-flight call *per client*. Composition
+    therefore builds two, on their own models and deadlines; a single shared
+    client would have made every message that arrived during a compaction fall
+    back to `continue_session` with no call at all.
+    """
+    import threading as _threading
+
+    release = _threading.Event()
+
+    def hangs(**kwargs):
+        release.wait(30.0)
+        return _response(_call("decide", {}))
+
+    busy = StructuredModelClient(
+        model="openai/glm-5.2",
+        api_key="k",
+        input_budget_tokens=32_768,
+        api_base=PINNED,
+        generate=hangs,
+        timeout=0.05,
+        deadline_grace_seconds=0.05,
+    )
+    other, _ = _client(_response(_call("decide", {"ok": True})))
+    try:
+        with pytest.raises(StructuredCallError, match="deadline"):
+            busy.call(_request())
+        # The second client is unaffected by the first one's stuck worker.
+        assert other.call(_request()) == {"ok": True}
+    finally:
+        release.set()
+
+
+def test_the_classifier_may_run_on_its_own_model(monkeypatch) -> None:
+    """An unset override changes nothing; a set one is used verbatim."""
+    monkeypatch.setenv("ZAI_API_KEY", "k")
+    monkeypatch.setenv("GLM_MODEL", "glm-5.2")
+    monkeypatch.delenv(CLASSIFIER_MODEL_ENV, raising=False)
+    monkeypatch.delenv("GLM_OPENAI_BASE_URL", raising=False)
+
+    default = structured_client_from_env(
+        input_budget_tokens=32_768, model_env=CLASSIFIER_MODEL_ENV
+    )
+    assert default._model == "openai/glm-5.2"
+
+    monkeypatch.setenv(CLASSIFIER_MODEL_ENV, "glm-fast-placeholder")
+    overridden = structured_client_from_env(
+        input_budget_tokens=32_768,
+        model_env=CLASSIFIER_MODEL_ENV,
+        timeout=CLASSIFIER_TIMEOUT_SECONDS,
+    )
+    assert overridden._model == "openai/glm-fast-placeholder"
+    assert overridden._timeout == CLASSIFIER_TIMEOUT_SECONDS
+    # Chat is untouched by the override.
+    assert (
+        structured_client_from_env(input_budget_tokens=32_768)._model
+        == "openai/glm-5.2"
+    )
 
 
 def test_a_transport_failure_fails_closed() -> None:

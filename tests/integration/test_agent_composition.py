@@ -570,7 +570,7 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
     classifier_committed = threading.Event()
     classifier_calls: list[str] = []
 
-    def structured_client(*, input_budget_tokens: int):
+    def structured_client(*, input_budget_tokens: int, **overrides):
         def generate(**kwargs):
             function_name = kwargs["declarations"][0]["function"]["name"]
             if function_name == "session_boundary_decision":
