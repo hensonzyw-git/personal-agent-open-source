@@ -258,9 +258,15 @@ class McpClientCore:
                 raise McpTimeoutError(
                     f"{self.connector_id} did not complete initialize in time"
                 ) from failure
+            # Unwrap ExceptionGroup (anyio task group) to surface the real
+            # error — e.g. a protocol-version mismatch — instead of the
+            # opaque "ExceptionGroup" type name.
+            root = failure
+            while hasattr(root, "exceptions") and root.exceptions:
+                root = root.exceptions[0]
+            detail = str(root) if root else "unknown"
             raise McpTransportError(
-                f"{self.connector_id} failed to connect: "
-                f"{type(failure).__name__ if failure else 'unknown'}"
+                f"{self.connector_id} failed to connect: {detail}"
             ) from failure
         return self.identity
 
