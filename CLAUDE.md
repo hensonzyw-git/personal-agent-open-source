@@ -1,6 +1,6 @@
 # Personal Agent — Agent Collaboration Guide
 
-> Last updated: 2026-07-28
+> Last updated: 2026-07-29
 >
 > `AGENTS.md` and `CLAUDE.md` must remain byte-for-byte equivalent. Update both
 > in the same change.
@@ -171,31 +171,65 @@ next to §5.1 instead of in a commit message.
   duplicate-decision endpoint and the review-detail read pass `retry=False`
   precisely because they dispatch outside.
 
-### 5.3 Context economy — keeping per-request input small
+### 5.3 Context economy — minimise aggregate token use
 
-These rules exist because a long coding session can spend millions of input
-tokens on repeated prefixes (system prompt + tool schemas + AGENTS.md + full
-conversation history) even when most of that prefix is cache-hit at a discount.
-Cache hits are not free; they are discounted, so a large prefix still costs.
+The optimisation target is the **sum of raw input tokens across the main agent
+and every subagent**, including cache-hit input. A smaller main context is not a
+win if several inherited subagents replay it. Concurrency optimises latency, not
+token use. Roughly:
 
-- **Read large files through a subagent.** Files over ~200 lines should be read
-  via the `Explore` agent (or a custom subagent with `tools: [Read, Grep, Glob]`),
-  not directly with `Read` in the main context. The file contents stay in the
-  subagent's isolated context and only the summary returns to the main session.
-  A 1000-line file read directly adds ~10K tokens to every subsequent request in
-  that session; read through a subagent it adds near-zero.
-- **Shrink the active tool set per session.** Launch read-heavy sessions with a
-  limited tool set (e.g. `--tools Read Grep Glob Agent`) instead of the full
-  30+ tool registry. Each tool's JSON schema travels on every request; 30 tools
-  cost ~15-20K tokens/round. Define coding and research profiles and switch.
-- **Compact proactively.** Run `/compact <focus>` before auto-compaction fires
-  so you control what is retained. Monitor with `/usage`. A lower
-  `model.contextWindow` (400000 instead of 1000000) makes auto-compaction
-  trigger sooner and keeps the per-request prefix smaller.
+`aggregate input ≈ Σ(each agent's model turns × that agent's current prefix)`.
+
+Reduce agent count, inherited history, model turns and repeated tool output in
+that order.
+
+- **Start scoped in the main agent.** Begin with `git status`, `git diff --stat`
+  / `--name-only`, `rg`, and exact line windows. File length alone never
+  authorises a subagent. Reading a few relevant hunks in the main agent is
+  cheaper when the question can be resolved in a small number of turns. Do not
+  print an entire large file or diff into the main context; narrow it first.
+- **Default to zero subagents; use at most one Explore subagent by default.**
+  Delegate only when a large, bounded read can be completed in one shot and
+  keeping that raw material out of several later main-agent turns is expected to
+  reduce the aggregate. Before spawning, state what material is being isolated
+  and why one bounded agent is cheaper than reading it locally. Parallelism by
+  itself is not a reason. Multiple overlapping review agents require an explicit
+  user request or clearly independent, high-risk domains that one pass cannot
+  cover.
+- **Do not fork the conversation by default.** On a surface that exposes
+  `fork_turns`, use `"none"`; otherwise do not copy the transcript. Give the
+  subagent a compact handoff: working directory, commit/range, exact files,
+  applicable scoped-rule paths, questions, and a strict output format. Use the
+  full dialogue only when the task genuinely depends on it; state that reason
+  before spawning.
+- **Make delegated reads one-shot and turn-bounded.** Size the handoff for at
+  most 10 model/tool iterations. A read-only subagent returns one final report
+  with findings, file/line evidence and no copied file bodies; if the budget is
+  insufficient, it returns the best partial evidence instead of continuing. It
+  sends no routine progress messages and is not continued for implementation.
+  The main agent fixes findings. If a fresh independent review is required,
+  start it from a compact handoff rather than extending the long-lived agent.
+- **Bound orchestration turns.** Do not repeatedly poll agents. Use at most two
+  waits per agent, each up to 60 seconds, and rely on the final notification.
+  Avoid status calls that return unchanged state.
+- **Serialise shared-worktree phases.** Do not run a full suite while another
+  agent is editing. Give each file one owner, finish edits, then run targeted
+  tests and one full suite from the stable tree. Do not rerun an unchanged suite
+  merely because another agent reported it.
+- **Do not reread unchanged evidence.** Keep one compact finding record
+  (`file:line`, trigger, actual, expected) and revisit only the changed hunk.
+  Prefer counts and paths over file bodies in agent reports and tool output.
+- **Compact before a long next phase.** Check `/usage` at phase boundaries. If
+  the current input is already large (about 80K tokens) and more than five model
+  turns remain, run `/compact <focus>` or start a fresh narrowly-scoped task
+  before review becomes implementation. Auto-compaction is a last resort.
+- **Shrink the tool registry when the surface supports it.** Use a read-only or
+  coding profile with only the needed tools; do not spawn an extra agent merely
+  to obtain a smaller registry.
 - **Prefer scoped rules over monolithic AGENTS.md.** Area-specific context
   (Finance, iOS, phase gates) belongs in `.qoder/rules/*.md` with `paths`
-  frontmatter, loaded only when matching files are touched. AGENTS.md keeps
-  only cross-cutting rules that every turn needs.
+  frontmatter. Keep this file limited to cross-cutting rules that justify their
+  cost on every turn.
 
 ## 6. Source-of-truth precedence
 

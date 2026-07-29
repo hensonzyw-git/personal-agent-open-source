@@ -156,6 +156,40 @@ def test_an_unsupported_part_payload_fails_closed() -> None:
         client.call(_request())
 
 
+def test_a_provider_that_never_returns_is_bounded() -> None:
+    """The classifier runs in the request path, before the message is anchored.
+
+    An adapter that ignores its own timeout must not hold an executor thread and
+    the user's message with it. The wait is bounded; the abandoned worker is
+    quarantined so repeats cannot stack up.
+    """
+    import threading as _threading
+
+    release = _threading.Event()
+
+    def hangs(**kwargs):
+        release.wait(30.0)
+        return _response(_call("decide", {}))
+
+    client = StructuredModelClient(
+        model="openai/glm-5.2",
+        api_key="k",
+        input_budget_tokens=32_768,
+        api_base=PINNED,
+        generate=hangs,
+        timeout=0.05,
+        deadline_grace_seconds=0.05,
+    )
+    try:
+        with pytest.raises(StructuredCallError, match="deadline"):
+            client.call(_request())
+        # A second call does not spawn another worker behind the stuck one.
+        with pytest.raises(StructuredCallError, match="not returned"):
+            client.call(_request())
+    finally:
+        release.set()
+
+
 def test_a_transport_failure_fails_closed() -> None:
     client, _ = _client(raises=RuntimeError("connection reset"))
     with pytest.raises(StructuredCallError):

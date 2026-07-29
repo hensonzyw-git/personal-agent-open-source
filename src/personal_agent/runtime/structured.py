@@ -19,6 +19,8 @@ own output would be deciding the thing it was asked to propose.
 
 from __future__ import annotations
 
+import queue
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Final
@@ -38,6 +40,10 @@ from personal_agent_core.manifest import canonical_json
 #: run *around* a user's turn, not inside it, and a slow one must not turn into
 #: a slow reply.
 DEFAULT_TIMEOUT_SECONDS: Final[float] = 20.0
+
+#: How long to keep waiting after the provider's own timeout should have fired.
+#: It is a backstop for an adapter that ignored its deadline, not a second one.
+DEADLINE_GRACE_SECONDS: Final[float] = 5.0
 
 _SUPPORTED_PART_FIELDS: Final[frozenset[str]] = frozenset(
     {"function_call", "text", "thought"}
@@ -74,7 +80,10 @@ class StructuredModelClient:
         api_base: str = ZHIPU_API_BASE,
         generate: Generate | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        deadline_grace_seconds: float = DEADLINE_GRACE_SECONDS,
     ) -> None:
+        if deadline_grace_seconds <= 0:
+            raise StructuredCallError("deadline grace must be positive")
         if timeout <= 0 or timeout > 25.0:
             raise StructuredCallError(
                 "structured call timeout must be within the 25-second budget"
@@ -93,6 +102,17 @@ class StructuredModelClient:
         self._timeout = timeout
         self._input_budget_tokens = input_budget_tokens
         self._generate = generate or generate_with_adk
+        # Python cannot kill a thread whose provider ignored its own timeout, so
+        # this bounds the *wait*, not the call, and keeps at most one abandoned
+        # worker per client. The classifier runs in the request path before the
+        # message is anchored: without this, one adapter that never returns
+        # holds an executor thread and the user's message with it, and repeats
+        # of that exhaust the pool. The Compactor has the same guard for the
+        # same reason; having it in only one of the two was the asymmetry that
+        # mattered, since the guarded one runs in the background.
+        self._worker_lock = threading.Lock()
+        self._worker: threading.Thread | None = None
+        self._deadline_grace = deadline_grace_seconds
 
     def call(self, request: StructuredRequest) -> dict[str, Any]:
         declaration = {
@@ -124,8 +144,62 @@ class StructuredModelClient:
             raise StructuredCallError(
                 "structured model input exceeded the configured budget"
             )
+        return _parse(
+            self._generate_bounded(request, declaration),
+            expected=request.function_name,
+        )
+
+    def _generate_bounded(
+        self, request: StructuredRequest, declaration: dict[str, Any]
+    ) -> Any:
+        """Call the provider behind a hard wall-clock limit."""
+        outcome: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+        def invoke() -> None:
+            try:
+                outcome.put((True, self._call_generator(request, declaration)))
+            except BaseException as exc:  # noqa: BLE001 - reported to the caller
+                outcome.put((False, exc))
+
+        with self._worker_lock:
+            if self._worker is not None and self._worker.is_alive():
+                # A previous call is still out there. Starting another would
+                # stack abandoned workers behind a provider that is already
+                # not returning.
+                raise StructuredCallError(
+                    "a previous structured call has not returned"
+                )
+            worker = threading.Thread(
+                target=invoke,
+                name=f"personal-agent-structured-{id(self):x}",
+                daemon=True,
+            )
+            self._worker = worker
+            worker.start()
+        # A margin over the provider's own timeout: this is the backstop for an
+        # adapter that ignored it, not a second, tighter deadline.
+        worker.join(self._timeout + self._deadline_grace)
+        if worker.is_alive():
+            raise StructuredCallError("structured model call exceeded its deadline")
         try:
-            response = self._generate(
+            succeeded, value = outcome.get_nowait()
+        except queue.Empty as exc:  # pragma: no cover - worker/result disagree
+            raise StructuredCallError(
+                "structured model call produced no result"
+            ) from exc
+        if not succeeded:
+            if isinstance(value, StructuredCallError):
+                raise value
+            raise StructuredCallError(
+                f"structured model call failed: {type(value).__name__}"
+            ) from value
+        return value
+
+    def _call_generator(
+        self, request: StructuredRequest, declaration: dict[str, Any]
+    ) -> Any:
+        try:
+            return self._generate(
                 model=self._model,
                 api_key=self._api_key,
                 api_base=self._api_base,
@@ -143,7 +217,6 @@ class StructuredModelClient:
             raise StructuredCallError(
                 f"structured model call failed: {type(exc).__name__}"
             ) from exc
-        return _parse(response, expected=request.function_name)
 
 
 def structured_client_from_env(
