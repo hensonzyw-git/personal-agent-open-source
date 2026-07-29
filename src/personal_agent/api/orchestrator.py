@@ -265,6 +265,12 @@ def run_operation(
         )
     try:
         envelope = build_context()
+        # End the transaction the assembly reads opened. A transaction that has
+        # read cannot write once anyone else has committed (SQLite reports the
+        # snapshot as unusable rather than waiting), and the model turn is the
+        # longest window in the system for someone else to commit. This also
+        # persists any Checkpoint the builder had to invalidate.
+        session.commit()
     except AppError as refused:
         if refused.code not in _CONTEXT_FAILURES:
             raise
@@ -551,6 +557,12 @@ def _step(
         failure_reason=failure_reason,
         zero_write_proven=zero_write_proven,
     )
+    # Each transition is durable on its own, and the transaction closes here
+    # rather than staying open across the next model or MCP call. The state
+    # machine is forward-only, so there is nothing a later failure would want
+    # to take back -- and a half-hour-old read snapshot is exactly what makes
+    # a later write fail.
+    session.commit()
     session.refresh(operation)
 
 

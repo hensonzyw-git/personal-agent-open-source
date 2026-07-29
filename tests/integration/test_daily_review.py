@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import select
 
 from personal_agent.api.control_client import ControlPlaneError, SuccessfulWrite
+from personal_agent_core.sqlite import run_write_transaction
 from personal_agent.api.daily_review import (
     MAX_CATCH_UP_DAYS,
     ReviewResult,
@@ -276,6 +277,11 @@ def test_two_runs_racing_on_the_same_day_still_produce_one_card(sessions) -> Non
     The interleave is forced deterministically: the second run commits its card
     while the first is still inside its own control read, so the first run's
     pre-check has already passed and only the constraint can stop it.
+
+    The loser now reaches that constraint through a retry: its read snapshot is
+    unusable once the winner commits, so the unit of work is re-run against
+    fresh state -- which is what `review_job` does in production and why the
+    assertion below is on the *converged* outcome, not on the first attempt.
     """
     other = Reader({"2026-07-25": [write("recB")]})
 
@@ -286,16 +292,19 @@ def test_two_runs_racing_on_the_same_day_still_produce_one_card(sessions) -> Non
         return [write("recA")]
 
     with sessions() as session:
-        outcome = build_review(session, racing_reader, day=YESTERDAY, now=NOW)
-        session.commit()
+        outcome = run_write_transaction(
+            session,
+            lambda: build_review(session, racing_reader, day=YESTERDAY, now=NOW),
+        )
 
-        assert outcome.result is ReviewResult.ALREADY_EXISTS
-        assert outcome.should_notify is False
+        # One card for the day -- the unique key held -- and the retry left the
+        # loser's own write on it rather than dropping it until the next run.
+        assert outcome.result is ReviewResult.UPDATED
         assert len(reviews(session)) == 1
-        # The winner's card is intact; the loser wrote nothing.
         card = reviews(session)[0]
         assert {item.record_id for item in items(session, card.review_id)} == {
-            "recB"
+            "recA",
+            "recB",
         }
 
 

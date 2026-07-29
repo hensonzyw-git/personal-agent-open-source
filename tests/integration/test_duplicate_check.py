@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.crypto import KeyRing, generate_key
 from personal_data_mcp.finance.duplicate_check import (
     Candidate,
@@ -349,14 +350,23 @@ def test_a_stale_session_cannot_authorise_an_already_spent_decision(
         )
         winning_session.commit()
 
-        with pytest.raises(OverrideRefused, match="concurrently"):
-            authorise_override(
+        # The Finance write path runs this unit through the retrying helper,
+        # because a session that has read cannot write once the winner commits.
+        # The retry re-reads the decision and refuses it for what it now is --
+        # already spent -- instead of the "decided concurrently" the CAS reports
+        # when the stale read was allowed to reach the UPDATE. One refusal
+        # either way; the second authorisation never happens.
+        with pytest.raises(OverrideRefused, match="already write_anyway"):
+            run_write_transaction(
                 stale_session,
-                check_id=finding.check_id,
-                entry=LUNCH,
-                current_candidates=candidates,
-                keyring=keyring,
-                now=NOW,
+                lambda: authorise_override(
+                    stale_session,
+                    check_id=finding.check_id,
+                    entry=LUNCH,
+                    current_candidates=candidates,
+                    keyring=keyring,
+                    now=NOW,
+                ),
             )
     finally:
         stale_session.close()

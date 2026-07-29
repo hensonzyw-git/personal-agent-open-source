@@ -38,16 +38,15 @@ def run_migrations_online() -> None:
         )
 
     with connectable.connect() as connection:
-        # A `PRAGMA` is not DML, so pysqlite does not open a transaction for it
-        # and the setting actually takes effect. Inside a transaction it would
-        # be a silent no-op.
-        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
-        # SQLAlchemy 2.0 opens a transaction on the first statement, and
-        # Alembic's `begin_transaction()` becomes a no-op when it finds one
-        # already open -- leaving nobody to commit, so the whole migration
-        # would roll back on close. Releasing it here hands ownership back to
-        # Alembic; the PRAGMA is connection state and survives the rollback.
-        connection.rollback()
+        # SQLite ignores `PRAGMA foreign_keys` inside a transaction, silently.
+        # The engine hands transaction control to SQLAlchemy so that
+        # `begin_nested()` is a real savepoint, which means any statement
+        # executed through `connection` opens a transaction first -- including
+        # this PRAGMA, which would then be a no-op and leave the cascade hazard
+        # above in force. Driving the DBAPI cursor directly keeps it outside a
+        # transaction, and leaves Alembic's `begin_transaction()` as the sole
+        # owner of the migration's own.
+        _pragma(connection, "foreign_keys=OFF")
         try:
             context.configure(
                 connection=connection,
@@ -68,7 +67,16 @@ def run_migrations_online() -> None:
                         "violation(s); rolling back"
                     )
         finally:
-            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+            _pragma(connection, "foreign_keys=ON")
+
+
+def _pragma(connection, statement: str) -> None:
+    """Apply a PRAGMA outside any transaction, through the DBAPI cursor."""
+    cursor = connection.connection.cursor()
+    try:
+        cursor.execute(f"PRAGMA {statement}")
+    finally:
+        cursor.close()
 
 
 if context.is_offline_mode():

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from personal_agent.api.operation_state import StaleOperationVersionError
+from personal_agent_core.sqlite import run_write_transaction
 from personal_agent.api.operation_store import (
     chat_request_fingerprint,
     get_operation,
@@ -281,10 +282,16 @@ def test_cancel_racing_submit_keeps_the_flag_and_reports_the_new_state(
         )
         worker.commit()
 
-    outcome = request_cancel(
-        stale_session, operation_id=operation_id, now=NOW
+    # `DELETE /v1/operations/{id}` runs this through the retrying helper: the
+    # stale session read before the worker committed, so its first write is
+    # refused by SQLite and the retry re-reads the operation as
+    # `source_in_progress`.
+    outcome = run_write_transaction(
+        stale_session,
+        lambda: request_cancel(
+            stale_session, operation_id=operation_id, now=NOW
+        ),
     )
-    stale_session.commit()
     stale_session.close()
 
     assert outcome.cancelled is False

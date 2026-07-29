@@ -16,15 +16,19 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, TypeVar
 
 from sqlalchemy import Engine, MetaData, Text, TypeDecorator, create_engine, event, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from personal_agent_core.timeutil import parse_rfc3339, to_rfc3339
 
+
+T = TypeVar("T")
 
 BUSY_TIMEOUT_MS: Final[int] = 5_000
 
@@ -149,6 +153,12 @@ class EncryptedEnvelope(TypeDecorator[dict[str, Any]]):
 
 
 def _configure_connection(dbapi_connection: Any, _record: Any) -> None:
+    # pysqlite opens a transaction before DML but *not* before `SAVEPOINT`, so
+    # with its own transaction handling a released `begin_nested()` block is
+    # committed on the spot and `Session.rollback()` cannot undo it. Handing
+    # transaction control to SQLAlchemy -- this line plus the explicit `BEGIN`
+    # below -- is what makes a savepoint a savepoint and a rollback a rollback.
+    dbapi_connection.isolation_level = None
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute("PRAGMA journal_mode=WAL")
@@ -159,11 +169,76 @@ def _configure_connection(dbapi_connection: Any, _record: Any) -> None:
         cursor.close()
 
 
+def _begin_transaction(connection: Any) -> None:
+    """Emit the `BEGIN` that pysqlite no longer emits once we own transactions."""
+    connection.exec_driver_sql("BEGIN")
+
+
 def create_database_engine(path: Path | str, *, echo: bool = False) -> Engine:
-    """Build an engine with the required PRAGMAs applied to every connection."""
+    """Build an engine with the required PRAGMAs and real transaction control.
+
+    The two listeners are a pair: disabling pysqlite's implicit `BEGIN` without
+    emitting one would leave every statement in autocommit. Both services share
+    this because they must not disagree about what a transaction is.
+    """
     engine = create_engine(f"sqlite+pysqlite:///{path}", echo=echo, future=True)
     event.listen(engine, "connect", _configure_connection)
+    event.listen(engine, "begin", _begin_transaction)
     return engine
+
+
+#: SQLite's answer when a transaction that already read tries to write after
+#: someone else committed: the snapshot it holds can no longer be upgraded. WAL
+#: reports it immediately -- `busy_timeout` does not apply, because waiting
+#: cannot help -- so the only correct response is to end the transaction and run
+#: the whole unit of work again against fresh state.
+_SNAPSHOT_CONFLICT_MARKERS: Final[tuple[str, ...]] = (
+    "database is locked",
+    "database table is locked",
+)
+
+
+def is_snapshot_conflict(error: BaseException) -> bool:
+    """Whether this error means "your read snapshot is stale; start over"."""
+    if not isinstance(error, OperationalError):
+        return False
+    return any(
+        marker in str(error.orig).lower() for marker in _SNAPSHOT_CONFLICT_MARKERS
+    )
+
+
+def run_write_transaction(
+    session: Session,
+    work: Callable[[], T],
+    *,
+    attempts: int = 3,
+) -> T:
+    """Run one unit of database work, retrying a lost read snapshot.
+
+    Only for work with **no external side effects**: it is called again from
+    the start, so a unit that may have written to Feishu, asked a model or
+    dispatched an MCP call must not be wrapped here. An idempotent read of our
+    own control plane is safe, at the cost of repeating it. Every mutation in
+    both services is a compare-and-swap guarded by `state_version` or a unique
+    constraint, so a retry re-reads the current row and either proceeds
+    correctly or reports the same conflict it would have reported without the
+    race.
+    """
+    if attempts < 1:
+        raise ValueError("attempts must be positive")
+    for remaining in range(attempts - 1, -1, -1):
+        try:
+            result = work()
+            session.commit()
+            return result
+        except Exception as error:
+            session.rollback()
+            if remaining and is_snapshot_conflict(error):
+                # The session is clean again; the next attempt begins a new
+                # transaction and therefore reads a fresh snapshot.
+                continue
+            raise
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 def check_integrity(engine: Engine) -> None:

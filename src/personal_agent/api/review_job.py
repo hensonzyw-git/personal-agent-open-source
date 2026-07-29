@@ -32,6 +32,7 @@ from personal_agent.api.control_client import (
     FinanceControlClient,
     SuccessfulWrite,
 )
+from personal_agent_core.sqlite import run_write_transaction
 from personal_agent.api.daily_review import (
     MAX_CATCH_UP_DAYS,
     ReviewOutcome,
@@ -89,19 +90,30 @@ def run_daily_review(
     for day in catch_up_days(day_now, max_days):
         with sessions() as session:
             try:
-                outcome = build_review(session, read_writes, day=day, now=moment)
-                if outcome.should_notify and outcome.review_id is not None:
-                    queued = enqueue_review_notification(
-                        session,
-                        review_id=outcome.review_id,
-                        now=moment,
-                        requeue_existing=(
-                            outcome.result is ReviewResult.UPDATED
-                        ),
+                def build_day() -> ReviewOutcome:
+                    """One day's card, re-runnable if another run raced us.
+
+                    The only external call inside is the control plane's own
+                    read of that day's verified writes, which is idempotent; a
+                    retry repeats it rather than acting twice.
+                    """
+                    outcome = build_review(
+                        session, read_writes, day=day, now=moment
                     )
-                    report.notified_reviews.append(outcome.review_id)
-                    report.queued_notifications += len(queued)
-                session.commit()
+                    if outcome.should_notify and outcome.review_id is not None:
+                        queued = enqueue_review_notification(
+                            session,
+                            review_id=outcome.review_id,
+                            now=moment,
+                            requeue_existing=(
+                                outcome.result is ReviewResult.UPDATED
+                            ),
+                        )
+                        report.notified_reviews.append(outcome.review_id)
+                        report.queued_notifications += len(queued)
+                    return outcome
+
+                outcome = run_write_transaction(session, build_day)
             except ControlPlaneError as exc:
                 session.rollback()
                 logger.warning(

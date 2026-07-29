@@ -229,9 +229,17 @@ def recover_pending(
         .filter(Operation.state.in_(sorted(RECOVERABLE_OPERATION_STATES)))
         .all()
     )
+    # Every control-plane read happens first, with no transaction open. Holding
+    # one across these calls would mean the first write afterwards fails if
+    # anything else committed in between, and reading them all before touching
+    # any row is also what keeps this projection all-or-nothing: an unreadable
+    # control plane aborts before a single operation has moved.
+    keys = [operation.idempotency_key for operation in pending]
+    session.commit()
+    statuses = [read_status(key) for key in keys]
+
     results: list[tuple[str, RecoveryPlan]] = []
-    for operation in pending:
-        status = read_status(operation.idempotency_key)
+    for operation, status in zip(pending, statuses, strict=True):
         plan = apply_recovery(session, operation, status, now=now)
         results.append((operation.operation_id, plan))
     return results

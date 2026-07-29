@@ -166,6 +166,13 @@ def deliver_pending(
     Each row is attempted at most once per call, and a failure schedules the
     next attempt rather than looping here: a provider that is down should not be
     hammered inside one job run.
+
+    The caller commits once, after the loop. That is safe only while the sender
+    reaches nothing: `UnavailablePushSender` is the only one shipped. Wiring a
+    real APNs sender must also split this so no transaction stays open across a
+    provider call -- otherwise a concurrent commit costs the whole batch its
+    delivery records after APNs already accepted them, and the next run sends
+    them again.
     """
     due = list(
         session.scalars(

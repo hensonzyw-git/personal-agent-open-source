@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.money import quantize_cny
+from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import ledger_day_epoch_millis, utc_now
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
@@ -199,15 +200,19 @@ async def write_income(
         candidates = find_exact_duplicates(duplicate_intent, rows)
         if duplicate_override is not None:
             with sessions() as session:
-                authorise_override(
+                # See `write_path`: read-then-CAS, so a lost snapshot retries
+                # into the same refusal rather than a lock error.
+                run_write_transaction(
                     session,
-                    check_id=duplicate_override,
-                    entry=duplicate_intent,
-                    current_candidates=candidates,
-                    keyring=keyring,
-                    now=now(),
+                    lambda: authorise_override(
+                        session,
+                        check_id=duplicate_override,
+                        entry=duplicate_intent,
+                        current_candidates=candidates,
+                        keyring=keyring,
+                        now=now(),
+                    ),
                 )
-                session.commit()
         elif candidates:
             with sessions() as session:
                 finding = raise_check(

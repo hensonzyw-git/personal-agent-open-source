@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import utc_now
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
@@ -478,15 +479,21 @@ async def submit_expense(
         candidates = find_exact_duplicates(entry, ledger_rows)
         if duplicate_override is not None:
             with sessions() as session:
-                authorise_override(
+                # Read-then-compare-and-swap: a concurrent release invalidates
+                # this transaction's snapshot, and the retry re-reads the
+                # decision and refuses it as already spent -- the same answer,
+                # reached honestly.
+                run_write_transaction(
                     session,
-                    check_id=duplicate_override,
-                    entry=entry,
-                    current_candidates=candidates,
-                    keyring=keyring,
-                    now=now(),
+                    lambda: authorise_override(
+                        session,
+                        check_id=duplicate_override,
+                        entry=entry,
+                        current_candidates=candidates,
+                        keyring=keyring,
+                        now=now(),
+                    ),
                 )
-                session.commit()
         elif candidates:
             with sessions() as session:
                 finding = raise_check(

@@ -44,6 +44,7 @@ from personal_agent.storage.models import (
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.manifest import canonical_json
+from personal_agent_core.sqlite import run_write_transaction
 
 
 COMPACTOR_VERSION: Final[str] = "compactor-v1"
@@ -853,6 +854,10 @@ class Compactor:
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail="compactor has no provider configured",
             )
+        # End the transaction the source gathering opened. The provider call is
+        # the longest window in a build, and a transaction that has read cannot
+        # write once anyone else has committed.
+        db.commit()
 
         request = CompactorRequest(
             session_id=session_id,
@@ -903,39 +908,49 @@ class Compactor:
         if failure is not None:
             return BuildResult(status="validation_failed", failure=failure)
 
-        if mode is not BuildMode.FIRST and parent_row is not None:
-            fresh_status = db.execute(
-                text(
-                    "SELECT status FROM context_checkpoints "
-                    "WHERE checkpoint_id = :cid"
+        def finalise() -> BuildResult:
+            """The write half, re-runnable against fresh state.
+
+            A concurrent build that commits between the source read and this
+            write invalidates our snapshot; the retry re-reads the parent's real
+            status, so the loser reports `stale_parent` or `lost_race` -- the
+            outcomes it would have reported anyway -- instead of a lock error.
+            """
+            if mode is not BuildMode.FIRST and parent_row is not None:
+                fresh_status = db.execute(
+                    text(
+                        "SELECT status FROM context_checkpoints "
+                        "WHERE checkpoint_id = :cid"
+                    ),
+                    {"cid": parent_row.checkpoint_id},
+                ).scalar_one_or_none()
+                if fresh_status != "active":
+                    return BuildResult(status="stale_parent")
+
+            supersede_id: str | None = None
+            if mode is BuildMode.INCREMENTAL:
+                supersede_id = parent_checkpoint_id
+            elif mode is BuildMode.FULL_REBUILD and parent_row is not None:
+                supersede_id = parent_row.checkpoint_id
+
+            return self._commit_checkpoint(
+                db,
+                keyring,
+                identifier_key,
+                session_id=session_id,
+                payload=payload,
+                sources=sources,
+                expected_hash=expected_hash,
+                parent_checkpoint_id=(
+                    parent_checkpoint_id
+                    if mode is BuildMode.INCREMENTAL
+                    else None
                 ),
-                {"cid": parent_row.checkpoint_id},
-            ).scalar_one_or_none()
-            if fresh_status != "active":
-                return BuildResult(status="stale_parent")
+                supersede_id=supersede_id,
+                now=now,
+            )
 
-        supersede_id: str | None = None
-        if mode is BuildMode.INCREMENTAL:
-            supersede_id = parent_checkpoint_id
-        elif mode is BuildMode.FULL_REBUILD and parent_row is not None:
-            supersede_id = parent_row.checkpoint_id
-
-        return self._commit_checkpoint(
-            db,
-            keyring,
-            identifier_key,
-            session_id=session_id,
-            payload=payload,
-            sources=sources,
-            expected_hash=expected_hash,
-            parent_checkpoint_id=(
-                parent_checkpoint_id
-                if mode is BuildMode.INCREMENTAL
-                else None
-            ),
-            supersede_id=supersede_id,
-            now=now,
-        )
+        return run_write_transaction(db, finalise)
 
     def _call_provider(self, request: CompactorRequest) -> Any | None:
         """Call the non-deterministic boundary behind a hard wall-clock limit.

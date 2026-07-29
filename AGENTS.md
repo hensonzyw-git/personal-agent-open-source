@@ -152,20 +152,24 @@ next to §5.1 instead of in a commit message.
   `session.expire_all()` before the read). Concurrent tests are the only
   reliable way to expose this; a single-session test will always see its own
   writes.
-- **`begin_nested()` on this engine commits; it is not a savepoint.** pysqlite
-  opens a transaction before DML but not before `SAVEPOINT`, so a *released*
-  nested block is written to disk immediately and a later `Session.rollback()`
-  cannot undo it. (An exception *inside* the block is still discarded
-  correctly.) Consequences to code around, not to assume away: a failed request
-  can leave rows a nested block already finished — `_discard_unanchored_operation`
-  in `api/app.py` compensates for exactly one such case — and design §6.2's
-  "Boundary Record and event in one transaction" is not literally true today.
-  Do not rely on an outer rollback to erase nested work; make the compensation
-  explicit and test it. Fixing this centrally (pysqlite `isolation_level=None`
-  plus an explicit `BEGIN`) is a real option but changes the concurrency model
-  of both services: real transactions mean a session that reads, then writes
-  after another session committed, gets `SQLITE_BUSY_SNAPSHOT` and must retry.
-  That is Henson's call, not a refactor to slip into another change.
+- **A transaction on this engine is a real transaction, and that has two
+  consequences.** `create_database_engine` disables pysqlite's own transaction
+  handling and emits `BEGIN` itself. Without that, pysqlite never opened a
+  transaction for `SAVEPOINT`, so a released `begin_nested()` block committed on
+  the spot and `Session.rollback()` could not undo it -- a failed request left
+  rows behind, and design 6.2's "Boundary Record and event in one transaction"
+  was not true. With it: (1) rollback really does discard the whole unit, so
+  compensating deletes on error paths are unnecessary and should not be added;
+  (2) a session that has **read** cannot write once another session has
+  committed -- SQLite refuses the snapshot upgrade immediately, and
+  `busy_timeout` does not apply because waiting cannot help. Therefore: never
+  hold a transaction across a model, MCP or Feishu call (commit first -- the
+  orchestrator commits after context assembly and after every state
+  transition), and wrap read-then-write units in
+  `personal_agent_core.sqlite.run_write_transaction`, which re-runs them
+  against fresh state. Only wrap work with no external side effects; the
+  duplicate-decision endpoint and the review-detail read pass `retry=False`
+  precisely because they dispatch outside.
 
 ### 5.3 Context economy — keeping per-request input small
 

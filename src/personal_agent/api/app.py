@@ -33,7 +33,7 @@ from typing import Any, Protocol
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import delete, text as text_clause
+from sqlalchemy import text as text_clause
 
 from personal_agent.api import events
 from personal_agent.api.device_api import (
@@ -85,14 +85,10 @@ from personal_agent.context.config import (
 )
 from personal_agent.context.session_manager import SessionManager
 from personal_agent.keys import HmacKey, HmacKeyRing
-from personal_agent.storage.models import (
-    REVIEW_STATUSES,
-    ApiRequest,
-    Device,
-    Operation,
-)
+from personal_agent.storage.models import REVIEW_STATUSES, Device, Operation
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.sqlite import run_write_transaction
 
 
 logger = logging.getLogger(__name__)
@@ -684,7 +680,6 @@ def _anchor_chat(
     """Persist request, encrypted payload and user event before model work."""
 
     with deps.session_factory() as session:
-        created: tuple[str, str] | None = None
         try:
             # `CAP-001` design 4.2.3: the client value is resolved onto the
             # canonical Timeline *before* the fingerprint, the event and the
@@ -711,7 +706,6 @@ def _anchor_chat(
             operation = opened.operation
             if not opened.created:
                 return _AnchoredChat(operation.operation_id, operation.state)
-            created = (operation.operation_id, operation.request_id)
 
             context = None
             if clarification_of is not None:
@@ -819,11 +813,12 @@ def _anchor_chat(
                 json.dumps(decision.audit_record(), sort_keys=True),
             )
             session.commit()
-            created = None
             return _AnchoredChat(operation.operation_id, operation.state)
         except StaleOperationVersionError as exc:
+            # The rollback below really does remove the request and operation
+            # this call opened: `begin_nested()` is a savepoint on this engine,
+            # so nothing it created survives the failed transaction.
             session.rollback()
-            _discard_unanchored_operation(session, created)
             raise AppError(
                 ErrorCode.INVALID_ARGUMENT,
                 internal_detail=(
@@ -832,30 +827,7 @@ def _anchor_chat(
             ) from exc
         except Exception:
             session.rollback()
-            _discard_unanchored_operation(session, created)
             raise
-
-
-def _discard_unanchored_operation(
-    session, created: tuple[str, str] | None
-) -> None:
-    """Remove a request whose source-validation transaction never anchored it.
-
-    `open_operation` uses a SAVEPOINT to resolve idempotency races. SQLite may
-    persist that SAVEPOINT even when a later source-clarification CAS loses, so
-    rollback alone is not sufficient evidence that the new request disappeared.
-    The ids here were created by this call and have no Timeline event yet.
-    """
-    if created is None:
-        return
-    operation_id, request_id = created
-    session.execute(
-        delete(Operation).where(Operation.operation_id == operation_id)
-    )
-    session.execute(
-        delete(ApiRequest).where(ApiRequest.request_id == request_id)
-    )
-    session.commit()
 
 
 def _process_chat(
@@ -1044,7 +1016,8 @@ def _process_duplicate_decision(
             )
             return _operation_response(target)
 
-        return _commit(session, work)
+        # `write anyway` dispatches a real Finance write inside `work`.
+        return _commit(session, work, retry=False)
 
 
 def _read_daily_review(deps: AgentApiDeps, request, review_id: str, authenticate):
@@ -1063,20 +1036,28 @@ def _read_daily_review(deps: AgentApiDeps, request, review_id: str, authenticate
                 review_detail(session, review_id, deps.read_record)
             )
 
-        return _commit(session, work)
+        # Opening a card reads live ledger values through the control plane.
+        return _commit(session, work, retry=False)
 
 
-def _commit(session, work: Callable[[], Any]):
-    try:
-        response = work()
-        session.commit()
-        return response
-    except (_Unauthenticated, AppError):
-        session.rollback()
-        raise
-    except Exception:
-        session.rollback()
-        raise
+def _commit(session, work: Callable[[], Any], *, retry: bool = True):
+    """Run one endpoint's database work and commit it.
+
+    `retry` is on by default because an endpoint that reads and then writes
+    cannot keep its snapshot once anyone else has committed; SQLite refuses the
+    upgrade rather than waiting, and re-running the handler against fresh state
+    is the only correct answer. Endpoints that reach an external service inside
+    `work` pass `retry=False`: repeating them would repeat that call.
+    """
+    if not retry:
+        try:
+            response = work()
+            session.commit()
+            return response
+        except Exception:
+            session.rollback()
+            raise
+    return run_write_transaction(session, work)
 
 
 def _owned_operation(
