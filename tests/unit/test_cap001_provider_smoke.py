@@ -22,7 +22,6 @@ from cap001_provider_smoke import (
 )
 from personal_agent.runtime.session_classifier import GlmBoundaryClassifier
 from personal_agent.runtime.structured import (
-    StructuredCallError,
     StructuredModelClient,
 )
 

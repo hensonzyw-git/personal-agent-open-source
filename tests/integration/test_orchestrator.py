@@ -21,7 +21,6 @@ from personal_agent.api.intent import WriteIntent, open_intent
 from personal_agent.api.operation_store import (
     open_operation,
     request_cancel,
-    transition_operation,
 )
 from personal_agent.api.orchestrator import (
     CommitClarificationZeroWrite,

@@ -8,7 +8,6 @@ and that the modern path has no initialize/ping/session-id/GET-SSE leakage.
 from __future__ import annotations
 
 import asyncio
-import json
 import socket
 import subprocess
 import sys
@@ -16,10 +15,13 @@ import time
 
 import httpx
 import pytest
+from mcp import ClientSession, MCPError, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 from personal_agent.mcp_client.core import (
     McpClientCore,
     McpTransportError,
+    PROTOCOL_VERSION,
     StdioTransport,
     StreamableHttpTransport,
 )
@@ -28,6 +30,14 @@ ENV = {"PYTHONPATH": "src:tests", "PATH": "/usr/bin:/bin"}
 
 FINANCE_MODULE = "fixtures.mcp_servers.finance_fixture_server"
 THIRDPARTY_MODULE = "fixtures.mcp_servers.thirdparty_server"
+MODERN_META = {
+    "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+    "io.modelcontextprotocol/clientCapabilities": {},
+    "io.modelcontextprotocol/clientInfo": {
+        "name": "personal-agent-conformance",
+        "version": "0.1",
+    },
+}
 
 
 def _free_port() -> int:
@@ -124,6 +134,8 @@ def test_v2_client_negotiates_2026_07_28_over_http() -> None:
                 "finance", StreamableHttpTransport(url=server.url)
             ) as client:
                 assert client.identity.protocol_version == "2026-07-28"
+                assert client.identity.name == "personal-data-mcp-fixture"
+                assert client.identity.version == "0.1.0"
 
         asyncio.run(run())
 
@@ -155,16 +167,51 @@ def test_v2_tools_list_returns_snake_case_schema() -> None:
         asyncio.run(run())
 
 
-def test_v2_server_has_no_session_id_in_response_headers() -> None:
+def test_v2_server_discover_succeeds_without_a_session_id() -> None:
     with HttpServer(FINANCE_MODULE) as server:
         response = httpx.post(
             server.url,
-            json={"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {}},
-            headers={"MCP-Protocol-Version": "2026-07-28", "Content-Type": "application/json"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "server/discover",
+                "params": {"_meta": MODERN_META},
+            },
+            headers={
+                "MCP-Protocol-Version": PROTOCOL_VERSION,
+                "Mcp-Method": "server/discover",
+                "Content-Type": "application/json",
+            },
             timeout=10,
             trust_env=False,
         )
+        assert response.status_code == 200
+        assert response.json()["result"]["supportedVersions"] == [
+            PROTOCOL_VERSION
+        ]
         assert "mcp-session-id" not in {k.lower() for k in response.headers}
+
+
+def test_v2_server_rejects_a_method_header_body_mismatch() -> None:
+    with HttpServer(FINANCE_MODULE) as server:
+        response = httpx.post(
+            server.url,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "server/discover",
+                "params": {"_meta": MODERN_META},
+            },
+            headers={
+                "MCP-Protocol-Version": PROTOCOL_VERSION,
+                "Mcp-Method": "tools/list",
+                "Content-Type": "application/json",
+            },
+            timeout=10,
+            trust_env=False,
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == -32020
 
 
 def test_v2_server_refuses_delete() -> None:
@@ -173,28 +220,137 @@ def test_v2_server_refuses_delete() -> None:
         assert response.status_code in (405, 406)
 
 
-# --- v2 client → legacy raw server: fail-closed -----------------------------
+# --- modern-only Finance versus explicitly compatible third parties --------
 
 
-def test_v2_client_rejects_legacy_2025_11_25_server() -> None:
+def test_generic_client_records_an_explicit_legacy_fallback() -> None:
     """The v2 client's negotiate_auto falls back to initialize when discover
-    is unavailable, detects 2025-11-25, and fail-closed validation rejects it.
+    is unavailable and records the legacy server's actual identity.
 
-    For Finance this is correct: the connector must negotiate 2026-07-28 or
-    fail closed. The error message names the actual version so an operator
-    can distinguish a legacy server from a network failure.
+    This compatibility leg is for explicitly configured third-party connectors,
+    not the self-owned Finance connector.
     """
+    with LegacyRawServer() as legacy:
+        async def connect() -> None:
+            async with McpClientCore(
+                "legacy-third-party",
+                StreamableHttpTransport(url=legacy.url),
+            ) as client:
+                assert client.identity.protocol_version == "2025-11-25"
+                assert [tool.name for tool in await client.list_tools()] == [
+                    "legacy.echo"
+                ]
+
+        asyncio.run(connect())
+
+
+def test_finance_client_rejects_a_legacy_server() -> None:
     with LegacyRawServer() as legacy:
         async def attempt() -> None:
             async with McpClientCore(
-                "legacy-probe",
+                "finance",
                 StreamableHttpTransport(url=legacy.url),
-            ) as client:
-                await client.connect()
+                allowed_protocol_versions=frozenset({PROTOCOL_VERSION}),
+            ):
+                pass
 
         with pytest.raises(McpTransportError) as excinfo:
             asyncio.run(attempt())
         assert "2025-11-25" in str(excinfo.value)
+
+
+def test_finance_server_rejects_legacy_initialize_over_http() -> None:
+    with HttpServer(FINANCE_MODULE) as server:
+        response = httpx.post(
+            server.url,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "legacy-probe", "version": "0.1"},
+                },
+            },
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            },
+            timeout=10,
+            trust_env=False,
+        )
+        assert response.status_code in (200, 404)
+        assert response.json()["error"]["code"] == -32601
+
+
+def test_finance_server_reports_removed_initialize_on_modern_http() -> None:
+    """Keep the official conformance finding covered by the local suite."""
+    with HttpServer(FINANCE_MODULE) as server:
+        response = httpx.post(
+            server.url,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "modern-conformance-probe",
+                        "version": "0.1",
+                    },
+                    "_meta": MODERN_META,
+                },
+            },
+            headers={
+                "MCP-Protocol-Version": PROTOCOL_VERSION,
+                "Mcp-Method": "initialize",
+                "Content-Type": "application/json",
+            },
+            timeout=10,
+            trust_env=False,
+        )
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == -32601
+
+
+def test_finance_server_reports_removed_ping_on_modern_http() -> None:
+    with HttpServer(FINANCE_MODULE) as server:
+        response = httpx.post(
+            server.url,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "ping",
+                "params": {"_meta": MODERN_META},
+            },
+            headers={
+                "MCP-Protocol-Version": PROTOCOL_VERSION,
+                "Mcp-Method": "ping",
+                "Content-Type": "application/json",
+            },
+            timeout=10,
+            trust_env=False,
+        )
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == -32601
+
+
+def test_finance_server_rejects_legacy_initialize_over_stdio() -> None:
+    async def attempt() -> None:
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", FINANCE_MODULE, "stdio"],
+            env=ENV,
+        )
+        async with stdio_client(params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                with pytest.raises(MCPError) as excinfo:
+                    await session.initialize()
+                assert excinfo.value.code == -32601
+
+    asyncio.run(attempt())
 
 
 # --- third-party server: v2 client discovers tools -------------------------

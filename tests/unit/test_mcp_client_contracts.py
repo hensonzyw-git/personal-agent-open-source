@@ -14,6 +14,7 @@ from personal_agent.mcp_client.core import (
     _validate_protocol_version,
 )
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.mcp_protocol import FINANCE_PROTOCOL_VERSIONS
 
 
 def client_with(session) -> McpClientCore:
@@ -77,13 +78,29 @@ def test_resources_list_is_followed_to_exhaustion() -> None:
     assert session.cursors == [None, "page-2"]
 
 
-def test_future_or_older_protocol_versions_are_rejected() -> None:
+def test_only_the_frozen_modern_and_explicit_legacy_versions_are_accepted() -> None:
     with pytest.raises(McpTransportError):
         _validate_protocol_version("fixture", "2025-06-18")
+    _validate_protocol_version("third-party", "2025-11-25")
     with pytest.raises(McpTransportError):
-        _validate_protocol_version("fixture", "2025-11-25")
+        _validate_protocol_version(
+            "finance", "2025-11-25", FINANCE_PROTOCOL_VERSIONS
+        )
     with pytest.raises(McpTransportError):
         _validate_protocol_version("fixture", "2099-01-01")
+
+
+def test_client_snapshots_a_mutable_protocol_policy() -> None:
+    allowed = {"2026-07-28"}
+    client = McpClientCore(
+        "finance",
+        StdioTransport(command="unused", args=[]),
+        allowed_protocol_versions=allowed,
+    )
+
+    allowed.add("2025-11-25")
+
+    assert client.allowed_protocol_versions == FINANCE_PROTOCOL_VERSIONS
 
 
 def test_stdio_carries_the_host_context_in_meta() -> None:

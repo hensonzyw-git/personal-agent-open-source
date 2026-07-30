@@ -17,7 +17,6 @@ from personal_agent.mcp_client.registry import (
     ConnectorRegistry,
     QuarantineReason,
     TrustLevel,
-    schema_hash,
 )
 from personal_agent.policy.bridge import (
     MAX_RESULT_BYTES,

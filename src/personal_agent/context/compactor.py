@@ -23,7 +23,7 @@ import queue
 import re
 import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Final, Literal, Protocol

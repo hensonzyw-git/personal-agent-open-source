@@ -23,6 +23,14 @@ from personal_agent_core.manifest import load_manifest
 
 PROD_MODULE = "fixtures.production_mcp_server"
 BASE_ENV = {"PYTHONPATH": "src:tests", "PATH": "/usr/bin:/bin"}
+MODERN_META = {
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientCapabilities": {},
+    "io.modelcontextprotocol/clientInfo": {
+        "name": "personal-agent-wire-test",
+        "version": "0.1",
+    },
+}
 
 
 def free_port() -> int:
@@ -196,6 +204,37 @@ def test_post_still_works_after_the_guard(prod_server, caller) -> None:
             )
 
     assert run(scenario())["status"] == "ok"
+
+
+def test_omitted_tool_arguments_are_an_empty_object(
+    prod_server, caller
+) -> None:
+    """MCP makes `arguments` optional; a no-argument tool must still work."""
+    response = httpx.post(
+        prod_server.url,
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "meta.capabilities",
+                "_meta": MODERN_META,
+            },
+        },
+        headers={
+            **caller.headers("meta.capabilities", {}),
+            "MCP-Protocol-Version": "2026-07-28",
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": "meta.capabilities",
+            "Content-Type": "application/json",
+        },
+        timeout=10,
+        trust_env=False,
+    )
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result.get("isError", False) is False
+    assert result["structuredContent"]["status"] == "ok"
 
 
 # --- the gate over the real transport ---------------------------------------

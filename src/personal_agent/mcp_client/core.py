@@ -21,6 +21,7 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import Set
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -35,9 +36,13 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.types import PaginatedRequestParams, Tool
 
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.mcp_protocol import (
+    MODERN_PROTOCOL_VERSION,
+    THIRD_PARTY_PROTOCOL_VERSIONS,
+)
 
 
-PROTOCOL_VERSION: Final[str] = "2026-07-28"
+PROTOCOL_VERSION: Final[str] = MODERN_PROTOCOL_VERSION
 
 DEFAULT_INITIALIZE_TIMEOUT: Final[timedelta] = timedelta(seconds=5)
 DEFAULT_LIST_TIMEOUT: Final[timedelta] = timedelta(seconds=5)
@@ -88,11 +93,16 @@ def _error_payload(result: Any) -> dict[str, Any] | None:
     return None
 
 
-def _validate_protocol_version(connector_id: str, observed: str) -> None:
-    if observed != PROTOCOL_VERSION:
+def _validate_protocol_version(
+    connector_id: str,
+    observed: str,
+    allowed_protocol_versions: frozenset[str] = THIRD_PARTY_PROTOCOL_VERSIONS,
+) -> None:
+    if observed not in allowed_protocol_versions:
         raise McpTransportError(
             f"{connector_id} negotiated unsupported MCP protocol "
-            f"{observed!r}; expected {PROTOCOL_VERSION!r}"
+            f"{observed!r}; allowed "
+            f"{sorted(allowed_protocol_versions)!r}"
         )
 
 
@@ -138,9 +148,25 @@ class McpClientCore:
     catalog with it.
     """
 
-    def __init__(self, connector_id: str, transport: Transport) -> None:
+    def __init__(
+        self,
+        connector_id: str,
+        transport: Transport,
+        *,
+        allowed_protocol_versions: Set[str] = (
+            THIRD_PARTY_PROTOCOL_VERSIONS
+        ),
+    ) -> None:
+        protocol_versions = frozenset(allowed_protocol_versions)
+        if not protocol_versions:
+            raise ValueError("allowed_protocol_versions must not be empty")
+        if not protocol_versions <= THIRD_PARTY_PROTOCOL_VERSIONS:
+            raise ValueError(
+                "allowed_protocol_versions contains an unsupported version"
+            )
         self.connector_id = connector_id
         self.transport = transport
+        self.allowed_protocol_versions = protocol_versions
         self._session: ClientSession | None = None
         self._identity: ServerIdentity | None = None
         self._task: asyncio.Task[None] | None = None
@@ -217,7 +243,9 @@ class McpClientCore:
                 ):
                     await negotiate_auto(session)
                 _validate_protocol_version(
-                    self.connector_id, session.protocol_version
+                    self.connector_id,
+                    session.protocol_version,
+                    self.allowed_protocol_versions,
                 )
 
                 self._session = session
@@ -297,14 +325,6 @@ class McpClientCore:
             raise McpTransportError(f"{self.connector_id} is not connected")
         return self._session
 
-    async def ping(self) -> bool:
-        try:
-            with anyio.fail_after(5):
-                await self._require_session().send_ping()
-        except Exception:
-            return False
-        return True
-
     async def list_tools(self) -> list[Tool]:
         """Read the whole catalog, following pagination to exhaustion."""
         session = self._require_session()
@@ -366,7 +386,9 @@ class McpClientCore:
                     headers={**self.transport.headers, **host_context},
                 )
                 async with McpClientCore(
-                    self.connector_id, call_transport
+                    self.connector_id,
+                    call_transport,
+                    allowed_protocol_versions=self.allowed_protocol_versions,
                 ) as call_client:
                     return await call_client.call_tool(
                         name, arguments, timeout=timeout

@@ -1444,10 +1444,10 @@ def _operation_response(
 
 def _transient(result) -> dict[str, Any]:
     fields: dict[str, Any] = {}
-    for field in ("answer", "clarification", "duplicate_existing"):
-        value = getattr(result, field, None)
+    for name in ("answer", "clarification", "duplicate_existing"):
+        value = getattr(result, name, None)
         if value is not None:
-            fields[field] = value
+            fields[name] = value
     return fields
 
 
@@ -1479,13 +1479,13 @@ def _operation_projection(operation: Operation) -> dict[str, Any]:
 
 def _result_content(result) -> dict[str, Any]:
     content: dict[str, Any] = {"state": result.state}
-    for field in (
+    for name in (
         "record_id", "answer", "clarification", "duplicate_check_id",
         "duplicate_existing", "failure_reason",
     ):
-        value = getattr(result, field, None)
+        value = getattr(result, name, None)
         if value is not None:
-            content[field] = value
+            content[name] = value
     return content
 
 

@@ -25,9 +25,11 @@ from mcp.server.lowlevel import Server
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from fixtures.finance_fixture import fixture_catalog, fixture_receipt
+from personal_agent_core.mcp_protocol import ModernProtocolOnlyMiddleware
 
 
 SERVER_NAME = "personal-data-mcp-fixture"
+SERVER_VERSION = "0.1.0"
 
 
 def build_server(*, host: str = "127.0.0.1", port: int = 0) -> Server:
@@ -66,11 +68,14 @@ def build_server(*, host: str = "127.0.0.1", port: int = 0) -> Server:
             structured_content=fixture_receipt(name, arguments),
         )
 
-    return Server(
+    server = Server(
         SERVER_NAME,
+        version=SERVER_VERSION,
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
     )
+    server.middleware.append(ModernProtocolOnlyMiddleware())
+    return server
 
 
 def main() -> None:

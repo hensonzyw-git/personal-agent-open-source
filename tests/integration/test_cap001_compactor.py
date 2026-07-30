@@ -30,10 +30,8 @@ from personal_agent.context.compactor import (
     OperationProjection,
     RawEventSource,
     SourceBundle,
-    ValidationFailure,
     compute_source_hash,
     invalidate_checkpoints_referencing,
-    source_hmac,
     validate_checkpoint,
 )
 from personal_agent.context.config import (

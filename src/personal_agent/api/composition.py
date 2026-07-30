@@ -107,6 +107,7 @@ from personal_agent.storage.models import Device
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.host_context import ISSUER
 from personal_agent_core.manifest import load_manifest
+from personal_agent_core.mcp_protocol import FINANCE_PROTOCOL_VERSIONS
 from personal_agent_core.timeutil import (
     format_ledger_date,
     ledger_date,
@@ -532,7 +533,9 @@ async def agent_service(
         sessions = session_factory(engine)
         registry = ConnectorRegistry()
         client = McpClientCore(
-            config.connector_id, StreamableHttpTransport(url=mcp_url)
+            config.connector_id,
+            StreamableHttpTransport(url=mcp_url),
+            allowed_protocol_versions=FINANCE_PROTOCOL_VERSIONS,
         )
         aliases, quarantined = await _discover(client, registry, config.connector_id)
         bridge = GovernedToolBridge(

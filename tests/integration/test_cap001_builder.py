@@ -30,12 +30,12 @@ from personal_agent.api import events
 from personal_agent.context.budget import ComponentKind, ContextComponent
 from personal_agent.context.builder import (
     SCHEMA_VERSION,
-    UNTRUSTED_CLOSE,
     ContextBuilder,
     ContextEnvelope,
     MemoryCandidate,
 )
 from personal_agent.context.compact_state import CheckpointCompactStateProvider
+from personal_agent.context.untrusted import UNTRUSTED_CLOSE
 from personal_agent.context.compactor import (
     SCHEMA_VERSION as CHECKPOINT_SCHEMA_VERSION,
     Compactor,

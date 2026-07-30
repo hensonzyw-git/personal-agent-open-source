@@ -35,6 +35,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.host_context import HOST_ONLY_FIELDS, ServiceKeyRing
+from personal_agent_core.mcp_protocol import ModernProtocolOnlyMiddleware
 from personal_data_mcp.server.authz import Authorizer
 from personal_data_mcp.server.config import ServerConfig
 from personal_data_mcp.server.control import (
@@ -53,6 +54,7 @@ from personal_data_mcp.server import meta
 
 
 SERVER_NAME: Final[str] = "personal-data-mcp"
+SERVER_VERSION: Final[str] = "0.1.0"
 
 #: Headers the Client Core sends for a governed call. Read into a context
 #: variable so the handler never reaches back into the transport.
@@ -243,16 +245,20 @@ def build_server(
     async def on_call_tool(
         ctx: Any, params: Any
     ) -> CallToolResult:
+        arguments = params.arguments or {}
         return await dispatch(
-            registry, authorizer, params.name, params.arguments,
+            registry, authorizer, params.name, arguments,
             current_request_headers(),
         )
 
-    return Server(
+    server = Server(
         SERVER_NAME,
+        version=SERVER_VERSION,
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
     )
+    server.middleware.append(ModernProtocolOnlyMiddleware())
+    return server
 
 
 def build_app(

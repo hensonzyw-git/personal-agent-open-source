@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
 from cap001_fixtures import CURSOR_KEY, IDENTIFIER_KEY
-from personal_agent.api.app import AgentApiDeps, AuthContext, build_app
+from personal_agent.api.app import AgentApiDeps, build_app
 from personal_agent.api.orchestrator import (
     Clarification,
     DirectAnswer,

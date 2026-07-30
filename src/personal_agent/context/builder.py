@@ -64,11 +64,7 @@ from personal_agent.context.continuation import (
     MAX_CLARIFICATION_QUESTION_CHARS,
     ClarificationContext,
 )
-from personal_agent.context.untrusted import (
-    UNTRUSTED_CLOSE,
-    UNTRUSTED_OPEN,
-    frame_untrusted_data as _frame,
-)
+from personal_agent.context.untrusted import frame_untrusted_data as _frame
 from personal_agent.keys import HmacKey, HmacKeyRing
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.storage.models import (
