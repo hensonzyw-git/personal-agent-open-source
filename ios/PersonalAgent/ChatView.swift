@@ -11,6 +11,9 @@ import SwiftUI
 /// model wrote.
 struct ChatView: View {
     @Bindable var model: ChatModel
+    /// The check awaiting the user's 仍然记录 confirmation. `write_anyway`
+    /// forces a write past the duplicate gate, so it is never one tap.
+    @State private var confirmingWriteAnyway: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,6 +23,22 @@ struct ChatView: View {
         }
         .navigationTitle("对话")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            "服务端已提示这笔与现有记录疑似重复。仍然写入一条新记录？",
+            isPresented: Binding(
+                get: { confirmingWriteAnyway != nil },
+                set: { if !$0 { confirmingWriteAnyway = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("仍然记录", role: .destructive) {
+                if let checkID = confirmingWriteAnyway {
+                    confirmingWriteAnyway = nil
+                    Task { await model.decideDuplicate(checkID: checkID, decision: .writeAnyway) }
+                }
+            }
+            Button("再想想", role: .cancel) { confirmingWriteAnyway = nil }
+        }
     }
 
     private var timeline: some View {
@@ -163,9 +182,37 @@ struct ChatView: View {
                     .foregroundStyle(.orange)
                 if let existing { Text(existing) }
                 field("duplicate_check_id", checkID)
-                Text("“仍然记录 / 忽略”的决策界面属于 DEV-031，本版本只如实展示，不代你决定。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let pending = model.pendingDecisions[checkID] {
+                    // The choice was made but the reply never arrived. Offering
+                    // the buttons again would be refused by the server — the
+                    // same key under the other decision is a `409` — so the only
+                    // honest actions are retrying the *same* decision or
+                    // deliberately forgetting it locally.
+                    Text("已提交「\(pending.decision == .dismiss ? "忽略" : "仍然记录")」，等待服务端确认。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button("重试同一决策") {
+                            Task { await model.retryDecision(pending) }
+                        }
+                        Spacer()
+                        Button("丢弃（不询问服务端）", role: .destructive) {
+                            Task { await model.discardDecision(checkID: checkID) }
+                        }
+                    }
+                    .font(.footnote)
+                    .disabled(model.busy)
+                } else {
+                    HStack {
+                        Button("仍然记录") { confirmingWriteAnyway = checkID }
+                        Spacer()
+                        Button("忽略，不记录", role: .destructive) {
+                            Task { await model.decideDuplicate(checkID: checkID, decision: .dismiss) }
+                        }
+                    }
+                    .font(.footnote)
+                    .disabled(model.busy)
+                }
 
             case .failedSafe(let reason):
                 Label("未写入", systemImage: "xmark.circle")

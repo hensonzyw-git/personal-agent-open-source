@@ -33,6 +33,16 @@ public actor ChatTimeline {
         public var operationID: String?
     }
 
+    /// `DEV-031`. One duplicate decision whose reply never arrived. Persisted
+    /// for the same reason as `PendingSend`: the idempotency key inside is what
+    /// makes a retry replay the server's recorded outcome instead of starting a
+    /// second decision for the same check.
+    public struct PendingDuplicateDecision: Codable, Sendable, Equatable {
+        public let checkID: String
+        public let decision: DuplicateDecision
+        public let idempotencyKey: String
+    }
+
     public enum ChatError: Error, Equatable {
         /// No Timeline id yet. `/v1/capabilities` has to answer first.
         case timelineUnknown
@@ -42,6 +52,15 @@ public actor ChatTimeline {
         /// The local pending record could not be decoded. Reported rather than
         /// discarded: dropping it would hide an operation that may hold a write.
         case pendingSendMalformed
+        /// `DEV-031`. A decision for this check may already have reached the
+        /// server, so the *other* choice is locked: sending it under a fresh key
+        /// would be refused there, and reusing the stored key is a `409`. The
+        /// pending record is returned so the caller can say exactly which
+        /// decision is in flight.
+        case lockedDuplicateDecision(PendingDuplicateDecision)
+        /// The local pending-decision records could not be decoded. Reported
+        /// rather than discarded, for the same reason as `pendingSendMalformed`.
+        case pendingDecisionsMalformed
     }
 
     private let backend: any ChatBackend
@@ -266,6 +285,110 @@ public actor ChatTimeline {
         try clearPending()
     }
 
+    // --- duplicate decisions (`DEV-031`) --------------------------------------
+    //
+    // One durable slot per parked duplicate check, holding the idempotency key
+    // the decision was first sent under. The slot exists for exactly one
+    // ambiguity: the request may have landed while the reply was lost. The
+    // server's own rules do the rest — the same key and decision replay the
+    // recorded outcome, the same key under the other decision is a `409`, and a
+    // fresh key for a resolved check is refused — so a retry can never start a
+    // second decision and a crash can never lose which choice was made.
+
+    /// Resolve a parked duplicate as the user chose.
+    ///
+    /// The key is minted once and persisted **before** the request leaves, for
+    /// the same reason as a chat send: a lost reply then replays rather than
+    /// risks a second decision. While a decision for this check is unconfirmed,
+    /// the other choice is refused locally with `lockedDuplicateDecision` —
+    /// changing one's mind is only safe once the server has answered.
+    ///
+    /// For `writeAnyway` the reply is the new override operation; it is polled
+    /// bounded so the caller sees the write's real outcome, not the acceptance.
+    public func decide(
+        checkID: String, decision: DuplicateDecision
+    ) async throws -> OperationReceipt {
+        if let existing = try loadDecisions().first(where: { $0.checkID == checkID }) {
+            guard existing.decision == decision else {
+                throw ChatError.lockedDuplicateDecision(existing)
+            }
+            return try await sendDecision(existing)
+        }
+        let record = PendingDuplicateDecision(
+            checkID: checkID,
+            decision: decision,
+            idempotencyKey: UUID().uuidString
+        )
+        try saveDecisions(try loadDecisions() + [record])
+        return try await sendDecision(record)
+    }
+
+    /// Re-present every unconfirmed decision. The reconnect path, and the reason
+    /// an app restart between tap and reply cannot lose or duplicate a decision.
+    @discardableResult
+    public func resumeDecisions() async throws -> [OperationReceipt] {
+        var receipts: [OperationReceipt] = []
+        for record in try loadDecisions() {
+            receipts.append(try await sendDecision(record))
+        }
+        return receipts
+    }
+
+    /// The decisions whose reply never arrived, for the UI to show as
+    /// in-flight rather than offering the choice again.
+    public func pendingDecisions() throws -> [PendingDuplicateDecision] {
+        try loadDecisions()
+    }
+
+    /// Forget an unconfirmed decision locally *without* asking the server. Only
+    /// for a deliberate user action, and only after the check id was shown: the
+    /// decision may already be recorded there.
+    public func discardDecision(checkID: String) throws {
+        try removeDecision(checkID)
+    }
+
+    /// Send one decision and clear its slot once the server's answer is known.
+    private func sendDecision(
+        _ record: PendingDuplicateDecision
+    ) async throws -> OperationReceipt {
+        let receipt: OperationReceipt
+        do {
+            receipt = try await backend.decideDuplicate(
+                checkID: record.checkID,
+                decision: record.decision,
+                idempotencyKey: record.idempotencyKey
+            )
+        } catch let error as AgentClientError where Self.provesNotAnchored(error) {
+            // Refused before the decision could be recorded (or a key conflict a
+            // retry can never repair, or the check is already resolved). Keeping
+            // the slot would lock this check behind a decision that cannot land.
+            try? removeDecision(record.checkID)
+            throw error
+        }
+        // A 2xx means the server recorded the decision; it is durable there and
+        // the slot has nothing left to protect. For `writeAnyway` the receipt is
+        // the new override operation, so wait bounded for the write's outcome.
+        try removeDecision(record.checkID)
+        if record.decision == .writeAnyway, !receipt.outcome.isSettled {
+            return try await settleDecision(receipt)
+        }
+        return receipt
+    }
+
+    /// Bounded polling for the override operation. Unlike `settle` there is no
+    /// slot to manage: the decision is already durable, and the write's outcome
+    /// is the server's to show, not the client's to re-request.
+    private func settleDecision(_ first: OperationReceipt) async throws -> OperationReceipt {
+        var receipt = first
+        var attempt = 0
+        while !receipt.outcome.isSettled && attempt < pollDelays.count {
+            try await sleep(pollDelays[attempt])
+            attempt += 1
+            receipt = try await backend.operation(operationID: receipt.operationID)
+        }
+        return receipt
+    }
+
     // --- polling --------------------------------------------------------------
 
     private func settle(
@@ -350,6 +473,32 @@ public actor ChatTimeline {
     private func clearPending() throws {
         try store.delete(CredentialKey.pendingChatSend)
     }
+
+    private func loadDecisions() throws -> [PendingDuplicateDecision] {
+        guard let data = try store.read(CredentialKey.pendingDuplicateDecisions) else {
+            return []
+        }
+        do {
+            return try JSONDecoder().decode([PendingDuplicateDecision].self, from: data)
+        } catch {
+            throw ChatError.pendingDecisionsMalformed
+        }
+    }
+
+    private func saveDecisions(_ decisions: [PendingDuplicateDecision]) throws {
+        if decisions.isEmpty {
+            try store.delete(CredentialKey.pendingDuplicateDecisions)
+            return
+        }
+        try store.write(
+            CredentialKey.pendingDuplicateDecisions,
+            value: try JSONEncoder().encode(decisions)
+        )
+    }
+
+    private func removeDecision(_ checkID: String) throws {
+        try saveDecisions(try loadDecisions().filter { $0.checkID != checkID })
+    }
 }
 
 /// What `ChatTimeline` needs from the network.
@@ -376,4 +525,11 @@ public protocol ChatBackend: Sendable {
         direction: TimelineDirection,
         limit: Int?
     ) async throws -> TimelinePageResponse
+
+    /// `DEV-031`. Resolve one parked duplicate under the caller's idempotency key.
+    func decideDuplicate(
+        checkID: String,
+        decision: DuplicateDecision,
+        idempotencyKey: String
+    ) async throws -> OperationReceipt
 }

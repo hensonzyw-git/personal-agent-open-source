@@ -201,6 +201,86 @@ public struct AgentClient: Sendable {
         )
     }
 
+    /// Resolve a parked duplicate (`DEV-031`, design 5.2).
+    ///
+    /// The idempotency rules are the server's own and they are strict, which is
+    /// why the key is the caller's: a retry after a lost reply must present the
+    /// **same** key and the **same** decision, and the server then replays the
+    /// outcome it already recorded. The same key under the other decision is a
+    /// `409` that can never succeed, and a fresh key for a check that is already
+    /// resolved is refused — so a second write cannot be started by accident.
+    ///
+    /// The reply is an operation projection: the newly created override
+    /// operation for `write_anyway`, or the cancelled parked one for `dismiss`.
+    public func decideDuplicate(
+        checkID: String,
+        decision: DuplicateDecision,
+        idempotencyKey: String,
+        token: String
+    ) async throws -> OperationReceipt {
+        try await send(
+            method: "POST",
+            path: "/v1/duplicate-checks/\(checkID)/decision",
+            body: ["decision": decision.rawValue],
+            token: token,
+            headers: ["Idempotency-Key": idempotencyKey],
+            accepting: [200, 202],
+            as: OperationReceipt.self
+        )
+    }
+
+    // --- the daily review (`DEV-031`, design 5.3 and 7.7) ----------------------
+
+    /// The card list, newest day first. `status` is a filter the server
+    /// validates; an unknown one is its `400` to return, not this client's to
+    /// pre-approve, so the raw wire value travels.
+    public func dailyReviews(status: String? = nil, token: String) async throws -> ReviewListResponse {
+        var query: [URLQueryItem] = []
+        if let status { query.append(URLQueryItem(name: "status", value: status)) }
+        return try await send(
+            method: "GET",
+            path: "/v1/daily-reviews",
+            token: token,
+            query: query,
+            as: ReviewListResponse.self
+        )
+    }
+
+    /// One opened card. This is the expensive read: every item's values are the
+    /// record's *current* ledger fields, not anything cached.
+    public func dailyReview(reviewID: String, token: String) async throws -> ReviewDetail {
+        try await send(
+            method: "GET",
+            path: "/v1/daily-reviews/\(reviewID)",
+            token: token,
+            as: ReviewDetail.self
+        )
+    }
+
+    /// Mark the card as looked at. Idempotent server-side, and free of ledger
+    /// effects; the reply is the card's new state, which is the only state the
+    /// caller should show.
+    public func ackReview(reviewID: String, token: String) async throws -> ReviewSummary {
+        try await send(
+            method: "POST",
+            path: "/v1/daily-reviews/\(reviewID)/ack",
+            token: token,
+            as: ReviewSummary.self
+        )
+    }
+
+    /// Push the card back for later. A reviewed card is refused with a `400`:
+    /// walking an acknowledgement backwards is the server's call to refuse, not
+    /// this client's to retry around.
+    public func deferReview(reviewID: String, token: String) async throws -> ReviewSummary {
+        try await send(
+            method: "POST",
+            path: "/v1/daily-reviews/\(reviewID)/defer",
+            token: token,
+            as: ReviewSummary.self
+        )
+    }
+
     // --- transport -----------------------------------------------------------
 
     private func send<Response: Decodable>(
@@ -324,6 +404,11 @@ public struct Capabilities: Decodable, Sendable {
     /// to learn it and must never invent one, so a service that omits it fails
     /// here rather than at the first message.
     public let conversationID: String
+    /// `DEV-031`. Where the service says the Feishu ledger lives. Optional
+    /// exactly because the server omits the field when it does not know: the
+    /// client never invents the address, so "no jump offered" is the honest
+    /// rendering of a missing value.
+    public let ledgerURL: String?
 
     public struct Tool: Decodable, Sendable {
         public let alias: String
@@ -341,6 +426,7 @@ public struct Capabilities: Decodable, Sendable {
         case allowedToolsVersion = "allowed_tools_version"
         case tools
         case conversationID = "conversation_id"
+        case ledgerURL = "ledger_url"
     }
 }
 

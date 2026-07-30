@@ -181,6 +181,8 @@ public actor DeviceSession {
             // installation any more, so keeping the record would only display an
             // operation nothing here can resolve.
             CredentialKey.pendingChatSend,
+            // `DEV-031`: same reasoning for unconfirmed duplicate decisions.
+            CredentialKey.pendingDuplicateDecisions,
             // Delete the authoritative envelope last. If removing a legacy item
             // fails, the complete enrollment remains recoverable.
             CredentialKey.enrollment,
@@ -267,6 +269,46 @@ public actor DeviceSession {
                 token: $0
             )
         }
+    }
+
+    /// `DEV-031`. The one-retry refresh policy is safe here for the same reason
+    /// as the chat POST: the *caller's* decision key is presented again, and the
+    /// server replays the outcome it recorded for that key.
+    public func decideDuplicate(
+        checkID: String,
+        decision: DuplicateDecision,
+        idempotencyKey: String
+    ) async throws -> OperationReceipt {
+        try await authorized {
+            try await self.client.decideDuplicate(
+                checkID: checkID,
+                decision: decision,
+                idempotencyKey: idempotencyKey,
+                token: $0
+            )
+        }
+    }
+
+    // --- `DEV-031` daily review ------------------------------------------------
+    //
+    // All four are safe under the one-retry policy without any client key: the
+    // reads are reads, and ack/defer are idempotent state transitions the server
+    // owns — a retry returns the state, it does not make a second change.
+
+    public func dailyReviews(status: String?) async throws -> ReviewListResponse {
+        try await authorized { try await self.client.dailyReviews(status: status, token: $0) }
+    }
+
+    public func dailyReview(reviewID: String) async throws -> ReviewDetail {
+        try await authorized { try await self.client.dailyReview(reviewID: reviewID, token: $0) }
+    }
+
+    public func ackReview(reviewID: String) async throws -> ReviewSummary {
+        try await authorized { try await self.client.ackReview(reviewID: reviewID, token: $0) }
+    }
+
+    public func deferReview(reviewID: String) async throws -> ReviewSummary {
+        try await authorized { try await self.client.deferReview(reviewID: reviewID, token: $0) }
     }
 
     private func authorized<T>(_ call: (String) async throws -> T) async throws -> T {
@@ -433,6 +475,9 @@ public actor DeviceSession {
 /// ones `ChatTimeline` can reach. Conforming the real session means the tests can
 /// stub HTTP alone and still exercise the real token policy.
 extension DeviceSession: ChatBackend {}
+
+/// `DEV-031`: the review surface, same reasoning as above.
+extension DeviceSession: ReviewBackend {}
 
 public enum DeviceSessionError: Error, Equatable {
     case notEnrolled

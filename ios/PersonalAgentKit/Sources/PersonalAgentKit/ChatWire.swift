@@ -315,6 +315,20 @@ extension OperationReceipt: Decodable {
     }
 }
 
+// --- the duplicate decision (`DEV-031`) ----------------------------------------
+
+/// The only two resolutions a parked duplicate accepts, per technical design 5.2.
+///
+/// The wire values are the server's own vocabulary; a case this build does not
+/// know can therefore never be sent, and the server refuses anything else anyway.
+public enum DuplicateDecision: String, Sendable, Equatable, Codable {
+    /// The parked operation ends as `cancelled_pre_submit`. Nothing is written.
+    case dismiss
+    /// A *new* operation is created carrying the check id as its override
+    /// authorisation, and the write happens under it.
+    case writeAnyway = "write_anyway"
+}
+
 // --- Timeline ----------------------------------------------------------------
 
 /// One JSON scalar from an event's `content`.

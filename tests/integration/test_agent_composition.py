@@ -352,6 +352,34 @@ def test_a_non_loopback_control_url_is_refused(keys, agent_db) -> None:
         asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example.feishu.cn/base/APP_TOKEN",
+        "not-a-url",
+        "https:///base/APP_TOKEN",
+    ],
+)
+def test_a_malformed_ledger_url_is_refused(keys, agent_db, url) -> None:
+    """`DEV-031`: the client opens whatever the service names, so a non-https
+    or hostless value is refused before a socket exists."""
+
+    async def scenario():
+        async with agent_service(
+            AgentServiceConfig(
+                database=agent_db,
+                finance_mcp_url="http://127.0.0.1:8811/mcp",
+                finance_control_url="http://127.0.0.1:8811",
+                user_id=USER_ID,
+                ledger_url=url,
+            )
+        ):
+            pytest.fail("composition should have refused")
+
+    with pytest.raises(CompositionError, match="ledger URL"):
+        asyncio.run(scenario())
+
+
 def test_an_absent_finance_service_fails_composition(keys, agent_db) -> None:
     """No half-started service: discovery failure is a startup failure."""
     port = free_port()

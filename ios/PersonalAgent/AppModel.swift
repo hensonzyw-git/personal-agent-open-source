@@ -33,10 +33,15 @@ final class AppModel {
     /// `DEV-030`. Built once a session exists, and opened on the Timeline the
     /// server names in `/v1/capabilities` — never on an id chosen here.
     var chat: ChatModel?
+    /// `DEV-031`. The daily-review surface. Like the chat it is built once per
+    /// session, and its ledger jump URL is re-validated from every fresh
+    /// `/v1/capabilities` read rather than remembered.
+    var review: ReviewModel?
 
     private let store: CredentialStore = KeychainCredentialStore()
     private var session: DeviceSession?
     private var chatTimeline: ChatTimeline?
+    private var reviewCenter: ReviewCenter?
 
     // --- lifecycle -----------------------------------------------------------
 
@@ -103,6 +108,7 @@ final class AppModel {
             phase = .ready
             lastError = nil
             await openChat(session: session, conversationID: read.conversationID)
+            await openReview(session: session, capabilities: read)
         } catch AgentClientError.deviceRejected {
             phase = .revoked
             // The last successful read is now unverifiable, and leaving it on
@@ -114,6 +120,8 @@ final class AppModel {
             // read must not stay on screen looking current.
             chat = nil
             chatTimeline = nil
+            review = nil
+            reviewCenter = nil
             lastError = "服务端已不再为本设备签发 token（设备被撤销或密钥不匹配）。"
         } catch {
             lastError = describe(error)
@@ -129,6 +137,8 @@ final class AppModel {
             phase = .revoked
             chat = nil
             chatTimeline = nil
+            review = nil
+            reviewCenter = nil
             lastError = nil
         } catch {
             lastError = describe(error)
@@ -148,6 +158,8 @@ final class AppModel {
             selfDevice = nil
             chat = nil
             chatTimeline = nil
+            review = nil
+            reviewCenter = nil
             // The previous phase's error described a device that no longer exists
             // here; carrying it onto the enrollment screen would report a failure
             // for a device that was just forgotten.
@@ -183,6 +195,29 @@ final class AppModel {
             // only correct move; arguing with it is not an option it has.
             await chat?.open(conversationID: conversationID)
         }
+    }
+
+    /// Open the review surface (`DEV-031`).
+    ///
+    /// The list is (re)loaded on every refresh: it is a cheap local read, and a
+    /// card reopened server-side by a late-verified write must not keep showing
+    /// 已复核 because nobody asked again.
+    private func openReview(session: DeviceSession, capabilities: Capabilities) async {
+        if reviewCenter == nil {
+            reviewCenter = ReviewCenter(backend: session)
+        }
+        guard let reviewCenter else { return }
+        if review == nil {
+            review = ReviewModel(
+                center: reviewCenter,
+                ledgerURL: nil,
+                describe: { [weak self] error in
+                    self?.describe(error) ?? String(describing: error)
+                }
+            )
+        }
+        review?.updateLedgerURL(from: capabilities)
+        await review?.load()
     }
 
     private func makeSession() -> DeviceSession? {
@@ -232,6 +267,11 @@ final class AppModel {
             return "上一条消息还没有确认结果，先处理它再发新的，否则同一笔可能被记两次。"
         case ChatTimeline.ChatError.pendingSendMalformed:
             return "本机保存的未完成消息已损坏，无法安全恢复；请记下界面上的 operation_id，在服务端确认后再丢弃。"
+        case ChatTimeline.ChatError.lockedDuplicateDecision(let pending):
+            let wording = pending.decision == .dismiss ? "忽略" : "仍然记录"
+            return "该疑似重复已提交「\(wording)」但结果未确认，请先重试同一决策或丢弃它；直接改选会被服务端拒绝。"
+        case ChatTimeline.ChatError.pendingDecisionsMalformed:
+            return "本机保存的未确认决策已损坏，无法安全恢复；请记下界面上的 duplicate_check_id，在服务端确认后再丢弃。"
         case DeviceSessionError.localPersistenceFailed(let deviceID, let revoked):
             if revoked {
                 return "本机凭证保存失败；刚创建的服务端设备已自动撤销，请重新生成注册码。"

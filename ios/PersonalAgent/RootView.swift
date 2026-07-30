@@ -19,6 +19,12 @@ struct RootView: View {
                     NavigationStack { ChatView(model: chat) }
                         .tabItem { Label("对话", systemImage: "bubble.left.and.text.bubble.right") }
                 }
+                // `DEV-031`: the daily review. It reads only what the service
+                // proves, so it follows the same visibility rule as the chat.
+                if let review = model.review, model.phase == .ready {
+                    NavigationStack { ReviewListView(model: review) }
+                        .tabItem { Label("复核", systemImage: "checkmark.seal") }
+                }
                 NavigationStack { ServiceStatusView(model: model) }
                     .tabItem { Label("状态", systemImage: "shield.lefthalf.filled") }
             }
@@ -78,6 +84,10 @@ struct EnrollmentView: View {
 
 struct ServiceStatusView: View {
     @Bindable var model: AppModel
+    /// `DEV-031`: both destructive actions are two-tap on purpose. A stray tap
+    /// must not be able to strand the device server-side or orphan it locally.
+    @State private var confirmingRevoke = false
+    @State private var confirmingForget = false
 
     var body: some View {
         List {
@@ -135,20 +145,44 @@ struct ServiceStatusView: View {
                     .disabled(model.busy)
                 if model.phase != .revoked {
                     Button("撤销本设备（服务端）", role: .destructive) {
-                        Task { await model.revokeSelf() }
+                        confirmingRevoke = true
                     }
                     .disabled(model.busy)
                 }
                 Button("清除本机凭证", role: .destructive) {
-                    Task { await model.forgetLocally() }
+                    confirmingForget = true
                 }
                 .disabled(model.busy)
             } footer: {
-                Text("清除本机凭证只删除本机密钥，不等于服务端撤销；两件事分开做。")
+                if model.phase == .revoked {
+                    Text("撤销已完成。想重新使用这台设备：先清除本机凭证，再用服务器上新的一次性注册码重新注册。")
+                } else {
+                    Text("清除本机凭证只删除本机密钥，不等于服务端撤销；两件事分开做。")
+                }
             }
         }
         .navigationTitle("Personal Agent")
         .refreshable { await model.refresh() }
+        .confirmationDialog(
+            "撤销后服务端将不再为本设备签发 token，对话和复核都会立即不可用。重新使用需要服务器上的一次性注册码。",
+            isPresented: $confirmingRevoke,
+            titleVisibility: .visible
+        ) {
+            Button("确认撤销本设备", role: .destructive) {
+                Task { await model.revokeSelf() }
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .confirmationDialog(
+            "清除本机凭证会删除 Secure Enclave 密钥。服务端上的设备记录仍然存在（成为孤儿设备），需要时在服务器执行 revoke 清理。",
+            isPresented: $confirmingForget,
+            titleVisibility: .visible
+        ) {
+            Button("确认清除本机凭证", role: .destructive) {
+                Task { await model.forgetLocally() }
+            }
+            Button("取消", role: .cancel) {}
+        }
     }
 
     private func row(_ label: String, _ value: String) -> some View {

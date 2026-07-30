@@ -181,6 +181,13 @@ class AgentApiDeps:
     #: then deterministic and every uncertain case continues the Session.
     context_config: ContextConfig = field(default_factory=default_context_config)
     session_manager: SessionManager | None = None
+    #: `DEV-031`. Where the Feishu ledger lives, named by the service and never
+    #: invented by a client (Henson's 2026-07-30 decision). `None` means this
+    #: composition does not know it, and the field is then absent from
+    #: `/v1/capabilities` so the app hides the jump honestly rather than opening
+    #: a placeholder. It is a resource identifier, not a secret: it comes from
+    #: local configuration and travels only to enrolled devices.
+    ledger_url: str | None = None
 
     def __post_init__(self) -> None:
         if self.sync_wait_seconds <= 0 or self.sync_wait_seconds > 30.0:
@@ -561,18 +568,19 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         with deps.session_factory() as session:
             def work():
                 auth = authenticate(request, session)
-                return JSONResponse(
-                    {
-                        "allowed_tools_version": auth.allowed_tools_version,
-                        "tools": deps.capabilities(auth),
-                        # Every enrolled device resolves to this one Timeline
-                        # (design 4.2.2). The field keeps its compatibility
-                        # name; renaming it is an API major version.
-                        "conversation_id": events.canonical_timeline_id(
-                            session, now=deps.now()
-                        ),
-                    }
-                )
+                body: dict[str, Any] = {
+                    "allowed_tools_version": auth.allowed_tools_version,
+                    "tools": deps.capabilities(auth),
+                    # Every enrolled device resolves to this one Timeline
+                    # (design 4.2.2). The field keeps its compatibility
+                    # name; renaming it is an API major version.
+                    "conversation_id": events.canonical_timeline_id(
+                        session, now=deps.now()
+                    ),
+                }
+                if deps.ledger_url is not None:
+                    body["ledger_url"] = deps.ledger_url
+                return JSONResponse(body)
 
             return _commit(session, work)
 

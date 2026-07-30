@@ -33,6 +33,11 @@ public enum CredentialKey {
     /// starting a second write, so it belongs in the same durable store as the
     /// device identity rather than in `UserDefaults`.
     public static let pendingChatSend = "pending-chat-send-v1"
+    /// `DEV-031`: the duplicate decisions whose reply was never confirmed. Each
+    /// holds the idempotency key that makes a retry replay the server's recorded
+    /// outcome instead of starting a second decision, so they belong in the same
+    /// durable store as the chat send slot.
+    public static let pendingDuplicateDecisions = "pending-duplicate-decisions-v1"
     /// Legacy keys from the first DEV-029 simulator build. `DeviceSession`
     /// migrates them on read and deletes them when the user forgets locally.
     public static let deviceKeyBlob = "device-key-blob"

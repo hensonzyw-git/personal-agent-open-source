@@ -24,6 +24,10 @@ final class ChatModel {
     /// An unresolved message this launch inherited. Shown rather than hidden: it
     /// may hold a write nobody has confirmed yet.
     var unresolved: ChatTimeline.PendingSend?
+    /// `DEV-031`. Decisions submitted whose reply never arrived, keyed by check
+    /// id so a card can show "已提交，待确认" instead of offering the choice
+    /// again — offering it would be refused by the server anyway.
+    var pendingDecisions: [String: ChatTimeline.PendingDuplicateDecision] = [:]
     var lastError: String?
     var busy = false
     var loadingOlder = false
@@ -46,16 +50,28 @@ final class ChatModel {
             await mirror()
             // Resuming comes *after* history so the receipt lands under the
             // message it belongs to rather than above an empty screen.
+            var needsSync = false
             if let receipt = try await timeline.resume() {
                 liveReceipt = receipt
-                try await timeline.syncNewer()
-                await mirror()
+                needsSync = true
             }
+            // `DEV-031`: the same recovery for decisions whose reply was lost.
+            // Both resume before the final sync, so one page brings every
+            // consequence the server recorded while this app was away.
+            let resumedDecisions = try await timeline.resumeDecisions()
+            if !resumedDecisions.isEmpty {
+                needsSync = true
+            }
+            if needsSync {
+                try await timeline.syncNewer()
+            }
+            await mirror()
             lastError = nil
         } catch {
             lastError = describe(error)
         }
         unresolved = try? await timeline.pendingSend()
+        await mirrorDecisions()
     }
 
     func refresh() async {
@@ -157,6 +173,57 @@ final class ChatModel {
 
     func cancelAnswering() {
         answering = nil
+    }
+
+    // --- duplicate decisions (`DEV-031`) ---------------------------------------
+
+    /// Resolve a parked duplicate as the user chose. The decision key lives in
+    /// `ChatTimeline`; a lost reply is retried with the same key, so a flaky
+    /// network cannot record the choice twice.
+    func decideDuplicate(checkID: String, decision: DuplicateDecision) async {
+        busy = true
+        defer { busy = false }
+        do {
+            let receipt = try await timeline.decide(checkID: checkID, decision: decision)
+            // For `writeAnyway` this is the override operation's receipt, settled
+            // or still running; either way it is the structured truth to show.
+            liveReceipt = receipt
+            try await timeline.syncNewer()
+            await mirror()
+            lastError = nil
+        } catch {
+            lastError = describe(error)
+        }
+        await mirrorDecisions()
+    }
+
+    /// Re-present a decision whose reply never arrived. The stored key is
+    /// reused, so this is a replay, never a second decision.
+    func retryDecision(_ pending: ChatTimeline.PendingDuplicateDecision) async {
+        await decideDuplicate(checkID: pending.checkID, decision: pending.decision)
+    }
+
+    /// Forget an unconfirmed decision locally. Deliberately not automatic: the
+    /// server may already have recorded it, so the check id is shown first and
+    /// the user decides.
+    func discardDecision(checkID: String) async {
+        do {
+            try await timeline.discardDecision(checkID: checkID)
+            lastError = nil
+        } catch {
+            lastError = describe(error)
+        }
+        await mirrorDecisions()
+    }
+
+    private func mirrorDecisions() async {
+        // A malformed record throws; surface that through `lastError` on the
+        // paths that call this, never by silently showing "no pending decisions".
+        if let decisions = try? await timeline.pendingDecisions() {
+            pendingDecisions = Dictionary(
+                uniqueKeysWithValues: decisions.map { ($0.checkID, $0) }
+            )
+        }
     }
 
     private func mirror() async {

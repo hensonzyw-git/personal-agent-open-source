@@ -22,8 +22,13 @@ import Testing
 /// and the real request construction are all in the loop. Only HTTP is fake.
 
 // --- the stub service --------------------------------------------------------
+//
+// This harness is shared with `DuplicateDecisionTests.swift` and
+// `ReviewCenterTests.swift` (`DEV-031`), which is why the declarations below
+// are module-internal rather than file-private. Everything else in this file
+// stays private.
 
-private struct Call: Sendable {
+struct Call: Sendable {
     let method: String
     let path: String
     let query: [String: String]
@@ -36,22 +41,22 @@ private struct Call: Sendable {
     func string(_ field: String) -> String? { body[field] }
 }
 
-private struct Reply: Sendable {
+struct Reply: Sendable {
     let status: Int
     let body: Data
 
     static func ok(_ object: [String: Any]) -> Reply {
-        .init(status: 200, body: json(object))
+        .init(status: 200, body: chatJSON(object))
     }
 
     static func accepted(_ object: [String: Any]) -> Reply {
-        .init(status: 202, body: json(object))
+        .init(status: 202, body: chatJSON(object))
     }
 
     static func error(_ status: Int, _ code: String) -> Reply {
         .init(
             status: status,
-            body: json([
+            body: chatJSON([
                 "error": [
                     "code": code, "message": "refused", "retryable": false,
                 ]
@@ -65,7 +70,7 @@ private struct Reply: Sendable {
 /// The port is what keeps the suites independent: a single shared stub let two
 /// suites running in parallel answer each other's requests, and the failures
 /// looked like routing bugs in the client rather than in the test harness.
-private final class Service: @unchecked Sendable {
+final class Service: @unchecked Sendable {
     let port: Int
     var baseURL: URL { URL(string: "http://127.0.0.1:\(port)")! }
 
@@ -89,11 +94,11 @@ private final class Service: @unchecked Sendable {
         lock.withLock { calls.append(call) }
         switch (call.method, call.path) {
         case ("POST", "/v1/enrollments/claim"):
-            return .init(status: 201, body: enrolledBody)
+            return .init(status: 201, body: chatEnrolledBody)
         case ("POST", "/v1/auth/challenges"):
-            return .init(status: 200, body: challengeBody)
+            return .init(status: 200, body: chatChallengeBody)
         case ("POST", "/v1/auth/tokens"):
-            return .init(status: 200, body: tokenBody)
+            return .init(status: 200, body: chatTokenBody)
         default:
             let seen = lock.withLock {
                 calls.filter { $0.method == call.method && $0.path == call.path }.count
@@ -117,7 +122,7 @@ private final class Service: @unchecked Sendable {
 }
 
 /// Which fake service owns which loopback port.
-private final class ServiceRegistry: @unchecked Sendable {
+final class ServiceRegistry: @unchecked Sendable {
     static let shared = ServiceRegistry()
 
     private let lock = NSLock()
@@ -140,7 +145,7 @@ private final class ServiceRegistry: @unchecked Sendable {
     }
 }
 
-private final class ChatStub: URLProtocol {
+final class ChatStub: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
@@ -207,40 +212,40 @@ private final class ChatStub: URLProtocol {
     }
 }
 
-private func json(_ object: [String: Any]) -> Data {
+func chatJSON(_ object: [String: Any]) -> Data {
     try! JSONSerialization.data(withJSONObject: object)
 }
 
-private let deviceID = "018f0000-0000-7000-8000-00000000c0de"
-private let timelineID = "tl_0000000000000000000000000000c0de"
+let chatDeviceID = "018f0000-0000-7000-8000-00000000c0de"
+let chatTimelineID = "tl_0000000000000000000000000000c0de"
 
-private let enrolledBody = json([
-    "device_id": deviceID,
+let chatEnrolledBody = chatJSON([
+    "device_id": chatDeviceID,
     "display_name": "iPhone",
     "device_key_thumbprint": "thumb",
     "scopes": ["finance.write", "device.self.read"],
     "allowed_tools_version": "v1",
 ])
 
-private let challengeBody = json([
+let chatChallengeBody = chatJSON([
     "challenge_id": "chal-1",
-    "device_id": deviceID,
+    "device_id": chatDeviceID,
     "nonce": DeviceWireContract.base64URLEncode(Data(repeating: 9, count: 32)),
     "audience": "personal-agent-api",
     "expires_at": "2026-07-30T07:02:00+00:00",
 ])
 
-private let tokenBody = json([
+let chatTokenBody = chatJSON([
     "access_token": "token-1",
     "token_type": "Bearer",
     "expires_in": 600,
-    "device_id": deviceID,
+    "device_id": chatDeviceID,
     "scopes": ["finance.write", "device.self.read"],
     "allowed_tools_version": "v1",
 ])
 
 /// The server's operation projection, with every required field present.
-private func receipt(
+func chatReceipt(
     _ state: String,
     operation: String = "op-1",
     cancelRequested: Bool = false,
@@ -265,13 +270,13 @@ private func receipt(
     return body
 }
 
-private func page(
+func chatPage(
     _ events: [[String: Any]],
     olderCursor: Any = NSNull(),
     newerCursor: Any = NSNull(),
     hasOlder: Bool = false,
     hasNewer: Bool = false,
-    conversation: String = timelineID
+    conversation: String = chatTimelineID
 ) -> [String: Any] {
     [
         "conversation_id": conversation,
@@ -283,7 +288,7 @@ private func page(
     ]
 }
 
-private func event(
+func chatEvent(
     _ id: String,
     type: String = "user_message",
     operation: Any = NSNull(),
@@ -300,7 +305,7 @@ private func event(
 
 // --- fixtures ----------------------------------------------------------------
 
-private func makeSession(
+func makeChatSession(
     service: Service, store: CredentialStore
 ) throws -> DeviceSession {
     let configuration = URLSessionConfiguration.ephemeral
@@ -316,33 +321,33 @@ private func makeSession(
 
 /// An enrolled session plus a bound Timeline, which is the state every chat test
 /// starts from. Sleeping is a no-op so the poll schedule costs no wall time.
-private func makeChat(
+func makeChat(
     service: Service,
     store: CredentialStore = InMemoryCredentialStore(),
     bind: Bool = true,
     pollDelays: [Duration] = Array(repeating: .zero, count: 4)
 ) async throws -> (ChatTimeline, DeviceSession, CredentialStore) {
-    let session = try makeSession(service: service, store: store)
+    let session = try makeChatSession(service: service, store: store)
     _ = try await session.enroll(code: "code", displayName: "iPhone")
     let chat = ChatTimeline(
         backend: session, store: store, pollDelays: pollDelays, sleep: { _ in }
     )
-    if bind { await chat.bind(conversationID: timelineID) }
+    if bind { await chat.bind(conversationID: chatTimelineID) }
     return (chat, session, store)
 }
 
-// --- the receipt projection: no success from prose ---------------------------
+// --- the chatReceipt projection: no success from prose ---------------------------
 
-@Suite("The DEV-030 receipt projection")
+@Suite("The DEV-030 chatReceipt projection")
 struct OperationReceiptTests {
     private func decode(_ object: [String: Any]) throws -> OperationReceipt {
-        try JSONDecoder().decode(OperationReceipt.self, from: json(object))
+        try JSONDecoder().decode(OperationReceipt.self, from: chatJSON(object))
     }
 
     @Test("a governed write proves itself with an external record id")
     func recordEvidence() throws {
         let parsed = try decode(
-            receipt(
+            chatReceipt(
                 "succeeded", tool: "finance.log_expense", recordID: "rec-42"
             )
         )
@@ -352,7 +357,7 @@ struct OperationReceiptTests {
 
     @Test("succeeded without evidence is unknown, never a recorded expense")
     func succeededWithoutEvidence() throws {
-        let parsed = try decode(receipt("succeeded", tool: "finance.log_expense"))
+        let parsed = try decode(chatReceipt("succeeded", tool: "finance.log_expense"))
         #expect(parsed.outcome == .indeterminate(state: "succeeded"))
         #expect(!parsed.outcome.provesWrite)
     }
@@ -360,7 +365,7 @@ struct OperationReceiptTests {
     @Test("a read-only success is an answer, and still not a write")
     func answerIsNotAWrite() throws {
         let parsed = try decode(
-            receipt(
+            chatReceipt(
                 "succeeded",
                 tool: "finance.query_expenses",
                 extra: ["answer": "本月个人支出 2093.00"]
@@ -372,7 +377,7 @@ struct OperationReceiptTests {
 
     @Test("an unknown state stops the poll loop and claims nothing")
     func unknownState() throws {
-        let parsed = try decode(receipt("teleported", recordID: "rec-1"))
+        let parsed = try decode(chatReceipt("teleported", recordID: "rec-1"))
         #expect(parsed.state == .unrecognised("teleported"))
         #expect(parsed.outcome == .indeterminate(state: "teleported"))
         #expect(parsed.outcome.isSettled)
@@ -383,7 +388,7 @@ struct OperationReceiptTests {
     @Test("a cancel request past submit is not a rollback")
     func cancelIsNotRollback() throws {
         let parsed = try decode(
-            receipt("source_in_progress", cancelRequested: true, clientDetached: true)
+            chatReceipt("source_in_progress", cancelRequested: true, clientDetached: true)
         )
         #expect(parsed.outcome == .running)
         #expect(parsed.cancellation == .requestedOutcomeStillAuthoritative)
@@ -391,7 +396,7 @@ struct OperationReceiptTests {
 
     @Test("only cancelled_pre_submit may say nothing was written")
     func cancelledPreSubmit() throws {
-        let parsed = try decode(receipt("cancelled_pre_submit", cancelRequested: true))
+        let parsed = try decode(chatReceipt("cancelled_pre_submit", cancelRequested: true))
         #expect(parsed.outcome == .cancelledBeforeSubmit)
         #expect(parsed.cancellation == .cancelledBeforeSubmit)
     }
@@ -399,7 +404,7 @@ struct OperationReceiptTests {
     @Test("a duplicate park without its check id is not a decision prompt")
     func duplicateWithoutCheckID() throws {
         let parsed = try decode(
-            receipt(
+            chatReceipt(
                 "waiting_for_duplicate_decision",
                 extra: ["duplicate_existing": "午饭 ¥20 餐饮"]
             )
@@ -410,7 +415,7 @@ struct OperationReceiptTests {
     @Test("a duplicate park exposes the check id the user has to decide on")
     func duplicatePark() throws {
         let parsed = try decode(
-            receipt(
+            chatReceipt(
                 "waiting_for_duplicate_decision",
                 duplicateCheckID: "dup-9",
                 extra: ["duplicate_existing": "午饭 ¥20 餐饮"]
@@ -426,7 +431,7 @@ struct OperationReceiptTests {
     @Test("needs_manual_review keeps the record id and is not a success")
     func manualReview() throws {
         let parsed = try decode(
-            receipt(
+            chatReceipt(
                 "needs_manual_review",
                 recordID: "rec-7",
                 failureReason: "SOURCE_COMMIT_UNKNOWN"
@@ -442,10 +447,10 @@ struct OperationReceiptTests {
 
     @Test("a body missing cancel_requested is refused, not defaulted")
     func missingFlagIsRefused() {
-        var body = receipt("succeeded")
+        var body = chatReceipt("succeeded")
         body["cancel_requested"] = nil
         #expect(throws: (any Error).self) {
-            try JSONDecoder().decode(OperationReceipt.self, from: json(body))
+            try JSONDecoder().decode(OperationReceipt.self, from: chatJSON(body))
         }
     }
 }
@@ -455,7 +460,7 @@ struct OperationReceiptTests {
 @Suite("The DEV-030 Timeline projection")
 struct TimelineEventTests {
     private func decode(_ object: [String: Any]) throws -> TimelineEvent {
-        try JSONDecoder().decode(TimelineEvent.self, from: json(object))
+        try JSONDecoder().decode(TimelineEvent.self, from: chatJSON(object))
     }
 
     @Test("reassuring prose next to failed_safe still renders as a failure")
@@ -463,7 +468,7 @@ struct TimelineEventTests {
         // The exact shape §5.1 warns about: the model's own words say the expense
         // was recorded, and the structured state says nothing was written.
         let parsed = try decode(
-            event(
+            chatEvent(
                 "ev-1",
                 type: "operation_result",
                 content: [
@@ -485,7 +490,7 @@ struct TimelineEventTests {
     @Test("a persisted success with a record id is evidence")
     func persistedRecordEvidence() throws {
         let parsed = try decode(
-            event(
+            chatEvent(
                 "ev-2",
                 type: "operation_result",
                 content: ["state": "succeeded", "record_id": "rec-42"]
@@ -502,7 +507,7 @@ struct TimelineEventTests {
     @Test("a persisted success with no record id claims nothing")
     func persistedSuccessWithoutEvidence() throws {
         let parsed = try decode(
-            event("ev-3", type: "operation_result", content: ["state": "succeeded"])
+            chatEvent("ev-3", type: "operation_result", content: ["state": "succeeded"])
         )
         #expect(
             parsed.kind
@@ -515,11 +520,11 @@ struct TimelineEventTests {
     @Test("a Session divider is presentation, not dialogue")
     func divider() throws {
         let parsed = try decode(
-            event("ev-4", type: "session_divider", content: ["reason": "idle_and_unrelated"])
+            chatEvent("ev-4", type: "session_divider", content: ["reason": "idle_and_unrelated"])
         )
         #expect(parsed.kind == .sessionDivider(reason: "idle_and_unrelated", corrected: false))
         let corrected = try decode(
-            event(
+            chatEvent(
                 "ev-5",
                 type: "session_boundary_corrected",
                 content: ["reason": "user_correction"]
@@ -529,17 +534,17 @@ struct TimelineEventTests {
         #expect(corrected.kind == .sessionDivider(reason: "user_correction", corrected: true))
     }
 
-    @Test("an unknown event type stays visible instead of vanishing")
+    @Test("an unknown chatEvent type stays visible instead of vanishing")
     func unknownEventType() throws {
-        let parsed = try decode(event("ev-6", type: "teleport", content: [:]))
+        let parsed = try decode(chatEvent("ev-6", type: "teleport", content: [:]))
         #expect(parsed.kind == .unrecognised(eventType: "teleport"))
     }
 
     @Test("a non-string where text belongs is unreadable, not blank")
     func nonStringText() throws {
-        let parsed = try decode(event("ev-7", content: ["text": 18]))
+        let parsed = try decode(chatEvent("ev-7", content: ["text": 18]))
         #expect(parsed.kind == .unrecognised(eventType: "user_message"))
-        // The page still decodes: one odd value must not blank the whole history.
+        // The chatPage still decodes: one odd value must not blank the whole history.
         #expect(parsed.content["text"] == .number(18))
     }
 }
@@ -550,18 +555,18 @@ struct TimelineEventTests {
 struct ChatSendTests {
     private func newService() -> Service { Service() }
 
-    @Test("an accepted message is polled to its structured receipt")
+    @Test("an accepted message is polled to its structured chatReceipt")
     func pollToReceipt() async throws {
         let service = newService()
         service.answer { call, seen in
             switch (call.method, call.path) {
             case ("POST", "/v1/chat/messages"):
-                return .accepted(receipt("accepted"))
+                return .accepted(chatReceipt("accepted"))
             case ("GET", "/v1/operations/op-1"):
                 return seen == 0
-                    ? .accepted(receipt("source_in_progress"))
+                    ? .accepted(chatReceipt("source_in_progress"))
                     : .ok(
-                        receipt(
+                        chatReceipt(
                             "succeeded", tool: "finance.log_expense", recordID: "rec-42"
                         )
                     )
@@ -576,7 +581,7 @@ struct ChatSendTests {
         #expect(final.outcome == .recorded(recordID: "rec-42", tool: "finance.log_expense"))
         #expect(service.chatPosts.count == 1)
         #expect(service.chatPosts.first?.idempotencyKey?.isEmpty == false)
-        #expect(service.chatPosts.first?.string("conversation_id") == timelineID)
+        #expect(service.chatPosts.first?.string("conversation_id") == chatTimelineID)
         // A settled operation releases the pending slot.
         #expect(try store.read(CredentialKey.pendingChatSend) == nil)
     }
@@ -590,9 +595,9 @@ struct ChatSendTests {
                 // The first POST reaches the server, which anchors the operation,
                 // and the reply is lost on the way back.
                 if seen == 0 { return .init(status: 599, body: Data()) }
-                return .accepted(receipt("accepted"))
+                return .accepted(chatReceipt("accepted"))
             case ("GET", "/v1/operations/op-1"):
-                return .ok(receipt("succeeded", tool: "finance.log_expense", recordID: "rec-42"))
+                return .ok(chatReceipt("succeeded", tool: "finance.log_expense", recordID: "rec-42"))
             default:
                 return .error(404, "NOT_FOUND")
             }
@@ -627,7 +632,7 @@ struct ChatSendTests {
         service.answer { call, _ in
             switch (call.method, call.path) {
             case ("GET", "/v1/operations/op-1"):
-                return .ok(receipt("succeeded", tool: "finance.log_expense", recordID: "rec-42"))
+                return .ok(chatReceipt("succeeded", tool: "finance.log_expense", recordID: "rec-42"))
             default:
                 return .error(500, "INTERNAL_ERROR")
             }
@@ -637,7 +642,7 @@ struct ChatSendTests {
         // answer is a poll. Posting again would be a second chance at a second row.
         let pending = ChatTimeline.PendingSend(
             idempotencyKey: "key-1",
-            conversationID: timelineID,
+            conversationID: chatTimelineID,
             text: "咖啡 18 个人支出",
             clarificationOf: nil,
             operationID: "op-1"
@@ -715,9 +720,9 @@ struct ChatSendTests {
         service.answer { call, _ in
             switch (call.method, call.path) {
             case ("POST", "/v1/chat/messages"):
-                return .accepted(receipt("accepted"))
+                return .accepted(chatReceipt("accepted"))
             case ("GET", "/v1/operations/op-1"):
-                return .accepted(receipt("verifying"))
+                return .accepted(chatReceipt("verifying"))
             default:
                 return .error(404, "NOT_FOUND")
             }
@@ -740,7 +745,7 @@ struct ChatSendTests {
         let service = newService()
         service.answer { call, _ in
             call.path == "/v1/chat/messages"
-                ? .accepted(receipt("teleported", recordID: "rec-42"))
+                ? .accepted(chatReceipt("teleported", recordID: "rec-42"))
                 : .error(404, "NOT_FOUND")
         }
         let (chat, _, store) = try await makeChat(service: service)
@@ -762,7 +767,7 @@ struct ChatSendTests {
         service.answer { call, _ in
             call.path == "/v1/chat/messages"
                 ? .ok(
-                    receipt(
+                    chatReceipt(
                         "needs_manual_review",
                         tool: "finance.log_expense",
                         recordID: "rec-42",
@@ -796,14 +801,14 @@ struct ChatSendTests {
             case ("POST", "/v1/chat/messages"):
                 if seen == 0 {
                     return .accepted(
-                        receipt(
+                        chatReceipt(
                             "waiting_for_clarification",
                             extra: ["clarification": "这笔是个人还是家庭支出？"]
                         )
                     )
                 }
                 return .ok(
-                    receipt(
+                    chatReceipt(
                         "succeeded",
                         operation: "op-2",
                         tool: "finance.log_expense",
@@ -839,11 +844,11 @@ struct ChatSendTests {
         service.answer { call, _ in
             switch (call.method, call.path) {
             case ("POST", "/v1/chat/messages"):
-                return .accepted(receipt("accepted"))
+                return .accepted(chatReceipt("accepted"))
             case ("GET", "/v1/operations/op-1"):
-                return .accepted(receipt("source_in_progress"))
+                return .accepted(chatReceipt("source_in_progress"))
             case ("DELETE", "/v1/operations/op-1"):
-                return .accepted(receipt("source_in_progress", cancelRequested: true))
+                return .accepted(chatReceipt("source_in_progress", cancelRequested: true))
             default:
                 return .error(404, "NOT_FOUND")
             }
@@ -863,7 +868,7 @@ struct ChatSendTests {
 
         service.answer { call, _ in
             call.method == "DELETE"
-                ? .ok(receipt("cancelled_pre_submit", cancelRequested: true))
+                ? .ok(chatReceipt("cancelled_pre_submit", cancelRequested: true))
                 : .error(404, "NOT_FOUND")
         }
         let settled = try await chat.cancel(operationID: "op-1")
@@ -890,12 +895,12 @@ struct ChatSendTests {
                 ? .ok([
                     "allowed_tools_version": "v1",
                     "tools": [["alias": "finance.log_expense"]],
-                    "conversation_id": timelineID,
+                    "conversation_id": chatTimelineID,
                 ])
                 : .error(404, "NOT_FOUND")
         }
         let (_, session, _) = try await makeChat(service: service)
-        #expect(try await session.capabilities().conversationID == timelineID)
+        #expect(try await session.capabilities().conversationID == chatTimelineID)
 
         // A body without it is refused: the client has no other way to learn the
         // Timeline and must never invent one.
@@ -918,15 +923,15 @@ struct ChatHistoryTests
 {
     private func newService() -> Service { Service() }
 
-    @Test("the first page is the newest, and scrolling up prepends in order")
+    @Test("the first chatPage is the newest, and scrolling up prepends in order")
     func pagingUp() async throws {
         let service = newService()
         service.answer { call, seen in
             guard call.path.hasSuffix("/events") else { return .error(404, "NOT_FOUND") }
             if call.query["cursor"] == nil {
                 return .ok(
-                    page(
-                        [event("ev-3"), event("ev-4")],
+                    chatPage(
+                        [chatEvent("ev-3"), chatEvent("ev-4")],
                         olderCursor: "cur-older-3",
                         newerCursor: "cur-newer-4",
                         hasOlder: true
@@ -936,9 +941,9 @@ struct ChatHistoryTests
             #expect(call.query["cursor"] == "cur-older-3")
             #expect(call.query["direction"] == "older")
             return .ok(
-                page(
-                    [event("ev-1"), event("ev-2")],
-                    // An old page also carries a `newer_cursor`, anchored at *its*
+                chatPage(
+                    [chatEvent("ev-1"), chatEvent("ev-2")],
+                    // An old chatPage also carries a `newer_cursor`, anchored at *its*
                     // newest row -- ev-2, far behind the live edge.
                     newerCursor: "cur-newer-2",
                     hasOlder: false
@@ -956,33 +961,33 @@ struct ChatHistoryTests
         #expect(await chat.hasOlder == false)
         #expect(
             await chat.newestCursor == "cur-newer-4",
-            "an older page must not drag the sync cursor back into history"
+            "an older chatPage must not drag the sync cursor back into history"
         )
         #expect(service.timelineGets.count == 2)
     }
 
-    @Test("incremental sync appends and survives a quiet page")
+    @Test("incremental sync appends and survives a quiet chatPage")
     func incrementalSync() async throws {
         let service = newService()
         service.answer { call, seen in
             guard call.path.hasSuffix("/events") else { return .error(404, "NOT_FOUND") }
             if call.query["cursor"] == nil {
                 return .ok(
-                    page([event("ev-1")], newerCursor: "cur-newer-1")
+                    chatPage([chatEvent("ev-1")], newerCursor: "cur-newer-1")
                 )
             }
             #expect(call.query["direction"] == "newer")
             if seen == 1 {
                 return .ok(
-                    page(
-                        [event("ev-1"), event("ev-2")],
+                    chatPage(
+                        [chatEvent("ev-1"), chatEvent("ev-2")],
                         newerCursor: "cur-newer-2",
                         hasNewer: false
                     )
                 )
             }
             // A quiet poll: no events, and therefore no cursor at all.
-            return .ok(page([]))
+            return .ok(chatPage([]))
         }
         let (chat, _, _) = try await makeChat(service: service)
 
@@ -995,13 +1000,13 @@ struct ChatHistoryTests
         try await chat.syncNewer()
         #expect(
             await chat.newestCursor == "cur-newer-2",
-            "a quiet page must not end incremental sync"
+            "a quiet chatPage must not end incremental sync"
         )
         #expect(service.timelineGets.count == 3)
         #expect(service.timelineGets.last?.query["cursor"] == "cur-newer-2")
     }
 
-    @Test("an empty Timeline can discover its first event without a cursor")
+    @Test("an empty Timeline can discover its first chatEvent without a cursor")
     func emptyTimelineCanRefresh() async throws {
         let service = newService()
         service.answer { call, seen in
@@ -1009,8 +1014,8 @@ struct ChatHistoryTests
                 return .error(404, "NOT_FOUND")
             }
             return seen == 0
-                ? .ok(page([]))
-                : .ok(page([event("ev-1")], newerCursor: "cur-newer-1"))
+                ? .ok(chatPage([]))
+                : .ok(chatPage([chatEvent("ev-1")], newerCursor: "cur-newer-1"))
         }
         let (chat, _, _) = try await makeChat(service: service)
 
@@ -1028,7 +1033,7 @@ struct ChatHistoryTests
         let (_, session, _) = try await makeChat(service: service)
         await #expect(throws: AgentClientError.cursorRequired) {
             _ = try await session.timelinePage(
-                conversationID: timelineID, cursor: nil, direction: .newer, limit: nil
+                conversationID: chatTimelineID, cursor: nil, direction: .newer, limit: nil
             )
         }
         #expect(service.timelineGets.isEmpty)
@@ -1041,7 +1046,7 @@ struct ChatHistoryTests
             guard call.path.hasSuffix("/events") else { return .error(404, "NOT_FOUND") }
             if call.query["cursor"] == nil {
                 return .ok(
-                    page([event("ev-9")], olderCursor: "cur-stale", hasOlder: true)
+                    chatPage([chatEvent("ev-9")], olderCursor: "cur-stale", hasOlder: true)
                 )
             }
             return .error(400, "INVALID_CURSOR")
@@ -1050,17 +1055,17 @@ struct ChatHistoryTests
 
         try await chat.loadLatest()
         #expect(try await chat.loadOlder() == false)
-        // One refused page, then exactly one reload -- not a retry loop.
+        // One refused chatPage, then exactly one reload -- not a retry loop.
         #expect(service.timelineGets.count == 3)
         #expect(await chat.events.map(\.eventID) == ["ev-9"])
     }
 
-    @Test("a page missing its events array is malformed, never an empty history")
+    @Test("a chatPage missing its events array is malformed, never an empty history")
     func malformedPage() async throws {
         let service = newService()
         service.answer { call, _ in
             call.path.hasSuffix("/events")
-                ? .ok(["conversation_id": timelineID, "has_older": false, "has_newer": false])
+                ? .ok(["conversation_id": chatTimelineID, "has_older": false, "has_newer": false])
                 : .error(404, "NOT_FOUND")
         }
         let (chat, _, _) = try await makeChat(service: service)
@@ -1076,7 +1081,7 @@ struct ChatHistoryTests
         let service = newService()
         service.answer { call, _ in
             call.path.hasSuffix("/events")
-                ? .ok(page([event("ev-1")], conversation: "tl_canonical"))
+                ? .ok(chatPage([chatEvent("ev-1")], conversation: "tl_canonical"))
                 : .error(404, "NOT_FOUND")
         }
         let (chat, _, _) = try await makeChat(service: service)
@@ -1091,7 +1096,7 @@ struct ChatHistoryTests
         let service = newService()
         service.answer { call, _ in
             call.path.hasSuffix("/events")
-                ? .ok(page([event("ev-1")], newerCursor: "cur-1"))
+                ? .ok(chatPage([chatEvent("ev-1")], newerCursor: "cur-1"))
                 : .error(404, "NOT_FOUND")
         }
         let (chat, _, _) = try await makeChat(service: service)
@@ -1105,9 +1110,9 @@ struct ChatHistoryTests
     }
 }
 
-// --- the cross-language receipt contract -------------------------------------
+// --- the cross-language chatReceipt contract -------------------------------------
 
-/// The Swift half of `DEV-030`'s receipt contract.
+/// The Swift half of `DEV-030`'s chatReceipt contract.
 ///
 /// It reads the **same file** the Python suite reads --
 /// `src/personal_agent/api/vectors/chat_receipt_vectors.json`, whose receipts are
@@ -1120,7 +1125,7 @@ struct ChatHistoryTests
 private struct ReceiptVectors {
     struct Case {
         let name: String
-        let receipt: Data
+        let chatReceipt: Data
         let expectedOutcome: String
         let expectedProvesWrite: Bool
         let expectedSettled: Bool
@@ -1152,8 +1157,8 @@ private struct ReceiptVectors {
         let cases: [Case] = rawCases.compactMap { entry in
             guard
                 let name = entry["name"] as? String,
-                let receipt = entry["receipt"],
-                let body = try? JSONSerialization.data(withJSONObject: receipt),
+                let chatReceipt = entry["receipt"],
+                let body = try? JSONSerialization.data(withJSONObject: chatReceipt),
                 let outcome = entry["expected_outcome"] as? String,
                 let provesWrite = entry["expected_proves_write"] as? Bool,
                 let settled = entry["expected_settled"] as? Bool,
@@ -1163,7 +1168,7 @@ private struct ReceiptVectors {
             else { return nil }
             return Case(
                 name: name,
-                receipt: body,
+                chatReceipt: body,
                 expectedOutcome: outcome,
                 expectedProvesWrite: provesWrite,
                 expectedSettled: settled,
@@ -1204,7 +1209,7 @@ private func label(_ note: CancellationNote) -> String {
     }
 }
 
-@Suite("The frozen cross-language chat receipt contract")
+@Suite("The frozen cross-language chat chatReceipt contract")
 struct ReceiptContractTests {
     fileprivate let vectors = ReceiptVectors.load()
 
@@ -1236,12 +1241,12 @@ struct ReceiptContractTests {
         #expect(Set(vectors.recordEvidenceTools) == OperationReceipt.recordEvidenceTools)
     }
 
-    @Test("every server receipt projects to the outcome both sides agreed on")
+    @Test("every server chatReceipt projects to the outcome both sides agreed on")
     func casesAgree() throws {
         let vectors = try #require(vectors)
         for entry in vectors.cases {
             let parsed = try JSONDecoder().decode(
-                OperationReceipt.self, from: entry.receipt
+                OperationReceipt.self, from: entry.chatReceipt
             )
             #expect(
                 label(parsed.outcome) == entry.expectedOutcome,

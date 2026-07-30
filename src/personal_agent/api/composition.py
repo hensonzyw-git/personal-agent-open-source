@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Final
+from urllib.parse import urlsplit
 
 from personal_agent.api.app import AgentApiDeps, AuthContext
 from personal_agent.api.control_client import (
@@ -154,6 +155,12 @@ class AgentServiceConfig:
     #: a narrower set is how a read-only rollout is expressed.
     allowed_tools: frozenset[str] | None = None
     sync_wait_seconds: float = 30.0
+    #: `DEV-031`. The Feishu ledger URL this service names to enrolled devices
+    #: (Henson's 2026-07-30 decision: the client never invents it, like the
+    #: canonical Timeline id). It is a resource identifier from local
+    #: configuration, not a secret; `None` omits the field from
+    #: `/v1/capabilities` and the app then offers no jump.
+    ledger_url: str | None = None
 
 
 @dataclass
@@ -475,6 +482,7 @@ async def agent_service(
     try:
         mcp_url = require_loopback_url(config.finance_mcp_url)
         require_loopback_url(config.finance_control_url)
+        ledger_url = _checked_ledger_url(config.ledger_url)
     except ValueError as exc:
         raise CompositionError(str(exc)) from exc
 
@@ -681,6 +689,7 @@ async def agent_service(
                     # manifest and never from the enrolling client.
                     enrollment_manifest_version=manifest_version,
                     sync_wait_seconds=config.sync_wait_seconds,
+                    ledger_url=ledger_url,
                 ),
                 bridge=bridge,
                 catalog_aliases=aliases,
@@ -689,6 +698,24 @@ async def agent_service(
         finally:
             await control.aclose()
             await client.close()
+
+
+def _checked_ledger_url(raw: str | None) -> str | None:
+    """Validate the configured ledger URL, or pass `None` through.
+
+    `DEV-031`. The URL is opened on the phone, so only `https` with a real host
+    is acceptable: anything else is a configuration error to refuse at startup,
+    not a string to hand every enrolled device.
+    """
+    if raw is None:
+        return None
+    parts = urlsplit(raw.strip())
+    if parts.scheme != "https" or not parts.hostname:
+        raise ValueError(
+            "the ledger URL must be an https URL with a host; the client opens "
+            "whatever the service names, so a malformed value cannot be served"
+        )
+    return raw.strip()
 
 
 def _no_such_device(device_id: str) -> AppError:

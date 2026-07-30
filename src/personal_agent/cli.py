@@ -73,6 +73,11 @@ def main() -> None:
         # configuration, not a constant this code may choose.
         raise SystemExit("PERSONAL_AGENT_USER_ID must be set")
 
+    # `DEV-031`: the ledger URL the service names to enrolled devices. Optional;
+    # absence means the apps offer no "open the ledger" jump. The value itself
+    # is validated at composition.
+    ledger_url = os.environ.get("PERSONAL_AGENT_LEDGER_URL", "").strip() or None
+
     config = AgentServiceConfig(
         database=args.database,
         finance_mcp_url=args.finance_mcp_url,
@@ -81,6 +86,7 @@ def main() -> None:
         allowed_tools=(
             frozenset(args.allowed_tools) if args.allowed_tools else None
         ),
+        ledger_url=ledger_url,
     )
     try:
         asyncio.run(_serve(config, args))

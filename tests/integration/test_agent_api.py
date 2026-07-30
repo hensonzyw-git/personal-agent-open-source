@@ -150,6 +150,7 @@ def _client(
     dispatcher,
     dispatcher_traces=None,
     sync_wait_seconds=30.0,
+    ledger_url=None,
 ) -> TestClient:
     def build_dispatcher(auth, trace_id):
         if dispatcher_traces is not None:
@@ -169,6 +170,7 @@ def _client(
         capabilities=lambda auth: [{"alias": "finance.log_expense"}],
         now=lambda: NOW,
         sync_wait_seconds=sync_wait_seconds,
+        ledger_url=ledger_url,
     )
     return TestClient(build_app(deps))
 
@@ -569,6 +571,41 @@ def test_capabilities_lists_the_device_tools(engine, token_ring, keyring) -> Non
     )
     assert resp.status_code == 200
     assert resp.json()["tools"] == [{"alias": "finance.log_expense"}]
+
+
+def test_capabilities_names_the_ledger_url_only_when_composed(
+    engine, token_ring, keyring
+) -> None:
+    """`DEV-031`: the client never invents the ledger URL.
+
+    A composition that knows it returns it; one that does not omits the field
+    entirely, so the app can tell "the service named no ledger" apart from a
+    placeholder and hide the jump rather than open an invented address.
+    """
+    with_url = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+        ledger_url="https://example.feishu.cn/base/APP_TOKEN",
+    )
+    resp = with_url.get(
+        "/v1/capabilities",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ledger_url"] == "https://example.feishu.cn/base/APP_TOKEN"
+
+    without = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+    )
+    resp = without.get(
+        "/v1/capabilities",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert resp.status_code == 200
+    assert "ledger_url" not in resp.json()
 
 
 def test_an_active_device_cannot_poll_or_cancel_another_devices_operation(
