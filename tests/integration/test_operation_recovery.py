@@ -98,6 +98,15 @@ def test_finance_failed_safe_and_manual_review_project_through() -> None:
     ).target_state == "needs_manual_review"
 
 
+def test_finance_manual_review_preserves_a_known_record_id() -> None:
+    plan = plan_recovery(
+        "source_in_progress",
+        _status("needs_manual_review", record_id="rec123"),
+    )
+    assert plan.target_state == "needs_manual_review"
+    assert plan.safe_result == "rec123"
+
+
 def test_finance_cancel_only_projects_when_agent_is_pre_submit() -> None:
     assert plan_recovery(
         "dispatching", _status("cancelled_pre_submit")

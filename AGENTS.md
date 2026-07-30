@@ -296,7 +296,8 @@ conflict instead of silently choosing an old default.
   P0 contracts, and final design Go decision.
 - `docs/Phase1开发拆解_v0.1.md` — executable DEV/CAP tasks, dependencies,
   gates, external inputs and completion definition; development is authorised,
-  G0–G3 passed, CAP-001 and DEV-041 are complete, and DEV-030 is next before G4.
+  G0–G3 passed, CAP-001, DEV-041 and DEV-030 are complete (DEV-030 offline only),
+  and DEV-031 is the last implementation item before G4.
 - `ECS安全加固实施记录_2026-07-23.md` — security, encryption, snapshot, and
   rollback record.
 - `docs/iOS开发环境_Personal_Team_v0.1.md` — Personal Team constraints, the iOS

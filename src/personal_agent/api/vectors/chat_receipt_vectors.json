@@ -1,0 +1,226 @@
+{
+  "contract": "chat_receipt_projection_v2",
+  "note": "DEV-030. Generated from the server's own _operation_projection; the iOS client reads this file rather than a copy. Both sides must agree case by case, because the client's only reason to say 已写入 is a record_id in one of these bodies, and an indeterminate/manual-review result must not release the durable idempotency slot.",
+  "operation_states": [
+    "accepted",
+    "interpreting",
+    "waiting_for_clarification",
+    "waiting_for_duplicate_decision",
+    "dispatching",
+    "source_in_progress",
+    "verifying",
+    "succeeded",
+    "failed_safe",
+    "needs_manual_review",
+    "cancelled_pre_submit"
+  ],
+  "record_evidence_tools": [
+    "finance.log_expense",
+    "finance.log_income",
+    "finance.update_family_fund"
+  ],
+  "cases": [
+    {
+      "name": "expense_recorded",
+      "receipt": {
+        "operation_id": "op_expense_recorded",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "finance.log_expense",
+        "record_id": "recXXXXXXXXXXXX",
+        "failure_reason": null,
+        "duplicate_check_id": null
+      },
+      "expected_outcome": "recorded",
+      "expected_proves_write": true,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "succeeded_without_evidence",
+      "receipt": {
+        "operation_id": "op_succeeded_without_evidence",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "finance.log_expense",
+        "record_id": null,
+        "failure_reason": null,
+        "duplicate_check_id": null
+      },
+      "expected_outcome": "indeterminate",
+      "expected_proves_write": false,
+      "expected_settled": true,
+      "expected_releases_pending": false,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "read_only_answer",
+      "receipt": {
+        "operation_id": "op_read_only_answer",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "finance.query_expenses",
+        "record_id": null,
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "answer": "本月个人支出 2093.00"
+      },
+      "expected_outcome": "answered",
+      "expected_proves_write": false,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "no_tool_answer",
+      "receipt": {
+        "operation_id": "op_no_tool_answer",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": null,
+        "record_id": null,
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "answer": "好的"
+      },
+      "expected_outcome": "answered",
+      "expected_proves_write": false,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "parked_clarification",
+      "receipt": {
+        "operation_id": "op_parked_clarification",
+        "state": "waiting_for_clarification",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": null,
+        "record_id": null,
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "clarification": "这笔是个人还是家庭支出？"
+      },
+      "expected_outcome": "needs_clarification",
+      "expected_proves_write": false,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "parked_duplicate",
+      "receipt": {
+        "operation_id": "op_parked_duplicate",
+        "state": "waiting_for_duplicate_decision",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": null,
+        "record_id": null,
+        "failure_reason": null,
+        "duplicate_check_id": "dupXXXXXXXX",
+        "duplicate_existing": "午饭 ¥20 餐饮"
+      },
+      "expected_outcome": "needs_duplicate_decision",
+      "expected_proves_write": false,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "failed_safe",
+      "receipt": {
+        "operation_id": "op_failed_safe",
+        "state": "failed_safe",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": null,
+        "record_id": null,
+        "failure_reason": "TOOL_NOT_ALLOWLISTED",
+        "duplicate_check_id": null
+      },
+      "expected_outcome": "failed_safe",
+      "expected_proves_write": false,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "manual_review_keeps_record",
+      "receipt": {
+        "operation_id": "op_manual_review_keeps_record",
+        "state": "needs_manual_review",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "finance.log_expense",
+        "record_id": "recXXXXXXXXXXXX",
+        "failure_reason": "SOURCE_COMMIT_UNKNOWN",
+        "duplicate_check_id": null
+      },
+      "expected_outcome": "needs_manual_review",
+      "expected_proves_write": false,
+      "expected_settled": true,
+      "expected_releases_pending": false,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "cancelled_pre_submit",
+      "receipt": {
+        "operation_id": "op_cancelled_pre_submit",
+        "state": "cancelled_pre_submit",
+        "cancel_requested": true,
+        "client_detached": false,
+        "tool": null,
+        "record_id": null,
+        "failure_reason": null,
+        "duplicate_check_id": null
+      },
+      "expected_outcome": "cancelled_before_submit",
+      "expected_proves_write": false,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "cancelled_before_submit"
+    },
+    {
+      "name": "cancel_after_submit_is_not_a_rollback",
+      "receipt": {
+        "operation_id": "op_cancel_after_submit_is_not_a_rollback",
+        "state": "source_in_progress",
+        "cancel_requested": true,
+        "client_detached": true,
+        "tool": null,
+        "record_id": null,
+        "failure_reason": null,
+        "duplicate_check_id": null
+      },
+      "expected_outcome": "running",
+      "expected_proves_write": false,
+      "expected_settled": false,
+      "expected_releases_pending": false,
+      "expected_cancellation": "requested_outcome_still_authoritative"
+    },
+    {
+      "name": "still_interpreting",
+      "receipt": {
+        "operation_id": "op_still_interpreting",
+        "state": "interpreting",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": null,
+        "record_id": null,
+        "failure_reason": null,
+        "duplicate_check_id": null
+      },
+      "expected_outcome": "running",
+      "expected_proves_write": false,
+      "expected_settled": false,
+      "expected_releases_pending": false,
+      "expected_cancellation": "none"
+    }
+  ]
+}

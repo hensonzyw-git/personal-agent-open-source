@@ -158,7 +158,14 @@ def plan_recovery(
             reason="finance failed safe",
         )
     if fs == "needs_manual_review":
-        return _manual_review("finance needs manual review")
+        return _manual_review(
+            "finance needs manual review",
+            safe_result=(
+                finance_status.record_id
+                if _nonempty(finance_status.record_id)
+                else None
+            ),
+        )
     if fs == "cancelled_pre_submit":
         if agent_pre_submit:
             return RecoveryPlan(
@@ -269,9 +276,14 @@ def _walk(
     session.refresh(operation)
 
 
-def _manual_review(reason: str) -> RecoveryPlan:
+def _manual_review(
+    reason: str, *, safe_result: str | None = None
+) -> RecoveryPlan:
     return RecoveryPlan(
-        RecoveryAction.RESOLVE, target_state="needs_manual_review", reason=reason
+        RecoveryAction.RESOLVE,
+        target_state="needs_manual_review",
+        safe_result=safe_result,
+        reason=reason,
     )
 
 

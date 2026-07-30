@@ -28,6 +28,11 @@ public enum CredentialKey {
     /// allowed a write failure to leave a new server device paired with only
     /// part of its local identity.
     public static let enrollment = "device-enrollment-v1"
+    /// `DEV-030`: the one unfinished chat message, if any. It holds the
+    /// idempotency key that makes a reconnect resume the same operation instead of
+    /// starting a second write, so it belongs in the same durable store as the
+    /// device identity rather than in `UserDefaults`.
+    public static let pendingChatSend = "pending-chat-send-v1"
     /// Legacy keys from the first DEV-029 simulator build. `DeviceSession`
     /// migrates them on read and deletes them when the user forgets locally.
     public static let deviceKeyBlob = "device-key-blob"

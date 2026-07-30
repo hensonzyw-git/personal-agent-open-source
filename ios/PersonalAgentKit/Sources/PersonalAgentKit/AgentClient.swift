@@ -116,6 +116,91 @@ public struct AgentClient: Sendable {
         )
     }
 
+    // --- chat, operations and the Timeline (`DEV-030`) ------------------------
+
+    /// Post one chat message.
+    ///
+    /// `idempotencyKey` is the caller's, not this method's, and that is the whole
+    /// point: a retry after a lost reply must present the **same** key so the
+    /// server replays the same operation instead of starting a second write.
+    /// `conversationID` must be the id the server itself handed out — the client
+    /// neither creates nor manages Sessions.
+    ///
+    /// A `202` is a normal answer here, not an error: the model turn continues
+    /// server-side and the reply carries the durable `operation_id` to poll.
+    public func sendChatMessage(
+        conversationID: String,
+        text: String,
+        clarificationOf: String? = nil,
+        idempotencyKey: String,
+        token: String
+    ) async throws -> OperationReceipt {
+        try await send(
+            method: "POST",
+            path: "/v1/chat/messages",
+            body: [
+                "conversation_id": conversationID,
+                "text": text,
+                "clarification_of": clarificationOf,
+            ],
+            token: token,
+            headers: ["Idempotency-Key": idempotencyKey],
+            accepting: [200, 202],
+            as: OperationReceipt.self
+        )
+    }
+
+    public func operation(
+        operationID: String, token: String
+    ) async throws -> OperationReceipt {
+        try await send(
+            method: "GET",
+            path: "/v1/operations/\(operationID)",
+            token: token,
+            accepting: [200, 202],
+            as: OperationReceipt.self
+        )
+    }
+
+    /// Ask the server to cancel. The reply is the operation's *current* state:
+    /// once a source submit may have happened this only records the request, and
+    /// the accounting outcome still comes from the server.
+    public func cancelOperation(
+        operationID: String, token: String
+    ) async throws -> OperationReceipt {
+        try await send(
+            method: "DELETE",
+            path: "/v1/operations/\(operationID)",
+            token: token,
+            accepting: [200, 202],
+            as: OperationReceipt.self
+        )
+    }
+
+    /// One page of history. `direction: .newer` requires a cursor server-side, so
+    /// asking for it without one is refused here rather than as a 400.
+    public func timelinePage(
+        conversationID: String,
+        cursor: String? = nil,
+        direction: TimelineDirection = .older,
+        limit: Int? = nil,
+        token: String
+    ) async throws -> TimelinePageResponse {
+        if direction == .newer && cursor == nil {
+            throw AgentClientError.cursorRequired
+        }
+        var query = [URLQueryItem(name: "direction", value: direction.rawValue)]
+        if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
+        return try await send(
+            method: "GET",
+            path: "/v1/conversations/\(conversationID)/events",
+            token: token,
+            query: query,
+            as: TimelinePageResponse.self
+        )
+    }
+
     // --- transport -----------------------------------------------------------
 
     private func send<Response: Decodable>(
@@ -123,9 +208,12 @@ public struct AgentClient: Sendable {
         path: String,
         body: [String: String?]? = nil,
         token: String? = nil,
+        headers: [String: String] = [:],
+        query: [URLQueryItem] = [],
+        accepting: Set<Int> = [200, 201],
         as type: Response.Type
     ) async throws -> Response {
-        guard let url = URL(string: path, relativeTo: baseURL) else {
+        guard let url = Self.url(path: path, query: query, relativeTo: baseURL) else {
             throw AgentClientError.invalidBaseURL
         }
         var request = URLRequest(url: url)
@@ -133,6 +221,9 @@ public struct AgentClient: Sendable {
         request.timeoutInterval = 20
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        for (name, value) in headers {
+            request.setValue(value, forHTTPHeaderField: name)
         }
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -151,7 +242,7 @@ public struct AgentClient: Sendable {
         guard let http = response as? HTTPURLResponse else {
             throw AgentClientError.malformedResponse
         }
-        if http.statusCode == 200 || http.statusCode == 201 {
+        if accepting.contains(http.statusCode) {
             do {
                 return try JSONDecoder().decode(Response.self, from: data)
             } catch {
@@ -159,6 +250,17 @@ public struct AgentClient: Sendable {
             }
         }
         throw AgentClientError.from(status: http.statusCode, body: data)
+    }
+
+    private static func url(
+        path: String, query: [URLQueryItem], relativeTo base: URL
+    ) -> URL? {
+        guard let resolved = URL(string: path, relativeTo: base) else { return nil }
+        guard !query.isEmpty else { return resolved }
+        guard var components = URLComponents(url: resolved, resolvingAgainstBaseURL: true)
+        else { return nil }
+        components.queryItems = query
+        return components.url
     }
 }
 
@@ -217,6 +319,11 @@ public struct IssuedToken: Decodable, Sendable {
 public struct Capabilities: Decodable, Sendable {
     public let allowedToolsVersion: String
     public let tools: [Tool]
+    /// The one canonical Timeline every enrolled device resolves to
+    /// (`CAP-001` design 4.2.2). It is **required**: the client has no other way
+    /// to learn it and must never invent one, so a service that omits it fails
+    /// here rather than at the first message.
+    public let conversationID: String
 
     public struct Tool: Decodable, Sendable {
         public let alias: String
@@ -233,6 +340,7 @@ public struct Capabilities: Decodable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case allowedToolsVersion = "allowed_tools_version"
         case tools
+        case conversationID = "conversation_id"
     }
 }
 
@@ -287,9 +395,32 @@ public enum AgentClientError: Error, Equatable {
     case unauthenticated
     case forbidden(code: String?)
     case badRequest(code: String?)
+    /// This `Idempotency-Key` is already bound to a different request. Retrying
+    /// with the same key can never succeed, and minting a new one for the same
+    /// intent would risk a second write.
+    case idempotencyConflict
+    /// The server does not know this id — a Timeline that names nothing here, or
+    /// an operation this device does not own.
+    case notFound(code: String?)
     case serverError(status: Int)
     case transport(String)
     case malformedResponse
+    /// `direction=newer` needs a cursor: "everything newer than nothing" is the
+    /// whole Timeline, which is not a page. Refused before the request.
+    case cursorRequired
+
+    /// The server's stable error code, where it sent one. Callers use it to tell
+    /// `INVALID_CURSOR` (recoverable by reloading) from a plain bad request.
+    public var errorCode: String? {
+        switch self {
+        case .forbidden(let code), .badRequest(let code), .notFound(let code):
+            return code
+        case .idempotencyConflict:
+            return "IDEMPOTENCY_CONFLICT"
+        default:
+            return nil
+        }
+    }
 
     static func from(status: Int, body: Data) -> AgentClientError {
         let code = Self.errorCode(in: body)
@@ -297,6 +428,8 @@ public enum AgentClientError: Error, Equatable {
         case 400: return .badRequest(code: code)
         case 401: return code == "DEVICE_AUTH_REJECTED" ? .deviceRejected : .unauthenticated
         case 403: return code == "ENROLLMENT_REJECTED" ? .enrollmentRejected : .forbidden(code: code)
+        case 404: return .notFound(code: code)
+        case 409: return .idempotencyConflict
         default: return .serverError(status: status)
         }
     }

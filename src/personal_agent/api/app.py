@@ -1468,7 +1468,7 @@ def _operation_projection(operation: Operation) -> dict[str, Any]:
         elif operation.state == "waiting_for_duplicate_decision":
             projection["duplicate_existing"] = operation.safe_result
         elif (
-            operation.state == "succeeded"
+            operation.state in {"succeeded", "needs_manual_review"}
             and operation.tool in _RECORD_ID_RESULT_TOOLS
         ):
             projection["record_id"] = operation.safe_result

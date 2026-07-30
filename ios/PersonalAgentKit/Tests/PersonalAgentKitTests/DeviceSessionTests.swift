@@ -140,6 +140,9 @@ private let enrolledBody = json([
 private let capabilitiesBody = json([
     "allowed_tools_version": "v1",
     "tools": [["alias": "meta.capabilities"]],
+    // `DEV-030`: the canonical Timeline id is part of this contract, and the
+    // client refuses a capabilities body without it.
+    "conversation_id": "tl_0000000000000000000000000000beef",
 ])
 
 private let devicesBody = json([

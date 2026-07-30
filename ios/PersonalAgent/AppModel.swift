@@ -30,9 +30,13 @@ final class AppModel {
     var selfDevice: DeviceSummary?
     var lastError: String?
     var busy = false
+    /// `DEV-030`. Built once a session exists, and opened on the Timeline the
+    /// server names in `/v1/capabilities` — never on an id chosen here.
+    var chat: ChatModel?
 
     private let store: CredentialStore = KeychainCredentialStore()
     private var session: DeviceSession?
+    private var chatTimeline: ChatTimeline?
 
     // --- lifecycle -----------------------------------------------------------
 
@@ -93,10 +97,12 @@ final class AppModel {
         busy = true
         defer { busy = false }
         do {
-            capabilities = try await session.capabilities()
+            let read = try await session.capabilities()
+            capabilities = read
             selfDevice = try await session.devices().devices.first { $0.isSelf }
             phase = .ready
             lastError = nil
+            await openChat(session: session, conversationID: read.conversationID)
         } catch AgentClientError.deviceRejected {
             phase = .revoked
             // The last successful read is now unverifiable, and leaving it on
@@ -104,6 +110,10 @@ final class AppModel {
             // presented as current is worse than no value.
             capabilities = nil
             selfDevice = nil
+            // The chat surface goes with it: a Timeline this device can no longer
+            // read must not stay on screen looking current.
+            chat = nil
+            chatTimeline = nil
             lastError = "服务端已不再为本设备签发 token（设备被撤销或密钥不匹配）。"
         } catch {
             lastError = describe(error)
@@ -117,6 +127,8 @@ final class AppModel {
         do {
             selfDevice = try await session.revokeSelf()
             phase = .revoked
+            chat = nil
+            chatTimeline = nil
             lastError = nil
         } catch {
             lastError = describe(error)
@@ -134,6 +146,8 @@ final class AppModel {
             keyKind = nil
             capabilities = nil
             selfDevice = nil
+            chat = nil
+            chatTimeline = nil
             // The previous phase's error described a device that no longer exists
             // here; carrying it onto the enrollment screen would report a failure
             // for a device that was just forgotten.
@@ -145,6 +159,31 @@ final class AppModel {
     }
 
     // --- helpers -------------------------------------------------------------
+
+    /// Open the chat surface on the server's canonical Timeline.
+    ///
+    /// The `ChatTimeline` is created once per session and reused, because it owns
+    /// the unresolved-message slot; rebuilding it on every refresh would drop the
+    /// loaded history and re-run the resume path.
+    private func openChat(session: DeviceSession, conversationID: String) async {
+        if chatTimeline == nil {
+            chatTimeline = ChatTimeline(backend: session, store: store)
+        }
+        guard let chatTimeline else { return }
+        if chat == nil {
+            chat = ChatModel(
+                timeline: chatTimeline,
+                describe: { [weak self] error in
+                    self?.describe(error) ?? String(describing: error)
+                }
+            )
+            await chat?.open(conversationID: conversationID)
+        } else if await chatTimeline.boundConversationID != conversationID {
+            // The server named a different Timeline. Adopting it is the client's
+            // only correct move; arguing with it is not an option it has.
+            await chat?.open(conversationID: conversationID)
+        }
+    }
 
     private func makeSession() -> DeviceSession? {
         let text = baseURLText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -187,6 +226,12 @@ final class AppModel {
             return "challenge 与本设备不匹配，已拒绝签名。"
         case DeviceSessionError.storedEnrollmentMalformed:
             return "本机设备凭证损坏，无法安全恢复；请先在服务器撤销旧设备，再重新注册。"
+        case ChatTimeline.ChatError.timelineUnknown:
+            return "还没拿到服务端的 Timeline，请先刷新状态。"
+        case ChatTimeline.ChatError.unresolvedSend:
+            return "上一条消息还没有确认结果，先处理它再发新的，否则同一笔可能被记两次。"
+        case ChatTimeline.ChatError.pendingSendMalformed:
+            return "本机保存的未完成消息已损坏，无法安全恢复；请记下界面上的 operation_id，在服务端确认后再丢弃。"
         case DeviceSessionError.localPersistenceFailed(let deviceID, let revoked):
             if revoked {
                 return "本机凭证保存失败；刚创建的服务端设备已自动撤销，请重新生成注册码。"

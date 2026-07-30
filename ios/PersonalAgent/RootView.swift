@@ -5,14 +5,22 @@ struct RootView: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        NavigationStack {
-            switch model.phase {
-            case .loading:
-                ProgressView("正在读取本机设备凭证…")
-            case .needsEnrollment:
-                EnrollmentView(model: model)
-            case .ready, .revoked:
-                ServiceStatusView(model: model)
+        switch model.phase {
+        case .loading:
+            ProgressView("正在读取本机设备凭证…")
+        case .needsEnrollment:
+            NavigationStack { EnrollmentView(model: model) }
+        case .ready, .revoked:
+            TabView {
+                // `DEV-030`: chat is the primary surface. It appears only once the
+                // service has named a Timeline; a revoked device gets the status
+                // screen and an honest explanation instead.
+                if let chat = model.chat, model.phase == .ready {
+                    NavigationStack { ChatView(model: chat) }
+                        .tabItem { Label("对话", systemImage: "bubble.left.and.text.bubble.right") }
+                }
+                NavigationStack { ServiceStatusView(model: model) }
+                    .tabItem { Label("状态", systemImage: "shield.lefthalf.filled") }
             }
         }
     }

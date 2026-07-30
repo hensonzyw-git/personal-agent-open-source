@@ -177,6 +177,10 @@ public actor DeviceSession {
             CredentialKey.deviceKeyKind,
             CredentialKey.deviceID,
             CredentialKey.baseURL,
+            // Without a device key the pending operation cannot be polled by this
+            // installation any more, so keeping the record would only display an
+            // operation nothing here can resolve.
+            CredentialKey.pendingChatSend,
             // Delete the authoritative envelope last. If removing a legacy item
             // fails, the complete enrollment remains recoverable.
             CredentialKey.enrollment,
@@ -210,6 +214,59 @@ public actor DeviceSession {
         token = nil
         rejected = true
         return summary
+    }
+
+    // --- `DEV-030` chat, operations and Timeline -----------------------------
+    //
+    // Each of these goes through `authorized`, so a token that expired mid-turn is
+    // retried exactly once. That is safe for the chat POST specifically because the
+    // *caller's* idempotency key is presented again: the retry either replays the
+    // operation the first attempt created or creates the first one, never a second.
+
+    public func sendChatMessage(
+        conversationID: String,
+        text: String,
+        clarificationOf: String?,
+        idempotencyKey: String
+    ) async throws -> OperationReceipt {
+        try await authorized {
+            try await self.client.sendChatMessage(
+                conversationID: conversationID,
+                text: text,
+                clarificationOf: clarificationOf,
+                idempotencyKey: idempotencyKey,
+                token: $0
+            )
+        }
+    }
+
+    public func operation(operationID: String) async throws -> OperationReceipt {
+        try await authorized {
+            try await self.client.operation(operationID: operationID, token: $0)
+        }
+    }
+
+    public func cancelOperation(operationID: String) async throws -> OperationReceipt {
+        try await authorized {
+            try await self.client.cancelOperation(operationID: operationID, token: $0)
+        }
+    }
+
+    public func timelinePage(
+        conversationID: String,
+        cursor: String?,
+        direction: TimelineDirection,
+        limit: Int?
+    ) async throws -> TimelinePageResponse {
+        try await authorized {
+            try await self.client.timelinePage(
+                conversationID: conversationID,
+                cursor: cursor,
+                direction: direction,
+                limit: limit,
+                token: $0
+            )
+        }
     }
 
     private func authorized<T>(_ call: (String) async throws -> T) async throws -> T {
@@ -371,6 +428,11 @@ public actor DeviceSession {
         }
     }
 }
+
+/// `DEV-030`: the chat surface is exactly these four calls, and they are the only
+/// ones `ChatTimeline` can reach. Conforming the real session means the tests can
+/// stub HTTP alone and still exercise the real token policy.
+extension DeviceSession: ChatBackend {}
 
 public enum DeviceSessionError: Error, Equatable {
     case notEnrolled
