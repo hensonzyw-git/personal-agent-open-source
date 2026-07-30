@@ -82,7 +82,7 @@ private struct ReviewDetailView: View {
         List {
             Section {
                 HStack(spacing: 12) {
-                    if detail.summary.status != .reviewed {
+                    if detail.summary.status.allowsReviewActions {
                         Button("确认都正确") {
                             Task {
                                 await model.ack()

@@ -51,6 +51,7 @@ final class ReviewModel {
     }
 
     func load() async {
+        guard !busy else { return }
         busy = true
         defer { busy = false }
         do {
@@ -63,6 +64,7 @@ final class ReviewModel {
     }
 
     func open(reviewID: String) async {
+        guard !busy else { return }
         busy = true
         defer { busy = false }
         do {
@@ -78,6 +80,7 @@ final class ReviewModel {
     /// 确认都正确. Marks the card as looked at — never a ledger change.
     func ack() async {
         guard let reviewID = openedDetail?.detail.summary.reviewID else { return }
+        guard !busy else { return }
         busy = true
         defer { busy = false }
         do {
@@ -94,6 +97,7 @@ final class ReviewModel {
     /// error it is; the stale card stays until the next load tells the truth.
     func deferCard() async {
         guard let reviewID = openedDetail?.detail.summary.reviewID else { return }
+        guard !busy else { return }
         busy = true
         defer { busy = false }
         do {

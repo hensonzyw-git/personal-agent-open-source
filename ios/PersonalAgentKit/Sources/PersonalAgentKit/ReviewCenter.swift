@@ -1,5 +1,12 @@
 import Foundation
 
+public enum ReviewCenterError: Error, Equatable {
+    /// Another ack/defer for this card crossed an async boundary first.
+    case mutationInProgress(String)
+    /// A future server status is visible but cannot be changed by this build.
+    case unrecognisedStatus(String)
+}
+
 /// The review surface of `DEV-031`, kept out of SwiftUI so it can be tested
 /// headlessly with `swift test`.
 ///
@@ -20,6 +27,9 @@ public actor ReviewCenter {
     public private(set) var opened: ReviewDetail?
 
     private let backend: any ReviewBackend
+    /// Actors are re-entrant across `await`; this is the actual mutation lock,
+    /// whereas a SwiftUI `busy` flag is only presentation.
+    private var mutatingReviewIDs: Set<String> = []
 
     public init(backend: any ReviewBackend) {
         self.backend = backend
@@ -47,6 +57,8 @@ public actor ReviewCenter {
     /// Mark the card as looked at. Free of ledger effects (design 7.7 step 6).
     @discardableResult
     public func ack(reviewID: String) async throws -> ReviewSummary {
+        try beginMutation(reviewID)
+        defer { mutatingReviewIDs.remove(reviewID) }
         let summary = try await backend.ackReview(reviewID: reviewID)
         adopt(summary)
         if opened?.summary.reviewID == reviewID {
@@ -60,6 +72,8 @@ public actor ReviewCenter {
     /// a reload shows the truth rather than a wish.
     @discardableResult
     public func deferCard(reviewID: String) async throws -> ReviewSummary {
+        try beginMutation(reviewID)
+        defer { mutatingReviewIDs.remove(reviewID) }
         let summary = try await backend.deferReview(reviewID: reviewID)
         adopt(summary)
         if opened?.summary.reviewID == reviewID {
@@ -75,6 +89,23 @@ public actor ReviewCenter {
         if let index = summaries.firstIndex(where: { $0.reviewID == summary.reviewID }) {
             summaries[index] = summary
         }
+    }
+
+    private func beginMutation(_ reviewID: String) throws {
+        if let status = knownStatus(reviewID),
+           case .unrecognised(let raw) = status {
+            throw ReviewCenterError.unrecognisedStatus(raw)
+        }
+        guard mutatingReviewIDs.insert(reviewID).inserted else {
+            throw ReviewCenterError.mutationInProgress(reviewID)
+        }
+    }
+
+    private func knownStatus(_ reviewID: String) -> ReviewStatus? {
+        if opened?.summary.reviewID == reviewID {
+            return opened?.summary.status
+        }
+        return summaries.first(where: { $0.reviewID == reviewID })?.status
     }
 }
 

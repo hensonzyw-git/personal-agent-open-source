@@ -55,6 +55,10 @@ _COLUMN = "encrypted_content"
 
 USER_MESSAGE = "user_message"
 OPERATION_RESULT = "operation_result"
+#: `DEV-031`. A user's duplicate choice is a permanent Timeline fact, separate
+#: from the operation result it caused. It is presentation state, not dialogue,
+#: and therefore deliberately absent from `MODEL_VISIBLE_EVENT_TYPES`.
+DUPLICATE_DECISION = "duplicate_decision"
 #: `CAP-001` design 6.1: a boundary is a persisted, displayable Timeline fact,
 #: so every device shows the same divider. Neither divider event is ever fed to
 #: the model as an instruction.

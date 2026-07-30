@@ -716,6 +716,23 @@ def test_duplicate_then_write_anyway_carries_the_override(engine, token_ring, ke
     assert decision.json()["record_id"] == "recDUP"
     # The write past the duplicate carried the Host-bound override.
     assert dispatcher.commit_calls[0]["override"] == "dup-1"
+    timeline = client.get(
+        "/v1/conversations/c1/events",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    projected = timeline.json()["events"]
+    assert [event["event_type"] for event in projected] == [
+        "user_message",
+        "operation_result",
+        "duplicate_decision",
+        "operation_result",
+    ]
+    assert projected[2]["content"] == {
+        "decision": "write_anyway",
+        "duplicate_check_id": "dup-1",
+    }
+    assert projected[3]["content"]["state"] == "succeeded"
+    assert projected[3]["content"]["record_id"] == "recDUP"
 
 
 def test_dismiss_decision_replays_and_rejects_a_different_check(
@@ -750,6 +767,24 @@ def test_dismiss_decision_replays_and_rejects_a_different_check(
     assert first.status_code == second.status_code == 200
     assert first.json()["operation_id"] == second.json()["operation_id"]
     assert second.json()["state"] == "cancelled_pre_submit"
+    timeline = client.get(
+        "/v1/conversations/c1/events",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    projected = timeline.json()["events"]
+    # The HTTP replay is also a Timeline replay: one permanent choice marker
+    # and one terminal result, never a second pair.
+    assert [event["event_type"] for event in projected] == [
+        "user_message",
+        "operation_result",
+        "duplicate_decision",
+        "operation_result",
+    ]
+    assert projected[2]["content"] == {
+        "decision": "dismiss",
+        "duplicate_check_id": "dup-dismiss",
+    }
+    assert projected[3]["content"]["state"] == "cancelled_pre_submit"
 
     conflict = client.post(
         "/v1/duplicate-checks/another-check/decision",

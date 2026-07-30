@@ -272,6 +272,10 @@ final class AppModel {
             return "该疑似重复已提交「\(wording)」但结果未确认，请先重试同一决策或丢弃它；直接改选会被服务端拒绝。"
         case ChatTimeline.ChatError.pendingDecisionsMalformed:
             return "本机保存的未确认决策已损坏，无法安全恢复；请记下界面上的 duplicate_check_id，在服务端确认后再丢弃。"
+        case ReviewCenterError.mutationInProgress:
+            return "这张复核卡正在更新，请等待服务端回复。"
+        case ReviewCenterError.unrecognisedStatus(let status):
+            return "服务端返回了本客户端不认识的复核状态（\(status)）；已按只读处理，请升级后再操作。"
         case DeviceSessionError.localPersistenceFailed(let deviceID, let revoked):
             if revoked {
                 return "本机凭证保存失败；刚创建的服务端设备已自动撤销，请重新生成注册码。"

@@ -48,6 +48,16 @@ public enum ReviewStatus: Sendable, Equatable {
         case .unrecognised(let raw): return raw
         }
     }
+
+    /// Only states whose transition semantics this build knows may expose ack
+    /// or defer. A future status stays visible but read-only: treating it as
+    /// pending would defeat the point of preserving it as `unrecognised`.
+    public var allowsReviewActions: Bool {
+        switch self {
+        case .pending, .deferred: return true
+        case .reviewed, .unrecognised: return false
+        }
+    }
 }
 
 // --- summaries ---------------------------------------------------------------
@@ -129,7 +139,10 @@ public struct ReviewItem: Sendable, Equatable, Identifiable {
     /// `no_receipt`). The row stays on the card either way.
     public let unavailable: String?
 
-    public var id: String { recordID }
+    /// Feishu record ids are table-scoped. The server deliberately keeps an
+    /// expense and an income with the same `record_id` as two review items, so
+    /// SwiftUI identity must carry the same table dimension.
+    public var id: String { "\(tableKind ?? tool)\u{1f}\(recordID)" }
 
     public init(
         recordID: String,

@@ -67,7 +67,8 @@ struct ChatView: View {
                         entry(event).id(event.eventID)
                     }
 
-                    if let receipt = model.liveReceipt, !receipt.outcome.isSettled {
+                    if let receipt = model.liveReceipt,
+                       !model.hasMirroredReceipt(receipt) {
                         liveCard(receipt)
                     }
 
@@ -123,6 +124,15 @@ struct ChatView: View {
                     .fixedSize()
                 Rectangle().frame(height: 1).foregroundStyle(.quaternary)
             }
+
+        case .duplicateDecision(let checkID, let decision):
+            Label(
+                "疑似重复已处理：\(duplicateDecisionText(decision))",
+                systemImage: "checkmark.circle"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityHint("duplicate_check_id \(checkID)")
 
         case .unrecognised(let eventType):
             // Not dropped: a history that silently omits entries is a history that
@@ -182,7 +192,16 @@ struct ChatView: View {
                     .foregroundStyle(.orange)
                 if let existing { Text(existing) }
                 field("duplicate_check_id", checkID)
-                if let pending = model.pendingDecisions[checkID] {
+                if let resolved = model.resolvedDuplicateDecisions[checkID] {
+                    Label(
+                        "已处理：\(duplicateDecisionText(resolved))",
+                        systemImage: "checkmark.circle"
+                    )
+                    .foregroundStyle(.secondary)
+                    Text("此提示已经完成，不能再次提交。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let pending = model.pendingDecisions[checkID] {
                     // The choice was made but the reply never arrived. Offering
                     // the buttons again would be refused by the server — the
                     // same key under the other decision is a `409` — so the only
@@ -269,6 +288,14 @@ struct ChatView: View {
                 .font(.footnote)
                 .disabled(model.busy)
             }
+        }
+    }
+
+    private func duplicateDecisionText(_ wire: String) -> String {
+        switch wire {
+        case DuplicateDecision.writeAnyway.rawValue: return "仍然记录"
+        case DuplicateDecision.dismiss.rawValue: return "忽略，不记录"
+        default: return "服务端决策 \(wire)"
         }
     }
 

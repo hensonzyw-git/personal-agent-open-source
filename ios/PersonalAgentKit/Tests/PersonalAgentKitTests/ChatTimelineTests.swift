@@ -534,6 +534,39 @@ struct TimelineEventTests {
         #expect(corrected.kind == .sessionDivider(reason: "user_correction", corrected: true))
     }
 
+    @Test("a duplicate decision marker permanently closes its check")
+    func duplicateDecisionMarker() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-decision",
+                type: "duplicate_decision",
+                content: [
+                    "duplicate_check_id": "chk-1",
+                    "decision": "write_anyway",
+                ]
+            )
+        )
+        #expect(
+            parsed.kind
+                == .duplicateDecision(
+                    checkID: "chk-1",
+                    decision: "write_anyway"
+                )
+        )
+    }
+
+    @Test("a malformed duplicate decision marker stays visible as unknown")
+    func malformedDuplicateDecisionMarker() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-decision-bad",
+                type: "duplicate_decision",
+                content: ["duplicate_check_id": "chk-1"]
+            )
+        )
+        #expect(parsed.kind == .unrecognised(eventType: "duplicate_decision"))
+    }
+
     @Test("an unknown chatEvent type stays visible instead of vanishing")
     func unknownEventType() throws {
         let parsed = try decode(chatEvent("ev-6", type: "teleport", content: [:]))

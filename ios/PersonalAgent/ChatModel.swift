@@ -28,6 +28,10 @@ final class ChatModel {
     /// id so a card can show "已提交，待确认" instead of offering the choice
     /// again — offering it would be refused by the server anyway.
     var pendingDecisions: [String: ChatTimeline.PendingDuplicateDecision] = [:]
+    /// Decisions the server has durably projected into the Timeline. Historic
+    /// duplicate prompts consult this map so a handled card never offers the
+    /// buttons again after a refresh or app restart.
+    var resolvedDuplicateDecisions: [String: String] = [:]
     var lastError: String?
     var busy = false
     var loadingOlder = false
@@ -60,6 +64,7 @@ final class ChatModel {
             // consequence the server recorded while this app was away.
             let resumedDecisions = try await timeline.resumeDecisions()
             if !resumedDecisions.isEmpty {
+                liveReceipt = resumedDecisions.last
                 needsSync = true
             }
             if needsSync {
@@ -188,6 +193,7 @@ final class ChatModel {
             // For `writeAnyway` this is the override operation's receipt, settled
             // or still running; either way it is the structured truth to show.
             liveReceipt = receipt
+            resolvedDuplicateDecisions[checkID] = decision.rawValue
             try await timeline.syncNewer()
             await mirror()
             lastError = nil
@@ -229,5 +235,22 @@ final class ChatModel {
     private func mirror() async {
         events = await timeline.events
         hasOlder = await timeline.hasOlder
+        var resolved: [String: String] = [:]
+        for event in events {
+            if case .duplicateDecision(let checkID, let decision) = event.kind {
+                resolved[checkID] = decision
+            }
+        }
+        resolvedDuplicateDecisions = resolved
+    }
+
+    /// A live receipt stays visible until the same state has arrived as a
+    /// Timeline event. This covers a successful decision followed by a failed
+    /// sync without duplicating the card once the permanent event is present.
+    func hasMirroredReceipt(_ receipt: OperationReceipt) -> Bool {
+        events.contains { event in
+            event.operationID == receipt.operationID
+                && event.content["state"]?.stringValue == receipt.state.wire
+        }
     }
 }

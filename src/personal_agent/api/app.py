@@ -92,6 +92,7 @@ from personal_agent.keys import HmacKey, HmacKeyRing
 from personal_agent.storage.models import (
     REVIEW_STATUSES,
     ApiRequest,
+    ConversationEvent,
     Device,
     Operation,
 )
@@ -1127,6 +1128,7 @@ def _process_chat(
 class _Anchor:
     """The persisted user message this operation belongs to."""
 
+    conversation_id: str
     session_id: str
     turn_id: str
     event_id: str
@@ -1136,7 +1138,8 @@ def _anchor_event(session, operation_id: str) -> _Anchor:
     """The Session, turn and event the operation's user message was written into."""
     row = session.execute(
         text_clause(
-            "SELECT session_id, turn_id, event_id FROM conversation_events "
+            "SELECT conversation_id, session_id, turn_id, event_id "
+            "FROM conversation_events "
             "WHERE operation_id = :oid ORDER BY timeline_sequence LIMIT 1"
         ),
         {"oid": operation_id},
@@ -1146,7 +1149,12 @@ def _anchor_event(session, operation_id: str) -> _Anchor:
             ErrorCode.INTERNAL_ERROR,
             internal_detail="operation has no anchoring timeline event",
         )
-    return _Anchor(session_id=row[0], turn_id=row[1], event_id=row[2])
+    return _Anchor(
+        conversation_id=row[0],
+        session_id=row[1],
+        turn_id=row[2],
+        event_id=row[3],
+    )
 
 
 class _TurnContext:
@@ -1249,6 +1257,14 @@ def _process_duplicate_decision(
                 new_client_request_id=key,
                 now=deps.now(),
             )
+            # Resolve Timeline ownership only after the decision contract has
+            # accepted or replayed the request. In particular, a reused key for
+            # another check must remain the idempotency layer's 409 rather than
+            # being pre-empted by a "no source" lookup.
+            source = _duplicate_source_operation(
+                session, duplicate_check_id, auth.device_id
+            )
+            anchor = _anchor_event(session, source.operation_id)
             new_op = outcome.new_operation
             if new_op is not None and new_op.state == "accepted":
                 run_operation(
@@ -1265,6 +1281,16 @@ def _process_duplicate_decision(
                 )
             target = new_op if new_op is not None else _find_by_check(
                 session, duplicate_check_id, auth.device_id
+            )
+            _append_duplicate_decision_events(
+                session,
+                deps.keyring,
+                source=source,
+                target=target,
+                anchor=anchor,
+                duplicate_check_id=duplicate_check_id,
+                decision=decision,
+                now=deps.now(),
             )
             return _operation_response(target)
 
@@ -1392,6 +1418,112 @@ def _find_by_check(
             internal_detail="no operation for this duplicate check",
         )
     return operation
+
+
+def _duplicate_source_operation(
+    session, duplicate_check_id: str, device_id: str
+) -> Operation:
+    """Return the chat operation whose Timeline turn produced this check.
+
+    A successful `write_anyway` creates a second operation under the same check.
+    Only the original has a `user_message` anchor, so joining that fact avoids
+    choosing the override on an idempotent replay.
+    """
+    operation = (
+        session.query(Operation)
+        .join(Operation.api_request)
+        .join(
+            ConversationEvent,
+            ConversationEvent.operation_id == Operation.operation_id,
+        )
+        .filter(
+            Operation.duplicate_check_id == duplicate_check_id,
+            Operation.api_request.has(device_id=device_id),
+            ConversationEvent.event_type == events.USER_MESSAGE,
+        )
+        .one_or_none()
+    )
+    if operation is None:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail="no anchored operation for this duplicate check",
+        )
+    return operation
+
+
+def _append_duplicate_decision_events(
+    session,
+    keyring: KeyRing,
+    *,
+    source: Operation,
+    target: Operation,
+    anchor: _Anchor,
+    duplicate_check_id: str,
+    decision: str,
+    now: datetime,
+) -> None:
+    """Persist one decision marker and the operation outcome it produced.
+
+    The marker is the idempotency witness for Timeline projection too: if the
+    HTTP decision is replayed, both events already exist and neither is appended
+    twice. They share one final transaction, so the marker can never claim a
+    result event was persisted when it was not.
+    """
+    already_recorded = (
+        session.query(ConversationEvent)
+        .filter(
+            ConversationEvent.operation_id == source.operation_id,
+            ConversationEvent.event_type == events.DUPLICATE_DECISION,
+        )
+        .first()
+        is not None
+    )
+    if already_recorded:
+        return
+
+    session.refresh(target)
+    events.append_event(
+        session,
+        keyring,
+        conversation_id=anchor.conversation_id,
+        session_id=anchor.session_id,
+        turn_id=anchor.turn_id,
+        event_type=events.DUPLICATE_DECISION,
+        content={
+            "duplicate_check_id": duplicate_check_id,
+            "decision": decision,
+        },
+        operation_id=source.operation_id,
+        now=now,
+    )
+    events.append_event(
+        session,
+        keyring,
+        conversation_id=anchor.conversation_id,
+        session_id=anchor.session_id,
+        turn_id=anchor.turn_id,
+        event_type=events.OPERATION_RESULT,
+        content=_operation_event_content(target),
+        operation_id=target.operation_id,
+        now=now,
+    )
+
+
+def _operation_event_content(operation: Operation) -> dict[str, Any]:
+    projection = _operation_projection(operation)
+    return {
+        name: projection[name]
+        for name in (
+            "state",
+            "record_id",
+            "answer",
+            "clarification",
+            "duplicate_check_id",
+            "duplicate_existing",
+            "failure_reason",
+        )
+        if projection.get(name) is not None
+    }
 
 
 def _required(body: dict[str, Any], field: str) -> str:

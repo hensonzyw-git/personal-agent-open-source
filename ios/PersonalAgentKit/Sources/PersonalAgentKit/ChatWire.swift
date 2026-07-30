@@ -375,6 +375,9 @@ public enum TimelineEntryKind: Sendable, Equatable {
     /// A Session boundary. Presentation only — never dialogue, never an
     /// instruction, and the server's fixed wording is a `reason` code.
     case sessionDivider(reason: String?, corrected: Bool)
+    /// `DEV-031`. The permanent marker that closes an earlier duplicate prompt.
+    /// It is presentation state and never model dialogue.
+    case duplicateDecision(checkID: String, decision: String)
     /// An event type this build does not know. Kept visible rather than dropped:
     /// a silently-missing entry is a history that lies about what happened.
     case unrecognised(eventType: String)
@@ -437,6 +440,16 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                 ),
                 state: state
             )
+        case "duplicate_decision":
+            guard
+                let checkID = content["duplicate_check_id"]?.stringValue,
+                !checkID.isEmpty,
+                let decision = content["decision"]?.stringValue,
+                !decision.isEmpty
+            else {
+                return .unrecognised(eventType: eventType)
+            }
+            return .duplicateDecision(checkID: checkID, decision: decision)
         case "session_divider", "session_boundary_corrected":
             return .sessionDivider(
                 reason: content["reason"]?.stringValue,

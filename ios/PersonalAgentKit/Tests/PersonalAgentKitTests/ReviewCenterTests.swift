@@ -96,6 +96,33 @@ struct ReviewCenterTests {
         #expect(summaries[1].status.wire == "frozen")
     }
 
+    @Test("a status this build does not know is visible but read-only")
+    func unknownStatusIsReadOnly() async throws {
+        let service = newService()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("GET", "/v1/daily-reviews"):
+                return .ok([
+                    "reviews": [summaryBody("rev-frozen", status: "frozen")]
+                ])
+            default:
+                return .error(500, "SHOULD_NOT_BE_CALLED")
+            }
+        }
+        let center = try await makeReview(service: service)
+        _ = try await center.loadList()
+
+        await #expect(
+            throws: ReviewCenterError.unrecognisedStatus("frozen")
+        ) {
+            _ = try await center.ack(reviewID: "rev-frozen")
+        }
+        #expect(service.calls("POST", "/v1/daily-reviews/rev-frozen/ack").isEmpty)
+        #expect(!ReviewStatus.unrecognised("future").allowsReviewActions)
+        #expect(ReviewStatus.pending.allowsReviewActions)
+        #expect(ReviewStatus.deferred.allowsReviewActions)
+    }
+
     @Test("a list filter travels as the server's own vocabulary")
     func listFilterTravels() async throws {
         let service = newService()
@@ -301,6 +328,23 @@ struct ReviewCenterTests {
         #expect(await center.summaries.first?.status == .deferred)
     }
 
+    @Test("ack and defer for one card cannot cross the same async boundary")
+    func mutationsAreSerialised() async throws {
+        let backend = BlockingReviewBackend()
+        let center = ReviewCenter(backend: backend)
+        let ack = Task { try await center.ack(reviewID: "rev-1") }
+        await backend.waitUntilAckStarted()
+
+        await #expect(
+            throws: ReviewCenterError.mutationInProgress("rev-1")
+        ) {
+            _ = try await center.deferCard(reviewID: "rev-1")
+        }
+        await backend.releaseAck()
+        #expect(try await ack.value.status == .reviewed)
+        #expect(await backend.deferCalls == 0)
+    }
+
     // --- presentation -------------------------------------------------------------
 
     @Test("ledger values render as themselves")
@@ -311,5 +355,78 @@ struct ReviewCenterTests {
         #expect(JSONScalar.bool(true).displayText == "true")
         #expect(JSONScalar.null.displayText == "—")
         #expect(JSONScalar.unsupported.displayText == "（本客户端无法显示的字段值）")
+    }
+
+    @Test("review item identity includes the ledger table")
+    func reviewItemIdentityIsTableScoped() {
+        let expense = ReviewItem(
+            recordID: "recSame",
+            tool: "finance.log_expense",
+            committedAt: "2026-07-29T12:00:00+00:00",
+            tableKind: "expense",
+            values: nil,
+            unreadableFields: [],
+            unavailable: nil
+        )
+        let income = ReviewItem(
+            recordID: "recSame",
+            tool: "finance.log_income",
+            committedAt: "2026-07-29T12:01:00+00:00",
+            tableKind: "income",
+            values: nil,
+            unreadableFields: [],
+            unavailable: nil
+        )
+
+        #expect(expense.id != income.id)
+    }
+}
+
+private actor BlockingReviewBackend: ReviewBackend {
+    private var ackStarted = false
+    private var ackContinuation: CheckedContinuation<Void, Never>?
+    private(set) var deferCalls = 0
+
+    func dailyReviews(status: String?) async throws -> ReviewListResponse {
+        ReviewListResponse(reviews: [])
+    }
+
+    func dailyReview(reviewID: String) async throws -> ReviewDetail {
+        ReviewDetail(summary: summary(.pending), items: [])
+    }
+
+    func ackReview(reviewID: String) async throws -> ReviewSummary {
+        ackStarted = true
+        await withCheckedContinuation { continuation in
+            ackContinuation = continuation
+        }
+        return summary(.reviewed)
+    }
+
+    func deferReview(reviewID: String) async throws -> ReviewSummary {
+        deferCalls += 1
+        return summary(.deferred)
+    }
+
+    func waitUntilAckStarted() async {
+        while !ackStarted {
+            await Task.yield()
+        }
+    }
+
+    func releaseAck() {
+        ackContinuation?.resume()
+        ackContinuation = nil
+    }
+
+    private func summary(_ status: ReviewStatus) -> ReviewSummary {
+        ReviewSummary(
+            reviewID: "rev-1",
+            reviewDate: "2026-07-29",
+            status: status,
+            itemCount: 1,
+            createdAt: "2026-07-30T00:00:05+00:00",
+            reviewedAt: status == .reviewed ? "2026-07-30T08:00:00+00:00" : nil
+        )
     }
 }
