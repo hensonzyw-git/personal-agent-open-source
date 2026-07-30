@@ -127,6 +127,7 @@ AGENT_ID: Final[str] = ISSUER
 FINANCE_CONNECTOR_ID: Final[str] = "personal-data"
 
 LEDGER_TIMEZONE: Final[str] = "Asia/Shanghai"
+RECOVERY_INTERVAL_SECONDS: Final[float] = 60.0
 
 
 class CompositionError(RuntimeError):
@@ -428,12 +429,14 @@ def recover_at_startup(
     now: Callable[[], datetime] = utc_now,
     run: Callable[[Any], Any] = asyncio.run,
 ) -> list[tuple[str, Any]]:
-    """Project Finance truth onto every recoverable operation, once, at boot.
+    """Run one projection of Finance truth onto every recoverable operation.
 
-    An unreadable control plane rolls the whole scan back rather than leaving
-    half a projection behind: the operations stay recoverable and the next start
-    tries again. Refusing to start instead would wedge the Agent whenever
-    Finance is down, and guessing would be worse than both.
+    The composition root calls this at boot and once per minute, as required by
+    technical design 7.6.1. An unreadable control plane rolls the whole scan back
+    rather than leaving half a projection behind: the operations stay recoverable
+    and the next scheduled scan tries again. Refusing to run the service instead
+    would wedge the Agent whenever Finance is down, and guessing would be worse
+    than both.
     """
     read = _finance_status_reader(control, run)
     with sessions() as session:
@@ -443,8 +446,8 @@ def recover_at_startup(
         except ControlPlaneError as exc:
             session.rollback()
             logger.warning(
-                "startup recovery could not read the Finance control plane (%s); "
-                "recoverable operations are left untouched for the next start",
+                "operation recovery could not read the Finance control plane (%s); "
+                "recoverable operations are left untouched for the next scan",
                 type(exc).__name__,
             )
             return []
@@ -452,8 +455,35 @@ def recover_at_startup(
             session.rollback()
             raise
     for operation_id, plan in results:
-        logger.info("startup recovery: %s -> %s", operation_id, plan.action)
+        logger.info("operation recovery: %s -> %s", operation_id, plan.action)
     return results
+
+
+async def _recover_periodically(
+    sessions: Callable[[], Any],
+    control: FinanceControlClient,
+    *,
+    now: Callable[[], datetime],
+    interval_seconds: float,
+    stop: asyncio.Event,
+) -> None:
+    """Re-run the recovery projection for the lifetime of the service."""
+    while True:
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval_seconds)
+            return
+        except TimeoutError:
+            pass
+        try:
+            # The scan is synchronous SQLite work and its control reads drive
+            # their own event loop, so it must not block the API event loop.
+            await asyncio.to_thread(recover_at_startup, sessions, control, now=now)
+        except Exception:
+            # A single broken scan must not permanently remove recovery from a
+            # long-running service. The next minute retries from durable state.
+            logger.exception(
+                "operation recovery scan failed unexpectedly; retrying next interval"
+            )
 
 
 @contextmanager
@@ -475,8 +505,11 @@ async def agent_service(
     build_gateway: Callable[[], Any] = glm_gateway_from_env,
     build_structured_client: Callable[..., Any] = structured_client_from_env,
     context_config: ContextConfig | None = None,
+    recovery_interval_seconds: float = RECOVERY_INTERVAL_SECONDS,
 ) -> AsyncIterator[ComposedAgentService]:
     """Compose the Agent API for the lifetime of the service."""
+    if recovery_interval_seconds <= 0:
+        raise ValueError("recovery_interval_seconds must be positive")
     # Both internal channels are checked here, before a key is read or a socket
     # is opened, so a misconfigured host can never receive a signed token.
     try:
@@ -554,10 +587,22 @@ async def agent_service(
         control = FinanceControlClient(
             base_url=config.finance_control_url, signing_ring=service_ring
         )
+        recovery_task: asyncio.Task[None] | None = None
+        recovery_stop = asyncio.Event()
         try:
             # In a worker thread, because the scan is synchronous SQLite work
             # and its control reads drive their own event loop.
             await asyncio.to_thread(recover_at_startup, sessions, control, now=now)
+            recovery_task = asyncio.create_task(
+                _recover_periodically(
+                    sessions,
+                    control,
+                    now=now,
+                    interval_seconds=recovery_interval_seconds,
+                    stop=recovery_stop,
+                ),
+                name="operation-recovery",
+            )
 
             def device_for(auth: AuthContext) -> DeviceAuthorization | None:
                 with sessions() as session:
@@ -696,6 +741,13 @@ async def agent_service(
                 quarantined=quarantined,
             )
         finally:
+            if recovery_task is not None:
+                # Do not cancel `asyncio.to_thread`: cancellation cannot stop its
+                # worker thread and closing `control` underneath that thread
+                # would race an in-flight signed control read. Wake a sleeping
+                # task immediately, or let its bounded current scan finish.
+                recovery_stop.set()
+                await recovery_task
             await control.aclose()
             await client.close()
 

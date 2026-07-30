@@ -297,7 +297,8 @@ conflict instead of silently choosing an old default.
 - `docs/Phase1开发拆解_v0.1.md` — executable DEV/CAP tasks, dependencies,
   gates, external inputs and completion definition; development is authorised,
   G0–G3 passed, CAP-001, DEV-041, DEV-030 and DEV-031 are complete (the two iOS
-  tasks offline only), and G4 is next.
+  tasks live-verified on the Simulator on 2026-07-30), and G4 is next — it still
+  needs a real iPhone and DNS/TLS.
 - `ECS安全加固实施记录_2026-07-23.md` — security, encryption, snapshot, and
   rollback record.
 - `docs/iOS开发环境_Personal_Team_v0.1.md` — Personal Team constraints, the iOS

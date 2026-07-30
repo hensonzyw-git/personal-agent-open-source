@@ -1357,6 +1357,44 @@ def test_startup_recovery_reads_the_real_control_plane(
     assert operation.safe_result == f"rec_{key}"
 
 
+def test_periodic_recovery_projects_an_operation_without_a_service_restart(
+    keys, agent_db, tmp_path: Path
+) -> None:
+    """Design 7.6.1 requires a scan every minute, not only at process startup."""
+    finance_db = tmp_path / "finance-periodic.sqlite"
+    key = str(uuid.uuid4())
+    _seed_finance_success(finance_db, key)
+
+    service = LoopbackFinanceService(
+        {
+            MCP_KID_ENV: "svc-test",
+            MCP_PEM_ENV: str(keys.service_public_pem),
+        },
+        database=finance_db,
+    )
+    try:
+
+        async def scenario():
+            async with agent_service(
+                config_for(agent_db, service),
+                recovery_interval_seconds=0.01,
+            ):
+                operation_id = seed_in_flight_operation(agent_db, key)
+                for _ in range(100):
+                    if read_operation(agent_db, operation_id).state == "succeeded":
+                        return operation_id
+                    await asyncio.sleep(0.01)
+                pytest.fail("periodic recovery did not resolve the operation")
+
+        operation_id = asyncio.run(scenario())
+    finally:
+        service.stop()
+
+    operation = read_operation(agent_db, operation_id)
+    assert operation.state == "succeeded"
+    assert operation.safe_result == f"rec_{key}"
+
+
 def _seed_finance_success(database: Path, key: str) -> None:
     from personal_data_mcp.storage.engine import (
         create_all as finance_create_all,

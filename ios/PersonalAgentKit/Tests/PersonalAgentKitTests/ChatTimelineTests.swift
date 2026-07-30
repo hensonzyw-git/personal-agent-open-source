@@ -92,6 +92,17 @@ final class Service: @unchecked Sendable {
 
     func handle(_ call: Call) -> Reply {
         lock.withLock { calls.append(call) }
+        // The real server parses this header with `uuid.UUID(key)` and then
+        // requires `str(parsed) == key`, so a canonical *lower-case* UUIDv4 is the
+        // only accepted spelling. Refusing anything else here is not extra
+        // strictness for its own sake: the first live run against the real service
+        // refused every write this client sent, because Foundation's
+        // `UUID.uuidString` is upper-case and this stub used to accept it. A fake
+        // that is more permissive than the server it stands in for cannot catch
+        // that class of defect at all.
+        if let key = call.idempotencyKey, !IdempotencyKey.isCanonical(key) {
+            return .error(400, "INVALID_ARGUMENT")
+        }
         switch (call.method, call.path) {
         case ("POST", "/v1/enrollments/claim"):
             return .init(status: 201, body: chatEnrolledBody)
@@ -674,7 +685,7 @@ struct ChatSendTests {
         // The state a previous launch left behind: the operation id is known, so the
         // answer is a poll. Posting again would be a second chance at a second row.
         let pending = ChatTimeline.PendingSend(
-            idempotencyKey: "key-1",
+            idempotencyKey: "3f2504e0-4f89-41d3-9a0c-0305e82c3302",
             conversationID: chatTimelineID,
             text: "咖啡 18 个人支出",
             clarificationOf: nil,

@@ -15,6 +15,41 @@ import Foundation
 /// indeterminate — it stops the poll loop and says so, rather than polling
 /// forever or quietly reading as "not succeeded, so failed".
 
+// --- idempotency keys --------------------------------------------------------
+
+/// The only place this client mints an `Idempotency-Key`.
+///
+/// The server requires the **canonical** RFC 4122 form and compares the header
+/// against `str(uuid.UUID(key))`, which is lower-case. Foundation's
+/// `UUID.uuidString` is upper-case, so every write this client sent was refused
+/// with `INVALID_ARGUMENT` — chat messages and duplicate decisions alike. The
+/// offline suite could not see it: the stub accepted any key, because it was
+/// written from the same assumption as the code it was checking.
+///
+/// The server is right to be strict. If it accepted both cases, the same logical
+/// key in two spellings would become two rows, and one expense would be recorded
+/// twice — the exact failure the idempotency key exists to prevent. So the fix
+/// belongs here, and it is a single named mint rather than a `.lowercased()` at
+/// each call site: adapting at the call site leaves the next write path to
+/// rediscover this by being refused in production.
+enum IdempotencyKey {
+    static func mint() -> String {
+        UUID().uuidString.lowercased()
+    }
+
+    /// Canonical lower-case UUIDv4, as the server parses it. Used by the tests to
+    /// hold the stub to the real server's contract.
+    static func isCanonical(_ key: String) -> Bool {
+        guard let parsed = UUID(uuidString: key) else { return false }
+        // `UUID(uuidString:)` accepts either case, so the round-trip is what
+        // actually pins the spelling.
+        guard parsed.uuidString.lowercased() == key else { return false }
+        // Version 4, RFC 4122 variant: byte 6 high nibble is 4, byte 8 is 10xx.
+        let bytes = withUnsafeBytes(of: parsed.uuid) { Array($0) }
+        return bytes[6] >> 4 == 4 && bytes[8] >> 6 == 0b10
+    }
+}
+
 // --- operation state ---------------------------------------------------------
 
 /// The client-facing operation states of design 5.2.

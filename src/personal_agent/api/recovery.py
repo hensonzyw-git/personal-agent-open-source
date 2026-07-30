@@ -226,7 +226,7 @@ def apply_recovery(
 def recover_pending(
     session, read_status: FinanceStatusReader, *, now: datetime
 ) -> list[tuple[str, RecoveryPlan]]:
-    """Reconcile every recoverable operation against Finance, on startup.
+    """Reconcile every recoverable operation against Finance in one scan.
 
     Returns `(operation_id, plan)` for each so the composition root can log the
     projection without having to re-read the affected rows.

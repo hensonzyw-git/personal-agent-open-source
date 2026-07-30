@@ -165,7 +165,7 @@ struct DuplicateDecisionTests {
         let store = InMemoryCredentialStore()
         // The state a previous launch left behind: tapped, persisted, reply lost.
         let pending = ChatTimeline.PendingDuplicateDecision(
-            checkID: "chk-1", decision: .dismiss, idempotencyKey: "decision-key-1"
+            checkID: "chk-1", decision: .dismiss, idempotencyKey: "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
         )
         try store.write(
             CredentialKey.pendingDuplicateDecisions,
@@ -179,7 +179,7 @@ struct DuplicateDecisionTests {
         #expect(receipts.first?.outcome == .cancelledBeforeSubmit)
         let posts = service.calls("POST", decisionPath)
         #expect(posts.count == 1)
-        #expect(posts.first?.idempotencyKey == "decision-key-1")
+        #expect(posts.first?.idempotencyKey == "3f2504e0-4f89-41d3-9a0c-0305e82c3301")
         #expect(posts.first?.string("decision") == "dismiss")
         #expect(try storedDecisions(store).isEmpty)
     }
@@ -256,10 +256,10 @@ struct DuplicateDecisionTests {
         let store = InMemoryCredentialStore()
         let pending = [
             ChatTimeline.PendingDuplicateDecision(
-                checkID: "chk-1", decision: .dismiss, idempotencyKey: "key-1"
+                checkID: "chk-1", decision: .dismiss, idempotencyKey: "3f2504e0-4f89-41d3-9a0c-0305e82c3302"
             ),
             ChatTimeline.PendingDuplicateDecision(
-                checkID: "chk-2", decision: .dismiss, idempotencyKey: "key-2"
+                checkID: "chk-2", decision: .dismiss, idempotencyKey: "3f2504e0-4f89-41d3-9a0c-0305e82c3303"
             ),
         ]
         try store.write(
@@ -273,11 +273,11 @@ struct DuplicateDecisionTests {
         #expect(receipts.count == 2)
         #expect(
             service.calls("POST", "/v1/duplicate-checks/chk-1/decision")
-                .first?.idempotencyKey == "key-1"
+                .first?.idempotencyKey == "3f2504e0-4f89-41d3-9a0c-0305e82c3302"
         )
         #expect(
             service.calls("POST", "/v1/duplicate-checks/chk-2/decision")
-                .first?.idempotencyKey == "key-2"
+                .first?.idempotencyKey == "3f2504e0-4f89-41d3-9a0c-0305e82c3303"
         )
         #expect(try storedDecisions(store).isEmpty)
     }
@@ -313,7 +313,7 @@ struct DuplicateDecisionTests {
         service.answer { _, _ in .error(500, "INTERNAL_ERROR") }
         let store = InMemoryCredentialStore()
         let pending = ChatTimeline.PendingDuplicateDecision(
-            checkID: "chk-1", decision: .dismiss, idempotencyKey: "key-1"
+            checkID: "chk-1", decision: .dismiss, idempotencyKey: "3f2504e0-4f89-41d3-9a0c-0305e82c3302"
         )
         try store.write(
             CredentialKey.pendingDuplicateDecisions,

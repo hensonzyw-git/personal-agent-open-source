@@ -206,7 +206,7 @@ public actor ChatTimeline {
             throw ChatError.unresolvedSend(pending)
         }
         var pending = PendingSend(
-            idempotencyKey: UUID().uuidString,
+            idempotencyKey: IdempotencyKey.mint(),
             conversationID: id,
             text: text,
             clarificationOf: clarificationOf,
@@ -317,7 +317,7 @@ public actor ChatTimeline {
         let record = PendingDuplicateDecision(
             checkID: checkID,
             decision: decision,
-            idempotencyKey: UUID().uuidString
+            idempotencyKey: IdempotencyKey.mint()
         )
         try saveDecisions(try loadDecisions() + [record])
         return try await sendDecision(record)
