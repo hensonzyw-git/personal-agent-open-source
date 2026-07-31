@@ -295,10 +295,14 @@ conflict instead of silently choosing an old default.
 - `docs/Phase1技术方案评审结论_2026-07-23.md` — initial findings, resolved
   P0 contracts, and final design Go decision.
 - `docs/Phase1开发拆解_v0.1.md` — executable DEV/CAP tasks, dependencies,
-  gates, external inputs and completion definition; development is authorised,
-  G0–G3 passed, CAP-001, DEV-041, DEV-030 and DEV-031 are complete (the two iOS
-  tasks live-verified on the Simulator on 2026-07-30), and G4 is next — it still
-  needs a real iPhone and DNS/TLS.
+  gates, external inputs and completion definition; development is authorised
+  and **G0–G4 have passed** — G4 closed on 2026-08-01 with a real iPhone
+  enrolled against the deployed ECS over `https://agent.example.invalid`
+  (`docs/evidence/G4_真机验收_2026-08-01.md`). CAP-001, DEV-041, DEV-030,
+  DEV-031, DEV-032 and DEV-033 are complete. Next is DEV-034 / DEV-036 (no
+  external inputs; can start immediately), then DEV-035, which needs a private
+  OSS bucket and a restic key. Push and 打开飞书账本 stay unexercised (no APNs
+  under a Personal Team; `PERSONAL_AGENT_LEDGER_URL` unset on the ECS).
 - `ECS安全加固实施记录_2026-07-23.md` — security, encryption, snapshot, and
   rollback record.
 - `docs/iOS开发环境_Personal_Team_v0.1.md` — Personal Team constraints, the iOS
