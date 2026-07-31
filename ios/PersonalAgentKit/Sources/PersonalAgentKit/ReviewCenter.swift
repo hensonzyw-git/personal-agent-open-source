@@ -82,9 +82,13 @@ public actor ReviewCenter {
         return summary
     }
 
-    /// Replace the matching list entry with the server's own summary, or drop
-    /// it from view when a filter no longer includes it. The server orders the
-    /// list; a status change does not reorder days.
+    /// Replace the matching list entry with the server's own summary. The server
+    /// orders the list; a status change does not reorder days.
+    ///
+    /// A card whose new status falls outside the filter the list was loaded with
+    /// is deliberately **not** dropped: it stays visible carrying the server's
+    /// own new status, so the user sees what their tap did. Re-applying the
+    /// filter is `loadList`'s job, and it is the server that decides membership.
     private func adopt(_ summary: ReviewSummary) {
         if let index = summaries.firstIndex(where: { $0.reviewID == summary.reviewID }) {
             summaries[index] = summary

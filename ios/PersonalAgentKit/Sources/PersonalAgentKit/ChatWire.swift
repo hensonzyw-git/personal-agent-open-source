@@ -465,6 +465,17 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                     state: state,
                     // The persisted event carries no `tool`; evidence is the
                     // `record_id`, and its absence stays indeterminate.
+                    //
+                    // Passing `nil` skips the `recordEvidenceTools` refusal, so
+                    // history relies on a server invariant this file cannot
+                    // enforce: `_operation_projection` emits `answer` only when
+                    // the tool is **not** a governed write, so a `succeeded`
+                    // expense with no `record_id` carries no `answer` either and
+                    // still lands on `indeterminate` below. If the server ever
+                    // attaches an `answer` to a governed write, this projection
+                    // would render an unproven write as a clean answer — the
+                    // cross-language vectors in `chat_receipt_vectors.json` are
+                    // what hold that invariant in place.
                     tool: nil,
                     recordID: content["record_id"]?.stringValue,
                     failureReason: content["failure_reason"]?.stringValue,

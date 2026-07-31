@@ -357,6 +357,24 @@ struct ReviewCenterTests {
         #expect(JSONScalar.unsupported.displayText == "（本客户端无法显示的字段值）")
     }
 
+    @Test("a ledger number too large for Int renders instead of trapping")
+    func valueDisplayTextSurvivesOutOfRangeNumbers() {
+        // `1e300` is integral, so the previous `Int(value)` was reached and
+        // *trapped* — one out-of-range field crashed the whole card, which is
+        // the opposite of "an unreadable row stays on the card". These render
+        // as themselves rather than as an integer.
+        #expect(JSONScalar.number(1e300).displayText == "1e+300")
+        #expect(JSONScalar.number(-1e300).displayText == "-1e+300")
+        // Exactly on the Int64 boundary: 2^63 is not representable, 2^63 - 1024
+        // is the largest Double below it that is.
+        #expect(JSONScalar.number(9_223_372_036_854_775_808.0).displayText.isEmpty == false)
+        #expect(JSONScalar.number(9_223_372_036_854_774_784.0).displayText
+            == "9223372036854774784")
+        // Still exact for the values a ledger actually holds.
+        #expect(JSONScalar.number(-18.0).displayText == "-18")
+        #expect(JSONScalar.number(0.0).displayText == "0")
+    }
+
     @Test("review item identity includes the ledger table")
     func reviewItemIdentityIsTableScoped() {
         let expense = ReviewItem(

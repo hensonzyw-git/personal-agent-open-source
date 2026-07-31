@@ -47,6 +47,11 @@ final class ChatModel {
     /// Open the Timeline the server named, then finish anything left unresolved.
     func open(conversationID: String) async {
         await timeline.bind(conversationID: conversationID)
+        // `bind` drops the loaded history when the Timeline changes, so the
+        // decisions projected out of it are dropped here too. Every later
+        // `mirror()` merges rather than replaces, and this is the one place that
+        // is allowed to forget.
+        resolvedDuplicateDecisions = [:]
         busy = true
         defer { busy = false }
         do {
@@ -75,8 +80,7 @@ final class ChatModel {
         } catch {
             lastError = describe(error)
         }
-        unresolved = try? await timeline.pendingSend()
-        await mirrorDecisions()
+        await mirrorPendingSlots()
     }
 
     func refresh() async {
@@ -124,7 +128,7 @@ final class ChatModel {
         } catch {
             lastError = describe(error)
         }
-        unresolved = try? await timeline.pendingSend()
+        await mirrorPendingSlots()
     }
 
     /// Ask the server to cancel. Past a possible submit this only records the
@@ -141,7 +145,7 @@ final class ChatModel {
         } catch {
             lastError = describe(error)
         }
-        unresolved = try? await timeline.pendingSend()
+        await mirrorPendingSlots()
     }
 
     /// Re-ask the server about the unresolved message.
@@ -156,7 +160,7 @@ final class ChatModel {
         } catch {
             lastError = describe(error)
         }
-        unresolved = try? await timeline.pendingSend()
+        await mirrorPendingSlots()
     }
 
     /// Abandon an unresolved message locally. Deliberately separate from
@@ -200,7 +204,7 @@ final class ChatModel {
         } catch {
             lastError = describe(error)
         }
-        await mirrorDecisions()
+        await mirrorPendingSlots()
     }
 
     /// Re-present a decision whose reply never arrived. The stored key is
@@ -219,29 +223,57 @@ final class ChatModel {
         } catch {
             lastError = describe(error)
         }
-        await mirrorDecisions()
+        await mirrorPendingSlots()
     }
 
-    private func mirrorDecisions() async {
-        // A malformed record throws; surface that through `lastError` on the
-        // paths that call this, never by silently showing "no pending decisions".
-        if let decisions = try? await timeline.pendingDecisions() {
+    /// Re-read both durable slots and show exactly what they say.
+    ///
+    /// A malformed record is reported, never swallowed. `ChatTimeline` raises
+    /// `pendingSendMalformed` / `pendingDecisionsMalformed` precisely so a
+    /// record that may hold a write cannot be dropped; reading them with `try?`
+    /// would turn that back into `nil`, which the screen renders as "nothing
+    /// pending" — the exact lie those errors exist to prevent. On failure the
+    /// previous value is left standing, because a corrupt read is not evidence
+    /// that a banner shown a moment ago was wrong.
+    private func mirrorPendingSlots() async {
+        do {
+            unresolved = try await timeline.pendingSend()
+        } catch {
+            report(error)
+        }
+        do {
+            let decisions = try await timeline.pendingDecisions()
             pendingDecisions = Dictionary(
                 uniqueKeysWithValues: decisions.map { ($0.checkID, $0) }
             )
+        } catch {
+            report(error)
         }
+    }
+
+    /// Surface a follow-up failure without overwriting the primary one: an error
+    /// already on screen explains the action the user took, and these slot reads
+    /// run after it.
+    private func report(_ error: Error) {
+        if lastError == nil { lastError = describe(error) }
     }
 
     private func mirror() async {
         events = await timeline.events
         hasOlder = await timeline.hasOlder
-        var resolved: [String: String] = [:]
+        // Merge, never replace. `decideDuplicate` records its own choice as soon
+        // as the server accepts it, but the permanent marker is only projected
+        // here once it is inside the loaded window. Rebuilding this map from
+        // `events` alone would drop that entry and offer both buttons again for
+        // a check the server has already resolved — and by then the local
+        // decision slot is gone, so the second tap mints a fresh key the server
+        // refuses. The failure is closed; the prompt would still be a lie.
+        // `open(conversationID:)` is the only place allowed to forget.
         for event in events {
             if case .duplicateDecision(let checkID, let decision) = event.kind {
-                resolved[checkID] = decision
+                resolvedDuplicateDecisions[checkID] = decision
             }
         }
-        resolvedDuplicateDecisions = resolved
     }
 
     /// A live receipt stays visible until the same state has arrived as a

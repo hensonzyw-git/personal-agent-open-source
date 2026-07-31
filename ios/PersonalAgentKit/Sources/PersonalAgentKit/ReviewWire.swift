@@ -218,12 +218,18 @@ extension JSONScalar {
     /// What one ledger value looks like on the card. Raw and honest: an
     /// integral number renders without a trailing `.0`, anything else renders
     /// as itself, and an unsupported shape says so rather than vanishing.
+    ///
+    /// The integral case goes through `Int(exactly:)`, never `Int(_:)`. A
+    /// `Double` beyond `Int64` still satisfies `truncatingRemainder(...) == 0`,
+    /// and the unlabelled initialiser *traps* on it — a whole card would crash
+    /// on one out-of-range ledger field, which is the opposite of this file's
+    /// rule that an unreadable row stays on the card.
     public var displayText: String {
         switch self {
         case .string(let value): return value
         case .number(let value):
-            return value.truncatingRemainder(dividingBy: 1) == 0
-                ? String(Int(value)) : String(value)
+            if let integral = Int(exactly: value) { return String(integral) }
+            return String(value)
         case .bool(let value): return value ? "true" : "false"
         case .null: return "—"
         case .unsupported: return "（本客户端无法显示的字段值）"
