@@ -82,6 +82,8 @@ struct ChatView: View {
                 .padding()
             }
             .refreshable { await model.refresh() }
+            // iOS 26 SDK: no longer a View modifier, it is an environment value.
+            .environment(\.scrollDismissesKeyboardMode, .immediately)
             .onChange(of: model.events.count) {
                 if let last = model.events.last?.eventID {
                     withAnimation { proxy.scrollTo(last, anchor: .bottom) }

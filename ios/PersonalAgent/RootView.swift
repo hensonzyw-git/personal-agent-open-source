@@ -78,6 +78,9 @@ struct EnrollmentView: View {
                 .disabled(model.busy)
             }
         }
+        // iOS 26 SDK: `scrollDismissesKeyboardMode` is an environment value now,
+        // which also covers Form/List, not just ScrollView.
+        .environment(\.scrollDismissesKeyboardMode, .immediately)
         .navigationTitle("注册设备")
     }
 }
