@@ -4,6 +4,11 @@
 Description=Personal Data MCP (Finance, loopback only)
 After=network-online.target
 Wants=network-online.target
+# These two belong to [Unit] since systemd v229. Left in [Service] they travel a
+# deprecation path, and a version that drops it leaves `Restart=on-failure` with
+# no rate limit at all — a fail-closed service would then spin forever.
+StartLimitIntervalSec=120s
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -18,8 +23,6 @@ ExecStart=/opt/personal-agent/.venv/bin/personal-data-mcp \
     --port 8811
 Restart=on-failure
 RestartSec=5s
-StartLimitIntervalSec=120s
-StartLimitBurst=5
 
 # Created by deploy/install.sh as personal-data-mcp:personal-data-mcp 0700.
 ReadWritePaths=/var/lib/personal-data-mcp

@@ -33,6 +33,18 @@ expect_refused() { # <description> <command...>; PASS when the command FAILS
   if "$@" >/dev/null 2>&1; then fail "$desc"; else pass "$desc"; fi
 }
 
+# A refusal check alone proves nothing: `head` on a file that does not exist and
+# `ls` on a missing directory both fail, so a deployment that never created the
+# secret would report every cross-user check as PASS. Each refusal below is
+# therefore paired with the positive control that the *owning* user can read the
+# same path — the pair is what makes "cannot read" mean isolation rather than
+# absence.
+expect_isolated() { # <what> <owner-user> <other-user> <read-command...>
+  local what="$1" owner="$2" other="$3"; shift 3
+  expect_success "$owner CAN read $what (control)" sudo -u "$owner" "$@"
+  expect_refused "$other cannot read $what" sudo -u "$other" "$@"
+}
+
 echo "== services active, right identity =="
 expect_success "personal-data-mcp active" systemctl is-active --quiet personal-data-mcp
 expect_success "personal-agent-api active" systemctl is-active --quiet personal-agent-api
@@ -43,19 +55,45 @@ expect_success "api process runs as $API_USER" \
 expect_refused "no personal-agent process runs as root" \
   pgrep -u root -f 'personal-agent-api|personal-data-mcp'
 
-echo "== cross-user reads must fail =="
-expect_refused "api user cannot read mcp database dir" \
-  sudo -u "$API_USER" ls /var/lib/personal-data-mcp
-expect_refused "mcp user cannot read api database dir" \
-  sudo -u "$MCP_USER" ls /var/lib/personal-agent-api
-expect_refused "api user cannot read mcp env" \
-  sudo -u "$API_USER" head -c 1 /etc/personal-agent/mcp.env
-expect_refused "mcp user cannot read api env" \
-  sudo -u "$MCP_USER" head -c 1 /etc/personal-agent/api.env
-expect_refused "api user cannot read mcp key dir" \
-  sudo -u "$API_USER" ls /etc/personal-agent/keys/mcp
-expect_refused "mcp user cannot read api key dir" \
-  sudo -u "$MCP_USER" ls /etc/personal-agent/keys/api
+echo "== the running services hold the credentials they need =="
+# `sudo -u` below resolves groups from the passwd primary gid, which is NOT what
+# the units run with: the API overrides its primary group to www-data so Nginx
+# can reach the socket, and only `SupplementaryGroups=` puts personal-agent-api
+# back. Assert the real process credential rather than inferring it from a sudo
+# shell that has a different group set.
+api_pid="$(systemctl show -p MainPID --value personal-agent-api 2>/dev/null)"
+if [ -n "$api_pid" ] && [ "$api_pid" != "0" ] && [ -r "/proc/$api_pid/status" ]; then
+  # `Groups:` is the supplementary list; `Gid:` holds real/effective/saved/fs.
+  # Either is enough to reach the key ring, so both are collected — asserting
+  # only the supplementary list would fail a future unit that made
+  # personal-agent-api the primary group again.
+  API_GIDS="$(awk '/^(Groups|Gid):/{$1=""; print}' "/proc/$api_pid/status")"
+  API_KEY_GID="$(stat -c %g /etc/personal-agent/keys/api)"
+  if printf '%s\n' "$API_GIDS" | tr ' \t' '\n\n' | grep -qx "$API_KEY_GID"; then
+    pass "api process holds gid $API_KEY_GID, so it can read its own key ring"
+  else
+    fail "api process groups ($API_GIDS) lack gid $API_KEY_GID; it cannot read /etc/personal-agent/keys/api"
+  fi
+else
+  fail "could not read the api process credentials from /proc"
+fi
+
+echo "== cross-user reads must fail (each with its positive control) =="
+expect_isolated "the mcp database dir" "$MCP_USER" "$API_USER" \
+  ls /var/lib/personal-data-mcp
+expect_isolated "the api database dir" "$API_USER" "$MCP_USER" \
+  ls /var/lib/personal-agent-api
+expect_isolated "the mcp env" "$MCP_USER" "$API_USER" \
+  head -c 1 /etc/personal-agent/mcp.env
+expect_isolated "the api env" "$API_USER" "$MCP_USER" \
+  head -c 1 /etc/personal-agent/api.env
+expect_isolated "the mcp key dir" "$MCP_USER" "$API_USER" \
+  ls /etc/personal-agent/keys/mcp
+expect_isolated "the api key dir" "$API_USER" "$MCP_USER" \
+  ls /etc/personal-agent/keys/api
+# The socket has no owning *user* to control against — reaching it is Nginx's
+# privilege, and www-data is not one of the two service users. The control is
+# therefore that the socket answers at all, which the liveness section proves.
 expect_refused "mcp user cannot even reach the api socket" \
   sudo -u "$MCP_USER" curl -s --max-time 3 \
   --unix-socket /run/personal-agent/api.sock http://localhost/v1/capabilities
@@ -65,13 +103,21 @@ expect_success "api socket exists" test -S /run/personal-agent/api.sock
 # uvicorn forces a fresh socket to 0666, so the access boundary is the socket
 # *directory*: it must be 0770 personal-agent-api:www-data, which lets exactly
 # Nginx's group reach the socket and nobody else.
+#
+# The mode is compared digit by digit, never numerically. `stat -c %a` prints
+# octal, and `[ "$m" -le 770 ]` reads it as decimal: 0755 and 0707 both compare
+# as "<= 770" and pass, yet both grant `other` the execute bit that lets any
+# user on the box traverse into this directory and connect to the 0666 socket.
+# The only property worth asserting is that `other` has nothing.
 DIR_OWNER="$(stat -c %U /run/personal-agent)"
 DIR_GROUP="$(stat -c %G /run/personal-agent)"
 DIR_MODE="$(stat -c %a /run/personal-agent)"
-if [ "$DIR_OWNER" = "$API_USER" ] && [ "$DIR_GROUP" = "www-data" ] && [ "$DIR_MODE" -le 770 ]; then
+DIR_OTHER="${DIR_MODE: -1}"
+if [ "$DIR_OWNER" = "$API_USER" ] && [ "$DIR_GROUP" = "www-data" ] \
+   && [ "$DIR_OTHER" = "0" ]; then
   pass "socket dir $DIR_OWNER:$DIR_GROUP mode $DIR_MODE (Nginx can connect, others cannot)"
 else
-  fail "socket dir is $DIR_OWNER:$DIR_GROUP/$DIR_MODE, want $API_USER:www-data/<=770"
+  fail "socket dir is $DIR_OWNER:$DIR_GROUP/$DIR_MODE, want $API_USER:www-data with no 'other' bits"
 fi
 if [ -S /run/personal-agent/api.sock ]; then
   SOCK_GROUP="$(stat -c %G /run/personal-agent/api.sock)"

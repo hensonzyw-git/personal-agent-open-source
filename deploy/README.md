@@ -27,7 +27,9 @@ Deliberate choices, and why:
 - **Env/key files are root-owned, group-readable by exactly one service user.**
   A service cannot rewrite its own configuration, and the two users cannot read
   each other's material. systemd reads `EnvironmentFile=` as root before
-  dropping privileges, so this works.
+  dropping privileges, so this works. The *key rings* are different: the
+  service process reads those itself, at runtime, under its own credentials —
+  which is why the next point matters.
 - **`Group=www-data` on the API unit** exists for exactly one reason: the
   socket must be reachable by Nginx. uvicorn hardcodes a fresh UDS to mode
   0666 and ignores umask (verified against the installed uvicorn on
@@ -36,6 +38,14 @@ Deliberate choices, and why:
   Nginx's group traverse to the socket and blocks every other local user.
   The data directory is a *different* group (`api:api`, 0700), so even a
   future dir-mode mistake cannot expose the database to www-data.
+- **`SupplementaryGroups=personal-agent-api` is what makes that survivable.**
+  Setting `Group=` replaces the *primary* gid, and `useradd --system` leaves
+  the group's member list in `/etc/group` empty, so `initgroups()` has nothing
+  to restore it from. Without this line the service holds only www-data,
+  cannot traverse `/etc/personal-agent/keys/api` (0750 root:api), and dies on
+  its first key read into a restart loop. `sudo -u personal-agent-api` does
+  *not* reproduce this — sudo resolves the passwd primary gid — so `verify.sh`
+  asserts the group set of the real process out of `/proc`, not a sudo shell's.
 - **Fresh key material is minted on the server** (`provision_server_keys.sh`),
   not copied from the development Mac. Devices enrolled against the ECS are
   bound to these rings; the Mac's rings stay the Mac's.
@@ -90,23 +100,35 @@ scp -p -i ~/.ssh/personal_agent_example_key .env.local .env.finance.local \
   deploy@192.0.2.10:/tmp/
 ```
 
+Paste this as one block. It is written as a `bash -e` script rather than as
+loose lines on purpose: pasted line by line into an interactive shell, a `grep`
+that matches nothing returns 1 and the next line runs anyway, so a missing key
+would be discovered only when the first model call failed in production.
+
 ```sh
 # on the ECS, as root
-grep '^ZAI_API_KEY='           /tmp/.env.local         >> /etc/personal-agent/api.env
-grep '^PERSONAL_AGENT_USER_ID=' /tmp/.env.local        >> /etc/personal-agent/api.env || {
-  echo "PERSONAL_AGENT_USER_ID missing from .env.local — append the real value to api.env first" >&2
-  exit 1
+bash -e <<'PROVISION'
+require() { # <variable> <source file> <destination>
+  grep "^$1=" "$2" >> "$3" || {
+    echo "$1 missing from $2 — append the real value to $3 by hand first" >&2
+    exit 1
+  }
 }
-grep '^PERSONAL_AGENT_LEDGER_URL=' /tmp/.env.local     >> /etc/personal-agent/api.env || true
-grep '^FEISHU_FINANCE_'        /tmp/.env.finance.local >> /etc/personal-agent/mcp.env
+require ZAI_API_KEY            /tmp/.env.local /etc/personal-agent/api.env
+require PERSONAL_AGENT_USER_ID /tmp/.env.local /etc/personal-agent/api.env
+# Optional: absence means the apps offer no "open the ledger" jump.
+grep '^PERSONAL_AGENT_LEDGER_URL=' /tmp/.env.local >> /etc/personal-agent/api.env || true
+grep '^FEISHU_FINANCE_' /tmp/.env.finance.local >> /etc/personal-agent/mcp.env
 install -m 0600 -o personal-data-mcp -g personal-data-mcp \
   /tmp/ledger.synthetic_test.2026.json /var/lib/personal-data-mcp/
 shred -u /tmp/.env.local /tmp/.env.finance.local /tmp/ledger.synthetic_test.2026.json
+PROVISION
 ```
 
 No placeholder ever goes into an env file: a made-up `PERSONAL_AGENT_USER_ID`
 would pass the CLI's non-empty check and land in Finance's audit trail as a
-real identity.
+real identity. `require` refuses rather than substituting one, and it exits the
+heredoc — not the operator's SSH session.
 
 ### 5. Application code (Mac)
 
@@ -143,10 +165,17 @@ up first; `Requires=` enforces the order on every boot.
 sudo bash ~/personal-agent-deploy/verify.sh
 ```
 
-Covers: services active as their own users, no root process, **six cross-user
-read refusals** (DB dirs, env files, key dirs), socket group/mode for Nginx,
-MCP loopback-only, no 8810 TCP listener, 405 from the real MCP endpoint, 401
-through the real API socket, and `https://zhuyawei.com` still 200.
+Covers: services active as their own users, no root process, the API process's
+real group set out of `/proc`, **six cross-user read refusals** (DB dirs, env
+files, key dirs) **each paired with the positive control that the owning user
+can read the same path**, socket group/mode for Nginx, MCP loopback-only, no
+8810 TCP listener, 405 from the real MCP endpoint, 401 through the real API
+socket, and `https://zhuyawei.com` still 200.
+
+The positive controls are not decoration. `head` on a missing file and `ls` on
+a missing directory both fail, so a refusal-only suite reports a deployment
+that never created the secrets as fully isolated. The pair is what makes
+"cannot read" mean isolation rather than absence.
 
 ### 9. Record
 

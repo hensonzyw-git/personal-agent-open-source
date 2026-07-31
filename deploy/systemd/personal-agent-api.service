@@ -6,11 +6,25 @@ Description=Personal Agent Client API (single-user, behind Nginx)
 After=network-online.target personal-data-mcp.service
 Wants=network-online.target
 Requires=personal-data-mcp.service
+# `personal-data-mcp` is Type=simple, so "active" means forked, not listening.
+# The API fails closed when the MCP is not answering yet, so the boot-order race
+# is resolved by restarting rather than by a readiness protocol — the budget
+# below is therefore wide enough that a slow MCP start cannot exhaust it.
+StartLimitIntervalSec=300s
+StartLimitBurst=10
 
 [Service]
 Type=simple
 User=personal-agent-api
+# The socket's group must be www-data so only Nginx can connect to it. That
+# makes www-data the *primary* group, which means the service would otherwise
+# lose the `personal-agent-api` gid entirely: `useradd --system` leaves the
+# group's member list in /etc/group empty, so `initgroups()` cannot restore it
+# from the passwd primary gid that `Group=` has just overridden. Without this
+# line the process cannot traverse /etc/personal-agent/keys/api (0750
+# root:personal-agent-api) and fails to start on its first key read.
 Group=www-data
+SupplementaryGroups=personal-agent-api
 # uvicorn hardcodes a fresh UDS to mode 0666 and ignores umask (verified
 # against the installed uvicorn 2026-07-31); the access boundary is therefore
 # the RuntimeDirectory below (0770 api:www-data), not the socket file mode.
@@ -24,8 +38,6 @@ ExecStart=/opt/personal-agent/.venv/bin/personal-agent-api \
     --finance-control-url http://127.0.0.1:8811
 Restart=on-failure
 RestartSec=5s
-StartLimitIntervalSec=120s
-StartLimitBurst=5
 
 # Socket directory, chowned to personal-agent-api:www-data by systemd. It is
 # the access boundary for the API: only Nginx's group can reach the socket

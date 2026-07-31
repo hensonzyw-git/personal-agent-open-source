@@ -21,5 +21,24 @@ if [ $# -lt 1 ]; then
   exit 2
 fi
 
-exec sudo -u personal-agent-api \
-  bash -c 'set -a; . /etc/personal-agent/api.env; set +a; exec "$@"' bash "$@"
+# The env file is *parsed*, never sourced. `. api.env` would hand the file to
+# the shell, so a value containing `$(...)`, a backtick or a `#` would be
+# executed or truncated — and systemd's own EnvironmentFile parser does none of
+# that. Two parsers disagreeing about the same file means the operator CLI and
+# the service can hold different values for the same API key, which is exactly
+# the kind of divergence that is invisible until a write goes to the wrong
+# place. This loop reads plain `NAME=value` lines literally, like systemd does
+# for the unquoted values provision_server_keys.sh writes.
+exec sudo -u personal-agent-api bash -c '
+  set -euo pipefail
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ""|"#"*) continue ;; esac
+    name=${line%%=*}
+    case "$name" in
+      "$line") continue ;;                 # no "=" at all: not an assignment
+      ""|*[!A-Za-z0-9_]*) continue ;;      # not a shell-safe variable name
+    esac
+    export "$name=${line#*=}"
+  done < /etc/personal-agent/api.env
+  exec "$@"
+' bash "$@"
