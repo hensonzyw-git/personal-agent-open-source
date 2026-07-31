@@ -1,7 +1,14 @@
 # DEV-033: daily certificate expiry alarm. See cert-expiry-check.sh.
 [Unit]
 Description=Personal Agent certificate expiry check
+# The check now also dials 443, so it must not run before the network is up:
+# an unreachable host would otherwise alarm for the wrong reason at boot.
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/lib/personal-agent/cert-expiry-check.sh
+# The script bounds its own TLS dials at 15s each; this is the outer bound so a
+# hung check fails as a check rather than as a stuck unit.
+TimeoutStartSec=120s

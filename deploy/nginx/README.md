@@ -35,6 +35,16 @@ Decisions and why:
 - **The expiry alarm's channel is DEV-034's.** This task's contract is that an
   impending expiry cannot pass silently: journal `crit` plus a failed unit.
   Let's Encrypt's own expiry email to the account address is the backstop.
+- **The alarm checks the served certificate, not only the files.** Reading
+  `/etc/letsencrypt/live/*/cert.pem` alone answers "did renewal run", never
+  "is the renewed certificate the one clients get". Those diverge whenever the
+  deploy hook below stops reloading Nginx — dropped by a certbot reinstall,
+  failing quietly, or reloading an Nginx that then declines to start — and in
+  that state the file dates look perfect while the iPhone app fails its TLS
+  handshake and stops working entirely. So the check also dials
+  `agent.example.invalid:443` and `zhuyawei.com:443` and reads the leaf it is
+  actually handed. It follows that the alarm needs network egress and will
+  (correctly) fire when the host is unreachable.
 
 ## Procedure
 
