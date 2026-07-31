@@ -100,6 +100,20 @@ COMPOSED_ALIASES = (
 
 
 @dataclass(frozen=True)
+class PriorWrite:
+    """A completed write the case's context must already show.
+
+    Seeds the same shape production produces: the user message, then an
+    `OPERATION_RESULT` event carrying the succeeded record_id, anchored on a
+    terminal operation. This is what the model saw before it short-circuited
+    a resent message into a prose refusal on 2026-08-01.
+    """
+
+    text: str
+    record_id: str
+
+
+@dataclass(frozen=True)
 class Case:
     """One synthetic message and the outcome shape the contract requires."""
 
@@ -108,6 +122,7 @@ class Case:
     why: str
     expect: Callable[[Interpretation], list[str]]
     clarification: ClarificationContext | None = None
+    prior_write: PriorWrite | None = None
 
 
 def expect_tool(
@@ -212,6 +227,23 @@ def build_cases(today: str) -> list[Case]:
                 input_amount="120",
                 is_family_expense=True,
                 name="网球场",
+            ),
+        ),
+        Case(
+            id="expense_resent_after_success",
+            text="晚饭 35 个人支出",
+            why="a resend of an already-recorded message must still call the "
+            "tool; the duplicate decision belongs to the server. GLM answered "
+            "in prose instead in production (2026-08-01) and the gate never "
+            "fired",
+            prior_write=PriorWrite(
+                text="晚饭 35 个人支出", record_id="recSMOKEdup01"
+            ),
+            expect=expect_tool(
+                "finance.log_expense",
+                input_amount="35",
+                is_family_expense=False,
+                entry_kind="expense",
             ),
         ),
         Case(
@@ -535,6 +567,45 @@ def smoke_context(
                             question=clarification.question,
                             source_operation_ids=(source.operation_id,),
                         )
+                    prior = case.prior_write
+                    if prior is not None:
+                        source = open_operation(
+                            db,
+                            device_id="dev_glm_smoke",
+                            client_request_id=f"prior-{case.id}",
+                            request_fingerprint=f"prior-{case.id}",
+                            now=moment,
+                        ).operation
+                        append_event(
+                            db,
+                            keyring,
+                            conversation_id=SMOKE_TIMELINE,
+                            session_id=session_id,
+                            turn_id=f"trn-prior-{case.id}",
+                            event_type=USER_MESSAGE,
+                            content={"text": prior.text},
+                            operation_id=source.operation_id,
+                            now=moment,
+                        )
+                        # The exact shape `_result_content` projects for a
+                        # succeeded write: state plus record_id, nothing else.
+                        append_event(
+                            db,
+                            keyring,
+                            conversation_id=SMOKE_TIMELINE,
+                            session_id=session_id,
+                            turn_id=f"trn-prior-{case.id}",
+                            event_type=OPERATION_RESULT,
+                            content={
+                                "state": "succeeded",
+                                "record_id": prior.record_id,
+                            },
+                            operation_id=source.operation_id,
+                            now=moment,
+                        )
+                        source.state = "succeeded"
+                        source.state_version = 2
+                        source.safe_result = prior.record_id
                     event_id = append_event(
                         db,
                         keyring,

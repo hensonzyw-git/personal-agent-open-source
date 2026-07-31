@@ -32,6 +32,19 @@ def test_prompt_keeps_original_finance_boundaries() -> None:
     assert "全量分页" in prompt
 
 
+def test_prompt_forbids_model_side_duplicate_judgement() -> None:
+    """The 2026-08-01 production incident: on a resent message, GLM saw the
+    prior success in context and refused in prose, quoting the record_id --
+    the server-side duplicate gate never fired and no decision card existed.
+    The prompt must send resends through the tool instead.
+    """
+
+    prompt = build_system_prompt(today="2026-07-24")
+    assert "不得据此自行判重" in prompt
+    assert "仍照常调用对应工具" in prompt
+    assert "是否重复由服务端判定" in prompt
+
+
 def test_prompt_states_the_output_discipline_the_adapter_enforces() -> None:
     """The 2026-07-26 live smoke found all three of these shapes on real GLM.
 
