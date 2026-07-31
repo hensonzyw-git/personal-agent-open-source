@@ -14,7 +14,9 @@
 | user `personal-agent-api` | — | nologin | runs the Client API |
 | user `personal-data-mcp` | — | nologin | runs the Finance MCP |
 | `/var/lib/personal-agent-api` | api:api | 0700 | `agent.sqlite` |
+| `/var/lib/personal-agent-api/*` | api:**www-data** | 0600 | files inherit the unit's `Group=`; `UMask=0077` is what closes them |
 | `/var/lib/personal-data-mcp` | mcp:mcp | 0700 | `finance.sqlite`, ledger config |
+| `/var/lib/personal-data-mcp/*` | mcp:mcp | 0600 | |
 | `/etc/personal-agent/api.env` | root:api | 0640 | API environment (incl. GLM key) |
 | `/etc/personal-agent/mcp.env` | root:mcp | 0640 | MCP environment (Feishu) |
 | `/etc/personal-agent/keys/api/*` | root:api | 0640 | API key rings (private) |
@@ -37,8 +39,16 @@ Deliberate choices, and why:
   2026-07-31), so the real access boundary is the socket *directory*:
   `RuntimeDirectory=personal-agent` at 0770 `api:www-data` lets exactly
   Nginx's group traverse to the socket and blocks every other local user.
-  The data directory is a *different* group (`api:api`, 0700), so even a
-  future dir-mode mistake cannot expose the database to www-data.
+- **`UMask=0077` on the API unit is not cosmetic, and 0007 was wrong.**
+  `Group=www-data` sets the process's *egid*, and `/var/lib/personal-agent-api`
+  is not setgid, so every file the API creates — `agent.sqlite` and its `-wal` /
+  `-shm` — is group `www-data` no matter what the directory is owned by. At the
+  original 0007 that meant mode 0660: Nginx, the one network-facing process on
+  this box, held read+write on the Agent database, and the directory's 0700 was
+  the *only* thing in the way rather than the second layer. 0077 makes those
+  files 0600 and breaks nothing, because the socket's mode never came from the
+  umask in the first place. `verify.sh` asserts the file modes, not just the
+  directory's — the directory check alone is what let this sit unnoticed.
 - **`SupplementaryGroups=personal-agent-api` is what makes that survivable.**
   Setting `Group=` replaces the *primary* gid, and `useradd --system` leaves
   the group's member list in `/etc/group` empty, so `initgroups()` has nothing
@@ -200,6 +210,23 @@ to exist first, or just re-run verify before investigating.
 
 Schema changes: run the matching `*-db upgrade` command (step 6) *before* the
 restart. Every revision has a working `downgrade`.
+
+Unit changes need `systemctl daemon-reload` before the restart — re-running
+`deploy/install.sh` does both the reinstall and the reload.
+
+**One-time, on the first rollout that carries the `UMask=0077` API unit.** The
+unit shipped with `UMask=0007` until 2026-08-01, and `Group=www-data` (which the
+socket needs) means the API's own files are group `www-data`; those two together
+left `agent.sqlite` at 0660, i.e. readable and writable by Nginx. The new umask
+only applies to files created *after* the restart, so the existing ones must be
+fixed once, as root on the ECS:
+
+```sh
+chmod 0600 /var/lib/personal-agent-api/*
+```
+
+`verify.sh` now asserts this, so a missed run shows up as a `FAIL` rather than
+as nothing at all.
 
 ## Operator commands on the ECS (devices, review)
 

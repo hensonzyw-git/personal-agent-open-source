@@ -128,6 +128,34 @@ if [ -S /run/personal-agent/api.sock ]; then
   fi
 fi
 
+# The database files themselves, not just the directory. The API runs with
+# `Group=www-data` so Nginx can reach the socket, which means every file it
+# creates is group www-data; only `UMask=0077` keeps Nginx off the ledger's
+# Agent-side database, and the 0700 directory is then the second layer rather
+# than the only one. Nothing asserted this before, so a umask regression would
+# have been invisible.
+for data_dir in /var/lib/personal-agent-api /var/lib/personal-data-mcp; do
+  bad=""
+  for data_file in "$data_dir"/*; do
+    [ -f "$data_file" ] || continue
+    mode="$(stat -c %a "$data_file")"
+    # `stat -c %a` drops leading zeros, so pad before slicing: a 000-mode file
+    # prints as "0" and would otherwise read as a group digit of "0" and an
+    # other digit that is not there.
+    while [ "${#mode}" -lt 3 ]; do mode="0$mode"; done
+    # Compare the group and other digits as digits, never numerically.
+    case "${mode: -2}" in
+      00) ;;
+      *) bad="$bad $(basename "$data_file"):$mode" ;;
+    esac
+  done
+  if [ -z "$bad" ]; then
+    pass "no group/other access on any file in $data_dir"
+  else
+    fail "files in $data_dir grant group or other access:$bad"
+  fi
+done
+
 LISTENERS="$(ss -tln)"
 if printf '%s\n' "$LISTENERS" | grep -q "127.0.0.1:8811"; then
   pass "mcp bound to 127.0.0.1:8811"

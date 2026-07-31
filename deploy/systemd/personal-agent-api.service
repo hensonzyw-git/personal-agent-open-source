@@ -25,11 +25,20 @@ User=personal-agent-api
 # root:personal-agent-api) and fails to start on its first key read.
 Group=www-data
 SupplementaryGroups=personal-agent-api
-# uvicorn hardcodes a fresh UDS to mode 0666 and ignores umask (verified
-# against the installed uvicorn 2026-07-31); the access boundary is therefore
-# the RuntimeDirectory below (0770 api:www-data), not the socket file mode.
-# UMask only shapes the database files under /var/lib.
-UMask=0007
+# uvicorn hardcodes a fresh UDS to mode 0666 and ignores umask (it calls
+# os.chmod(uds, 0o666) after binding; verified against the installed uvicorn
+# 2026-07-31), so the access boundary is the RuntimeDirectory below
+# (0770 api:www-data), not the socket file mode. UMask therefore only shapes
+# the database files under /var/lib -- and those must NOT be group-readable.
+#
+# `Group=www-data` above makes www-data this process's egid, and
+# /var/lib/personal-agent-api is not setgid, so every file it creates
+# (agent.sqlite, -wal, -shm) is group www-data. At 0007 that handed Nginx --
+# the one network-facing process on this box -- read+write on the Agent
+# database, with only the directory's 0700 standing in the way. 0077 makes them
+# 0600 and costs nothing: nothing but this service ever opens them, and the
+# socket's mode does not come from here.
+UMask=0077
 EnvironmentFile=/etc/personal-agent/api.env
 ExecStart=/opt/personal-agent/.venv/bin/personal-agent-api \
     --database /var/lib/personal-agent-api/agent.sqlite \
