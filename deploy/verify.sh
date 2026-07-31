@@ -164,6 +164,15 @@ else
   fail "api /v1/capabilities over UDS -> $API_CODE, want 401"
 fi
 
+echo "== operator cli =="
+# The wrapper is the only honest path to the database for an operator. sudo
+# hands the service user a bare PATH, so a wrapper that forgets the venv makes
+# every operator command die with "not found" while everything above stays
+# green — which is exactly how this gap was found on 2026-07-31.
+expect_success "operator-cli.sh runs personal-agent-device list" \
+  /opt/personal-agent/operator-cli.sh personal-agent-device \
+  --database /var/lib/personal-agent-api/agent.sqlite list
+
 echo "== personal site regression =="
 SITE_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://zhuyawei.com)"
 if [ "$SITE_CODE" = "200" ]; then

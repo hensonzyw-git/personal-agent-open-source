@@ -38,11 +38,11 @@ struct EnrollmentView: View {
     var body: some View {
         Form {
             Section("服务地址") {
-                TextField("http://127.0.0.1:8810", text: $model.baseURLText)
+                TextField("https://agent.example.invalid", text: $model.baseURLText)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
-                Text("模拟器可直接用 127.0.0.1；真机填 Mac 的局域网地址。上线后改为 https://agent.example.invalid。")
+                Text("默认是线上服务；本地联调（模拟器连本机服务）时改为 http://127.0.0.1:8810。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

@@ -31,6 +31,9 @@ fi
 # for the unquoted values provision_server_keys.sh writes.
 exec sudo -u personal-agent-api bash -c '
   set -euo pipefail
+  # sudo gives the service user a bare PATH without the venv; the CLI names
+  # (personal-agent-device, ...) live in /opt/personal-agent/.venv/bin.
+  export PATH=/opt/personal-agent/.venv/bin:/usr/local/bin:/usr/bin:/bin
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ""|"#"*) continue ;; esac
     name=${line%%=*}

@@ -317,7 +317,12 @@ public struct AgentClient: Sendable {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
-            throw AgentClientError.transport(String(describing: error))
+            // Name the URL we actually dialled. The raw NSError carries it only
+            // deep inside userInfo, and a wrong base URL otherwise reads exactly
+            // like a server outage (real-device enrollment, 2026-07-31).
+            throw AgentClientError.transport(
+                "\(url.absoluteString): \(error.localizedDescription)"
+            )
         }
         guard let http = response as? HTTPURLResponse else {
             throw AgentClientError.malformedResponse

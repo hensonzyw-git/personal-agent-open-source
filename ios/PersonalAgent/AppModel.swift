@@ -17,10 +17,12 @@ final class AppModel {
     }
 
     var phase: Phase = .loading
-    /// Where the backend is. On the Simulator the Mac's loopback works as-is; on
-    /// a real iPhone this is the Mac's LAN address until `DEV-033` puts the
-    /// service behind TLS on `agent.example.invalid`.
-    var baseURLText: String = "http://127.0.0.1:8810"
+    /// Where the backend is. The default is the production entry behind TLS
+    /// (`DEV-033`); the Simulator's `http://127.0.0.1:8810` is typed by hand
+    /// for local runs. A fresh install must default to the real server: a
+    /// default of loopback made every real-device enrollment hit the phone's
+    /// own lo0 with -1004 and no server-side trace (2026-07-31).
+    var baseURLText: String = "https://agent.example.invalid"
     var enrollmentCode: String = ""
     var deviceName: String = defaultDeviceName()
 
