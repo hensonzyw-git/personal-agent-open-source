@@ -192,6 +192,12 @@ ssh -i ~/.ssh/personal_agent_example_key deploy@192.0.2.10 \
 sudo bash ~/personal-agent-deploy/verify.sh   # ECS
 ```
 
+Give the services a few seconds before `verify.sh`: the API only serves after
+Finance catalog discovery and boot-time schema validation, so a verify run
+~3s after `restart` can report liveness/socket failures that clear on the
+immediate re-run (observed 2026-08-01). Wait for `/run/personal-agent/api.sock`
+to exist first, or just re-run verify before investigating.
+
 Schema changes: run the matching `*-db upgrade` command (step 6) *before* the
 restart. Every revision has a working `downgrade`.
 
