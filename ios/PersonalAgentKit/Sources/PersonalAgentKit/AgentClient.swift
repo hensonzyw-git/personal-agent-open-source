@@ -298,7 +298,12 @@ public struct AgentClient: Sendable {
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 20
+        // Must exceed the server's sync-wait bound (sync_wait_seconds <= 30s,
+        // then the server itself flips to 202): a shorter timeout abandons a
+        // request the server was about to answer, which is exactly how the
+        // first real-device chat send "failed" at 20.6s while the write
+        // completed server-side (2026-08-01). Nginx allows 75s upstream.
+        request.timeoutInterval = 45
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
