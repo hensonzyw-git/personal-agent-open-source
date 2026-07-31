@@ -1,0 +1,44 @@
+[Unit]
+# DEV-032. Design 3.2: the Finance MCP listens on loopback TCP only; it is
+# never proxied by Nginx and never reachable from the public network.
+Description=Personal Data MCP (Finance, loopback only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=personal-data-mcp
+Group=personal-data-mcp
+UMask=0077
+EnvironmentFile=/etc/personal-agent/mcp.env
+ExecStart=/opt/personal-agent/.venv/bin/personal-data-mcp \
+    --database /var/lib/personal-data-mcp/finance.sqlite \
+    --ledger-config /var/lib/personal-data-mcp/ledger.synthetic_test.2026.json \
+    --host 127.0.0.1 \
+    --port 8811
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=120s
+StartLimitBurst=5
+
+# Created by deploy/install.sh as personal-data-mcp:personal-data-mcp 0700.
+ReadWritePaths=/var/lib/personal-data-mcp
+
+# Technical design §10.1 sandbox baseline.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

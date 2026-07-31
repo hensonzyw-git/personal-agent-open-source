@@ -1,0 +1,57 @@
+[Unit]
+# DEV-032. Design 3.2: the Client API listens on a Unix socket behind Nginx;
+# only Nginx (www-data) may connect, so the socket's group is www-data while
+# the data directory stays reachable only by the service user.
+Description=Personal Agent Client API (single-user, behind Nginx)
+After=network-online.target personal-data-mcp.service
+Wants=network-online.target
+Requires=personal-data-mcp.service
+
+[Service]
+Type=simple
+User=personal-agent-api
+Group=www-data
+# uvicorn hardcodes a fresh UDS to mode 0666 and ignores umask (verified
+# against the installed uvicorn 2026-07-31); the access boundary is therefore
+# the RuntimeDirectory below (0770 api:www-data), not the socket file mode.
+# UMask only shapes the database files under /var/lib.
+UMask=0007
+EnvironmentFile=/etc/personal-agent/api.env
+ExecStart=/opt/personal-agent/.venv/bin/personal-agent-api \
+    --database /var/lib/personal-agent-api/agent.sqlite \
+    --socket /run/personal-agent/api.sock \
+    --finance-mcp-url http://127.0.0.1:8811/mcp \
+    --finance-control-url http://127.0.0.1:8811
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=120s
+StartLimitBurst=5
+
+# Socket directory, chowned to personal-agent-api:www-data by systemd. It is
+# the access boundary for the API: only Nginx's group can reach the socket
+# inside, whose own mode uvicorn sets to 0666.
+RuntimeDirectory=personal-agent
+RuntimeDirectoryMode=0770
+# The data directory is created by deploy/install.sh as
+# personal-agent-api:personal-agent-api mode 0700; declared writable here
+# because ProtectSystem=strict makes the rest of the hierarchy read-only.
+ReadWritePaths=/var/lib/personal-agent-api
+
+# Technical design §10.1 sandbox baseline.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

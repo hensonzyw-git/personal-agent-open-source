@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import uvicorn
@@ -26,6 +27,45 @@ from personal_agent.api.composition import (
 
 DEFAULT_FINANCE_CONTROL_URL = "http://127.0.0.1:8811"
 DEFAULT_FINANCE_MCP_URL = "http://127.0.0.1:8811/mcp"
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8810
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+@dataclass(frozen=True)
+class BindTarget:
+    """Where the service listens: exactly one of TCP loopback or a Unix socket."""
+
+    uds: str | None
+    host: str | None
+    port: int | None
+
+
+def resolve_bind(host: str | None, port: int | None, socket: str | None) -> BindTarget:
+    """Resolve the CLI bind arguments into one target, refusing unsafe mixes.
+
+    Design 3 puts this service behind Nginx on a Unix socket; a public TCP bind
+    is a misconfiguration, not an option. The two bind styles are mutually
+    exclusive so a deployment cannot half-move to the socket.
+    """
+    if socket is not None:
+        if host is not None or port is not None:
+            raise SystemExit("--socket cannot be combined with --host/--port")
+        if not Path(socket).is_absolute():
+            raise SystemExit("--socket must be an absolute path")
+        return BindTarget(uds=socket, host=None, port=None)
+    effective_host = host if host is not None else DEFAULT_HOST
+    if effective_host not in _LOOPBACK_HOSTS:
+        raise SystemExit(
+            "personal-agent-api binds loopback only; public exposure is "
+            "Nginx's job (DEV-033)"
+        )
+    return BindTarget(
+        uds=None,
+        host=effective_host,
+        port=port if port is not None else DEFAULT_PORT,
+    )
 
 
 def main() -> None:
@@ -33,8 +73,18 @@ def main() -> None:
         description="Run the Agent Client API against the loopback Finance MCP."
     )
     parser.add_argument("--database", type=Path, required=True)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8810)
+    parser.add_argument("--host", default=None)
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument(
+        "--socket",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Absolute path of a Unix domain socket to listen on instead of "
+            "loopback TCP (the DEV-032 deployment form, behind Nginx). "
+            "Cannot be combined with --host/--port."
+        ),
+    )
     parser.add_argument("--log-level", default="info")
     parser.add_argument(
         "--finance-mcp-url",
@@ -58,14 +108,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.host not in {"127.0.0.1", "localhost", "::1"}:
-        # Design 3 puts this service behind Nginx on a Unix socket; the socket
-        # itself is `DEV-032`. Until then a public bind is a misconfiguration,
-        # not an option.
-        raise SystemExit(
-            "personal-agent-api binds loopback only; public exposure is "
-            "Nginx's job (DEV-033)"
-        )
+    bind = resolve_bind(args.host, args.port, args.socket)
 
     user_id = os.environ.get("PERSONAL_AGENT_USER_ID", "").strip()
     if not user_id:
@@ -89,20 +132,27 @@ def main() -> None:
         ledger_url=ledger_url,
     )
     try:
-        asyncio.run(_serve(config, args))
+        asyncio.run(_serve(config, args, bind))
     except CompositionError as exc:
         raise SystemExit(str(exc)) from exc
 
 
-async def _serve(config: AgentServiceConfig, args) -> None:
+async def _serve(config: AgentServiceConfig, args, bind: BindTarget) -> None:
     async with agent_service(config) as composed:
-        server = uvicorn.Server(
-            uvicorn.Config(
+        if bind.uds is not None:
+            server_config = uvicorn.Config(
                 build_app(composed.deps),
-                host=args.host,
-                port=args.port,
+                uds=bind.uds,
                 log_level=args.log_level,
                 access_log=False,
             )
-        )
+        else:
+            server_config = uvicorn.Config(
+                build_app(composed.deps),
+                host=bind.host,
+                port=bind.port,
+                log_level=args.log_level,
+                access_log=False,
+            )
+        server = uvicorn.Server(server_config)
         await server.serve()
