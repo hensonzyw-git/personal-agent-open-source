@@ -25,7 +25,7 @@ from personal_data_mcp.finance.duplicate_check import (
     candidate_set_hash,
     dismiss,
     expire_stale,
-    find_exact_duplicates,
+    find_duplicates,
     intent_fingerprint,
     raise_check,
 )
@@ -83,11 +83,11 @@ def ledger_row(
     )
 
 
-# --- the match is exact, on final stored values ------------------------------
+# --- the match is on final stored values, with a normalized name -------------
 
 
 def test_an_identical_row_is_a_candidate() -> None:
-    assert len(find_exact_duplicates(LUNCH, [ledger_row()])) == 1
+    assert len(find_duplicates(LUNCH, [ledger_row()])) == 1
 
 
 def test_scope_does_not_decide_whether_to_prompt() -> None:
@@ -103,7 +103,7 @@ def test_scope_does_not_decide_whether_to_prompt() -> None:
         is_family_expense=True,
         category="餐饮",
     )
-    candidates = find_exact_duplicates(
+    candidates = find_duplicates(
         family_lunch, [ledger_row(is_family_expense=False)]
     )
     assert len(candidates) == 1
@@ -111,7 +111,7 @@ def test_scope_does_not_decide_whether_to_prompt() -> None:
 
 
 def test_candidate_card_carries_the_existing_family_scope() -> None:
-    candidates = find_exact_duplicates(
+    candidates = find_duplicates(
         LUNCH, [ledger_row(is_family_expense=True)]
     )
     assert candidates[0].card()["is_family_expense"] is True
@@ -121,29 +121,77 @@ def test_candidate_card_carries_the_existing_family_scope() -> None:
     "difference",
     [
         {"amount": "20.01"},
-        {"name": "午饭 "},
         {"category": "购物"},
         {"when": date(2026, 7, 22)},
     ],
 )
 def test_any_difference_in_the_key_is_not_a_duplicate(difference) -> None:
-    # No normalisation, no similarity, no amount ranges: a trailing space or a
-    # cent is a different entry, and guessing otherwise would suppress a real
-    # write.
-    assert find_exact_duplicates(LUNCH, [ledger_row(**difference)]) == ()
+    # No similarity, no amount ranges: a cent or a different day is a different
+    # entry, and guessing otherwise would suppress a real write. Only the name
+    # compares normalized (2026-08-01); these keys stay exact.
+    assert find_duplicates(LUNCH, [ledger_row(**difference)]) == ()
+
+
+# --- name drift the exact compare let through (2026-08-01) --------------------
+
+
+def entry_named(name: str) -> ExpenseEntry:
+    return ExpenseEntry(
+        name=name,
+        amount_cny=Decimal("120.00"),
+        occurred_on=DAY,
+        is_family_expense=True,
+        category="日常生活",
+    )
+
+
+def tennis_row(name: str) -> LedgerExpense:
+    return ledger_row(
+        name=name, amount="120.00", category="日常生活", record_id=f"row-{name}"
+    )
+
+
+def test_amount_digits_in_the_row_name_still_match() -> None:
+    # The 2026-08-01 production case: one message, two model turns, names
+    # `网球场` and `网球场 120`. The exact compare wrote both.
+    assert len(find_duplicates(entry_named("网球场"), [tennis_row("网球场 120")])) == 1
+    assert len(find_duplicates(entry_named("网球场 120"), [tennis_row("网球场")])) == 1
+
+
+def test_full_width_digits_normalize_the_same() -> None:
+    assert len(find_duplicates(entry_named("网球场"), [tennis_row("网球场 １２０")])) == 1
+
+
+def test_punctuation_orphaned_by_digit_removal_does_not_block_a_match() -> None:
+    assert len(find_duplicates(entry_named("饭团"), [tennis_row("7-11 饭团")])) == 1
+
+
+def test_trailing_whitespace_is_not_a_different_entry() -> None:
+    assert len(find_duplicates(LUNCH, [ledger_row(name="午饭 ")])) == 1
+
+
+def test_digit_only_names_fall_back_to_exact_text() -> None:
+    # `120` and `121` both normalise to empty; equating them would flag two
+    # unrelated entries, so empty falls back to the exact original.
+    assert find_duplicates(entry_named("120"), [tennis_row("121")]) == ()
+    assert len(find_duplicates(entry_named("120"), [tennis_row("120")])) == 1
+
+
+def test_names_differing_by_more_than_digits_still_do_not_match() -> None:
+    assert find_duplicates(entry_named("咖啡"), [tennis_row("咖啡 大杯")]) == ()
 
 
 def test_a_manually_created_row_counts_the_same() -> None:
     # The scan is of the whole ledger, not of what the Agent wrote, so a row
     # Henson typed into Feishu himself is a candidate like any other.
     rows = [ledger_row(record_id="manual-1")]
-    candidates = find_exact_duplicates(LUNCH, rows)
+    candidates = find_duplicates(LUNCH, rows)
     assert [c.record_id for c in candidates] == ["manual-1"]
 
 
 def test_several_candidates_are_all_reported() -> None:
     rows = [ledger_row(record_id="rec1"), ledger_row(record_id="rec2")]
-    assert len(find_exact_duplicates(LUNCH, rows)) == 2
+    assert len(find_duplicates(LUNCH, rows)) == 2
 
 
 def test_the_candidate_set_hash_ignores_order() -> None:
@@ -159,7 +207,7 @@ def raise_for(
     sessions, keyring, entry=LUNCH, rows=None, now=NOW, idempotency_key="idem-1"
 ):
     rows = rows if rows is not None else [ledger_row()]
-    candidates = find_exact_duplicates(entry, rows)
+    candidates = find_duplicates(entry, rows)
     with sessions() as session:
         finding = raise_check(
             session,
@@ -276,7 +324,7 @@ def test_a_changed_candidate_set_invalidates_the_override(
     finding, _ = raise_for(sessions, keyring)
     # Someone added another identical row in Feishu between the question and
     # the answer: Henson agreed about a different world.
-    moved = find_exact_duplicates(
+    moved = find_duplicates(
         LUNCH, [ledger_row(record_id="rec1"), ledger_row(record_id="rec2")]
     )
     with sessions() as session:

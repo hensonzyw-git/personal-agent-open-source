@@ -43,7 +43,7 @@ from personal_data_mcp.feishu.base_source import BaseSource
 from personal_data_mcp.finance.duplicate_check import (
     DuplicateFinding,
     authorise_override,
-    find_exact_duplicates,
+    find_duplicates,
     raise_check,
 )
 from personal_data_mcp.finance.ledger_reader import LedgerExpense
@@ -476,7 +476,7 @@ async def submit_expense(
         already_started = session.get(ToolExecution, idempotency_key) is not None
 
     if not already_started:
-        candidates = find_exact_duplicates(entry, ledger_rows)
+        candidates = find_duplicates(entry, ledger_rows)
         if duplicate_override is not None:
             with sessions() as session:
                 # Read-then-compare-and-swap: a concurrent release invalidates

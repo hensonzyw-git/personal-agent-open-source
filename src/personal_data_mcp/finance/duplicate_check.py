@@ -6,9 +6,10 @@ twice; it does not replace Host idempotency, the Feishu `client_token`, or
 unknown-commit recovery, and design 7.6 rule 8 forbids using it as a substitute
 during recovery -- it runs only before an execution first reaches `prepared`.
 
-The match is exact, on the values that will actually be stored (design 7.7):
-`occurred_on + amount_cny + name + category`. No normalisation, no similarity,
-no amount ranges. Family scope is shown with each candidate because it helps
+The match is on the values that will actually be stored (design 7.7):
+`occurred_on + amount_cny + category` exactly, and `name` by
+`normalize_name_for_match` (Henson's 2026-08-01 decision). No similarity, no
+amount ranges. Family scope is shown with each candidate because it helps
 Henson judge, but it is deliberately *not* part of the key: two entries that
 differ only by scope are still worth pausing over.
 
@@ -25,6 +26,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -86,6 +89,37 @@ class DuplicateRow(DuplicateIntent, Protocol):
     record_id: str
 
 
+_DIGIT_RUN: Final[re.Pattern[str]] = re.compile(r"[0-9]+")
+
+
+def normalize_name_for_match(name: str) -> str:
+    """The comparison-only form of a name (Henson's 2026-08-01 decision).
+
+    The model does not reliably keep the amount out of the item text: the
+    identical message `网球场 120 家庭支出` produced both `网球场` and
+    `网球场 120` on 2026-08-01, and an exact name compare let the same
+    real-world purchase through twice. Matching therefore folds full-width
+    digits to ASCII (NFKC), drops digit runs, and drops tokens left with no
+    letters or digits by that removal (`7-11 饭团` ≡ `饭团`).
+
+    The stored name is never touched. This form exists only for matching,
+    which finance.md's "internal normalized names may be used only for
+    matching/audit" explicitly allows; a false positive here costs Henson one
+    confirmation card, while a miss costs a duplicate row.
+    """
+    text = unicodedata.normalize("NFKC", name)
+    text = _DIGIT_RUN.sub(" ", text)
+    return " ".join(token for token in text.split() if any(c.isalnum() for c in token))
+
+
+def _name_matches(normalized_wanted: str, wanted_name: str, row_name: str) -> bool:
+    # A name that is nothing but digits normalises to empty; comparing two
+    # empties would equate unrelated entries, so fall back to exact text.
+    if not normalized_wanted:
+        return row_name == wanted_name
+    return normalize_name_for_match(row_name) == normalized_wanted
+
+
 def _family_scope(value: object) -> bool | None:
     scope = getattr(value, "is_family_expense", None)
     return scope if isinstance(scope, bool) else None
@@ -111,23 +145,26 @@ def intent_fingerprint(entry: DuplicateIntent) -> str:
     ).hexdigest()
 
 
-def find_exact_duplicates(
+def find_duplicates(
     entry: DuplicateIntent, rows: list[DuplicateRow]
 ) -> tuple[Candidate, ...]:
-    """Every ledger row that exactly matches what is about to be written.
+    """Every ledger row that matches what is about to be written.
 
-    Comparison is on final stored values only. `rows` comes from a full-year
-    scan, so rows Henson created by hand in Feishu are included -- checking only
-    what the Agent wrote would miss the most likely duplicate of all.
+    Amount, ledger day and category compare exactly, on final stored values;
+    the name compares through `normalize_name_for_match`. `rows` comes from a
+    full-year scan, so rows Henson created by hand in Feishu are included --
+    checking only what the Agent wrote would miss the most likely duplicate of
+    all.
     """
+    wanted = normalize_name_for_match(entry.name)
     matches = [
         row
         for row in rows
         if row.occurred_on == entry.occurred_on
         and row.amount_cny is not None
         and row.amount_cny == entry.amount_cny
-        and row.name == entry.name
         and row.category == entry.category
+        and _name_matches(wanted, entry.name, row.name)
     ]
     return tuple(
         Candidate(

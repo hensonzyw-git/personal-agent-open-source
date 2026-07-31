@@ -37,7 +37,7 @@ from personal_data_mcp.finance.expense_record import (
 from personal_data_mcp.finance.duplicate_check import (
     DuplicateFinding,
     authorise_override,
-    find_exact_duplicates,
+    find_duplicates,
     raise_check,
 )
 from personal_data_mcp.finance.income_policy import (
@@ -197,7 +197,7 @@ async def write_income(
 
     if not already_started:
         rows = await read_year_incomes(adapter, source=source, config=config)
-        candidates = find_exact_duplicates(duplicate_intent, rows)
+        candidates = find_duplicates(duplicate_intent, rows)
         if duplicate_override is not None:
             with sessions() as session:
                 # See `write_path`: read-then-CAS, so a lost snapshot retries

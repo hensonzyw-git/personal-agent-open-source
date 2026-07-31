@@ -203,6 +203,18 @@ def build_cases(today: str) -> list[Case]:
             expect=expect_clarification(),
         ),
         Case(
+            id="expense_name_excludes_amount",
+            text="网球场 120 家庭支出",
+            why="the amount lives only in amount_cny; name drift between repeats "
+            "defeated the duplicate gate in production (2026-08-01)",
+            expect=expect_tool(
+                "finance.log_expense",
+                input_amount="120",
+                is_family_expense=True,
+                name="网球场",
+            ),
+        ),
+        Case(
             id="expense_indirect_family",
             text="给家里买了个电饭煲 399",
             why="`给家里` with a purchase counts as family expense (Henson 2026-07-29)",
