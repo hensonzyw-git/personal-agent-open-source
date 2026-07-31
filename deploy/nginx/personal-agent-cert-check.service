@@ -1,0 +1,7 @@
+# DEV-033: daily certificate expiry alarm. See cert-expiry-check.sh.
+[Unit]
+Description=Personal Agent certificate expiry check
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/personal-agent/cert-expiry-check.sh

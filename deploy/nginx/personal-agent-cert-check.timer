@@ -1,0 +1,10 @@
+# DEV-033: daily certificate expiry alarm. See cert-expiry-check.sh.
+[Unit]
+Description=Daily Personal Agent certificate expiry check
+
+[Timer]
+OnCalendar=*-*-* 09:17:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

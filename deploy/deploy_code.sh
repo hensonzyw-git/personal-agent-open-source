@@ -20,6 +20,11 @@ ECS_SSH=(ssh -i ~/.ssh/personal_agent_example_key "$ECS_HOST")
 ECS_SCP=(scp -i ~/.ssh/personal_agent_example_key)
 REMOTE=/opt/personal-agent
 
+# PyPI is unreliable from a mainland ECS; default to the Aliyun mirror.
+# --require-hashes still pins the exact files uv.lock exported — the mirror
+# only changes where the bytes come from, not which bytes are accepted.
+: "${PIP_INDEX_URL:=https://mirrors.aliyun.com/pypi/simple/}"
+
 cd "$(dirname "$0")/.."
 
 rm -rf dist
@@ -36,6 +41,7 @@ echo "built $WHEEL and dist/requirements.txt"
 
 "${ECS_SSH[@]}" bash -s <<EOF
 set -euo pipefail
+export PIP_INDEX_URL="$PIP_INDEX_URL"
 cd $REMOTE
 if [ ! -x .venv/bin/python ]; then
   python3 -m venv .venv

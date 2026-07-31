@@ -1,6 +1,7 @@
 # DEV-032 — systemd service users and sandbox, rollout runbook
 
-> Status: assets built offline, **not yet applied to the ECS**.
+> Status: **applied to the ECS on 2026-07-31**; evidence in
+> `docs/evidence/DEV032_DEV033_部署验收_2026-07-31.md`.
 > Target: `deploy@192.0.2.10` (`ssh -i ~/.ssh/personal_agent_example_key`).
 > Acceptance (Phase1 拆解 Wave 5): 两用户不能互读 DB/secret；无 root；个人站无回归。
 > Design: `docs/Phase1技术方案_v0.1.md` §3.2 (deployment form) and §10.1–10.2
