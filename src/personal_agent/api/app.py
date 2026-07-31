@@ -99,6 +99,7 @@ from personal_agent.storage.models import (
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.sqlite import run_write_transaction
+from personal_agent_core.tool_ir import TOOL_CONTRACTS
 
 
 logger = logging.getLogger(__name__)
@@ -212,15 +213,21 @@ _STATUS_BY_CODE = {
 
 _MAX_JSON_BODY_BYTES = 64 * 1024
 
-# Only an explicitly enumerated governed write may project `safe_result` as an
-# external record id. Unknown and read-only tools fail toward `answer`, never
-# toward evidence that a write happened.
+# Only a governed write may project `safe_result` as an external record id.
+# Unknown and read-only tools fail toward `answer`, never toward evidence that a
+# write happened.
+#
+# Derived from the manifest's own risk level, never hand-listed. A hand-listed
+# set drifts silently: it held exactly the three *enabled* R2 tools while
+# `finance.log_expense_batch` was already R2 in the IR, so enabling that tool
+# would have sent a succeeded batch write down the `answer` branch below --
+# which `ChatWire.swift` then renders as a clean answer for a write it never
+# proved. `test_chat_receipt_vectors` compares this set to the cross-language
+# vector file, but both sides were hand-maintained, so they would have drifted
+# together and stayed green. Disabled tools are included deliberately: the risk
+# is precisely a tool being enabled later.
 _RECORD_ID_RESULT_TOOLS = frozenset(
-    {
-        "finance.log_expense",
-        "finance.log_income",
-        "finance.update_family_fund",
-    }
+    contract.name for contract in TOOL_CONTRACTS if contract.risk_level == "R2"
 )
 
 

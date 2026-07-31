@@ -229,8 +229,16 @@ public struct OperationReceipt: Sendable, Equatable {
     /// of them without a `record_id` fails closed instead of being displayed as a
     /// recorded expense. It mirrors the server's `_RECORD_ID_RESULT_TOOLS`; the
     /// client uses it only to *refuse*, never to grant.
+    ///
+    /// The server derives its set from the IR's `risk_level == "R2"`, so this
+    /// list carries every governed write the IR declares, including one that is
+    /// not enabled yet (`finance.log_expense_batch`). Listing a disabled tool
+    /// costs nothing — the client only ever refuses with it — while omitting it
+    /// would mean the day it ships, an unproven batch write renders as a clean
+    /// receipt. `chat_receipt_vectors.json` is what holds the two sides equal.
     public static let recordEvidenceTools: Set<String> = [
         "finance.log_expense",
+        "finance.log_expense_batch",
         "finance.log_income",
         "finance.update_family_fund",
     ]

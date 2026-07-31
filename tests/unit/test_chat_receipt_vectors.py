@@ -14,6 +14,10 @@ What each test here defends:
 - **the evidence tool set may not drift.** The client refuses to display a write
   for a governed tool that came back without a `record_id`; if the server adds a
   write tool the client does not know, that refusal turns into a *false* refusal.
+  Two checks, because comparing the server's set to the vector only proves two
+  hand-maintained lists agree: the set is also asserted to be exactly the IR's
+  `R2` tools, so a new governed write fails here before it can reach a client
+  that would render it as a clean answer.
 - **each case really is what the server emits.** The receipts are produced by the
   real projection here rather than typed out, so the Swift suite is asserting
   against the server's output and not against a fixture someone kept in step by
@@ -30,6 +34,7 @@ import pytest
 from personal_agent.api.app import _RECORD_ID_RESULT_TOOLS, _operation_projection
 from personal_agent.api.operation_state import is_terminal
 from personal_agent.storage.models import OPERATION_STATES, Operation
+from personal_agent_core.tool_ir import TOOL_CONTRACTS
 
 VECTORS_PATH = (
     Path(__file__).parents[2]
@@ -90,6 +95,24 @@ def test_every_operation_state_is_in_the_vector() -> None:
 
 def test_record_evidence_tools_match_the_server() -> None:
     assert V["record_evidence_tools"] == sorted(_RECORD_ID_RESULT_TOOLS)
+
+
+def test_the_evidence_set_is_derived_from_the_ir_not_hand_listed() -> None:
+    """Every R2 tool the IR declares, enabled or not.
+
+    The test above only proves two hand-maintained lists agree with each other,
+    which is what let them agree while both were wrong: the set held the three
+    *enabled* R2 tools while `finance.log_expense_batch` was already R2, so
+    enabling it would have projected a succeeded batch write as an `answer`.
+    This is the assertion that catches a future re-hand-listing, and it is
+    deliberately independent of `enabled` -- a tool becoming enabled must not be
+    the moment the client's refusal turns into a false receipt.
+    """
+
+    assert _RECORD_ID_RESULT_TOOLS == {
+        contract.name for contract in TOOL_CONTRACTS if contract.risk_level == "R2"
+    }
+    assert "finance.log_expense_batch" in _RECORD_ID_RESULT_TOOLS
 
 
 def test_manual_review_preserves_a_known_record_id() -> None:

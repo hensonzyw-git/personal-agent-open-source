@@ -16,6 +16,7 @@
   ],
   "record_evidence_tools": [
     "finance.log_expense",
+    "finance.log_expense_batch",
     "finance.log_income",
     "finance.update_family_fund"
   ],
