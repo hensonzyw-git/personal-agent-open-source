@@ -79,12 +79,13 @@ key rotation is a deliberate act.
 
 ### 4. Secrets: GLM, Feishu, user id (Mac → ECS)
 
-The local env files are mode 600 and **never printed**. Transfer and split
-without echoing:
+The local env files are mode 600 and **never printed**. Transfer with `-p` so
+the 0600 survives the copy (a plain scp would land them 0644), split without
+echoing, and shred the copies:
 
 ```sh
 # on the Mac
-scp -i ~/.ssh/personal_agent_example_key .env.local .env.finance.local \
+scp -p -i ~/.ssh/personal_agent_example_key .env.local .env.finance.local \
   config/ledger.synthetic_test.2026.json \
   deploy@192.0.2.10:/tmp/
 ```
@@ -92,14 +93,20 @@ scp -i ~/.ssh/personal_agent_example_key .env.local .env.finance.local \
 ```sh
 # on the ECS, as root
 grep '^ZAI_API_KEY='           /tmp/.env.local         >> /etc/personal-agent/api.env
-grep '^PERSONAL_AGENT_USER_ID=' /tmp/.env.local        >> /etc/personal-agent/api.env \
-  || echo 'PERSONAL_AGENT_USER_ID=<same value as local>' >> /etc/personal-agent/api.env
+grep '^PERSONAL_AGENT_USER_ID=' /tmp/.env.local        >> /etc/personal-agent/api.env || {
+  echo "PERSONAL_AGENT_USER_ID missing from .env.local — append the real value to api.env first" >&2
+  exit 1
+}
 grep '^PERSONAL_AGENT_LEDGER_URL=' /tmp/.env.local     >> /etc/personal-agent/api.env || true
 grep '^FEISHU_FINANCE_'        /tmp/.env.finance.local >> /etc/personal-agent/mcp.env
 install -m 0600 -o personal-data-mcp -g personal-data-mcp \
   /tmp/ledger.synthetic_test.2026.json /var/lib/personal-data-mcp/
 shred -u /tmp/.env.local /tmp/.env.finance.local /tmp/ledger.synthetic_test.2026.json
 ```
+
+No placeholder ever goes into an env file: a made-up `PERSONAL_AGENT_USER_ID`
+would pass the CLI's non-empty check and land in Finance's audit trail as a
+real identity.
 
 ### 5. Application code (Mac)
 
