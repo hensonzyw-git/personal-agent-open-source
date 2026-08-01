@@ -26,8 +26,17 @@ Usage (the operator supplies the credential; this file never reads `.env.local`)
     set -a && . ./.env.local && set +a
     uv run python scripts/glm_live_smoke.py --out docs/evidence/glm_smoke.json
 
-`--list` prints the cases and `--case ID` runs a subset. `--dry-run` runs the
-no-network checks only. Exit code is 0 only when every selected case passed.
+`--list` prints the cases and `--case ID` runs a subset. Exit code is 0 only
+when every selected case passed.
+
+`--dry-run` is the cheap self-check: it runs the endpoint pin and makes no
+network call, so it exits 0 having proved only that the credential cannot
+travel to an unpinned host. That is deliberately *not* a smoke pass, and the
+output and the saved report both say so rather than printing "0/0 cases
+passed". **Never wire `--dry-run` into a scheduled job as the smoke** — a timer
+that runs the cheap variant would report the model boundary as verified without
+one model call, which is the shape `CLAUDE.md` §5.1 exists to prevent. If a
+scheduled job needs a real signal, it runs the cases.
 """
 
 from __future__ import annotations
@@ -740,7 +749,18 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"         - {problem}")
 
     failed = [outcome for outcome in outcomes if not outcome.passed]
-    print(f"\n{len(outcomes) - len(failed)}/{len(outcomes)} cases passed")
+    if args.dry_run:
+        # Never "0/0 cases passed". That reads as a pass, and what it would be
+        # claiming is the one thing this run did not do: the pinning check
+        # proves the credential cannot travel to an unpinned host, and proves
+        # nothing whatsoever about how the model behaves on the 17 failure
+        # shapes. Say which question was answered and which was not.
+        print(
+            f"\nendpoint pinning OK. NOT a smoke pass: 0 of {len(cases)} model "
+            "cases ran (--dry-run made no model call)."
+        )
+    else:
+        print(f"\n{len(outcomes) - len(failed)}/{len(outcomes)} cases passed")
 
     if args.out:
         report = {
@@ -750,6 +770,13 @@ def main(argv: list[str] | None = None) -> int:
             "model": os.environ.get("GLM_MODEL", "glm-5.2"),
             "catalog": list(COMPOSED_ALIASES),
             "endpoint_pinning_refused_tampered_host": pinned,
+            # The same statement the console makes, in the artifact. A saved
+            # `--dry-run` report is otherwise a file with a passing pin, a model
+            # name and an empty `cases` list -- which is exactly what a reader
+            # skimming for evidence would mistake for a clean smoke.
+            "dry_run": args.dry_run,
+            "model_cases_run": len(outcomes),
+            "model_cases_selected": len(cases),
             "cases": [
                 {
                     "id": outcome.case_id,
