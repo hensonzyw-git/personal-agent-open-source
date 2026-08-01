@@ -192,12 +192,37 @@ async def reconcile_write(
                 f"{idempotency_key} belongs to an unsupported tool"
             )
 
-    require_validated_source(
-        config=config,
-        validation=validation,
-        source=source,
-        operation="write recovery",
-    )
+    try:
+        require_validated_source(
+            config=config,
+            validation=validation,
+            source=source,
+            operation="write recovery",
+        )
+    except AppError as error:
+        # Recovery is the one path nobody watches. A drift here does not go
+        # unnoticed -- executions stop reaching a terminal state and DEV-034's
+        # `execution_stuck` warning fires within the hour -- but "something is
+        # stuck" sends the reader to the reconciler, while this event sends them
+        # to the Feishu Base, which is where the change actually happened. So
+        # this is a *diagnosis* improvement on an already-detected condition,
+        # not new detection, and it must not be mistaken for the primary guard:
+        # `require_validated_source` still refuses, unchanged, on all six of its
+        # call sites.
+        if error.code is ErrorCode.SOURCE_SCHEMA_CHANGED:
+            with sessions() as session:
+                _audit(
+                    session,
+                    trace_id=trace_id,
+                    event_type="schema_drift_blocked_recovery",
+                    summary=(
+                        "write recovery refused: ledger schema or source no "
+                        "longer matches the validated config"
+                    ),
+                    now=now(),
+                )
+                session.commit()
+        raise
 
     resource_lock_key: str | None = None
     resource_lock_owner: str | None = None

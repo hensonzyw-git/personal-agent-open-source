@@ -354,3 +354,60 @@ def test_a_report_never_prints_anything_but_vocabulary(database, capsys) -> None
     output = capsys.readouterr()
     assert "recSECRET123456" not in output.out
     assert "recSECRET123456" not in output.err
+
+
+# --- schema drift on the one path nobody watches ------------------------------
+
+
+def test_a_drift_that_blocked_recovery_is_critical_and_names_where_to_look(
+    database,
+) -> None:
+    """Diagnosis, not detection.
+
+    A drift that blocks recovery already surfaces as `execution_stuck` within
+    the hour, because executions stop reaching a terminal state. This finding
+    exists because "something is stuck" points at the reconciler while the
+    change actually happened in the Feishu Base, and the difference is an hour
+    of looking in the wrong place.
+    """
+    factory, engine = sessions_for(database)
+    try:
+        with factory() as session:
+            append_audit_event(
+                session,
+                event_id="d1",
+                trace_id="t1",
+                event_type="schema_drift_blocked_recovery",
+                redacted_summary="write recovery refused",
+                now=utc_now(),
+            )
+            session.commit()
+    finally:
+        engine.dispose()
+
+    findings = evaluate(facts_for(database))
+    assert "schema_drift_blocked_recovery" in codes(findings)
+    assert worst_severity(findings) == "critical"
+    detail = next(
+        f.detail for f in findings if f.code == "schema_drift_blocked_recovery"
+    )
+    assert "Feishu Base" in detail, "the finding must say where to look"
+
+
+def test_ordinary_audit_events_are_not_counted_as_drift(database) -> None:
+    # The count is a filtered query, not "audit events that are not writes".
+    factory, engine = sessions_for(database)
+    try:
+        with factory() as session:
+            append_audit_event(
+                session,
+                event_id="w1",
+                trace_id="t1",
+                event_type="write_succeeded",
+                redacted_summary="ok",
+                now=utc_now(),
+            )
+            session.commit()
+    finally:
+        engine.dispose()
+    assert "schema_drift_blocked_recovery" not in codes(evaluate(facts_for(database)))

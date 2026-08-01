@@ -93,6 +93,7 @@ class DerivedFacts:
     stuck_executions: int = 0
     broken_audit_events: int = 0
     audit_event_count: int = 0
+    schema_drift_events: int = 0
     wal_bytes: dict[str, int] = field(default_factory=dict)
     disk_free_bytes: int | None = None
     disk_total_bytes: int | None = None
@@ -103,6 +104,7 @@ class DerivedFacts:
             "stuck_executions": self.stuck_executions,
             "broken_audit_events": self.broken_audit_events,
             "audit_event_count": self.audit_event_count,
+            "schema_drift_events": self.schema_drift_events,
             "wal_bytes": dict(sorted(self.wal_bytes.items())),
             "disk_free_bytes": self.disk_free_bytes,
             "disk_total_bytes": self.disk_total_bytes,
@@ -169,6 +171,7 @@ def collect(
     stuck = 0
     broken = 0
     audit_total = 0
+    drift = 0
     if finance_session is not None:
         states = execution_state_counts(finance_session)
         stuck = stuck_execution_count(finance_session, now=now)
@@ -178,12 +181,20 @@ def collect(
                 select(func.count()).select_from(AuditEvent)
             ).scalar_one()
         )
+        drift = int(
+            finance_session.execute(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.event_type == "schema_drift_blocked_recovery")
+            ).scalar_one()
+        )
     free, total = disk_free(disk_path)
     return DerivedFacts(
         execution_states=states,
         stuck_executions=stuck,
         broken_audit_events=broken,
         audit_event_count=audit_total,
+        schema_drift_events=drift,
         wal_bytes={name: wal_size_bytes(path) for name, path in databases.items()},
         disk_free_bytes=free,
         disk_total_bytes=total,
@@ -228,6 +239,17 @@ def evaluate(facts: DerivedFacts) -> list[Finding]:
                 "critical",
                 f"{facts.broken_audit_events} audit event(s) no longer match "
                 "the chain: the trail has been altered or truncated",
+            )
+        )
+
+    if facts.schema_drift_events:
+        findings.append(
+            Finding(
+                "schema_drift_blocked_recovery",
+                "critical",
+                f"{facts.schema_drift_events} recovery attempt(s) refused "
+                "because the ledger schema or source no longer matches the "
+                "validated config: look at the Feishu Base, not the reconciler",
             )
         )
 

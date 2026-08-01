@@ -41,7 +41,11 @@ from personal_data_mcp.storage.engine import (
     session_factory,
 )
 from personal_data_mcp.storage.execution_store import acquire_recovery_lease
-from personal_data_mcp.storage.models import ExternalReceipt, ToolExecution
+from personal_data_mcp.storage.models import (
+    AuditEvent,
+    ExternalReceipt,
+    ToolExecution,
+)
 
 
 LEDGER_FIXTURES = Path(__file__).parents[1] / "fixtures" / "ledger"
@@ -465,6 +469,19 @@ def test_recovery_refuses_a_source_not_bound_to_the_validated_config(
         run(scenario())
     assert caught.value.code is ErrorCode.SOURCE_SCHEMA_CHANGED
     assert fake.row_count == 0
+
+    # DEV-034: the refusal must also leave a durable trace, because recovery is
+    # the one path nobody watches. Asserting it here rather than only in the
+    # observability tests is the point -- those write the audit row by hand, so
+    # they prove the *rule* reads it and prove nothing about whether anything
+    # emits it. This drives the real `reconcile_write`.
+    with sessions() as session:
+        drift_events = [
+            event.event_type
+            for event in session.query(AuditEvent)
+            if event.event_type == "schema_drift_blocked_recovery"
+        ]
+    assert drift_events == ["schema_drift_blocked_recovery"]
 
 
 def test_income_unknown_commit_recovers_against_the_income_contract(
