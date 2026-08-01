@@ -14,7 +14,7 @@
 | user `personal-agent-api` | — | nologin | runs the Client API |
 | user `personal-data-mcp` | — | nologin | runs the Finance MCP |
 | `/var/lib/personal-agent-api` | api:api | 0700 | `agent.sqlite` |
-| `/var/lib/personal-agent-api/*` | api:**www-data** | 0600 | files inherit the unit's `Group=`; `UMask=0077` is what closes them |
+| `/var/lib/personal-agent-api/*` | api:api or api:**www-data** | 0600 | `-wal`/`-shm` take the unit's `Group=`; see the chmod note under Upgrades |
 | `/var/lib/personal-data-mcp` | mcp:mcp | 0700 | `finance.sqlite`, ledger config |
 | `/var/lib/personal-data-mcp/*` | mcp:mcp | 0600 | |
 | `/etc/personal-agent/api.env` | root:api | 0640 | API environment (incl. GLM key) |
@@ -214,19 +214,38 @@ restart. Every revision has a working `downgrade`.
 Unit changes need `systemctl daemon-reload` before the restart — re-running
 `deploy/install.sh` does both the reinstall and the reload.
 
-**One-time, on the first rollout that carries the `UMask=0077` API unit.** The
-unit shipped with `UMask=0007` until 2026-08-01, and `Group=www-data` (which the
-socket needs) means the API's own files are group `www-data`; those two together
-left `agent.sqlite` at 0660, i.e. readable and writable by Nginx. The new umask
-only applies to files created *after* the restart, so the existing ones must be
-fixed once, as root on the ECS:
+**One-time, on the first rollout that carries the `UMask=0077` API unit.** Both
+databases were found at **0644** on 2026-08-01 — world-readable, and
+`agent.sqlite-wal` / `-shm` additionally group `www-data`, the one
+network-facing process on this box. Only the 0700 directories were keeping
+anyone out.
+
+A umask alone would not have produced 0644 and cannot fix it either, for two
+reasons worth writing down, because both defeat the obvious reasoning:
+
+- **SQLite copies the main database's mode onto `-wal` and `-shm`.** It does not
+  let the umask decide them. So the API's `UMask=0007` never applied to those
+  files; they inherited 0644 from `agent.sqlite`, which the migration step had
+  created under `sudo`'s 022. This is also why `personal-data-mcp` shows 0644
+  despite having shipped `UMask=0077` from the start — the umask was never the
+  operative rule.
+- **A umask only shapes files created after it takes effect.** Existing ones are
+  untouched by any unit change.
+
+So the units carry `UMask=0077` for anything created fresh later (a restore, a
+rebuilt database), and the existing files need a one-time chmod, as root, on
+**both** services:
 
 ```sh
-chmod 0600 /var/lib/personal-agent-api/*
+chmod 0600 /var/lib/personal-agent-api/* /var/lib/personal-data-mcp/*
 ```
 
-`verify.sh` now asserts this, so a missed run shows up as a `FAIL` rather than
-as nothing at all.
+Do it while the services are stopped, or restart them after: SQLite keeps the
+`-wal` and `-shm` open, and the next checkpoint recreates them from the main
+database's mode — which is exactly the mechanism that makes the fix stick.
+
+`verify.sh` now asserts every file in both directories, so a missed run shows up
+as a `FAIL` rather than as nothing at all.
 
 ## Operator commands on the ECS (devices, review)
 
