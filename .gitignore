@@ -24,6 +24,12 @@ __pycache__/
 # straight at the repo.
 *.p8
 secrets/
+# The off-machine key copies deliberately live OUTSIDE this repo, in
+# ~/.personal-agent/secrets/ -- see docs/密钥清单_v0.1.md. `secrets/` stays
+# ignored anyway, because a key that lands here even briefly must never be
+# committable: the application data keys cannot be reissued (rotating one does
+# not make already-sealed rows readable again), and publishing one would also
+# publish what opens every backup sitting in OSS.
 
 # Protected server-side ledger configuration. It carries Base, table and field
 # identifiers, which are sensitive though not secret; only the redacted report

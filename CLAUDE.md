@@ -319,9 +319,17 @@ conflict instead of silently choosing an old default.
   hard-coded `0600`, which let the backup user list every staged file and open
   none, and a ledger config read straight from a `0700` live data dir. `verify.sh`
   had missed both by asserting `ls` on a directory instead of a read of a file.
-  Still outstanding: the Mac off-machine restore drill (the **G5 precondition
-  gate** — real personal ledger credentials do not land until it passes). Today
-  proves the backup writes out, not that the data restores back. The
+  **The Mac off-machine restore drill passed the same day**
+  (`docs/evidence/DEV035_异机恢复演练_2026-08-01.md`): snapshot `c502e4b4`
+  restored on a machine sharing no storage with the ECS, seven checks including
+  the fixed-sample AEAD decrypt under the off-machine key ring and both restored
+  databases booting their own service read-only. **DEV-035 is complete and the
+  G5 precondition gate is passed.** Two gaps had to be closed first, both again
+  code that had never run: the data keys had never left the ECS at all (only the
+  restic key had an off-machine copy, so a lost ECS meant readable files and
+  unreadable columns — custody now tracked in `docs/密钥清单_v0.1.md`), and the
+  drill's own step 7 started only the API, which fails closed when it cannot
+  discover the Finance MCP, so it could never have passed anywhere. The
   ECS clock was checked and is correct
   (`docs/evidence/DEV035_ECS时钟核对_2026-08-01.md`). DEV-036 follows DEV-035.
   APNs inputs are complete but sender/device-registration code is not built,
