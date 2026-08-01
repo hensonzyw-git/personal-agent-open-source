@@ -1,0 +1,35 @@
+# DEV-035: snapshot the Finance MCP database (Online Backup API) into staging.
+#
+# Runs as the Finance service user against its own 0700 data dir. The backup
+# user cannot read the live DB, so the service produces the snapshot itself.
+[Unit]
+Description=Personal Data MCP DB snapshot for offsite backup
+After=personal-data-mcp.service
+
+[Service]
+Type=oneshot
+User=personal-data-mcp
+Group=personal-data-mcp
+UMask=0077
+ExecStart=/opt/personal-agent/.venv/bin/personal-data-mcp-db \
+    --database /var/lib/personal-data-mcp/finance.sqlite \
+    backup --out /var/backups/personal-agent/mcp/finance.latest.sqlite
+TimeoutStartSec=300s
+
+ReadWritePaths=/var/backups/personal-agent/mcp
+ReadOnlyPaths=/var/lib/personal-data-mcp
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

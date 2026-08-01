@@ -303,13 +303,22 @@ conflict instead of silently choosing an old default.
   remediation (Finance recovery lifecycle, audit-tail witness, alert recovery
   semantics and reproducible timer enablement) is deployed to the ECS and
   verified, migration `0003` included
-  (`docs/evidence/DEV034修复部署与DEV035输入就绪_2026-08-01.md`). Next is
-  DEV-035, whose two external inputs (a private versioned OSS bucket behind a
-  single-bucket RAM user, and a restic key separate from the data key with an
-  off-machine copy) landed and were exercised on 2026-08-01, so it is build work
-  with no blocker; DEV-036 follows DEV-035. APNs inputs are complete but
-  sender/device-registration code is not built, and 打开飞书账本 stays
-  unexercised because `PERSONAL_AGENT_LEDGER_URL` is unset on the ECS.
+  (`docs/evidence/DEV034修复部署与DEV035输入就绪_2026-08-01.md`). DEV-035's
+  two external inputs (a private versioned OSS bucket behind a single-bucket
+  RAM user, and a restic key separate from the data key with an off-machine
+  copy) landed and were exercised on 2026-08-01, and its code is built: the
+  `online_backup` primitive, both `*-db backup` CLIs, the deletion-manifest
+  export/replay, the restore-verify library, `deploy/backup.sh` + three systemd
+  timer/service pairs behind a least-privilege `personal-agent-backup` user,
+  and `scripts/restore_drill.sh`. The offline suite passes (1660 tests, +26).
+  Still outstanding: the ECS deploy of these units, a real `restic backup`
+  against OSS, and the Mac off-machine restore drill (the **G5 precondition
+  gate** — real personal ledger credentials do not land until it passes). The
+  ECS clock was checked and is correct
+  (`docs/evidence/DEV035_ECS时钟核对_2026-08-01.md`). DEV-036 follows DEV-035.
+  APNs inputs are complete but sender/device-registration code is not built,
+  and 打开飞书账本 stays unexercised because `PERSONAL_AGENT_LEDGER_URL` is
+  unset on the ECS.
 - `ECS安全加固实施记录_2026-07-23.md` — security, encryption, snapshot, and
   rollback record.
 - `docs/iOS开发环境_Personal_Team_v0.1.md` — Personal Team constraints, the iOS

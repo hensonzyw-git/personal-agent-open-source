@@ -204,6 +204,55 @@ else
   fail "api /v1/capabilities over UDS -> $API_CODE, want 401"
 fi
 
+echo "== DEV-035 backup isolation and units =="
+BACKUP_USER=personal-agent-backup
+# The backup user is in both service groups so it can READ staged snapshots, but
+# it must NOT be able to read the live data dirs (0700 owner-only) -- group
+# membership on the staging dir is not group membership on the live dir.
+expect_isolated "the live api database dir" "$API_USER" "$BACKUP_USER" \
+  ls /var/lib/personal-agent-api
+expect_isolated "the live mcp database dir" "$MCP_USER" "$BACKUP_USER" \
+  ls /var/lib/personal-data-mcp
+# Positive control: the backup user CAN read the staging dirs (so the refusal
+# above is isolation, not absence of the path).
+expect_success "backup user can read api staging dir" \
+  sudo -u "$BACKUP_USER" ls /var/backups/personal-agent/api
+expect_success "backup user can read mcp staging dir" \
+  sudo -u "$BACKUP_USER" ls /var/backups/personal-agent/mcp
+# Staging dirs: 0770, owned by the service user, group backup, no 'other'.
+for pair in "$API_USER:api" "$MCP_USER:mcp"; do
+  owner="${pair%%:*}"; sub="${pair##*:}"
+  d=/var/backups/personal-agent/$sub
+  m="$(stat -c %a "$d")"; while [ "${#m}" -lt 3 ]; do m="0$m"; done
+  if [ "$(stat -c %U "$d")" = "$owner" ] && [ "$(stat -c %G "$d")" = "$BACKUP_USER" ] \
+     && [ "${m: -1}" = "0" ]; then
+    pass "staging dir $d is $owner:$BACKUP_USER/$m"
+  else
+    fail "staging dir $d is $(stat -c %U:%G "$d")/$m, want $owner:$BACKUP_USER with no 'other'"
+  fi
+done
+expect_success "personal-agent-backup.timer enabled" \
+  systemctl is-enabled --quiet personal-agent-backup.timer
+expect_success "personal-agent-db-backup.timer enabled" \
+  systemctl is-enabled --quiet personal-agent-db-backup.timer
+expect_success "personal-data-mcp-db-backup.timer enabled" \
+  systemctl is-enabled --quiet personal-data-mcp-db-backup.timer
+# restic.env is root:backup 0640 so the backup user can read OSS creds, but the
+# repo PASSWORD file is root-only (the off-machine key is the real secret).
+if [ -f /etc/personal-agent/restic.env ]; then
+  re_mode="$(stat -c %a /etc/personal-agent/restic.env)"; while [ "${#re_mode}" -lt 3 ]; do re_mode="0$re_mode"; done
+  if [ "$(stat -c %G /etc/personal-agent/restic.env)" = "$BACKUP_USER" ] \
+     && [ "${re_mode: -1}" = "0" ]; then
+    pass "restic.env is root:$BACKUP_USER/$re_mode"
+  else
+    fail "restic.env is root:$(stat -c %G /etc/personal-agent/restic.env)/$re_mode, want root:$BACKUP_USER with no 'other'"
+  fi
+  expect_refused "api user cannot read restic.env" \
+    sudo -u "$API_USER" head -c 1 /etc/personal-agent/restic.env
+  expect_refused "mcp user cannot read restic.env" \
+    sudo -u "$MCP_USER" head -c 1 /etc/personal-agent/restic.env
+fi
+
 echo "== operator cli =="
 # The wrapper is the only honest path to the database for an operator. sudo
 # hands the service user a bare PATH, so a wrapper that forgets the venv makes

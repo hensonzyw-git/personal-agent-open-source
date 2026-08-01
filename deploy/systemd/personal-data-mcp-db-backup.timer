@@ -1,0 +1,10 @@
+# DEV-035: Finance MCP DB snapshot daily. See personal-agent-db-backup.timer.
+[Unit]
+Description=Personal Data MCP DB snapshot daily
+
+[Timer]
+OnCalendar=*-*-* 16:03:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

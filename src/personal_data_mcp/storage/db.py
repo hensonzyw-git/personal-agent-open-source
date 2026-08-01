@@ -11,6 +11,7 @@ readable recovery path for the previous version before any forward-only change.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from alembic import command
@@ -21,6 +22,27 @@ from personal_data_mcp.storage.engine import check_integrity, create_database_en
 
 
 MIGRATIONS_PATH = Path(__file__).parent / "migrations"
+
+
+def _backup(database: Path, out: Path) -> int:
+    """Produce one consistent SQLite snapshot of the Finance MCP database.
+
+    Runs as the Finance service user against its own 0700 data directory, so
+    the backup process never reads a secret or crosses a service boundary.
+    Exit codes: 1 = snapshot failed integrity, 2 = source could not be opened.
+    """
+    from personal_agent_core.sqlite import BackupError, BackupUnavailableError, online_backup
+
+    try:
+        online_backup(database, out)
+    except BackupUnavailableError as exc:
+        print(f"backup unavailable: {exc}", file=sys.stderr)
+        return 2
+    except BackupError as exc:
+        print(f"backup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"backed up {database} -> {out}")
+    return 0
 
 
 def alembic_config(engine: Engine) -> Config:
@@ -56,8 +78,25 @@ def main() -> None:
     upgrade_parser.add_argument("revision", nargs="?", default="head")
     downgrade_parser = subparsers.add_parser("downgrade")
     downgrade_parser.add_argument("revision")
+    backup_parser = subparsers.add_parser(
+        "backup",
+        description=(
+            "Produce one consistent SQLite snapshot (Online Backup API) of the "
+            "Finance MCP database for offsite backup. Does not run migrations."
+        ),
+    )
+    backup_parser.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="destination snapshot path; written atomically at mode 0600",
+    )
 
     args = parser.parse_args()
+
+    if args.action == "backup":
+        raise SystemExit(_backup(args.database, args.out))
+
     engine = create_database_engine(args.database)
 
     if args.database.exists():

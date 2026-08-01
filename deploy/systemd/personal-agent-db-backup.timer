@@ -1,0 +1,15 @@
+# DEV-035: snapshot both service databases daily, ahead of the offsite backup.
+#
+# Both db-backup timers fire at the same minute; the backup unit Requires them
+# and runs after, but the backup script also fails closed on a missing staged
+# snapshot, because timer ordering alone is not the guarantee.
+# 16:03 Asia/Shanghai: off the :00 mark, and before the 16:07 backup window.
+[Unit]
+Description=Personal Agent API DB snapshot daily
+
+[Timer]
+OnCalendar=*-*-* 16:03:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

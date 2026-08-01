@@ -1,0 +1,191 @@
+"""`DEV-035`: the deletion-manifest export and replay.
+
+The ``deletion_manifest`` table exists so a restore can re-apply the user's
+deletions and deleted data does not silently come back from an older backup
+(technical design 10.5: "恢复 live DB 后、开放读取前必须重放"). Until this
+module there was a table and a sealed column but no code that exported or
+replayed it, so the property was aspirational.
+
+Two halves:
+
+- :func:`export_manifest` reads every manifest row out of the live Agent
+  database and returns them as plain dicts. The object id stays sealed: a
+  manifest that named conversations in plaintext would leak exactly what the
+  user asked to remove. The export only transports the sealed envelope, the
+  type, the entry id and the timestamps. This is what gets its own small
+  encrypted copy inside the restic repository, separate from the DB snapshot,
+  so a restore that replays it is not depending on the snapshot's own copy of
+  the table.
+
+- :func:`replay_manifest` is run after a restore, before reads open. For each
+  entry it opens the sealed id under the data key (AAD-bound to
+  ``deletion_manifest.encrypted_object_id`` for that ``entry_id``) and applies
+  the deletion the ``object_type`` names. An unknown type fails closed: a
+  future type the replay code has not been taught must not be skipped, or a
+  deletion would quietly come back.
+
+The vocabulary is deliberately small and explicit. Phase 1 has no business
+path that *writes* to the manifest yet; this module delivers the restore half
+and the contract, and the first writer (conversation deletion) will add its
+type here. An ``object_type`` is only legal if it appears in
+:data:`REPLAY_HANDLERS`; anything else is a refusal.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable, Mapping
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
+
+from personal_agent_core.crypto import DecryptionError, KeyRing
+from personal_agent.storage.models import (
+    Conversation,
+    ConversationAlias,
+    ConversationEvent,
+    ContextSession,
+    DeletionManifest,
+)
+
+
+#: The table and column the sealed object id is bound to. The AAD must match
+#: what sealed it, or decryption fails closed -- this is the binding that makes
+#: a manifest entry copied into another table, or replayed against a different
+#: row, refuse rather than open.
+MANIFEST_TABLE = "deletion_manifest"
+MANIFEST_COLUMN = "encrypted_object_id"
+
+
+def export_manifest(session: Session) -> list[dict[str, Any]]:
+    """Read the full deletion manifest as sealed, transportable dicts.
+
+    Returns one dict per row with the entry id, object type, the sealed
+    envelope (untouched), and the timestamps. No object id is decrypted here:
+    the export is meant to live in its own encrypted copy inside the backup,
+    and decrypting at export time would put a plaintext id into a file that
+    outlives the live database.
+    """
+    rows = session.execute(select(DeletionManifest)).scalars().all()
+    return [
+        {
+            "entry_id": row.entry_id,
+            "object_type": row.object_type,
+            "encrypted_object_id": row.encrypted_object_id,
+            "deleted_at": row.deleted_at.isoformat() if row.deleted_at else None,
+            "backup_expiry_after": row.backup_expiry_after.isoformat()
+            if row.backup_expiry_after
+            else None,
+        }
+        for row in rows
+    ]
+
+
+def _delete_conversation(session: Session, object_id: str) -> int:
+    """Delete one conversation and its events/sessions.
+
+    Child rows are deleted explicitly rather than relying on the foreign-key
+    ``ON DELETE CASCADE``: that cascade only fires when ``PRAGMA foreign_keys``
+    is on for the connection, and a restored database opened through a plain
+    ``sqlite3`` connection (as a restore drill might) has it off by default.
+    Deleting the children in the same transaction is correct with or without
+    the pragma, and a replay must not depend on a connection setting that is
+    easy to forget on a fresh box.
+
+    Returns the number of conversation rows removed, so a replay can tell a
+    successful delete from an id that was already absent (a re-replay, or a
+    deletion the snapshot had already absorbed).
+    """
+    session.execute(
+        delete(ConversationEvent).where(ConversationEvent.conversation_id == object_id)
+    )
+    session.execute(
+        delete(ContextSession).where(ContextSession.conversation_id == object_id)
+    )
+    session.execute(
+        delete(ConversationAlias).where(ConversationAlias.conversation_id == object_id)
+    )
+    result = session.execute(
+        delete(Conversation).where(Conversation.conversation_id == object_id)
+    )
+    return result.rowcount or 0
+
+
+def _delete_conversation_event(session: Session, object_id: str) -> int:
+    result = session.execute(
+        delete(ConversationEvent).where(ConversationEvent.event_id == object_id)
+    )
+    return result.rowcount or 0
+
+
+#: The closed vocabulary of deletions a restore can replay. A type not here is
+#: a future deletion kind the replay has not been taught; failing closed on it
+#: is the property that keeps an unhandled deletion from coming back.
+REPLAY_HANDLERS: dict[str, Callable[[Session, str], int]] = {
+    "conversation": _delete_conversation,
+    "conversation_event": _delete_conversation_event,
+}
+
+
+class ManifestReplayError(RuntimeError):
+    """A manifest entry could not be replayed.
+
+    Replay runs after a restore and before reads open; any failure here must
+    stop the restore rather than let a deletion silently fail, so this is
+    raised, not logged-and-skipped.
+    """
+
+
+def replay_manifest(
+    session: Session,
+    entries: Iterable[Mapping[str, Any]],
+    keyring: KeyRing,
+) -> dict[str, Any]:
+    """Apply each manifest entry's deletion to the restored database.
+
+    For every entry the sealed object id is opened under ``keyring`` (AAD-bound
+    to this manifest table/column/entry_id) and the matching
+    :data:`REPLAY_HANDLERS` deletion runs. Unknown object types and decryption
+    failures raise :class:`ManifestReplayError` rather than skip -- a skipped
+    entry is a deletion that comes back.
+
+    Returns a count summary. The session is committed only if every entry
+    replayed without error; a failure leaves the transaction for the caller to
+    roll back.
+    """
+    applied = 0
+    already_absent = 0
+    for entry in entries:
+        object_type = entry.get("object_type")
+        handler = REPLAY_HANDLERS.get(object_type) if isinstance(object_type, str) else None
+        if handler is None:
+            raise ManifestReplayError(
+                f"unknown object_type {object_type!r} in manifest entry "
+                f"{entry.get('entry_id')!r}; refusing to skip a deletion"
+            )
+        envelope = entry.get("encrypted_object_id")
+        entry_id = entry.get("entry_id")
+        if not isinstance(envelope, Mapping):
+            raise ManifestReplayError(
+                f"manifest entry {entry_id!r} has no sealed object id"
+            )
+        try:
+            plaintext = keyring.decrypt(
+                dict(envelope),
+                table=MANIFEST_TABLE,
+                column=MANIFEST_COLUMN,
+                row_id=str(entry_id),
+            )
+        except DecryptionError as exc:
+            raise ManifestReplayError(
+                f"could not open sealed object id for entry {entry_id!r}: {exc}"
+            ) from exc
+        object_id = plaintext.decode("utf-8")
+        removed = handler(session, object_id)
+        if removed:
+            applied += 1
+        else:
+            already_absent += 1
+    session.commit()
+    return {"applied": applied, "already_absent": already_absent}

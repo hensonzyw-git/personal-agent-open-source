@@ -11,6 +11,7 @@ readable recovery path for the previous version before any forward-only change.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from alembic import command
@@ -21,6 +22,32 @@ from personal_agent.storage.engine import check_integrity, create_database_engin
 
 
 MIGRATIONS_PATH = Path(__file__).parent / "migrations"
+
+
+def _backup(database: Path, out: Path) -> int:
+    """Produce one consistent SQLite snapshot of the Agent API database.
+
+    Runs as the Agent service user against its own 0700 data directory, so the
+    backup process never needs to read a secret or cross a service boundary.
+    The snapshot lands in a staging directory restic's backup user can read.
+
+    Exit codes follow the observe_cli contract: 1 for a snapshot that failed
+    integrity, 2 for a source that could not be opened at all. ``2`` is
+    separate from ``1`` so a missing or locked database is not mis-read as a
+    corrupt one -- they need different operators' attention.
+    """
+    from personal_agent_core.sqlite import BackupError, BackupUnavailableError, online_backup
+
+    try:
+        online_backup(database, out)
+    except BackupUnavailableError as exc:
+        print(f"backup unavailable: {exc}", file=sys.stderr)
+        return 2
+    except BackupError as exc:
+        print(f"backup failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"backed up {database} -> {out}")
+    return 0
 
 
 def alembic_config(
@@ -84,8 +111,25 @@ def main() -> None:
     upgrade_parser.add_argument("revision", nargs="?", default="head")
     downgrade_parser = subparsers.add_parser("downgrade")
     downgrade_parser.add_argument("revision")
+    backup_parser = subparsers.add_parser(
+        "backup",
+        description=(
+            "Produce one consistent SQLite snapshot (Online Backup API) of the "
+            "Agent API database for offsite backup. Does not run migrations."
+        ),
+    )
+    backup_parser.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="destination snapshot path; written atomically at mode 0600",
+    )
 
     args = parser.parse_args()
+
+    if args.action == "backup":
+        raise SystemExit(_backup(args.database, args.out))
+
     engine = create_database_engine(args.database)
 
     if args.database.exists():

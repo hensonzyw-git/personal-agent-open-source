@@ -255,6 +255,134 @@ def check_integrity(engine: Engine) -> None:
         )
 
 
+class BackupError(RuntimeError):
+    """An online backup could not be produced or did not verify."""
+
+
+class BackupUnavailableError(BackupError):
+    """The source database could not be opened or read at all.
+
+    Distinct from :class:`BackupError` so a caller can map "I could not make a
+    snapshot" (exit 2 in the observe_cli contract) apart from "I made a snapshot
+    and it failed integrity" (exit 1). Collapsing them lets an unreachable
+    source look like a bad snapshot, which is the wrong diagnosis.
+    """
+
+
+def _integrity_check(path: Path) -> str:
+    """Open ``path`` read-only and return its ``integrity_check`` result.
+
+    A fresh connection on the *destination* file, never the live source. Pulled
+    out so the post-copy verification can be exercised independently of the
+    backup API: a snapshot that completes can still be corrupt on a flaky disk,
+    and the check is what stops restic from shipping corruption offsite.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True)
+    try:
+        row = conn.execute("PRAGMA integrity_check").fetchone()
+    except sqlite3.Error as exc:
+        # A snapshot so corrupt it cannot be opened, or whose schema is
+        # unreadable, is not "ok". `integrity_check` normally returns a text
+        # diagnosis for corruption; this is the worse case where the file will
+        # not even run the pragma. Treat it as a failed check.
+        return f"unreadable: {exc}"
+    finally:
+        conn.close()
+    return row[0] if row else ""
+
+
+def online_backup(
+    source: Path | str,
+    destination: Path,
+    *,
+    busy_timeout_ms: int = BUSY_TIMEOUT_MS,
+    _verify: Callable[[Path], str] = _integrity_check,
+) -> Path:
+    """Copy a live SQLite database into a consistent snapshot file.
+
+    Technical design 10.5: snapshots must come from the Online Backup API, not
+    a raw file copy. A running WAL-mode database's main file can be mid-checkpoint,
+    so ``cp`` may capture a half-written page; ``Connection.backup()`` reads
+    through the source's own pager and is safe to run while the service writes.
+
+    The source is opened read-only (``?mode=ro``), so a backup process can never
+    mutate the live database. The destination is written to a temporary sibling
+    and ``os.replace``\\ d into place, so an interrupted run leaves no half-file
+    that a later step could mistake for a good snapshot. After the copy, a fresh
+    connection runs ``PRAGMA integrity_check`` *on the destination*; anything
+    other than ``ok`` is deleted and raised as :class:`BackupError` -- a corrupt
+    snapshot is worse than no snapshot, because restic would faithfully encrypt
+    and ship the corruption offsite.
+
+    Returns the destination path on success.
+    """
+    import os
+    import sqlite3
+    import tempfile
+
+    source_path = Path(source)
+    if not source_path.exists():
+        raise BackupUnavailableError(
+            f"source database does not exist: {source_path}"
+        )
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    # Read-only source: a backup process has no business writing the live DB.
+    source_uri = f"file:{source_path.as_posix()}?mode=ro"
+    try:
+        src_conn = sqlite3.connect(source_uri, uri=True, timeout=busy_timeout_ms / 1000)
+    except sqlite3.Error as exc:
+        raise BackupUnavailableError(
+            f"could not open source database read-only: {exc}"
+        ) from exc
+
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=str(destination.parent)
+    )
+    os.close(tmp_fd)
+    tmp_path = Path(tmp_name)
+    # The temp file is created world-readable by mkstemp; a snapshot of a
+    # 0600 service database must not leak through a backup staging directory.
+    os.chmod(tmp_path, 0o600)
+
+    try:
+        # A fresh destination connection owns its own file; opening it before the
+        # backup would create an empty DB the API would then overwrite page by page.
+        dst_conn = sqlite3.connect(str(tmp_path))
+        try:
+            try:
+                src_conn.backup(dst_conn)
+            finally:
+                dst_conn.close()
+                src_conn.close()
+        except sqlite3.Error as exc:
+            raise BackupError(f"online backup failed: {exc}") from exc
+
+        # Verify the snapshot, not the source. A copy that completed can still be
+        # corrupt if the source was mid-checkpoint in a way the API could not
+        # reconcile, and restic will happily encrypt corruption.
+        result = _verify(tmp_path)
+        if result != "ok":
+            raise BackupError(
+                f"destination failed integrity_check: {result!r}"
+            )
+
+        os.replace(tmp_path, destination)
+        # os.replace inherits the temp's 0600; assert it explicitly so a future
+        # umask change cannot quietly widen a snapshot.
+        os.chmod(destination, 0o600)
+        return destination
+    except BaseException:
+        # Any path through here -- a raised BackupError included -- must not
+        # leave the temp file behind, or the next run's mkstemp collides and a
+        # half-written snapshot lingers in the staging directory.
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(bind=engine, expire_on_commit=False, future=True)
 

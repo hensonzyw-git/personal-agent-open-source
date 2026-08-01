@@ -1,0 +1,12 @@
+# DEV-035: daily offsite backup. 16:07 Asia/Shanghai, after the 16:03 snapshots.
+# Off the :00 mark. Persistent so a box that was down through the window still
+# backs up on next boot.
+[Unit]
+Description=Personal Agent offsite backup daily
+
+[Timer]
+OnCalendar=*-*-* 16:07:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
