@@ -48,6 +48,18 @@ expect_isolated() { # <what> <owner-user> <other-user> <read-command...>
 echo "== services active, right identity =="
 expect_success "personal-data-mcp active" systemctl is-active --quiet personal-data-mcp
 expect_success "personal-agent-api active" systemctl is-active --quiet personal-agent-api
+expect_success "DEV-034 observe timer enabled" \
+  systemctl is-enabled --quiet personal-data-mcp-observe.timer
+expect_success "DEV-034 observe timer active" \
+  systemctl is-active --quiet personal-data-mcp-observe.timer
+OBSERVE_RESULT="$(systemctl show -p Result --value personal-data-mcp-observe.service 2>/dev/null)"
+OBSERVE_STARTED="$(systemctl show -p ExecMainStartTimestampMonotonic --value personal-data-mcp-observe.service 2>/dev/null)"
+if [ "$OBSERVE_RESULT" = "success" ] \
+   && [ -n "$OBSERVE_STARTED" ] && [ "$OBSERVE_STARTED" != "0" ]; then
+  pass "DEV-034 immediate observe run succeeded"
+else
+  fail "DEV-034 observe service was not run successfully (result=${OBSERVE_RESULT:-unknown}, started=${OBSERVE_STARTED:-0})"
+fi
 expect_success "mcp process runs as $MCP_USER" \
   pgrep -u "$MCP_USER" -f personal-data-mcp
 expect_success "api process runs as $API_USER" \

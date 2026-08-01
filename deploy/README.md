@@ -164,7 +164,11 @@ sudo -u personal-agent-api /opt/personal-agent/.venv/bin/personal-agent-db \
 
 ```sh
 sudo systemctl enable --now personal-data-mcp personal-agent-api
+sudo systemctl enable --now personal-data-mcp-observe.timer
+# Do not wait fifteen minutes to discover a broken monitor on its first rollout.
+sudo systemctl start personal-data-mcp-observe.service
 sudo journalctl -u personal-data-mcp -u personal-agent-api --since -2m
+sudo journalctl -u personal-data-mcp-observe --since -2m
 ```
 
 The API refuses to start without a reachable Finance catalog, so the MCP comes
@@ -180,8 +184,9 @@ Covers: services active as their own users, no root process, the API process's
 real group set out of `/proc`, **six cross-user read refusals** (DB dirs, env
 files, key dirs) **each paired with the positive control that the owning user
 can read the same path**, socket group/mode for Nginx, MCP loopback-only, no
-8810 TCP listener, 405 from the real MCP endpoint, 401 through the real API
-socket, and `https://zhuyawei.com` still 200.
+8810 TCP listener, the DEV-034 timer enabled and active with a successful
+immediate report, 405 from the real MCP endpoint, 401 through the real API socket,
+and `https://zhuyawei.com` still 200.
 
 The positive controls are not decoration. `head` on a missing file and `ls` on
 a missing directory both fail, so a refusal-only suite reports a deployment
@@ -198,7 +203,9 @@ the deployed wheel to `docs/evidence/`, and update `PROJECT_STATUS.md`.
 ```sh
 bash deploy/deploy_code.sh          # Mac: build + install new wheel
 ssh -i ~/.ssh/personal_agent_example_key deploy@192.0.2.10 \
-  'sudo systemctl restart personal-data-mcp personal-agent-api'
+  'sudo systemctl restart personal-data-mcp personal-agent-api &&
+   sudo systemctl enable --now personal-data-mcp-observe.timer &&
+   sudo systemctl start personal-data-mcp-observe.service'
 sudo bash ~/personal-agent-deploy/verify.sh   # ECS
 ```
 
@@ -342,12 +349,12 @@ It **preserves** users, `/var/lib` data, `/etc/personal-agent` secrets and
 `/opt` code — removing any of those is a separate explicit decision, not part
 of a rollback.
 
-## Not in this task (by design)
+## Still outside this rollout
 
-- Nginx upstream, `agent.example.invalid` DNS/TLS — **DEV-033**. The socket this
-  task creates is the upstream it will proxy.
 - The daily-review timer — **DEV-036** (`personal-agent-review` is installed
   but has no timer yet).
 - `finance.query_expenses` — its cursor-signing credential is not loaded by
   server composition; the tool stays unadvertised (unchanged from DEV-027).
-- Backups/metrics/alerts — **DEV-034/035**.
+- Encrypted offsite backup/restore and backup-age alerting — **DEV-035**.
+- Real APNs device registration/sending and live receipt evidence — inputs are
+  ready, but implementation remains outside this rollout.

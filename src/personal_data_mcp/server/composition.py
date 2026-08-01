@@ -25,13 +25,16 @@ the credential-free MCP surface, exactly as it did before this module existed.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import time
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable, Final
 
 from personal_agent_core.timeutil import utc_now
 from personal_data_mcp.crypto.keys import load_data_keyring
@@ -45,17 +48,24 @@ from personal_data_mcp.feishu.base_source import (
 from personal_data_mcp.feishu.credentials import load_credentials
 from personal_data_mcp.finance.fx_connector import FxConnector
 from personal_data_mcp.finance.ledger_config import LedgerConfig, load_ledger_config
+from personal_data_mcp.finance.reconciler import reconcile_write
+from personal_data_mcp.server.app import build_registry
+from personal_data_mcp.server.control import RecordReader
 from personal_data_mcp.server.finance_write import (
     FinanceWriteDependencies,
-    fresh_validation,
     build_expense_handler,
     build_family_fund_handler,
     build_income_handler,
+    fresh_validation,
 )
-from personal_data_mcp.server.control import RecordReader
 from personal_data_mcp.server.handlers import ToolRegistry
 from personal_data_mcp.server.record_reader import build_record_reader
-from personal_data_mcp.server.app import build_registry
+from personal_data_mcp.storage.execution_store import scan_unfinished
+
+
+logger = logging.getLogger(__name__)
+
+RECOVERY_INTERVAL_SECONDS: Final[float] = 60.0
 
 
 @dataclass(frozen=True)
@@ -69,11 +79,80 @@ class FinanceComposition:
     record_reader: RecordReader
 
 
+async def recover_unfinished(
+    dependencies: FinanceWriteDependencies,
+    *,
+    owner: str,
+    validation=None,
+) -> list[tuple[str, str]]:
+    """Drive one snapshot of unfinished Finance executions toward truth.
+
+    The database read ends before schema or Feishu network activity begins. Each
+    execution then acquires its own durable lease inside ``reconcile_write``, so
+    a concurrent or restarted worker either owns the recovery or leaves it for
+    the next bounded scan. One bad execution cannot suppress recovery of the
+    rest, and log messages never include the idempotency key.
+    """
+    with dependencies.sessions() as session:
+        keys = [row.idempotency_key for row in scan_unfinished(session)]
+    if not keys:
+        return []
+
+    current_validation = validation or await fresh_validation(dependencies)
+    results: list[tuple[str, str]] = []
+    for key in keys:
+        try:
+            result = await reconcile_write(
+                key,
+                sessions=dependencies.sessions,
+                adapter=dependencies.adapter,
+                source=dependencies.source,
+                config=dependencies.config,
+                validation=current_validation,
+                keyring=dependencies.keyring,
+                owner=owner,
+                now=dependencies.now,
+            )
+        except Exception as exc:  # noqa: BLE001 - retry next bounded scan
+            # Exception messages and tracebacks can carry an idempotency key or
+            # provider detail. The durable row and DEV-034 report hold the
+            # diagnosis; the ordinary journal gets only the exception class.
+            logger.warning(
+                "Finance recovery left one execution unfinished (%s); "
+                "retrying next interval",
+                type(exc).__name__,
+            )
+            continue
+        results.append((key, result.final_state))
+    return results
+
+
+async def _recover_periodically(
+    dependencies: FinanceWriteDependencies,
+    *,
+    owner: str,
+    interval_seconds: float,
+    stop: asyncio.Event,
+) -> None:
+    """Run Finance recovery for the service lifetime without overlapping scans."""
+    while True:
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval_seconds)
+            return
+        except TimeoutError:
+            pass
+        try:
+            await recover_unfinished(dependencies, owner=owner)
+        except Exception as exc:  # noqa: BLE001 - the next interval must survive
+            logger.warning(
+                "Finance recovery scan could not run (%s); retrying next interval",
+                type(exc).__name__,
+            )
+
+
 def load_protected_config(path: Path) -> LedgerConfig:
     """Read the frozen annual config, or refuse to serve Finance tools."""
-    config = load_ledger_config(
-        json.loads(path.read_text(encoding="utf-8"))
-    )
+    config = load_ledger_config(json.loads(path.read_text(encoding="utf-8")))
     if config.ledger_kind != SYNTHETIC_TEST_KIND:
         raise LedgerSourceError(
             f"refusing to serve Finance write tools with a "
@@ -87,9 +166,12 @@ async def finance_tools(
     *,
     config_path: Path,
     sessions,
-    now: callable = utc_now,
+    now: Callable[[], datetime] = utc_now,
+    recovery_interval_seconds: float = RECOVERY_INTERVAL_SECONDS,
 ) -> AsyncIterator[FinanceComposition]:
     """Open the Finance write surface for the lifetime of the service."""
+    if recovery_interval_seconds <= 0:
+        raise ValueError("recovery_interval_seconds must be positive")
     config = load_protected_config(config_path)
     credentials = load_credentials()
     source = require_synthetic_test_base(
@@ -115,23 +197,50 @@ async def finance_tools(
         )
         # Fail at boot rather than at the first write. This validation is
         # deliberately discarded: the handlers revalidate inside each call.
-        await fresh_validation(dependencies)
+        initial_validation = await fresh_validation(dependencies)
         registry = build_registry(
             expense_write_handler=build_expense_handler(dependencies),
             income_write_handler=build_income_handler(dependencies),
             family_fund_handler=build_family_fund_handler(dependencies),
         )
-        yield FinanceComposition(
-            dependencies=dependencies,
-            registry=registry,
-            record_reader=build_record_reader(dependencies),
-        )
+        recovery_owner = f"finance-recovery-{uuid.uuid4()}"
+        recovery_stop = asyncio.Event()
+        recovery_task: asyncio.Task[None] | None = None
+        try:
+            # Design 7.6.2: recover before accepting new writes, then every
+            # minute for executions created or stranded during this process.
+            await recover_unfinished(
+                dependencies,
+                owner=recovery_owner,
+                validation=initial_validation,
+            )
+            recovery_task = asyncio.create_task(
+                _recover_periodically(
+                    dependencies,
+                    owner=recovery_owner,
+                    interval_seconds=recovery_interval_seconds,
+                    stop=recovery_stop,
+                ),
+                name="finance-recovery",
+            )
+            yield FinanceComposition(
+                dependencies=dependencies,
+                registry=registry,
+                record_reader=build_record_reader(dependencies),
+            )
+        finally:
+            recovery_stop.set()
+            if recovery_task is not None:
+                # Do not close the shared Feishu client underneath an in-flight
+                # recovery call. Setting the event stops the next interval;
+                # awaiting the task lets the bounded current scan finish.
+                await recovery_task
     finally:
         await fx.aclose()
         await adapter.aclose()
 
 
-def _utc_clock(now) -> callable:
+def _utc_clock(now: Callable[[], datetime]) -> Callable[[], datetime]:
     """The FX connector wants aware UTC instants, like everything else here."""
 
     def clock() -> datetime:

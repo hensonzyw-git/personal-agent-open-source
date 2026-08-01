@@ -302,3 +302,27 @@ class AuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
 
     __table_args__ = (Index("ix_audit_events_trace_id", "trace_id"),)
+
+
+class AuditChainAnchor(Base):
+    """Independent tail witness for detecting audit-table truncation.
+
+    The hash links inside ``audit_events`` detect edits and middle deletions but
+    cannot, by themselves, prove that the last row still exists: the remaining
+    prefix is a valid chain. This singleton is updated in the same SQLite
+    transaction as every append and witnesses the expected row count and tail.
+    It is not a defence against an attacker rewriting the whole database; it is
+    the missing protection against accidental or partial audit-table truncation.
+    """
+
+    __tablename__ = "audit_chain_anchor"
+
+    anchor_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    tail_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("anchor_id = 1", name="singleton"),
+        CheckConstraint("event_count >= 1", name="event_count_positive"),
+    )

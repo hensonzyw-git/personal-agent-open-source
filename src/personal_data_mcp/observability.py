@@ -48,6 +48,10 @@ from typing import Any, Final, Literal, Sequence
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from personal_data_mcp.finance.reconciler import (
+    SCHEMA_DRIFT_BLOCKED_EVENT,
+    SCHEMA_DRIFT_RESUMED_EVENT,
+)
 from personal_data_mcp.storage.execution_store import verify_audit_chain
 from personal_data_mcp.storage.models import (
     TERMINAL_EXECUTION_STATES,
@@ -119,7 +123,9 @@ def execution_state_counts(session: Session) -> dict[str, int]:
     return {state: count for state, count in rows}
 
 
-def stuck_execution_count(session: Session, *, now, minutes: int = STUCK_EXECUTION_MINUTES) -> int:
+def stuck_execution_count(
+    session: Session, *, now, minutes: int = STUCK_EXECUTION_MINUTES
+) -> int:
     """Non-terminal executions older than `minutes`.
 
     Deliberately counts by *age*, not by state name. A new unfinished state
@@ -150,12 +156,30 @@ def wal_size_bytes(database: Path) -> int:
         return 0
 
 
-def disk_free(path: Path) -> tuple[int | None, int | None]:
-    try:
-        usage = shutil.disk_usage(path)
-    except OSError:
-        return None, None
+def disk_free(path: Path) -> tuple[int, int]:
+    """Return filesystem capacity, or raise so the monitor exits cannot-check."""
+    usage = shutil.disk_usage(path)
     return usage.free, usage.total
+
+
+def active_schema_drift_count(session: Session) -> int:
+    """Count recovery traces whose latest schema state is still blocked."""
+    active: set[str] = set()
+    rows = session.execute(
+        select(AuditEvent.trace_id, AuditEvent.event_type)
+        .where(
+            AuditEvent.event_type.in_(
+                (SCHEMA_DRIFT_BLOCKED_EVENT, SCHEMA_DRIFT_RESUMED_EVENT)
+            )
+        )
+        .order_by(AuditEvent.sequence)
+    ).all()
+    for trace_id, event_type in rows:
+        if event_type == SCHEMA_DRIFT_BLOCKED_EVENT:
+            active.add(trace_id)
+        else:
+            active.discard(trace_id)
+    return len(active)
 
 
 def collect(
@@ -181,13 +205,7 @@ def collect(
                 select(func.count()).select_from(AuditEvent)
             ).scalar_one()
         )
-        drift = int(
-            finance_session.execute(
-                select(func.count())
-                .select_from(AuditEvent)
-                .where(AuditEvent.event_type == "schema_drift_blocked_recovery")
-            ).scalar_one()
-        )
+        drift = active_schema_drift_count(finance_session)
     free, total = disk_free(disk_path)
     return DerivedFacts(
         execution_states=states,
@@ -247,7 +265,7 @@ def evaluate(facts: DerivedFacts) -> list[Finding]:
             Finding(
                 "schema_drift_blocked_recovery",
                 "critical",
-                f"{facts.schema_drift_events} recovery attempt(s) refused "
+                f"{facts.schema_drift_events} recovery path(s) currently refused "
                 "because the ledger schema or source no longer matches the "
                 "validated config: look at the Feishu Base, not the reconciler",
             )

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from personal_agent_core.crypto import KeyRing
@@ -47,12 +48,15 @@ from personal_data_mcp.storage.execution_store import (
 )
 from personal_data_mcp.storage.models import (
     TERMINAL_EXECUTION_STATES,
+    AuditEvent,
     ExternalReceipt,
     ToolExecution,
 )
 
 
 DEADLINE_SECONDS: float = 30.0
+SCHEMA_DRIFT_BLOCKED_EVENT = "schema_drift_blocked_recovery"
+SCHEMA_DRIFT_RESUMED_EVENT = "schema_drift_recovery_resumed"
 
 
 class ReconcileError(RuntimeError):
@@ -85,6 +89,86 @@ def _receipt_of(session: Session, key: str) -> ExternalReceipt | None:
         .filter(ExternalReceipt.idempotency_key == key)
         .one_or_none()
     )
+
+
+def _record_schema_drift_state(
+    sessions: sessionmaker[Session],
+    *,
+    trace_id: str,
+    blocked: bool,
+    now: Callable[[], datetime],
+) -> None:
+    """Record only changes in recovery's schema-drift condition.
+
+    A periodic worker may retry once a minute. Appending the same blocked event
+    on every retry would grow the audit trail forever, while counting every
+    historical event would keep the alert red after the source was repaired.
+    The latest event for this recovery trace is therefore a tiny durable state
+    machine: blocked -> resumed -> blocked, with repeats as no-ops.
+    """
+    with sessions() as session:
+        latest = session.scalars(
+            select(AuditEvent)
+            .where(
+                AuditEvent.trace_id == trace_id,
+                AuditEvent.event_type.in_(
+                    (SCHEMA_DRIFT_BLOCKED_EVENT, SCHEMA_DRIFT_RESUMED_EVENT)
+                ),
+            )
+            .order_by(AuditEvent.sequence.desc())
+            .limit(1)
+        ).first()
+        target = (
+            SCHEMA_DRIFT_BLOCKED_EVENT if blocked else SCHEMA_DRIFT_RESUMED_EVENT
+        )
+        if latest is not None and latest.event_type == target:
+            return
+        if latest is None and not blocked:
+            return
+        _audit(
+            session,
+            trace_id=trace_id,
+            event_type=target,
+            summary=(
+                "write recovery refused: ledger schema or source no longer "
+                "matches the validated config"
+                if blocked
+                else "write recovery resumed after ledger schema validation"
+            ),
+            now=now(),
+        )
+        session.commit()
+
+
+def _fail_unrecoverable_pre_submit(
+    sessions: sessionmaker[Session],
+    *,
+    key: str,
+    version: int,
+    trace_id: str,
+    now: Callable[[], datetime],
+) -> ReconcileResult:
+    """Fail a prepared row safely when its sealed request cannot be recovered."""
+    moment = now()
+    with sessions() as session:
+        transition(
+            session,
+            idempotency_key=key,
+            current_state="prepared",
+            current_version=version,
+            target_state="failed_safe",
+            failure_code=ErrorCode.INTERNAL_ERROR.value,
+            now=moment,
+        )
+        _audit(
+            session,
+            trace_id=trace_id,
+            event_type="write_recovery_failed_safe",
+            summary="prepared write had no readable sealed recovery payload",
+            now=moment,
+        )
+        session.commit()
+    return ReconcileResult(key, "failed_safe", None)
 
 
 def _to_manual_review(
@@ -210,19 +294,14 @@ async def reconcile_write(
         # `require_validated_source` still refuses, unchanged, on all six of its
         # call sites.
         if error.code is ErrorCode.SOURCE_SCHEMA_CHANGED:
-            with sessions() as session:
-                _audit(
-                    session,
-                    trace_id=trace_id,
-                    event_type="schema_drift_blocked_recovery",
-                    summary=(
-                        "write recovery refused: ledger schema or source no "
-                        "longer matches the validated config"
-                    ),
-                    now=now(),
-                )
-                session.commit()
+            _record_schema_drift_state(
+                sessions, trace_id=trace_id, blocked=True, now=now
+            )
         raise
+    else:
+        _record_schema_drift_state(
+            sessions, trace_id=trace_id, blocked=False, now=now
+        )
 
     resource_lock_key: str | None = None
     resource_lock_owner: str | None = None
@@ -328,6 +407,14 @@ async def _drive(
             )
 
     if sealed is None:
+        if state == "prepared":
+            return _fail_unrecoverable_pre_submit(
+                sessions,
+                key=key,
+                version=version,
+                trace_id=trace_id,
+                now=now,
+            )
         return _to_manual_review(
             sessions,
             key=key,
@@ -347,6 +434,14 @@ async def _drive(
             config=config,
         )
     except (KeyError, TypeError, ValueError):
+        if state == "prepared":
+            return _fail_unrecoverable_pre_submit(
+                sessions,
+                key=key,
+                version=version,
+                trace_id=trace_id,
+                now=now,
+            )
         return _to_manual_review(
             sessions,
             key=key,
@@ -356,6 +451,53 @@ async def _drive(
             trace_id=trace_id,
             now=now,
         )
+
+    # A cold restart may find a request before its first create or while that
+    # create was in flight. Commit the conservative state before replaying: a
+    # crash between either transition and the request then remains recoverable
+    # under the same client token and can never be mistaken for "never sent".
+    if state == "prepared":
+        submitted_at = now()
+        with sessions() as session:
+            version = transition(
+                session,
+                idempotency_key=key,
+                current_state="prepared",
+                current_version=version,
+                target_state="submitting",
+                now=submitted_at,
+            )
+            _audit(
+                session,
+                trace_id=trace_id,
+                event_type="write_recovery_submitting",
+                summary="recovery submitted a previously prepared write",
+                now=submitted_at,
+            )
+            session.commit()
+        state = "submitting"
+
+    if state == "submitting":
+        moment = now()
+        with sessions() as session:
+            version = transition(
+                session,
+                idempotency_key=key,
+                current_state="submitting",
+                current_version=version,
+                target_state="commit_unknown",
+                failure_code=ErrorCode.SOURCE_COMMIT_UNKNOWN.value,
+                now=moment,
+            )
+            _audit(
+                session,
+                trace_id=trace_id,
+                event_type="write_recovery_commit_unknown",
+                summary="recovery conservatively promoted an interrupted submit",
+                now=moment,
+            )
+            session.commit()
+        state = "commit_unknown"
 
     record_id: str | None = None
     if state in ("commit_unknown", "reconciling_same_client_token"):

@@ -89,6 +89,37 @@ def test_upgrade_and_downgrade_round_trip(tmp_path: Path) -> None:
     engine.dispose()
 
 
+def test_audit_anchor_migration_witnesses_the_existing_tail(tmp_path: Path) -> None:
+    engine = create_database_engine(tmp_path / "audit-anchor-migration.sqlite")
+    db.upgrade(engine, "0002_duplicate_check_idempotency_key")
+    tail_hash = "a" * 64
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO audit_events
+                    (event_id, trace_id, event_type, redacted_summary,
+                     prev_hash, event_hash, created_at)
+                VALUES
+                    ('event-before-anchor', 'trace-before-anchor', 'test',
+                     'redacted', NULL, :tail_hash, :created_at)
+                """
+            ),
+            {"tail_hash": tail_hash, "created_at": NOW.isoformat()},
+        )
+
+    db.upgrade(engine)
+    with engine.connect() as connection:
+        anchor = connection.execute(
+            text(
+                "SELECT event_count, tail_hash FROM audit_chain_anchor "
+                "WHERE anchor_id = 1"
+            )
+        ).one()
+    assert anchor == (1, tail_hash)
+    engine.dispose()
+
+
 def test_the_two_service_schemas_are_disjoint() -> None:
     from personal_agent.storage.models import Base as AgentBase
 

@@ -71,4 +71,4 @@ systemctl daemon-reload
 echo
 echo "Installed. NOT enabled or started. Next: deploy/README.md steps 3-9"
 echo "(keys, environment files, ledger config, application, migrations),"
-echo "then 'systemctl enable --now personal-data-mcp personal-agent-api'."
+echo "then enable the two services AND personal-data-mcp-observe.timer."

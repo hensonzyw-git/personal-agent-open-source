@@ -24,6 +24,7 @@ from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.manifest import canonical_json
 from personal_data_mcp.storage.models import (
     TERMINAL_EXECUTION_STATES,
+    AuditChainAnchor,
     AuditEvent,
     ExternalReceipt,
     ResourceLock,
@@ -47,6 +48,10 @@ TOOL_TABLE_KINDS: Final[dict[str, str]] = {
 
 class UnverifiedReceiptError(RuntimeError):
     """An execution tried to report success without verified external proof."""
+
+
+class AuditChainIntegrityError(RuntimeError):
+    """The append-only audit tail no longer matches its independent witness."""
 
 
 def prepare_execution(
@@ -459,6 +464,18 @@ def append_audit_event(
         select(AuditEvent).order_by(AuditEvent.sequence.desc()).limit(1)
     ).first()
     prev_hash = previous.event_hash if previous else None
+    anchor = session.get(AuditChainAnchor, 1)
+    if previous is None:
+        if anchor is not None:
+            raise AuditChainIntegrityError(
+                "audit anchor exists but the audit trail is empty"
+            )
+    elif anchor is None or anchor.tail_hash != prev_hash:
+        # Never rebuild a missing/stale witness from the table it is meant to
+        # witness. Doing so would bless a truncated prefix on the next append.
+        raise AuditChainIntegrityError(
+            "audit tail does not match its independent anchor"
+        )
     event = AuditEvent(
         event_id=event_id,
         trace_id=trace_id,
@@ -476,11 +493,25 @@ def append_audit_event(
     )
     session.add(event)
     session.flush()
+    if anchor is None:
+        session.add(
+            AuditChainAnchor(
+                anchor_id=1,
+                event_count=1,
+                tail_hash=event.event_hash,
+                updated_at=now,
+            )
+        )
+    else:
+        anchor.event_count += 1
+        anchor.tail_hash = event.event_hash
+        anchor.updated_at = now
+    session.flush()
     return event
 
 
 def verify_audit_chain(session: Session) -> list[str]:
-    """Return the ids of events whose recorded hash no longer holds."""
+    """Return event ids or witness codes for any broken chain property."""
     broken: list[str] = []
     prev_hash: str | None = None
     events = session.scalars(
@@ -497,4 +528,12 @@ def verify_audit_chain(session: Session) -> list[str]:
         if event.prev_hash != prev_hash or event.event_hash != expected:
             broken.append(event.event_id)
         prev_hash = event.event_hash
+    anchor = session.get(AuditChainAnchor, 1)
+    if events:
+        if anchor is None:
+            broken.append("audit_anchor_missing")
+        elif anchor.event_count != len(events) or anchor.tail_hash != prev_hash:
+            broken.append("audit_tail_anchor_mismatch")
+    elif anchor is not None:
+        broken.append("audit_tail_anchor_mismatch")
     return broken

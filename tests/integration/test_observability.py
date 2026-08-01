@@ -18,9 +18,13 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from personal_agent_core.timeutil import utc_now
+from personal_data_mcp.finance.reconciler import (
+    SCHEMA_DRIFT_BLOCKED_EVENT,
+    SCHEMA_DRIFT_RESUMED_EVENT,
+)
 from personal_data_mcp.observability import (
     STUCK_EXECUTION_MINUTES,
     DerivedFacts,
@@ -176,6 +180,37 @@ def test_a_tampered_audit_chain_is_critical(database) -> None:
     assert worst_severity(findings) == "critical"
 
 
+def test_deleting_the_audit_tail_is_detected_by_the_anchor(database) -> None:
+    factory, engine = sessions_for(database)
+    try:
+        with factory() as session:
+            append_audit_event(
+                session,
+                event_id="e1",
+                trace_id="t1",
+                event_type="write_prepared",
+                redacted_summary="prepared",
+                now=utc_now(),
+            )
+            append_audit_event(
+                session,
+                event_id="e2",
+                trace_id="t1",
+                event_type="write_succeeded",
+                redacted_summary="succeeded",
+                now=utc_now(),
+            )
+            session.commit()
+        with factory() as session:
+            session.execute(delete(AuditEvent).where(AuditEvent.event_id == "e2"))
+            session.commit()
+    finally:
+        engine.dispose()
+
+    findings = evaluate(facts_for(database))
+    assert "audit_chain_broken" in codes(findings)
+
+
 def test_a_healthy_database_produces_no_alert(database) -> None:
     add_execution(database, key="k1", state="succeeded")
     findings = evaluate(facts_for(database))
@@ -246,11 +281,20 @@ def test_the_disk_floor_is_the_larger_of_the_ratio_and_the_fixed_size() -> None:
     assert "disk_low" not in codes(evaluate(healthy))
 
 
-def test_an_unreadable_disk_is_not_reported_as_healthy() -> None:
-    # `None` means "could not measure". Treating it as 0 would alarm constantly;
-    # treating it as infinite would stay silent. It must do neither.
-    unknown = DerivedFacts(disk_free_bytes=None, disk_total_bytes=None)
-    assert "disk_low" not in codes(evaluate(unknown))
+def test_an_unreadable_disk_makes_the_cli_exit_cannot_check(
+    database, tmp_path, capsys, monkeypatch
+) -> None:
+    import shutil
+
+    def unreadable(_path):
+        raise OSError("statvfs refused")
+
+    monkeypatch.setattr(shutil, "disk_usage", unreadable)
+    missing = tmp_path / "filesystem-that-does-not-exist"
+    assert main(
+        ["--database", str(database), "--disk-path", str(missing)]
+    ) == 2
+    assert "cannot check" in capsys.readouterr().err
 
 
 def test_a_large_wal_is_a_warning() -> None:
@@ -377,7 +421,7 @@ def test_a_drift_that_blocked_recovery_is_critical_and_names_where_to_look(
                 session,
                 event_id="d1",
                 trace_id="t1",
-                event_type="schema_drift_blocked_recovery",
+                event_type=SCHEMA_DRIFT_BLOCKED_EVENT,
                 redacted_summary="write recovery refused",
                 now=utc_now(),
             )
@@ -392,6 +436,35 @@ def test_a_drift_that_blocked_recovery_is_critical_and_names_where_to_look(
         f.detail for f in findings if f.code == "schema_drift_blocked_recovery"
     )
     assert "Feishu Base" in detail, "the finding must say where to look"
+
+
+def test_a_resumed_schema_validation_clears_the_active_drift_alert(database) -> None:
+    factory, engine = sessions_for(database)
+    try:
+        with factory() as session:
+            append_audit_event(
+                session,
+                event_id="d1",
+                trace_id="reconcile-k1",
+                event_type=SCHEMA_DRIFT_BLOCKED_EVENT,
+                redacted_summary="write recovery refused",
+                now=utc_now(),
+            )
+            append_audit_event(
+                session,
+                event_id="d2",
+                trace_id="reconcile-k1",
+                event_type=SCHEMA_DRIFT_RESUMED_EVENT,
+                redacted_summary="write recovery resumed",
+                now=utc_now(),
+            )
+            session.commit()
+    finally:
+        engine.dispose()
+
+    assert "schema_drift_blocked_recovery" not in codes(
+        evaluate(facts_for(database))
+    )
 
 
 def test_ordinary_audit_events_are_not_counted_as_drift(database) -> None:

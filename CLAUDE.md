@@ -299,10 +299,14 @@ conflict instead of silently choosing an old default.
   and **G0–G4 have passed** — G4 closed on 2026-08-01 with a real iPhone
   enrolled against the deployed ECS over `https://agent.example.invalid`
   (`docs/evidence/G4_真机验收_2026-08-01.md`). CAP-001, DEV-041, DEV-030,
-  DEV-031, DEV-032 and DEV-033 are complete. Next is DEV-034 / DEV-036 (no
-  external inputs; can start immediately), then DEV-035, which needs a private
-  OSS bucket and a restic key. Push and 打开飞书账本 stay unexercised (no APNs
-  under a Personal Team; `PERSONAL_AGENT_LEDGER_URL` unset on the ECS).
+  DEV-031, DEV-032, DEV-033 and DEV-034 are complete in the repository. The
+  DEV-034 review remediation (Finance recovery lifecycle, audit-tail witness,
+  alert recovery semantics and reproducible timer enablement) is verified
+  offline but still needs ECS migration/deployment evidence. Next is DEV-035,
+  which needs a private OSS bucket and a restic key; DEV-036 follows DEV-035.
+  APNs inputs are complete but sender/device-registration code is not built, and
+  打开飞书账本 stays unexercised because `PERSONAL_AGENT_LEDGER_URL` is unset on
+  the ECS.
 - `ECS安全加固实施记录_2026-07-23.md` — security, encryption, snapshot, and
   rollback record.
 - `docs/iOS开发环境_Personal_Team_v0.1.md` — Personal Team constraints, the iOS

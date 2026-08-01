@@ -40,7 +40,10 @@ from personal_data_mcp.storage.engine import (
     create_database_engine,
     session_factory,
 )
-from personal_data_mcp.storage.execution_store import acquire_recovery_lease
+from personal_data_mcp.storage.execution_store import (
+    acquire_recovery_lease,
+    transition,
+)
 from personal_data_mcp.storage.models import (
     AuditEvent,
     ExternalReceipt,
@@ -264,6 +267,77 @@ def test_commit_unknown_where_the_write_never_landed_creates_it_once(
     assert receipt_of(sessions).verified_at is not None
 
 
+def _seed_prepared_crash(fake, sessions, keyring, monkeypatch) -> None:
+    """Crash after prepared commits but before submitting can commit."""
+    from personal_data_mcp.finance import write_path
+
+    real_transition = write_path.transition
+
+    def crash_before_submitting(session, **kwargs):
+        if kwargs.get("target_state") == "submitting":
+            raise RuntimeError("simulated process crash before submit")
+        return real_transition(session, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(write_path, "transition", crash_before_submitting)
+
+        async def scenario():
+            async with adapter_for(fake) as adapter:
+                await write_expense(
+                    LUNCH,
+                    sessions=sessions,
+                    adapter=adapter,
+                    config=CONFIG,
+                    validation=VALIDATION,
+                    source=SOURCE,
+                    idempotency_key="idem-1",
+                    request_fingerprint="fp",
+                    trace_id="t",
+                    keyring=keyring,
+                    now=lambda: NOW,
+                )
+
+        with pytest.raises(RuntimeError, match="simulated process crash"):
+            run(scenario())
+    assert state_of(sessions) == "prepared"
+    assert fake.create_attempts == 0
+
+
+def test_a_prepared_write_is_submitted_once_after_restart(
+    sessions, keyring, monkeypatch
+) -> None:
+    fake = DedupingFeishu()
+    _seed_prepared_crash(fake, sessions, keyring, monkeypatch)
+
+    result = reconcile(fake, sessions, keyring)
+    assert result.final_state == "succeeded"
+    assert fake.create_attempts == 1
+    assert fake.row_count == 1
+
+
+def test_an_interrupted_submitting_write_is_replayed_under_the_same_token(
+    sessions, keyring, monkeypatch
+) -> None:
+    fake = DedupingFeishu()
+    _seed_prepared_crash(fake, sessions, keyring, monkeypatch)
+    with sessions() as session:
+        execution = session.get(ToolExecution, "idem-1")
+        transition(
+            session,
+            idempotency_key="idem-1",
+            current_state="prepared",
+            current_version=execution.state_version,
+            target_state="submitting",
+            now=NOW,
+        )
+        session.commit()
+
+    result = reconcile(fake, sessions, keyring)
+    assert result.final_state == "succeeded"
+    assert fake.create_attempts == 1
+    assert fake.row_count == 1
+
+
 def test_commit_unknown_where_the_write_did_land_adds_no_duplicate(
     sessions, keyring
 ) -> None:
@@ -470,6 +544,11 @@ def test_recovery_refuses_a_source_not_bound_to_the_validated_config(
     assert caught.value.code is ErrorCode.SOURCE_SCHEMA_CHANGED
     assert fake.row_count == 0
 
+    # A minute-later retry is the normal production shape. It must not append
+    # the same incident forever while the source remains drifted.
+    with pytest.raises(AppError):
+        run(scenario())
+
     # DEV-034: the refusal must also leave a durable trace, because recovery is
     # the one path nobody watches. Asserting it here rather than only in the
     # observability tests is the point -- those write the audit row by hand, so
@@ -482,6 +561,19 @@ def test_recovery_refuses_a_source_not_bound_to_the_validated_config(
             if event.event_type == "schema_drift_blocked_recovery"
         ]
     assert drift_events == ["schema_drift_blocked_recovery"]
+
+    result = reconcile(fake, sessions, keyring)
+    assert result.final_state == "succeeded"
+    with sessions() as session:
+        schema_events = [
+            event.event_type
+            for event in session.query(AuditEvent).order_by(AuditEvent.sequence)
+            if event.event_type.startswith("schema_drift_")
+        ]
+    assert schema_events == [
+        "schema_drift_blocked_recovery",
+        "schema_drift_recovery_resumed",
+    ]
 
 
 def test_income_unknown_commit_recovers_against_the_income_contract(
