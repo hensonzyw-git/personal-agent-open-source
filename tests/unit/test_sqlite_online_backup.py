@@ -18,12 +18,15 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from personal_agent_core.sqlite import (
     SNAPSHOT_MODE,
     STAGED_SNAPSHOT_MODE,
     BackupError,
     BackupUnavailableError,
+    create_read_only_database_engine,
     online_backup,
 )
 
@@ -124,6 +127,41 @@ def test_backup_honours_an_explicit_staged_mode(tmp_path: Path) -> None:
 
     mode = destination.stat().st_mode & 0o777
     assert mode == 0o640, f"expected 0640 staged snapshot, got {oct(mode)}"
+
+
+def test_read_only_engine_reads_without_touching_the_file(tmp_path: Path) -> None:
+    database = tmp_path / "restored.sqlite"
+    _seed(database)
+    before = database.stat().st_mtime_ns
+
+    engine = create_read_only_database_engine(database)
+    try:
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT count(*) FROM t")).scalar_one() == 3
+    finally:
+        engine.dispose()
+
+    assert database.stat().st_mtime_ns == before
+    assert not Path(f"{database}-wal").exists()
+    assert not Path(f"{database}-shm").exists()
+
+
+def test_read_only_engine_refuses_an_accidental_write(tmp_path: Path) -> None:
+    database = tmp_path / "restored.sqlite"
+    _seed(database)
+    engine = create_read_only_database_engine(database)
+    try:
+        with pytest.raises(OperationalError):
+            with engine.begin() as connection:
+                connection.execute(text("INSERT INTO t (v) VALUES ('forbidden')"))
+    finally:
+        engine.dispose()
+
+    raw = sqlite3.connect(database)
+    try:
+        assert raw.execute("SELECT count(*) FROM t").fetchone()[0] == 3
+    finally:
+        raw.close()
 
 
 def test_staged_mode_never_grants_other_access() -> None:

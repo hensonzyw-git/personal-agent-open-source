@@ -48,8 +48,8 @@ def test_finance_composition_runs_startup_and_periodic_recovery(
     async def validate(_dependencies):
         return object()
 
-    async def recover(_dependencies, *, owner, validation=None):
-        calls.append(validation)
+    async def recover(_dependencies, *, owner, limit=composition.RECOVERY_SCAN_LIMIT):
+        calls.append(limit)
         return []
 
     monkeypatch.setattr(composition, "fresh_validation", validate)
@@ -74,8 +74,8 @@ def test_finance_composition_runs_startup_and_periodic_recovery(
 
     asyncio.run(scenario())
 
-    assert calls[0] is not None, "startup must reuse boot-time schema validation"
-    assert calls[1] is None, "periodic scans must obtain fresh schema validation"
+    assert len(calls) >= 2
+    assert set(calls) == {composition.RECOVERY_SCAN_LIMIT}
     assert adapter.closed and fx.closed
 
 
@@ -103,7 +103,22 @@ def test_one_failed_execution_does_not_suppress_the_rest_of_the_scan(
     ]
     attempted: list[str] = []
 
-    monkeypatch.setattr(composition, "scan_unfinished", lambda _session: rows)
+    observed_limits: list[int] = []
+
+    def scan(_session, *, limit):
+        observed_limits.append(limit)
+        return rows
+
+    monkeypatch.setattr(composition, "scan_unfinished", scan)
+
+    validations: list[object] = []
+
+    async def validate(_dependencies):
+        value = object()
+        validations.append(value)
+        return value
+
+    monkeypatch.setattr(composition, "fresh_validation", validate)
 
     async def reconcile(key, **_kwargs):
         attempted.append(key)
@@ -116,9 +131,33 @@ def test_one_failed_execution_does_not_suppress_the_rest_of_the_scan(
         composition.recover_unfinished(
             dependencies,
             owner="worker",
-            validation=object(),
         )
     )
 
     assert attempted == ["first", "second"]
     assert results == [("second", "succeeded")]
+    assert observed_limits == [composition.RECOVERY_SCAN_LIMIT]
+    assert len(validations) == 2, "every execution needs fresh live schema evidence"
+
+
+def test_recovery_scan_is_bounded_before_network_work(monkeypatch) -> None:
+    class SessionContext:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *_args):
+            return None
+
+    dependencies = SimpleNamespace(sessions=lambda: SessionContext())
+    observed: list[int] = []
+
+    def scan(_session, *, limit):
+        observed.append(limit)
+        return []
+
+    monkeypatch.setattr(composition, "scan_unfinished", scan)
+
+    assert asyncio.run(
+        composition.recover_unfinished(dependencies, owner="worker", limit=7)
+    ) == []
+    assert observed == [7]

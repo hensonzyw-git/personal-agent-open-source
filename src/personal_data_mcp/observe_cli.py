@@ -37,7 +37,10 @@ from personal_data_mcp.observability import (
     missing_capabilities,
     worst_severity,
 )
-from personal_data_mcp.storage.engine import create_database_engine, session_factory
+from personal_data_mcp.storage.engine import (
+    create_read_only_database_engine,
+    session_factory,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -81,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     disk_path = args.disk_path or args.database.parent
-    engine = create_database_engine(args.database)
+    engine = create_read_only_database_engine(args.database)
     try:
         with session_factory(engine)() as session:
             facts = collect(

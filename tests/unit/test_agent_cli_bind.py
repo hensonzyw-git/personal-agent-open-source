@@ -9,8 +9,14 @@ public interface.
 from __future__ import annotations
 
 import pytest
+from fastapi.testclient import TestClient
 
+from personal_agent.api.app import build_restore_read_only_app
 from personal_agent.cli import DEFAULT_PORT, resolve_bind
+from personal_agent_core.sqlite import (
+    create_read_only_database_engine,
+    session_factory,
+)
 
 
 def test_default_binds_loopback_tcp() -> None:
@@ -50,3 +56,26 @@ def test_socket_and_tcp_arguments_are_mutually_exclusive() -> None:
         resolve_bind("127.0.0.1", None, "/run/personal-agent/api.sock")
     with pytest.raises(SystemExit, match="cannot be combined"):
         resolve_bind(None, 8810, "/run/personal-agent/api.sock")
+
+
+def test_restore_probe_reads_the_database_and_exposes_no_write_surface(
+    tmp_path,
+) -> None:
+    import sqlite3
+
+    database = tmp_path / "restored.sqlite"
+    raw = sqlite3.connect(database)
+    raw.execute("CREATE TABLE proof (value INTEGER NOT NULL)")
+    raw.execute("INSERT INTO proof VALUES (1)")
+    raw.commit()
+    raw.close()
+
+    engine = create_read_only_database_engine(database)
+    try:
+        client = TestClient(build_restore_read_only_app(session_factory(engine)))
+        response = client.get("/v1/capabilities")
+    finally:
+        engine.dispose()
+
+    assert response.status_code == 401
+    assert response.json() == {"error": {"code": "UNAUTHENTICATED"}}

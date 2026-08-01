@@ -32,10 +32,11 @@ for user in "$API_USER" "$MCP_USER"; do
   fi
 done
 
-# DEV-035: a least-privilege backup user. It is a member of both service groups
-# so it can READ the staged snapshots, but it never touches the live 0700 data
-# directories (those stay owner-only) and never reads a secret. A root backup
-# unit would hold both databases and all keys at once; this avoids that.
+# DEV-035: a least-privilege backup user. It reads only snapshots whose staging
+# directories belong to its own group; it must never join either service group,
+# because those groups can read the corresponding env and key directories.
+# A root backup unit would hold both databases and all keys at once; this avoids
+# that single-compromise boundary.
 BACKUP_USER=personal-agent-backup
 if id "$BACKUP_USER" >/dev/null 2>&1; then
   echo "user $BACKUP_USER already exists"
@@ -44,12 +45,15 @@ else
     --comment "Personal Agent DEV-035 backup" "$BACKUP_USER"
   echo "created user $BACKUP_USER"
 fi
-# Group membership gives read access to the staged snapshot dirs below. The
-# supplementary groups are also asserted on the real process in verify.sh,
-# because sudo resolves groups differently from a systemd unit (see the note
-# in deploy/README.md on SupplementaryGroups).
-usermod -aG "$API_USER" "$BACKUP_USER" 2>/dev/null || true
-usermod -aG "$MCP_USER" "$BACKUP_USER" 2>/dev/null || true
+# Remediate boxes installed by the first DEV-035 revision. The staging dirs
+# below are group=personal-agent-backup, so these memberships were redundant
+# for snapshots and accidentally opened both services' 0640 secrets.
+for service_group in "$API_USER" "$MCP_USER"; do
+  if id -nG "$BACKUP_USER" | tr ' ' '\n' | grep -Fxq "$service_group"; then
+    gpasswd -d "$BACKUP_USER" "$service_group"
+    echo "removed $BACKUP_USER from $service_group"
+  fi
+done
 
 # --- directories --------------------------------------------------------------
 # Data: reachable only by the owning service user.

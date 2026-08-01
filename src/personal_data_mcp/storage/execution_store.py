@@ -241,15 +241,20 @@ def release_recovery_lease(
     return result.rowcount == 1
 
 
-def scan_unfinished(session: Session) -> list[ToolExecution]:
-    """Every execution that has not reached a terminal state."""
-    return list(
-        session.scalars(
-            select(ToolExecution)
-            .where(ToolExecution.state.not_in(sorted(TERMINAL_EXECUTION_STATES)))
-            .order_by(ToolExecution.created_at)
-        )
+def scan_unfinished(
+    session: Session, *, limit: int | None = None
+) -> list[ToolExecution]:
+    """Oldest unfinished executions, optionally capped to one recovery slice."""
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be positive")
+    statement = (
+        select(ToolExecution)
+        .where(ToolExecution.state.not_in(sorted(TERMINAL_EXECUTION_STATES)))
+        .order_by(ToolExecution.created_at)
     )
+    if limit is not None:
+        statement = statement.limit(limit)
+    return list(session.scalars(statement))
 
 
 def resume_after_restart(

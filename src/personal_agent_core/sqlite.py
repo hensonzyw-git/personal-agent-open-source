@@ -187,6 +187,49 @@ def create_database_engine(path: Path | str, *, echo: bool = False) -> Engine:
     return engine
 
 
+def _configure_read_only_connection(dbapi_connection: Any, _record: Any) -> None:
+    """Configure a connection that must never mutate the restored file."""
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA query_only=ON")
+        cursor.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    finally:
+        cursor.close()
+
+
+def create_read_only_database_engine(
+    path: Path | str, *, echo: bool = False
+) -> Engine:
+    """Open an existing SQLite database with OS- and SQLite-level write refusal.
+
+    Restore verification and read-only service smoke must not use
+    :func:`create_database_engine`: its production connection hook deliberately
+    sets ``journal_mode=WAL``, which may update the file and create sidecars.
+    This engine opens ``mode=ro`` and also enables ``query_only`` so an accidental
+    write fails at the database boundary instead of relying on caller discipline.
+    """
+    import sqlite3
+    from urllib.parse import quote
+
+    database = Path(path).resolve()
+    if not database.is_file():
+        raise FileNotFoundError(f"database does not exist: {database}")
+    uri = f"file:{quote(database.as_posix(), safe='/')}?mode=ro"
+
+    def connect():
+        return sqlite3.connect(uri, uri=True, check_same_thread=False)
+
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        creator=connect,
+        echo=echo,
+        future=True,
+    )
+    event.listen(engine, "connect", _configure_read_only_connection)
+    return engine
+
+
 #: SQLite's answer when a transaction that already read tries to write after
 #: someone else committed: the snapshot it holds can no longer be upgraded. WAL
 #: reports it immediately -- `busy_timeout` does not apply, because waiting

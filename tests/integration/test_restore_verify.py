@@ -24,6 +24,8 @@ from personal_agent.backup.deletion_manifest import (
 from personal_agent.backup.restore_verify import (
     check_aead_sample,
     check_audit_chain_intact,
+    check_finance_reference_integrity,
+    check_finance_schema_version,
     check_integrity,
     check_replay_deletion_manifest,
     check_schema_version,
@@ -33,6 +35,7 @@ from personal_agent.storage import db
 from personal_agent.storage.engine import create_database_engine, session_factory
 from personal_agent_core.crypto import KeyRing, generate_key
 from personal_agent_core.timeutil import to_rfc3339
+from personal_data_mcp.storage import db as finance_db
 
 
 NOW = datetime(2026, 8, 1, 8, 0, tzinfo=timezone.utc)
@@ -103,6 +106,35 @@ def _add_manifest(engine, keyring: KeyRing, *, entry_id: str, object_id: str) ->
                 "now": to_rfc3339(NOW),
             },
         )
+
+
+def _seed_finance(path: Path, *, with_receipt: bool = True) -> None:
+    engine = create_database_engine(path)
+    finance_db.upgrade(engine, "head")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO tool_executions "
+                "(idempotency_key, tool, request_fingerprint, state, "
+                " state_version, client_token, created_at, updated_at, "
+                " submitted_at, completed_at) VALUES "
+                "('idem-1', 'finance.log_expense', 'fp', 'succeeded', "
+                " 5, 'token-1', :now, :now, :now, :now)"
+            ),
+            {"now": to_rfc3339(NOW)},
+        )
+        if with_receipt:
+            conn.execute(
+                text(
+                    "INSERT INTO external_receipts "
+                    "(receipt_id, idempotency_key, source_system, table_kind, "
+                    " record_id, created_at, verified_at) VALUES "
+                    "('receipt-1', 'idem-1', 'feishu_bitable', 'expense', "
+                    " 'record-1', :now, :now)"
+                ),
+                {"now": to_rfc3339(NOW)},
+            )
+    engine.dispose()
 
 
 @pytest.fixture()
@@ -176,6 +208,25 @@ def test_reference_integrity_catches_an_orphan_operation(
     assert "orphan_operations=1" in result["detail"]
 
 
+def test_finance_schema_and_receipt_integrity_pass(tmp_path: Path) -> None:
+    path = tmp_path / "finance.sqlite"
+    _seed_finance(path)
+    assert check_finance_schema_version(path)["ok"]
+    assert check_finance_reference_integrity(path)["ok"]
+
+
+def test_finance_reference_integrity_catches_success_without_receipt(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "finance.sqlite"
+    _seed_finance(path, with_receipt=False)
+
+    result = check_finance_reference_integrity(path)
+
+    assert not result["ok"]
+    assert "invalid_succeeded_receipts=1" in result["detail"]
+
+
 def test_aead_sample_opens_under_the_right_key(tmp_path: Path, keyring: KeyRing) -> None:
     path = tmp_path / "agent.sqlite"
     engine = _seed(path, keyring, conversations=["c1"])
@@ -216,7 +267,9 @@ def test_run_all_orders_aead_before_replay(tmp_path: Path, keyring: KeyRing) -> 
     # *replay* not racing the *sample* against a half-applied state. Pin that
     # run_all returns a result for each, in order.
     path = tmp_path / "agent.sqlite"
+    finance_path = tmp_path / "finance.sqlite"
     engine = _seed(path, keyring, conversations=["c1"])
+    _seed_finance(finance_path)
     _add_manifest(engine, keyring, entry_id="drill-sample", object_id="c1")
     with session_factory(engine)() as session:
         manifest = export_manifest(session)
@@ -224,9 +277,11 @@ def test_run_all_orders_aead_before_replay(tmp_path: Path, keyring: KeyRing) -> 
     results = run_all(
         path,
         keyring,
+        finance_database=finance_path,
         manifest_entries=manifest,
         aead_sample_entry_id="drill-sample",
     )
     names = [r["name"] for r in results]
+    assert "finance_reference_integrity" in names
     assert names.index("aead_sample") < names.index("deletion_manifest_replay")
     assert all(r["ok"] for r in results), [r for r in results if not r["ok"]]

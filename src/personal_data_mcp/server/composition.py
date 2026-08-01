@@ -66,6 +66,7 @@ from personal_data_mcp.storage.execution_store import scan_unfinished
 logger = logging.getLogger(__name__)
 
 RECOVERY_INTERVAL_SECONDS: Final[float] = 60.0
+RECOVERY_SCAN_LIMIT: Final[int] = 100
 
 
 @dataclass(frozen=True)
@@ -83,7 +84,7 @@ async def recover_unfinished(
     dependencies: FinanceWriteDependencies,
     *,
     owner: str,
-    validation=None,
+    limit: int = RECOVERY_SCAN_LIMIT,
 ) -> list[tuple[str, str]]:
     """Drive one snapshot of unfinished Finance executions toward truth.
 
@@ -93,15 +94,24 @@ async def recover_unfinished(
     the next bounded scan. One bad execution cannot suppress recovery of the
     rest, and log messages never include the idempotency key.
     """
+    if limit < 1:
+        raise ValueError("limit must be positive")
     with dependencies.sessions() as session:
-        keys = [row.idempotency_key for row in scan_unfinished(session)]
+        keys = [
+            row.idempotency_key
+            for row in scan_unfinished(session, limit=limit)
+        ]
     if not keys:
         return []
 
-    current_validation = validation or await fresh_validation(dependencies)
     results: list[tuple[str, str]] = []
     for key in keys:
         try:
+            # Schema evidence is per execution, not per scan. A recovery can
+            # spend seconds at each provider boundary; reusing one snapshot for
+            # every row would let a Feishu schema change after the first row go
+            # unnoticed by every later write in this slice.
+            current_validation = await fresh_validation(dependencies)
             result = await reconcile_write(
                 key,
                 sessions=dependencies.sessions,
@@ -197,7 +207,7 @@ async def finance_tools(
         )
         # Fail at boot rather than at the first write. This validation is
         # deliberately discarded: the handlers revalidate inside each call.
-        initial_validation = await fresh_validation(dependencies)
+        await fresh_validation(dependencies)
         registry = build_registry(
             expense_write_handler=build_expense_handler(dependencies),
             income_write_handler=build_income_handler(dependencies),
@@ -212,7 +222,6 @@ async def finance_tools(
             await recover_unfinished(
                 dependencies,
                 owner=recovery_owner,
-                validation=initial_validation,
             )
             recovery_task = asyncio.create_task(
                 _recover_periodically(

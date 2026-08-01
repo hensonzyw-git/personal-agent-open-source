@@ -2,9 +2,10 @@
 # restic, then prune. See deploy/backup.sh for the policy and the fail-closed
 # checks.
 #
-# Runs as the personal-agent-backup user, which is in BOTH service groups so it
-# can read the staged snapshots in /var/backups/personal-agent. It never reads
-# the live 0700 databases (those dirs are 0700 owner-only).
+# Runs as the personal-agent-backup user. The staged directories are setgid and
+# group=personal-agent-backup, so no API/MCP supplementary group is needed. Not
+# carrying those groups is what keeps both services' env and key rings outside
+# the backup process's compromise boundary.
 #
 # It does read two secrets, and both must be reachable AS THIS USER: restic.env
 # (root:backup 0640) and the file RESTIC_PASSWORD_FILE points at. restic opens
@@ -22,7 +23,6 @@ Requires=personal-agent-db-backup.service personal-data-mcp-db-backup.service
 Type=oneshot
 User=personal-agent-backup
 Group=personal-agent-backup
-SupplementaryGroups=personal-agent-api personal-data-mcp
 EnvironmentFile=/etc/personal-agent/restic.env
 # The backup user is a system user with no home, so restic's default cache path
 # (~/.cache) is an unwritable /home/personal-agent-backup. Without this it logs
@@ -33,8 +33,7 @@ ExecStart=/opt/personal-agent/deploy/backup.sh
 TimeoutStartSec=1800s
 
 # Read the staged snapshots and the unit files; write only the restic cache.
-# The live data dirs are 0700 and not listed here, so even the group membership
-# cannot reach them through this unit's filesystem view.
+# The live data dirs are 0700 and not listed here.
 ReadOnlyPaths=/var/backups/personal-agent /etc/systemd/system
 ReadWritePaths=/var/cache/restic
 PrivateTmp=yes

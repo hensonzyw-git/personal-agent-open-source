@@ -25,6 +25,7 @@ def main() -> None:
         description="Run the DEV-035 library-side restore checks on a restored DB."
     )
     parser.add_argument("--agent-database", type=Path, required=True)
+    parser.add_argument("--finance-database", type=Path, required=True)
     parser.add_argument(
         "--manifest",
         type=Path,
@@ -48,6 +49,7 @@ def main() -> None:
     results = run_all(
         args.agent_database,
         keyring,
+        finance_database=args.finance_database,
         manifest_entries=manifest_entries,
         aead_sample_entry_id=args.aead_sample_entry_id,
     )

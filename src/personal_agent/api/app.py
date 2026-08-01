@@ -235,6 +235,27 @@ class _Unauthenticated(Exception):
     """A request could not be tied to an active device."""
 
 
+def build_restore_read_only_app(session_factory: Callable[[], Any]) -> FastAPI:
+    """Minimal service-binary probe for an isolated restored database.
+
+    This mode deliberately composes no model, MCP client, recovery worker or
+    write handler. The database is supplied through a ``mode=ro`` engine by the
+    CLI; each probe request performs a real read before returning the same 401
+    an unauthenticated production capabilities request would receive.
+    """
+    app = FastAPI()
+
+    @app.get("/v1/capabilities")
+    async def restored_capabilities_probe() -> JSONResponse:
+        with session_factory() as session:
+            session.execute(text_clause("SELECT 1")).scalar_one()
+        return JSONResponse(
+            {"error": {"code": "UNAUTHENTICATED"}}, status_code=401
+        )
+
+    return app
+
+
 def build_app(deps: AgentApiDeps) -> FastAPI:
     operation_tasks: dict[str, asyncio.Task[_ProcessedChat]] = {}
     compaction_tasks: set[asyncio.Task[None]] = set()

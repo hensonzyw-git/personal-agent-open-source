@@ -17,7 +17,7 @@ from pathlib import Path
 
 import uvicorn
 
-from personal_agent.api.app import build_app
+from personal_agent.api.app import build_app, build_restore_read_only_app
 from personal_agent.api.composition import (
     AgentServiceConfig,
     CompositionError,
@@ -87,6 +87,15 @@ def main() -> None:
     )
     parser.add_argument("--log-level", default="info")
     parser.add_argument(
+        "--restore-read-only",
+        action="store_true",
+        help=(
+            "Start an isolated restore probe: open the existing database "
+            "read-only and compose no model, MCP client, recovery worker or "
+            "write route. For scripts/restore_drill.sh only."
+        ),
+    )
+    parser.add_argument(
         "--finance-mcp-url",
         default=DEFAULT_FINANCE_MCP_URL,
         help="Loopback Streamable HTTP endpoint of the Finance MCP service.",
@@ -109,6 +118,10 @@ def main() -> None:
     args = parser.parse_args()
 
     bind = resolve_bind(args.host, args.port, args.socket)
+
+    if args.restore_read_only:
+        _serve_restore_read_only(args.database, args, bind)
+        return
 
     user_id = os.environ.get("PERSONAL_AGENT_USER_ID", "").strip()
     if not user_id:
@@ -156,3 +169,26 @@ async def _serve(config: AgentServiceConfig, args, bind: BindTarget) -> None:
             )
         server = uvicorn.Server(server_config)
         await server.serve()
+
+
+def _serve_restore_read_only(database: Path, args, bind: BindTarget) -> None:
+    from personal_agent.storage.engine import (
+        check_integrity,
+        create_read_only_database_engine,
+        session_factory,
+    )
+
+    engine = create_read_only_database_engine(database)
+    try:
+        check_integrity(engine)
+        app = build_restore_read_only_app(session_factory(engine))
+        kwargs = {
+            "log_level": args.log_level,
+            "access_log": False,
+        }
+        if bind.uds is not None:
+            uvicorn.run(app, uds=bind.uds, **kwargs)
+        else:
+            uvicorn.run(app, host=bind.host, port=bind.port, **kwargs)
+    finally:
+        engine.dispose()

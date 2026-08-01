@@ -2,10 +2,11 @@
 # DEV-035: encrypt one consistent snapshot of both service databases plus the
 # protected config into the offsite OSS bucket via restic, then prune.
 #
-# Runs as the personal-agent-backup user (created by install.sh), which is in
-# both service groups so it can READ the staged snapshots -- never the live
-# 0700 databases and never a secret. The snapshots themselves are produced by
-# each service's own `*-db backup` subcommand, run by that service's own timer
+# Runs as the personal-agent-backup user (created by install.sh), which belongs
+# to neither service group. It reads snapshots through setgid staging
+# directories owned by its own group, never the live 0700 databases or service
+# secrets. The snapshots themselves are produced by each service's own `*-db
+# backup` subcommand, run by that service's own timer
 # (personal-agent-db-backup.timer / personal-data-mcp-db-backup.timer) BEFORE
 # this unit runs. This script fails closed if a staged snapshot is missing:
 # shipping a backup that omits one database is worse than not shipping.

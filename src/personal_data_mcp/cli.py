@@ -20,6 +20,15 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8811)
     parser.add_argument("--log-level", default="info")
     parser.add_argument(
+        "--restore-read-only",
+        action="store_true",
+        help=(
+            "Start an isolated restore probe with an OS-level read-only "
+            "database. Validates the protected config but composes no Finance "
+            "adapter, recovery worker or write tools."
+        ),
+    )
+    parser.add_argument(
         "--database",
         type=Path,
         default=None,
@@ -46,19 +55,47 @@ def main() -> None:
     config = ServerConfig(host=args.host, port=args.port)
 
     session_factory = None
+    engine = None
     if args.database is not None:
         from personal_data_mcp.storage.engine import (
             check_integrity,
             create_database_engine,
+            create_read_only_database_engine,
         )
         from personal_data_mcp.storage.engine import (
             session_factory as make_session_factory,
         )
 
-        engine = create_database_engine(args.database)
+        engine = (
+            create_read_only_database_engine(args.database)
+            if args.restore_read_only
+            else create_database_engine(args.database)
+        )
         if args.database.exists():
             check_integrity(engine)
         session_factory = make_session_factory(engine)
+
+    if args.restore_read_only:
+        if session_factory is None or engine is None or args.ledger_config is None:
+            raise SystemExit(
+                "--restore-read-only requires --database and --ledger-config"
+            )
+        # Parse and enforce the protected-config kind without loading Finance
+        # credentials or contacting Feishu. The served registry remains meta-only.
+        from personal_data_mcp.server.composition import load_protected_config
+
+        load_protected_config(args.ledger_config)
+        try:
+            uvicorn.run(
+                build_app(config, session_factory=session_factory),
+                host=config.host,
+                port=config.port,
+                log_level=args.log_level,
+                access_log=False,
+            )
+        finally:
+            engine.dispose()
+        return
 
     if args.ledger_config is None:
         uvicorn.run(

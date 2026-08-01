@@ -206,13 +206,36 @@ fi
 
 echo "== DEV-035 backup isolation and units =="
 BACKUP_USER=personal-agent-backup
-# The backup user is in both service groups so it can READ staged snapshots, but
-# it must NOT be able to read the live data dirs (0700 owner-only) -- group
-# membership on the staging dir is not group membership on the live dir.
+# Staging is shared through the backup user's own group. Joining either service
+# group would also expose that service's 0640 env and keys, collapsing the data-
+# key / repository-key separation DEV-035 is meant to preserve.
+BACKUP_GROUPS="$(id -nG "$BACKUP_USER")"
+for forbidden_group in "$API_USER" "$MCP_USER"; do
+  if printf '%s\n' "$BACKUP_GROUPS" | tr ' ' '\n' | grep -Fxq "$forbidden_group"; then
+    fail "$BACKUP_USER unexpectedly belongs to $forbidden_group"
+  else
+    pass "$BACKUP_USER does not belong to $forbidden_group"
+  fi
+done
+UNIT_SUPPLEMENTARY="$(systemctl show personal-agent-backup.service -p SupplementaryGroups --value)"
+if [ -z "$UNIT_SUPPLEMENTARY" ]; then
+  pass "backup unit declares no supplementary service groups"
+else
+  fail "backup unit declares supplementary groups: $UNIT_SUPPLEMENTARY"
+fi
+
 expect_isolated "the live api database dir" "$API_USER" "$BACKUP_USER" \
   ls /var/lib/personal-agent-api
 expect_isolated "the live mcp database dir" "$MCP_USER" "$BACKUP_USER" \
   ls /var/lib/personal-data-mcp
+expect_isolated "the api env from the backup user" "$API_USER" "$BACKUP_USER" \
+  head -c 1 /etc/personal-agent/api.env
+expect_isolated "the mcp env from the backup user" "$MCP_USER" "$BACKUP_USER" \
+  head -c 1 /etc/personal-agent/mcp.env
+expect_isolated "the api key dir from the backup user" "$API_USER" "$BACKUP_USER" \
+  ls /etc/personal-agent/keys/api
+expect_isolated "the mcp key dir from the backup user" "$MCP_USER" "$BACKUP_USER" \
+  ls /etc/personal-agent/keys/mcp
 # Positive control: the backup user CAN read the staging dirs (so the refusal
 # above is isolation, not absence of the path).
 expect_success "backup user can read api staging dir" \

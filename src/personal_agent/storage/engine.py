@@ -14,6 +14,7 @@ from personal_agent_core.sqlite import (
     DatabaseIntegrityError,
     check_integrity,
     create_database_engine,
+    create_read_only_database_engine,
     session_factory,
 )
 from personal_agent_core.sqlite import create_all as _create_all
@@ -25,6 +26,7 @@ __all__ = [
     "check_integrity",
     "create_all",
     "create_database_engine",
+    "create_read_only_database_engine",
     "session_factory",
 ]
 

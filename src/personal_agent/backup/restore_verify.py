@@ -24,31 +24,43 @@ from sqlalchemy import text
 
 from personal_agent.backup.deletion_manifest import replay_manifest
 from personal_agent.storage import db
-from personal_agent.storage.engine import create_database_engine, session_factory
+from personal_agent.storage.engine import (
+    create_database_engine,
+    create_read_only_database_engine,
+    session_factory,
+)
 
 
-def check_integrity(database: Path) -> dict[str, Any]:
-    engine = create_database_engine(database)
+def check_integrity(
+    database: Path, *, name: str = "integrity_check"
+) -> dict[str, Any]:
+    engine = create_read_only_database_engine(database)
     try:
         with engine.connect() as conn:
             result = conn.execute(text("PRAGMA integrity_check")).scalar_one()
     finally:
         engine.dispose()
     return {
-        "name": "integrity_check",
+        "name": name,
         "ok": result == "ok",
         "detail": f"integrity_check={result}",
     }
 
 
-def check_schema_version(database: Path, expected: str = "head") -> dict[str, Any]:
+def _check_schema_version(
+    database: Path,
+    *,
+    migrations_path: Path,
+    name: str,
+    expected: str = "head",
+) -> dict[str, Any]:
     """The restored DB must be at the current schema revision.
 
     A snapshot taken before a migration restores at the old revision; running
     it against the current service would either fail or silently use the old
     shape. ``expected='head'`` resolves to the package's current head.
     """
-    engine = create_database_engine(database)
+    engine = create_read_only_database_engine(database)
     try:
         from alembic.runtime.migration import MigrationContext
 
@@ -64,10 +76,10 @@ def check_schema_version(database: Path, expected: str = "head") -> dict[str, An
             from alembic.script import ScriptDirectory
 
             cfg = Config()
-            cfg.set_main_option("script_location", str(db.MIGRATIONS_PATH))
+            cfg.set_main_option("script_location", str(migrations_path))
             target = ScriptDirectory.from_config(cfg).get_current_head()
         return {
-            "name": "schema_version",
+            "name": name,
             "ok": current_rev == target,
             "detail": f"restored={current_rev} expected={target}",
         }
@@ -75,18 +87,42 @@ def check_schema_version(database: Path, expected: str = "head") -> dict[str, An
         engine.dispose()
 
 
-def check_audit_chain_intact(database: Path) -> dict[str, Any]:
-    """The Finance-side audit chain lives in the MCP database, not here.
+def check_schema_version(database: Path, expected: str = "head") -> dict[str, Any]:
+    return _check_schema_version(
+        database,
+        migrations_path=db.MIGRATIONS_PATH,
+        name="schema_version",
+        expected=expected,
+    )
 
-    For the Agent database the reference-integrity check that matters is the
-    operation/receipt lineage: every terminal operation that claims success
-    must reference an api_request, and the idempotency keys must be unique.
-    This runs a bounded query rather than importing the full recovery layer,
-    so it works on a cold restored file with no service running.
+
+def check_finance_schema_version(
+    database: Path, expected: str = "head"
+) -> dict[str, Any]:
+    from personal_data_mcp.storage import db as finance_db
+
+    return _check_schema_version(
+        database,
+        migrations_path=finance_db.MIGRATIONS_PATH,
+        name="finance_schema_version",
+        expected=expected,
+    )
+
+
+def check_agent_reference_integrity(database: Path) -> dict[str, Any]:
+    """Verify the Agent-side request/operation and foreign-key lineage.
+
+    SQLite's ``integrity_check`` does not validate foreign keys. A backup can be
+    page-perfect while an operation points at a request that is no longer there,
+    so the restore gate checks both the full FK graph and the explicit
+    idempotency invariants the service depends on.
     """
-    engine = create_database_engine(database)
+    engine = create_read_only_database_engine(database)
     try:
         with engine.connect() as conn:
+            foreign_key_violations = len(
+                conn.execute(text("PRAGMA foreign_key_check")).all()
+            )
             # Operations whose request_id does not resolve to an api_request
             # row: a restored DB with a broken foreign reference cannot be
             # trusted to report what happened.
@@ -104,11 +140,74 @@ def check_audit_chain_intact(database: Path) -> dict[str, Any]:
                     "GROUP BY idempotency_key HAVING count(*) > 1)"
                 )
             ).scalar_one()
-        ok = orphans == 0 and dupes == 0
+        ok = foreign_key_violations == 0 and orphans == 0 and dupes == 0
         return {
             "name": "reference_integrity",
             "ok": ok,
-            "detail": f"orphan_operations={orphans} duplicate_idempotency_keys={dupes}",
+            "detail": (
+                f"foreign_key_violations={foreign_key_violations} "
+                f"orphan_operations={orphans} duplicate_idempotency_keys={dupes}"
+            ),
+        }
+    finally:
+        engine.dispose()
+
+
+# Historical public name retained for callers outside the drill package.
+check_audit_chain_intact = check_agent_reference_integrity
+
+
+def check_finance_reference_integrity(database: Path) -> dict[str, Any]:
+    """Verify Finance idempotency rows and the receipts that justify success."""
+    engine = create_read_only_database_engine(database)
+    try:
+        with engine.connect() as conn:
+            foreign_key_violations = len(
+                conn.execute(text("PRAGMA foreign_key_check")).all()
+            )
+            orphan_receipts = conn.execute(
+                text(
+                    "SELECT count(*) FROM external_receipts r "
+                    "LEFT JOIN tool_executions e "
+                    "ON e.idempotency_key = r.idempotency_key "
+                    "WHERE e.idempotency_key IS NULL"
+                )
+            ).scalar_one()
+            invalid_successes = conn.execute(
+                text(
+                    "SELECT count(*) FROM ("
+                    " SELECT e.idempotency_key"
+                    " FROM tool_executions e"
+                    " LEFT JOIN external_receipts r"
+                    "   ON r.idempotency_key = e.idempotency_key"
+                    " WHERE e.state = 'succeeded'"
+                    " GROUP BY e.idempotency_key, e.tool"
+                    " HAVING count(r.receipt_id) <> 1"
+                    "    OR sum(CASE"
+                    "         WHEN r.verified_at IS NOT NULL"
+                    "          AND length(trim(r.record_id)) > 0"
+                    "          AND r.table_kind = CASE e.tool"
+                    "            WHEN 'finance.log_expense' THEN 'expense'"
+                    "            WHEN 'finance.log_income' THEN 'income'"
+                    "            WHEN 'finance.update_family_fund' THEN 'family_fund'"
+                    "            ELSE '__unsupported__' END"
+                    "         THEN 1 ELSE 0 END) <> 1"
+                    ")"
+                )
+            ).scalar_one()
+        ok = (
+            foreign_key_violations == 0
+            and orphan_receipts == 0
+            and invalid_successes == 0
+        )
+        return {
+            "name": "finance_reference_integrity",
+            "ok": ok,
+            "detail": (
+                f"foreign_key_violations={foreign_key_violations} "
+                f"orphan_receipts={orphan_receipts} "
+                f"invalid_succeeded_receipts={invalid_successes}"
+            ),
         }
     finally:
         engine.dispose()
@@ -126,7 +225,7 @@ def check_aead_sample(
     """
     from personal_agent.backup.deletion_manifest import MANIFEST_COLUMN, MANIFEST_TABLE
 
-    engine = create_database_engine(database)
+    engine = create_read_only_database_engine(database)
     try:
         with engine.connect() as conn:
             row = conn.execute(
@@ -203,6 +302,7 @@ def run_all(
     database: Path,
     keyring,
     *,
+    finance_database: Path | None = None,
     manifest_entries: list[dict[str, Any]] | None = None,
     aead_sample_entry_id: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -217,8 +317,18 @@ def run_all(
     results = [
         check_integrity(database),
         check_schema_version(database),
-        check_audit_chain_intact(database),
+        check_agent_reference_integrity(database),
     ]
+    if finance_database is not None:
+        results.extend(
+            [
+                check_integrity(
+                    finance_database, name="finance_integrity_check"
+                ),
+                check_finance_schema_version(finance_database),
+                check_finance_reference_integrity(finance_database),
+            ]
+        )
     if aead_sample_entry_id is not None:
         results.append(check_aead_sample(database, keyring, entry_id=aead_sample_entry_id))
     if manifest_entries is not None:
