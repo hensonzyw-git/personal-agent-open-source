@@ -324,8 +324,9 @@ def missing_capabilities() -> list[Finding]:
         Finding(
             "backup_age_unknown",
             "info",
-            "no backup age check: DEV-035 is not built, so there are no backups "
-            "to age. This is not 'backups are fresh'",
+            "no backup age check: backups run on a timer and land in OSS "
+            "(DEV-035), but nothing reads their age yet (DEV-036). This is not "
+            "'backups are fresh'",
         ),
         Finding(
             "push_metrics_unwired",

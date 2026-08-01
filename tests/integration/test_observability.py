@@ -318,6 +318,26 @@ def test_the_report_says_what_it_cannot_see() -> None:
     assert worst_severity(missing_capabilities()) == "info"
 
 
+def test_the_backup_gap_does_not_claim_there_are_no_backups() -> None:
+    """A gap message ages with the project, and this one aged into a lie.
+
+    It read "DEV-035 is not built, so there are no backups to age" for as long
+    as that was true, and kept reading it after DEV-035 shipped, timers were
+    enabled and real snapshots were sitting in OSS -- so the daily report was
+    telling its only reader that no backup existed. A message about a missing
+    measurement must never make a claim about the thing being measured.
+    """
+    detail = next(
+        finding.detail
+        for finding in missing_capabilities()
+        if finding.code == "backup_age_unknown"
+    )
+    assert "not built" not in detail
+    assert "there are no backups" not in detail
+    # It must still refuse to be read as reassurance.
+    assert "backups are fresh" in detail
+
+
 # --- the CLI contract ---------------------------------------------------------
 
 
