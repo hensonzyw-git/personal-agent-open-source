@@ -36,10 +36,18 @@ def _backup(database: Path, out: Path) -> int:
     separate from ``1`` so a missing or locked database is not mis-read as a
     corrupt one -- they need different operators' attention.
     """
-    from personal_agent_core.sqlite import BackupError, BackupUnavailableError, online_backup
+    from personal_agent_core.sqlite import (
+        STAGED_SNAPSHOT_MODE,
+        BackupError,
+        BackupUnavailableError,
+        online_backup,
+    )
 
     try:
-        online_backup(database, out)
+        # 0640, not the 0600 default: this snapshot exists to be read by the
+        # personal-agent-backup user through the staging dir's group. Owner-only
+        # here means the offsite backup can stat the file and open none of it.
+        online_backup(database, out, mode=STAGED_SNAPSHOT_MODE)
     except BackupUnavailableError as exc:
         print(f"backup unavailable: {exc}", file=sys.stderr)
         return 2

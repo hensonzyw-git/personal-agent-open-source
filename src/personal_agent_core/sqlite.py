@@ -293,11 +293,22 @@ def _integrity_check(path: Path) -> str:
     return row[0] if row else ""
 
 
+#: Default snapshot mode: owner-only. A snapshot of a 0600 service database is
+#: exactly as sensitive as the database, so widening is opt-in and per-call.
+SNAPSHOT_MODE: Final[int] = 0o600
+
+#: The mode a snapshot needs when it is staged for the offsite backup user. The
+#: staging directory is 2770 root-of-service:personal-agent-backup with no
+#: 'other' bits, so 0640 shares the file with that one group and nobody else.
+STAGED_SNAPSHOT_MODE: Final[int] = 0o640
+
+
 def online_backup(
     source: Path | str,
     destination: Path,
     *,
     busy_timeout_ms: int = BUSY_TIMEOUT_MS,
+    mode: int = SNAPSHOT_MODE,
     _verify: Callable[[Path], str] = _integrity_check,
 ) -> Path:
     """Copy a live SQLite database into a consistent snapshot file.
@@ -315,6 +326,12 @@ def online_backup(
     other than ``ok`` is deleted and raised as :class:`BackupError` -- a corrupt
     snapshot is worse than no snapshot, because restic would faithfully encrypt
     and ship the corruption offsite.
+
+    ``mode`` is applied to the finished file explicitly, so the result never
+    depends on the caller's umask. It defaults to owner-only; a caller staging
+    the snapshot for the offsite backup user passes
+    :data:`STAGED_SNAPSHOT_MODE`, which is the only widening in the system and
+    is readable only to the staging directory's group.
 
     Returns the destination path on success.
     """
@@ -346,7 +363,9 @@ def online_backup(
     tmp_path = Path(tmp_name)
     # The temp file is created world-readable by mkstemp; a snapshot of a
     # 0600 service database must not leak through a backup staging directory.
-    os.chmod(tmp_path, 0o600)
+    # The half-written file is always owner-only, whatever the final mode is:
+    # nothing may read a snapshot that has not passed integrity_check yet.
+    os.chmod(tmp_path, SNAPSHOT_MODE)
 
     try:
         # A fresh destination connection owns its own file; opening it before the
@@ -371,16 +390,20 @@ def online_backup(
             )
 
         os.replace(tmp_path, destination)
-        # os.replace inherits the temp's 0600; assert it explicitly so a future
-        # umask change cannot quietly widen a snapshot.
-        os.chmod(destination, 0o600)
+        # os.replace inherits the temp's mode; set the requested one explicitly
+        # so neither a umask nor a pre-existing destination decides it.
+        os.chmod(destination, mode)
         return destination
-    except BaseException:
-        # Any path through here -- a raised BackupError included -- must not
-        # leave the temp file behind, or the next run's mkstemp collides and a
-        # half-written snapshot lingers in the staging directory.
-        tmp_path.unlink(missing_ok=True)
-        raise
+    finally:
+        # The destination connection is WAL-capable, so sqlite may have created
+        # `<tmp>-shm` / `<tmp>-wal` siblings. os.replace moves only the main
+        # file, so without this every run leaves two orphans behind in the
+        # staging directory -- observed accumulating there on 2026-08-01.
+        # `unlink` on the temp itself is a no-op after a successful replace and
+        # the cleanup an error path needs: a half-written snapshot must never
+        # linger where a later step could mistake it for a good one.
+        for orphan in (tmp_path, Path(f"{tmp_path}-shm"), Path(f"{tmp_path}-wal")):
+            orphan.unlink(missing_ok=True)
 
 
 def session_factory(engine: Engine) -> sessionmaker[Session]:

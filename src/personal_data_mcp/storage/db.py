@@ -31,10 +31,17 @@ def _backup(database: Path, out: Path) -> int:
     the backup process never reads a secret or crosses a service boundary.
     Exit codes: 1 = snapshot failed integrity, 2 = source could not be opened.
     """
-    from personal_agent_core.sqlite import BackupError, BackupUnavailableError, online_backup
+    from personal_agent_core.sqlite import (
+        STAGED_SNAPSHOT_MODE,
+        BackupError,
+        BackupUnavailableError,
+        online_backup,
+    )
 
     try:
-        online_backup(database, out)
+        # 0640: staged for the personal-agent-backup user via the staging dir's
+        # group. See personal_agent.storage.db._backup for the same reasoning.
+        online_backup(database, out, mode=STAGED_SNAPSHOT_MODE)
     except BackupUnavailableError as exc:
         print(f"backup unavailable: {exc}", file=sys.stderr)
         return 2

@@ -219,16 +219,32 @@ expect_success "backup user can read api staging dir" \
   sudo -u "$BACKUP_USER" ls /var/backups/personal-agent/api
 expect_success "backup user can read mcp staging dir" \
   sudo -u "$BACKUP_USER" ls /var/backups/personal-agent/mcp
-# Staging dirs: 0770, owned by the service user, group backup, no 'other'.
+# Listing a directory is not opening a file, and on 2026-08-01 that difference
+# was the whole defect: the dirs were 0770 group=backup and listed fine, while
+# every staged file inside was 0600 owner-only under UMask=0077. The backup ran,
+# stat'd all three inputs, and died on its first actual read. Assert the read.
+for pair in "agent.latest.sqlite:api" "deletion-manifest.json:api" \
+            "finance.latest.sqlite:mcp"; do
+  f="${pair%%:*}"; sub="${pair##*:}"
+  p=/var/backups/personal-agent/$sub/$f
+  if [ ! -e "$p" ]; then
+    fail "staged file $p does not exist (has the db-backup unit run?)"
+  else
+    expect_success "backup user can OPEN staged $sub/$f" \
+      sudo -u "$BACKUP_USER" head -c 1 "$p"
+  fi
+done
+# Staging dirs: 2770, owned by the service user, group backup, no 'other'. The
+# setgid bit is what makes new staged files inherit the backup group.
 for pair in "$API_USER:api" "$MCP_USER:mcp"; do
   owner="${pair%%:*}"; sub="${pair##*:}"
   d=/var/backups/personal-agent/$sub
-  m="$(stat -c %a "$d")"; while [ "${#m}" -lt 3 ]; do m="0$m"; done
+  m="$(stat -c %a "$d")"; while [ "${#m}" -lt 4 ]; do m="0$m"; done
   if [ "$(stat -c %U "$d")" = "$owner" ] && [ "$(stat -c %G "$d")" = "$BACKUP_USER" ] \
-     && [ "${m: -1}" = "0" ]; then
+     && [ "${m: -1}" = "0" ] && [ "${m:0:1}" = "2" ]; then
     pass "staging dir $d is $owner:$BACKUP_USER/$m"
   else
-    fail "staging dir $d is $(stat -c %U:%G "$d")/$m, want $owner:$BACKUP_USER with no 'other'"
+    fail "staging dir $d is $(stat -c %U:%G "$d")/$m, want $owner:$BACKUP_USER setgid (2770) with no 'other'"
   fi
 done
 expect_success "personal-agent-backup.timer enabled" \
@@ -237,8 +253,10 @@ expect_success "personal-agent-db-backup.timer enabled" \
   systemctl is-enabled --quiet personal-agent-db-backup.timer
 expect_success "personal-data-mcp-db-backup.timer enabled" \
   systemctl is-enabled --quiet personal-data-mcp-db-backup.timer
-# restic.env is root:backup 0640 so the backup user can read OSS creds, but the
-# repo PASSWORD file is root-only (the off-machine key is the real secret).
+# restic.env is root:backup 0640 so the backup user can read OSS creds. The repo
+# password file must be readable by the SAME user -- restic opens it under the
+# unit's User=, so a root-only key fails closed at run time instead of being
+# safer. Both stay unreadable to the api and mcp users.
 if [ -f /etc/personal-agent/restic.env ]; then
   re_mode="$(stat -c %a /etc/personal-agent/restic.env)"; while [ "${#re_mode}" -lt 3 ]; do re_mode="0$re_mode"; done
   if [ "$(stat -c %G /etc/personal-agent/restic.env)" = "$BACKUP_USER" ] \
@@ -251,6 +269,28 @@ if [ -f /etc/personal-agent/restic.env ]; then
     sudo -u "$API_USER" head -c 1 /etc/personal-agent/restic.env
   expect_refused "mcp user cannot read restic.env" \
     sudo -u "$MCP_USER" head -c 1 /etc/personal-agent/restic.env
+  # The gap that let a root-only key ship on 2026-08-01: restic.env's own mode
+  # was asserted, the key it points at was not, so the unit was one run away
+  # from EACCES while every check stayed green. Never print the value.
+  PW_FILE="$(sed -n 's/^RESTIC_PASSWORD_FILE=//p' /etc/personal-agent/restic.env | tail -1)"
+  if [ -z "$PW_FILE" ]; then
+    fail "restic.env has no RESTIC_PASSWORD_FILE"
+  elif [ ! -f "$PW_FILE" ]; then
+    fail "RESTIC_PASSWORD_FILE points at a missing file"
+  else
+    expect_success "backup user can read the repo password file" \
+      sudo -u "$BACKUP_USER" test -r "$PW_FILE"
+    expect_refused "api user cannot read the repo password file" \
+      sudo -u "$API_USER" head -c 1 "$PW_FILE"
+    expect_refused "mcp user cannot read the repo password file" \
+      sudo -u "$MCP_USER" head -c 1 "$PW_FILE"
+    pw_mode="$(stat -c %a "$PW_FILE")"; while [ "${#pw_mode}" -lt 3 ]; do pw_mode="0$pw_mode"; done
+    if [ "${pw_mode: -1}" = "0" ]; then
+      pass "repo password file has no 'other' access ($pw_mode)"
+    else
+      fail "repo password file is world-accessible ($pw_mode)"
+    fi
+  fi
 fi
 
 echo "== operator cli =="

@@ -66,12 +66,22 @@ install -d -m 0750 -o root -g "$MCP_USER" /etc/personal-agent/keys/mcp
 # Application code: owned by the deploy user; services only read and execute.
 install -d -m 0755 -o "$DEPLOY_USER" -g "$DEPLOY_USER" /opt/personal-agent
 
-# DEV-035: staging dirs for the daily snapshots. Each is 0770 owned by its
+# DEV-035: staging dirs for the daily snapshots. Each is 2770 owned by its
 # service user with the backup user in the group, so the service writes the
 # snapshot and the backup user reads it -- and nobody else can. The live data
 # dirs above stay 0700, so group membership here grants no access to them.
-install -d -m 0770 -o "$API_USER" -g "$BACKUP_USER" /var/backups/personal-agent/api
-install -d -m 0770 -o "$MCP_USER" -g "$BACKUP_USER" /var/backups/personal-agent/mcp
+#
+# The setgid bit is load-bearing, not tidiness: without it a file created here
+# takes the writer's own primary group (personal-agent-api / personal-data-mcp),
+# and the backup user -- who is in neither -- can list the directory but open
+# nothing in it. Group inheritance plus the units' UMask=0027 is what actually
+# makes the staged files readable; the directory mode alone never did.
+install -d -m 2770 -o "$API_USER" -g "$BACKUP_USER" /var/backups/personal-agent/api
+install -d -m 2770 -o "$MCP_USER" -g "$BACKUP_USER" /var/backups/personal-agent/mcp
+# `install -d` on an existing directory does not reapply the mode, so make the
+# setgid bit and group explicit for boxes provisioned before this change.
+chmod 2770 /var/backups/personal-agent/api /var/backups/personal-agent/mcp
+chgrp "$BACKUP_USER" /var/backups/personal-agent/api /var/backups/personal-agent/mcp
 # The restic cache is the only path the backup unit writes.
 install -d -m 0700 -o "$BACKUP_USER" -g "$BACKUP_USER" /var/cache/restic
 
@@ -104,6 +114,9 @@ install -m 0644 -o root -g root \
   "$UNIT_SRC/personal-agent-backup.service" \
   "$UNIT_SRC/personal-agent-backup.timer" /etc/systemd/system/
 # The backup script is executed by the backup user from /opt/personal-agent.
+# /opt/personal-agent exists (created above), but its deploy/ subdir does not
+# until the first DEV-035 install, so create it here.
+install -d -m 0755 -o "$DEPLOY_USER" -g "$DEPLOY_USER" /opt/personal-agent/deploy
 install -m 0755 -o "$DEPLOY_USER" -g "$DEPLOY_USER" \
   "$(cd "$(dirname "$0")" && pwd)/backup.sh" /opt/personal-agent/deploy/backup.sh
 systemctl daemon-reload

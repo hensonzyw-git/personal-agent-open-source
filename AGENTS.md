@@ -310,10 +310,18 @@ conflict instead of silently choosing an old default.
   `online_backup` primitive, both `*-db backup` CLIs, the deletion-manifest
   export/replay, the restore-verify library, `deploy/backup.sh` + three systemd
   timer/service pairs behind a least-privilege `personal-agent-backup` user,
-  and `scripts/restore_drill.sh`. The offline suite passes (1660 tests, +26).
-  Still outstanding: the ECS deploy of these units, a real `restic backup`
-  against OSS, and the Mac off-machine restore drill (the **G5 precondition
-  gate** — real personal ledger credentials do not land until it passes). The
+  and `scripts/restore_drill.sh`. The offline suite passes (1664 tests).
+  **The ECS deploy and the first real OSS backup landed on 2026-08-01**
+  (`docs/evidence/DEV035_部署与首次真实备份_2026-08-01.md`): snapshot `3b11537b`
+  with all eight inputs, clean `restic check`, `verify.sh` 55 PASS / 0 FAIL,
+  three timers enabled. It took six fixes that no offline test could have
+  caught — chiefly staging dirs without setgid combined with `UMask=0077` and a
+  hard-coded `0600`, which let the backup user list every staged file and open
+  none, and a ledger config read straight from a `0700` live data dir. `verify.sh`
+  had missed both by asserting `ls` on a directory instead of a read of a file.
+  Still outstanding: the Mac off-machine restore drill (the **G5 precondition
+  gate** — real personal ledger credentials do not land until it passes). Today
+  proves the backup writes out, not that the data restores back. The
   ECS clock was checked and is correct
   (`docs/evidence/DEV035_ECS时钟核对_2026-08-01.md`). DEV-036 follows DEV-035.
   APNs inputs are complete but sender/device-registration code is not built,

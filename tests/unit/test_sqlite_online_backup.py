@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 
 from personal_agent_core.sqlite import (
+    SNAPSHOT_MODE,
+    STAGED_SNAPSHOT_MODE,
     BackupError,
     BackupUnavailableError,
     online_backup,
@@ -92,6 +94,56 @@ def test_backup_destination_mode_is_0600(tmp_path: Path) -> None:
 
     mode = destination.stat().st_mode & 0o777
     assert mode == 0o600, f"expected 0600 snapshot, got {oct(mode)}"
+
+
+def test_backup_leaves_no_wal_sidecars_behind(tmp_path: Path) -> None:
+    """os.replace moves the main file only. Without explicit cleanup each run
+    leaks a `-shm` and a `-wal` orphan into the staging directory, which is
+    where they were found accumulating on 2026-08-01."""
+    source = tmp_path / "live.sqlite"
+    _seed(source)
+    destination = tmp_path / "snap.sqlite"
+
+    online_backup(source, destination)
+
+    leftovers = sorted(
+        p.name for p in tmp_path.iterdir() if p.name.startswith(".")
+    )
+    assert leftovers == [], f"staging dir kept orphans: {leftovers}"
+
+
+def test_backup_honours_an_explicit_staged_mode(tmp_path: Path) -> None:
+    """A staged snapshot must be group-readable, or the offsite backup can only
+    stat it. On 2026-08-01 the hard-coded 0600 made every staged file
+    unreadable to personal-agent-backup while the directory looked correct."""
+    source = tmp_path / "live.sqlite"
+    _seed(source)
+    destination = tmp_path / "snap.sqlite"
+
+    online_backup(source, destination, mode=STAGED_SNAPSHOT_MODE)
+
+    mode = destination.stat().st_mode & 0o777
+    assert mode == 0o640, f"expected 0640 staged snapshot, got {oct(mode)}"
+
+
+def test_staged_mode_never_grants_other_access() -> None:
+    """Group-readable is the widening; world-readable never is."""
+    assert STAGED_SNAPSHOT_MODE & 0o007 == 0
+    assert SNAPSHOT_MODE & 0o077 == 0
+
+
+def test_explicit_mode_overrides_a_stale_destination_mode(tmp_path: Path) -> None:
+    """os.replace inherits the temp file's mode, so a pre-existing destination
+    must not decide the result either way."""
+    source = tmp_path / "live.sqlite"
+    _seed(source)
+    destination = tmp_path / "snap.sqlite"
+    destination.write_bytes(b"stale")
+    destination.chmod(0o666)
+
+    online_backup(source, destination, mode=STAGED_SNAPSHOT_MODE)
+
+    assert destination.stat().st_mode & 0o777 == 0o640
 
 
 def test_backup_overwrites_a_stale_destination(tmp_path: Path) -> None:

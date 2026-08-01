@@ -4,9 +4,15 @@
 #
 # Runs as the personal-agent-backup user, which is in BOTH service groups so it
 # can read the staged snapshots in /var/backups/personal-agent. It never reads
-# the live 0700 databases (those dirs are 0700 owner-only) and never reads a
-# secret: restic.env is root:backup 0640, and the repo password file is root
-# only, reached through RESTIC_PASSWORD_FILE.
+# the live 0700 databases (those dirs are 0700 owner-only).
+#
+# It does read two secrets, and both must be reachable AS THIS USER: restic.env
+# (root:backup 0640) and the file RESTIC_PASSWORD_FILE points at. restic opens
+# the password file itself, under this unit's User=, NoNewPrivileges=yes and an
+# empty CapabilityBoundingSet -- so a root-only 0600 key, or a 0700 directory
+# above it, is not "extra safe", it is EACCES at run time. Keep the key
+# root:backup 0640 inside a root:backup 0750 directory. Confidentiality against
+# the other services still holds: neither api nor mcp is in this group.
 [Unit]
 Description=Personal Agent offsite backup (restic -> OSS)
 After=personal-agent-db-backup.service personal-data-mcp-db-backup.service
@@ -18,6 +24,11 @@ User=personal-agent-backup
 Group=personal-agent-backup
 SupplementaryGroups=personal-agent-api personal-data-mcp
 EnvironmentFile=/etc/personal-agent/restic.env
+# The backup user is a system user with no home, so restic's default cache path
+# (~/.cache) is an unwritable /home/personal-agent-backup. Without this it logs
+# "unable to open cache" and re-reads every pack on each run. /var/cache/restic
+# is created by install.sh and is the only path this unit may write.
+Environment=RESTIC_CACHE_DIR=/var/cache/restic
 ExecStart=/opt/personal-agent/deploy/backup.sh
 TimeoutStartSec=1800s
 

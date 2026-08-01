@@ -12,7 +12,10 @@ After=personal-agent-api.service
 Type=oneshot
 User=personal-agent-api
 Group=personal-agent-api
-UMask=0077
+# 0027, not 0077: the staged files exist to be read by personal-agent-backup,
+# which reaches them through the setgid staging dir's group. 0077 makes every
+# staged file owner-only, so the offsite backup can stat them and open none.
+UMask=0027
 ExecStart=/opt/personal-agent/.venv/bin/personal-agent-db \
     --database /var/lib/personal-agent-api/agent.sqlite \
     backup --out /var/backups/personal-agent/api/agent.latest.sqlite

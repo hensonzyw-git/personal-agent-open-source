@@ -25,6 +25,7 @@ from pathlib import Path
 
 from personal_agent.backup.deletion_manifest import export_manifest
 from personal_agent.storage.engine import create_database_engine, session_factory
+from personal_agent_core.sqlite import SNAPSHOT_MODE, STAGED_SNAPSHOT_MODE
 
 
 def main() -> None:
@@ -54,11 +55,15 @@ def main() -> None:
     os.close(fd)
     tmp_path = Path(tmp_name)
     try:
-        os.chmod(tmp_path, 0o600)
+        # Owner-only while it is half-written; 0640 once it is complete, because
+        # the personal-agent-backup user has to read it out of the staging dir
+        # to ship it. The dir is 2770 with no 'other' bits, so 0640 reaches that
+        # one group and nothing else.
+        os.chmod(tmp_path, SNAPSHOT_MODE)
         with open(tmp_path, "w", encoding="utf-8") as fh:
             json.dump(entries, fh, ensure_ascii=False, sort_keys=True)
         os.replace(tmp_path, args.out)
-        os.chmod(args.out, 0o600)
+        os.chmod(args.out, STAGED_SNAPSHOT_MODE)
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise

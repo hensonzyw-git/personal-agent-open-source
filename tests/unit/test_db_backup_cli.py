@@ -60,8 +60,11 @@ def test_backup_cli_produces_verified_snapshot(
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     finally:
         conn.close()
+    # Both service CLIs stage for the offsite backup user, so 0640 is the
+    # contract here -- 0600 is what made the 2026-08-01 backup run fail on its
+    # first real read after passing every presence check.
     mode = out.stat().st_mode & 0o777
-    assert mode == 0o600
+    assert mode == 0o640, f"staged snapshot must be group-readable, got {oct(mode)}"
 
 
 @pytest.mark.parametrize("db_module", [agent_db, mcp_db])

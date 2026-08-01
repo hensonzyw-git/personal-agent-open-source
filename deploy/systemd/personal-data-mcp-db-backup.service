@@ -10,10 +10,20 @@ After=personal-data-mcp.service
 Type=oneshot
 User=personal-data-mcp
 Group=personal-data-mcp
-UMask=0077
+# 0027, not 0077: see personal-agent-db-backup.service. The staged snapshot is
+# written to be read by the backup user via the setgid staging dir's group.
+UMask=0027
 ExecStart=/opt/personal-agent/.venv/bin/personal-data-mcp-db \
     --database /var/lib/personal-data-mcp/finance.sqlite \
     backup --out /var/backups/personal-agent/mcp/finance.latest.sqlite
+# Stage the protected ledger config too. It lives in the 0700 live data dir, so
+# the backup user can never read it there -- restic tried on 2026-08-01 and got
+# EPERM after it had already written a partial snapshot. A restore needs the
+# config that was in force, so it is staged like the snapshot: written by the
+# owning service, 0640, group-inherited from the setgid staging dir.
+ExecStartPost=/usr/bin/install -m 0640 \
+    /var/lib/personal-data-mcp/ledger.synthetic_test.2026.json \
+    /var/backups/personal-agent/mcp/ledger.synthetic_test.2026.json
 TimeoutStartSec=300s
 
 ReadWritePaths=/var/backups/personal-agent/mcp
