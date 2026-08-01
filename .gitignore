@@ -19,6 +19,10 @@ __pycache__/
 *.key
 *.p12
 *.pfx
+# APNs auth keys. Apple lets you download a `.p8` exactly once and never again,
+# which makes the natural instinct — keep a copy somewhere handy — point
+# straight at the repo.
+*.p8
 secrets/
 
 # Protected server-side ledger configuration. It carries Base, table and field
