@@ -254,6 +254,35 @@ database's mode — which is exactly the mechanism that makes the fix stick.
 `verify.sh` now asserts every file in both directories, so a missed run shows up
 as a `FAIL` rather than as nothing at all.
 
+### If `deploy_code.sh` dies with "Connection closed by ... port 22"
+
+`fail2ban` is active on this box, and a session that opens many SSH connections
+in a short window gets banned briefly (observed 2026-08-01: four bans in a day
+of deployment work, each expiring on its own). The symptom is confusing because
+short interactive `ssh` keeps working between drops while `scp` fails, which
+invites a diagnosis about the sftp subsystem. It is not sftp — `sftp-server` is
+present and fine.
+
+Two things follow:
+
+- **Check the exit code, not the tail.** `deploy_code.sh` runs under `set -e`
+  and aborts before its success echoes, so a failed run prints the build line
+  and stops. Piping it to `tail` hides `exit=255` and makes a failed deploy look
+  finished — after which restarting the services silently reruns the *old*
+  build. Confirm what actually landed:
+
+  ```sh
+  ssh -i ~/.ssh/personal_agent_example_key deploy@192.0.2.10 \
+    '/opt/personal-agent/.venv/bin/pip show personal-agent | head -2'
+  ```
+
+- **Batch remote work into one connection**, and prefer `rsync` (which uses the
+  shell transport) over repeated `scp` when a ban is in progress.
+
+  ```sh
+  sudo fail2ban-client status sshd    # "Currently banned" tells you if it is this
+  ```
+
 ## Health check and alerts (DEV-034)
 
 `personal-data-mcp-observe.timer` runs every 15 minutes as `personal-data-mcp`
