@@ -1,0 +1,356 @@
+"""`DEV-034`: the alert path, exercised end to end against real databases.
+
+No stub reports and no stub filesystem: every test below builds a real SQLite
+database with `create_all`, writes real `ToolExecution` and `AuditEvent` rows,
+and runs the real `personal-data-mcp-observe` entry point. §5.1's rule about
+fakes applies with force here, because a monitor is precisely the kind of code
+that is only ever exercised by its own test doubles until the day it matters.
+
+The property this file cares about most is not "does it find problems" but
+**"can it ever be silent about one"**. Hence the exit-code tests, the
+cannot-check tests, and `test_a_report_never_prints_anything_but_vocabulary`.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
+from sqlalchemy import select
+
+from personal_agent_core.timeutil import utc_now
+from personal_data_mcp.observability import (
+    STUCK_EXECUTION_MINUTES,
+    DerivedFacts,
+    collect,
+    evaluate,
+    missing_capabilities,
+    worst_severity,
+)
+from personal_data_mcp.observe_cli import main
+from personal_data_mcp.storage.engine import (
+    create_all,
+    create_database_engine,
+    session_factory,
+)
+from personal_data_mcp.storage.execution_store import append_audit_event
+from personal_data_mcp.storage.models import AuditEvent, ToolExecution
+
+
+@pytest.fixture(autouse=True)
+def roomy_disk(monkeypatch):
+    """Pin the disk numbers so these tests measure the code, not the host.
+
+    Found the hard way: the first run of this file failed on a developer Mac
+    that was genuinely at 90% full, so `disk_low` fired inside tests asserting
+    "no findings". The monitor was right and the tests were wrong -- a test that
+    reads the real filesystem is a test whose result depends on who runs it.
+    The disk *rules* are covered separately against explicit `DerivedFacts`,
+    which is where a threshold belongs anyway.
+    """
+    import shutil
+    from collections import namedtuple
+
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda _: usage(1024**4, 0, 900 * 1024**3)
+    )
+
+
+@pytest.fixture()
+def database(tmp_path: Path) -> Path:
+    path = tmp_path / "finance.sqlite"
+    engine = create_database_engine(path)
+    create_all(engine)
+    engine.dispose()
+    return path
+
+
+def sessions_for(path: Path):
+    engine = create_database_engine(path)
+    return session_factory(engine), engine
+
+
+def add_execution(path: Path, *, key: str, state: str, age_minutes: int = 0) -> None:
+    factory, engine = sessions_for(path)
+    moment = utc_now() - timedelta(minutes=age_minutes)
+    try:
+        with factory() as session:
+            session.add(
+                ToolExecution(
+                    idempotency_key=key,
+                    tool="finance.log_expense",
+                    request_fingerprint=f"fp-{key}",
+                    # NOT NULL and unique: the token that makes the source-side
+                    # create idempotent.
+                    client_token=f"ct-{key}",
+                    state=state,
+                    state_version=1,
+                    created_at=moment,
+                    updated_at=moment,
+                    # `post_submit_states_record_submission_time`: anything
+                    # except these three must record when it reached the source.
+                    # Honouring the constraint rather than working around it
+                    # matters -- a fixture that can build a row production
+                    # cannot would test the monitor against a shape that never
+                    # occurs.
+                    submitted_at=(
+                        None
+                        if state
+                        in ("prepared", "failed_safe", "cancelled_pre_submit")
+                        else moment
+                    ),
+                )
+            )
+            session.commit()
+    finally:
+        engine.dispose()
+
+
+def facts_for(path: Path) -> DerivedFacts:
+    factory, engine = sessions_for(path)
+    try:
+        with factory() as session:
+            return collect(
+                finance_session=session,
+                agent_session=None,
+                databases={"finance": path},
+                disk_path=path.parent,
+                now=utc_now(),
+            )
+    finally:
+        engine.dispose()
+
+
+def codes(findings) -> set[str]:
+    return {finding.code for finding in findings}
+
+
+# --- the 立即告警 list ---------------------------------------------------------
+
+
+def test_a_commit_unknown_write_is_critical(database) -> None:
+    add_execution(database, key="k1", state="commit_unknown")
+    findings = evaluate(facts_for(database))
+    assert "write_commit_unknown" in codes(findings)
+    assert worst_severity(findings) == "critical"
+
+
+def test_a_manual_review_write_is_critical(database) -> None:
+    """`needs_manual_review` is where a read-back mismatch lands."""
+    add_execution(database, key="k1", state="needs_manual_review")
+    findings = evaluate(facts_for(database))
+    assert "write_needs_manual_review" in codes(findings)
+    assert worst_severity(findings) == "critical"
+
+
+def test_a_tampered_audit_chain_is_critical(database) -> None:
+    """Not a stubbed verifier: a real row is really edited underneath it."""
+    factory, engine = sessions_for(database)
+    try:
+        with factory() as session:
+            append_audit_event(
+                session,
+                event_id="e1",
+                trace_id="t1",
+                event_type="write_prepared",
+                redacted_summary="prepared",
+                now=utc_now(),
+            )
+            session.commit()
+        with factory() as session:
+            # `sequence` is the primary key; `event_id` is merely unique, so
+            # this looks the row up the way an editor of the table would.
+            event = session.scalars(
+                select(AuditEvent).where(AuditEvent.event_id == "e1")
+            ).one()
+            event.redacted_summary = "something else entirely"
+            session.commit()
+    finally:
+        engine.dispose()
+
+    findings = evaluate(facts_for(database))
+    assert "audit_chain_broken" in codes(findings)
+    assert worst_severity(findings) == "critical"
+
+
+def test_a_healthy_database_produces_no_alert(database) -> None:
+    add_execution(database, key="k1", state="succeeded")
+    findings = evaluate(facts_for(database))
+    assert findings == []
+
+
+def test_a_terminal_execution_is_never_stuck(database) -> None:
+    # Age alone must not raise anything: a succeeded write from last year is
+    # not a problem, and a rule that said so would train the reader to ignore it.
+    add_execution(
+        database, key="k1", state="succeeded", age_minutes=STUCK_EXECUTION_MINUTES * 100
+    )
+    assert evaluate(facts_for(database)) == []
+
+
+def test_a_long_lived_unfinished_execution_is_a_warning(database) -> None:
+    add_execution(
+        database,
+        key="k1",
+        state="submitting",
+        age_minutes=STUCK_EXECUTION_MINUTES + 1,
+    )
+    findings = evaluate(facts_for(database))
+    assert "execution_stuck" in codes(findings)
+
+
+def test_a_recent_unfinished_execution_is_not_yet_a_warning(database) -> None:
+    add_execution(database, key="k1", state="submitting", age_minutes=1)
+    assert codes(evaluate(facts_for(database))) == set()
+
+
+@pytest.mark.parametrize(
+    "state", ["prepared", "committed_unverified", "reconciling_same_client_token"]
+)
+def test_stuck_is_measured_by_age_not_by_a_state_allowlist(database, state) -> None:
+    """Every unfinished state, not just the two the alert list names.
+
+    `stuck_execution_count` excludes `TERMINAL_EXECUTION_STATES` rather than
+    listing the unfinished ones, so a state added later is watched from the day
+    it exists instead of from the day someone remembers this file. `prepared` is
+    the case that makes the difference visible: it is not post-submit, so a rule
+    written around `submitting`/`commit_unknown` would miss a write that stalled
+    before it ever left.
+
+    An invented state cannot be used to make this point -- `ck_tool_executions_state`
+    rejects anything outside `EXECUTION_STATES` at the database level, which is
+    a stronger guarantee than this rule and one level below it.
+    """
+    add_execution(
+        database, key="k1", state=state, age_minutes=STUCK_EXECUTION_MINUTES + 1
+    )
+    assert "execution_stuck" in codes(evaluate(facts_for(database)))
+
+
+# --- thresholds ---------------------------------------------------------------
+
+
+def test_the_disk_floor_is_the_larger_of_the_ratio_and_the_fixed_size() -> None:
+    # Large disk: the 10% ratio binds, because 1 GiB free on a 1 TiB disk is
+    # minutes from full.
+    big = DerivedFacts(disk_free_bytes=2 * 1024**3, disk_total_bytes=1024**4)
+    assert "disk_low" in codes(evaluate(big))
+    # Small disk: the fixed 1 GiB binds, because 10% of 4 GiB is not enough room
+    # to checkpoint a WAL.
+    small = DerivedFacts(disk_free_bytes=800 * 1024**2, disk_total_bytes=4 * 1024**3)
+    assert "disk_low" in codes(evaluate(small))
+    healthy = DerivedFacts(disk_free_bytes=200 * 1024**3, disk_total_bytes=1024**4)
+    assert "disk_low" not in codes(evaluate(healthy))
+
+
+def test_an_unreadable_disk_is_not_reported_as_healthy() -> None:
+    # `None` means "could not measure". Treating it as 0 would alarm constantly;
+    # treating it as infinite would stay silent. It must do neither.
+    unknown = DerivedFacts(disk_free_bytes=None, disk_total_bytes=None)
+    assert "disk_low" not in codes(evaluate(unknown))
+
+
+def test_a_large_wal_is_a_warning() -> None:
+    assert "wal_large" in codes(
+        evaluate(DerivedFacts(wal_bytes={"finance": 200 * 1024**2}))
+    )
+    assert "wal_large" not in codes(
+        evaluate(DerivedFacts(wal_bytes={"finance": 1024}))
+    )
+
+
+# --- the gaps must speak ------------------------------------------------------
+
+
+def test_the_report_says_what_it_cannot_see() -> None:
+    """Silence about an unmeasurable thing is indistinguishable from health."""
+    gaps = codes(missing_capabilities())
+    assert "backup_age_unknown" in gaps
+    assert "push_metrics_unwired" in gaps
+    # Info only: a known gap must not make a healthy box look unhealthy.
+    assert worst_severity(missing_capabilities()) == "info"
+
+
+# --- the CLI contract ---------------------------------------------------------
+
+
+def test_a_healthy_box_exits_zero(database, capsys) -> None:
+    add_execution(database, key="k1", state="succeeded")
+    assert main(["--database", str(database)]) == 0
+
+
+def test_a_critical_finding_exits_one(database) -> None:
+    add_execution(database, key="k1", state="commit_unknown")
+    assert main(["--database", str(database)]) == 1
+
+
+def test_a_warning_also_exits_one(database) -> None:
+    add_execution(
+        database, key="k1", state="submitting", age_minutes=STUCK_EXECUTION_MINUTES + 1
+    )
+    assert main(["--database", str(database)]) == 1
+
+
+def test_a_missing_database_exits_two_not_zero(tmp_path, capsys) -> None:
+    """The most important test in this file.
+
+    A monitor that cannot read its database and exits 0 is worse than no
+    monitor: the timer stays green forever and the box is unobserved. 2 says
+    "could not check", which is a different state from "checked, all well".
+    """
+    assert main(["--database", str(tmp_path / "absent.sqlite")]) == 2
+    assert "cannot check" in capsys.readouterr().err
+
+
+def test_an_unreadable_database_exits_two(tmp_path, capsys) -> None:
+    corrupt = tmp_path / "finance.sqlite"
+    corrupt.write_bytes(b"this is not a database")
+    assert main(["--database", str(corrupt)]) == 2
+    assert "cannot check" in capsys.readouterr().err
+
+
+def test_alerts_go_to_stderr_so_the_journal_ranks_them(database, capsys) -> None:
+    add_execution(database, key="k1", state="commit_unknown")
+    main(["--database", str(database)])
+    captured = capsys.readouterr()
+    assert "write_commit_unknown" in captured.err
+    # Known gaps are info and belong on stdout, not mixed in with alerts.
+    assert "backup_age_unknown" in captured.out
+
+
+def test_json_mode_is_machine_readable(database, capsys) -> None:
+    add_execution(database, key="k1", state="commit_unknown")
+    main(["--database", str(database), "--json"])
+    report = json.loads(capsys.readouterr().out)
+    assert report["kind"] == "personal_agent_observe"
+    assert report["worst_severity"] == "critical"
+    assert any(f["code"] == "write_commit_unknown" for f in report["findings"])
+
+
+# --- nothing printable may come from data ------------------------------------
+
+
+def test_a_report_never_prints_anything_but_vocabulary(database, capsys) -> None:
+    """The redaction claim, tested where it would actually break.
+
+    A ledger name, a Feishu record id and an idempotency key all pass through
+    the rows this report counts. None may appear in its output -- the report is
+    counts and codes, never contents.
+    """
+    add_execution(database, key="recSECRET123456", state="commit_unknown")
+    factory, engine = sessions_for(database)
+    try:
+        with factory() as session:
+            execution = session.get(ToolExecution, "recSECRET123456")
+            execution.tool = "finance.log_expense"
+            session.commit()
+    finally:
+        engine.dispose()
+
+    main(["--database", str(database), "--json"])
+    output = capsys.readouterr()
+    assert "recSECRET123456" not in output.out
+    assert "recSECRET123456" not in output.err

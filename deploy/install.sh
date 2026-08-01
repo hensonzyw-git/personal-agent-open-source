@@ -61,6 +61,11 @@ fi
 # --- systemd units ------------------------------------------------------------
 install -m 0644 -o root -g root "$UNIT_SRC/personal-agent-api.service" /etc/systemd/system/
 install -m 0644 -o root -g root "$UNIT_SRC/personal-data-mcp.service" /etc/systemd/system/
+# DEV-034 health check. Installed here but, like the services, not enabled:
+# enabling it before the application exists would fail every 15 minutes.
+install -m 0644 -o root -g root \
+  "$UNIT_SRC/personal-data-mcp-observe.service" \
+  "$UNIT_SRC/personal-data-mcp-observe.timer" /etc/systemd/system/
 systemctl daemon-reload
 
 echo

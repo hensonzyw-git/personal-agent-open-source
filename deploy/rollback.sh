@@ -16,8 +16,11 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 systemctl disable --now personal-agent-api personal-data-mcp 2>/dev/null || true
+systemctl disable --now personal-data-mcp-observe.timer 2>/dev/null || true
 rm -f /etc/systemd/system/personal-agent-api.service
 rm -f /etc/systemd/system/personal-data-mcp.service
+rm -f /etc/systemd/system/personal-data-mcp-observe.service
+rm -f /etc/systemd/system/personal-data-mcp-observe.timer
 systemctl daemon-reload
 
 echo "Units removed. PRESERVED (remove only by a separate explicit decision):"

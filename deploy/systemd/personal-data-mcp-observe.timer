@@ -1,0 +1,17 @@
+# DEV-034: run the health check every 15 minutes.
+#
+# 15 minutes rather than daily: the two critical findings (commit_unknown, a
+# read-back mismatch parked for review) are about a real ledger row that this
+# system cannot account for, and a day is a long time to hold that. The check is
+# a few SQLite counts and a statvfs, so the cost of running it often is nil.
+[Unit]
+Description=Personal Agent health check every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+# Survive downtime: a box that was off through the window still gets checked.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

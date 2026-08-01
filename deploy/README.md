@@ -254,6 +254,41 @@ database's mode — which is exactly the mechanism that makes the fix stick.
 `verify.sh` now asserts every file in both directories, so a missed run shows up
 as a `FAIL` rather than as nothing at all.
 
+## Health check and alerts (DEV-034)
+
+`personal-data-mcp-observe.timer` runs every 15 minutes as `personal-data-mcp`
+and reports to journald. Alerting *is* the unit failing:
+
+```sh
+systemctl status personal-data-mcp-observe          # failed = something to look at
+journalctl -u personal-data-mcp-observe -n 40       # what it found
+```
+
+Exit codes are the interface, and 1 and 2 are deliberately different:
+
+| exit | meaning |
+|---|---|
+| 0 | checked, nothing above `info` |
+| 1 | checked, found a `warning` or `critical` |
+| 2 | **could not check** — missing or unreadable database |
+
+A monitor that cannot read its database and exits 0 is worse than no monitor,
+because the timer then stays green forever while the box is unobserved. That is
+why 2 exists rather than being folded into 1.
+
+Two `INFO` lines are expected on every healthy run and are not noise:
+`backup_age_unknown` (DEV-035 has no backups to age) and `push_metrics_unwired`
+(DEV-028's push half is unwritten). They are printed because silence about an
+unmeasurable thing is indistinguishable from health. They disappear when their
+blocking task lands.
+
+To read the report by hand, including as JSON:
+
+```sh
+sudo -u personal-data-mcp /opt/personal-agent/.venv/bin/personal-data-mcp-observe \
+  --database /var/lib/personal-data-mcp/finance.sqlite --json
+```
+
 ## Operator commands on the ECS (devices, review)
 
 ```sh
