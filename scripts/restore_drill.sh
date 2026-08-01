@@ -15,7 +15,7 @@
 #     config but never loads model, token, cursor, identifier, or private
 #     service credentials and never composes a write-capable connector.
 #
-# This script is intentionally a thin orchestrator: the six checks live in
+# This script is intentionally a thin orchestrator: the database checks live in
 # personal_agent.backup.restore_verify so they are unit-tested offline. The
 # shell handles restic restore + the read-only service start, which are the
 # parts that touch the real environment and cannot be library calls.

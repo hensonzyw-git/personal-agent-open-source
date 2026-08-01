@@ -2,7 +2,8 @@
 
 Run by ``scripts/restore_drill.sh`` against a restored Agent database. Loads
 the data key ring from the environment (the off-machine secret-store copy, not
-anything on the ECS), runs the six checks, and exits non-zero if any failed.
+anything on the ECS), runs the Agent and Finance restore gates, and exits
+non-zero if any failed.
 
 The manifest is the export produced by
 ``personal-agent-export-deletion-manifest``; the AEAD sample entry id names one

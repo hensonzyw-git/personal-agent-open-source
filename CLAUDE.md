@@ -310,7 +310,7 @@ conflict instead of silently choosing an old default.
   `online_backup` primitive, both `*-db backup` CLIs, the deletion-manifest
   export/replay, the restore-verify library, `deploy/backup.sh` + three systemd
   timer/service pairs behind a least-privilege `personal-agent-backup` user,
-  and `scripts/restore_drill.sh`. The offline suite passes (1664 tests).
+  and `scripts/restore_drill.sh`. The current offline suite passes (1678 tests).
   **The ECS deploy and the first real OSS backup landed on 2026-08-01**
   (`docs/evidence/DEV035_部署与首次真实备份_2026-08-01.md`): snapshot `3b11537b`
   with all eight inputs, clean `restic check`, `verify.sh` 55 PASS / 0 FAIL,
@@ -319,17 +319,21 @@ conflict instead of silently choosing an old default.
   hard-coded `0600`, which let the backup user list every staged file and open
   none, and a ledger config read straight from a `0700` live data dir. `verify.sh`
   had missed both by asserting `ls` on a directory instead of a read of a file.
-  **The Mac off-machine restore drill passed the same day**
-  (`docs/evidence/DEV035_异机恢复演练_2026-08-01.md`): snapshot `c502e4b4`
-  restored on a machine sharing no storage with the ECS, seven checks including
-  the fixed-sample AEAD decrypt under the off-machine key ring and both restored
-  databases booting their own service read-only. **DEV-035 is complete and the
-  G5 precondition gate is passed.** Two gaps had to be closed first, both again
-  code that had never run: the data keys had never left the ECS at all (only the
-  restic key had an off-machine copy, so a lost ECS meant readable files and
-  unreadable columns — custody now tracked in `docs/密钥清单_v0.1.md`), and the
-  drill's own step 7 started only the API, which fails closed when it cannot
-  discover the Finance MCP, so it could never have passed anywhere. The
+  **The Mac off-machine restore drill passed the same day, then passed again
+  after review remediation**
+  (`docs/evidence/DEV035审查修复部署与异机复验_2026-08-01.md`). Review invalidated
+  the first run's two safety claims: normal Finance composition was not a
+  read-only probe, and the backup account's two service groups exposed both
+  service env/key boundaries. Commit `b719d78` is deployed: the backup account
+  now belongs to neither group; purpose-built OS/SQLite read-only entrypoints
+  compose no model/adapter/recovery/write path; the restore gate validates both
+  databases' integrity/schema/FK/idempotency/receipt graph; recovery is bounded
+  to 100 rows with fresh schema evidence per execution; and cleanup can delete
+  only a marker-protected script-owned `mktemp` directory. ECS verification is
+  66 PASS / 0 FAIL. New real snapshot `fe0ae539` (8 inputs) passed `restic check`
+  and a full Mac rerun. **DEV-035 is complete and the G5 precondition gate is
+  passed.** The data-key off-machine custody remains tracked in
+  `docs/密钥清单_v0.1.md`. The
   ECS clock was checked and is correct
   (`docs/evidence/DEV035_ECS时钟核对_2026-08-01.md`). DEV-036 follows DEV-035.
   APNs inputs are complete but sender/device-registration code is not built,

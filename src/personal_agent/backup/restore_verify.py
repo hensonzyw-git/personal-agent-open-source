@@ -1,12 +1,11 @@
 """`DEV-035`: verify a restored Agent database before reads open.
 
-Design 10.5's restore drill runs six checks on a restored database:
-integrity, schema version, idempotency/receipt reference integrity, a fixed
-sample AEAD decrypt, deletion-manifest replay, and (in the shell wrapper) a
-read-only service start. This module owns the ones that are pure library
-calls against a database path, so they can run in a Mac restore drill
-without the deployed service present and be unit-tested offline against a
-fixture database.
+Design 10.5's restore drill verifies both restored databases: integrity,
+schema version, foreign-key and idempotency/receipt reference integrity, a
+fixed-sample AEAD decrypt, deletion-manifest replay, and (in the shell wrapper)
+dedicated read-only service starts. This module owns the pure library calls so
+they can run in a Mac restore drill without a deployed service and be tested
+offline against fixture databases.
 
 Each check returns a result dict with ``name``, ``ok`` and ``detail``; the
 drill CLI fails closed if any is not ``ok``. The detail never includes a
