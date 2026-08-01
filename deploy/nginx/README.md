@@ -45,6 +45,14 @@ Decisions and why:
   `agent.example.invalid:443` and `zhuyawei.com:443` and reads the leaf it is
   actually handed. It follows that the alarm needs network egress and will
   (correctly) fire when the host is unreachable.
+- **The output reports each source separately, on purpose.** Both halves read
+  the same certificates and therefore usually agree, so a single "nearest
+  expiry" line looks identical whether the served check ran and matched or
+  returned nothing at all — the first live run on 2026-08-01 printed exactly one
+  source and was indistinguishable from a broken served half. The healthy line
+  is now `on-disk nearest … (N checked); served nearest … (N checked)`, and a
+  source that checked nothing is itself an alarm. Read the counts, not just the
+  days.
 
 ## Procedure
 

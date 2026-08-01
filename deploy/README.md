@@ -237,8 +237,15 @@ rebuilt database), and the existing files need a one-time chmod, as root, on
 **both** services:
 
 ```sh
-chmod 0600 /var/lib/personal-agent-api/* /var/lib/personal-data-mcp/*
+sudo sh -c 'chmod 0600 /var/lib/personal-agent-api/* /var/lib/personal-data-mcp/*'
 ```
+
+The `sh -c` is not decoration. `sudo chmod 0600 /var/lib/personal-agent-api/*`
+expands the glob in the *calling* shell, which runs as `deploy` and cannot
+read a 0700 directory — so it matches nothing, passes the literal `*` to chmod,
+and fails. Inside a script with `set -e` that aborts the run wherever it happens
+to be, which on 2026-08-01 was with both services already stopped. Let root
+expand the glob.
 
 Do it while the services are stopped, or restart them after: SQLite keeps the
 `-wal` and `-shm` open, and the next checkpoint recreates them from the main

@@ -38,8 +38,17 @@ SERVED_NAMES=(agent.example.invalid zhuyawei.com)
 
 now=$(date +%s)
 alarms=0
-worst_name=""
-worst_days=""
+
+# Worst and count are tracked per source, never merged into one "nearest".
+# A merged summary cannot evidence that both halves ran: the two sources read
+# the same certificates, so they usually tie, and a tie leaves whichever ran
+# first holding the line. The healthy output would then look identical whether
+# the served check ran and agreed or returned nothing at all -- which is exactly
+# the failure this script was extended to catch. Observed on the first live run,
+# 2026-08-01.
+declare -A worst_name=([disk]="" [served]="")
+declare -A worst_days=([disk]="" [served]="")
+declare -A checked=([disk]=0 [served]=0)
 
 days_left() { # PEM on stdin -> days remaining, or non-zero when unreadable
     local end end_ts
@@ -49,16 +58,28 @@ days_left() { # PEM on stdin -> days remaining, or non-zero when unreadable
     echo $(( (end_ts - now) / 86400 ))
 }
 
-note() { # <label> <days>
-    local label="$1" days="$2"
-    if [ -z "$worst_days" ] || [ "$days" -lt "$worst_days" ]; then
-        worst_name="$label"
-        worst_days="$days"
+note() { # <source: disk|served> <label> <days>
+    local source="$1" label="$2" days="$3"
+    checked[$source]=$(( checked[$source] + 1 ))
+    if [ -z "${worst_days[$source]}" ] || [ "$days" -lt "${worst_days[$source]}" ]; then
+        worst_name[$source]="$label"
+        worst_days[$source]="$days"
     fi
     if [ "$days" -lt "$WARN_DAYS" ]; then
-        echo "CERT EXPIRY ALARM: $label expires in $days day(s) (< $WARN_DAYS)" >&2
+        echo "CERT EXPIRY ALARM: $label ($source) expires in $days day(s)" \
+            "(< $WARN_DAYS)" >&2
         alarms=$((alarms + 1))
     fi
+}
+
+summarise() { # <source> -> one clause, or an alarm if the source checked nothing
+    local source="$1"
+    if [ "${checked[$source]}" -eq 0 ]; then
+        echo "$source: NOTHING CHECKED"
+        return 1
+    fi
+    echo "$source nearest ${worst_name[$source]} in ${worst_days[$source]} day(s)" \
+         "(${checked[$source]} checked)"
 }
 
 # --- 1. on disk ---------------------------------------------------------------
@@ -71,7 +92,7 @@ for cert in /etc/letsencrypt/live/*/cert.pem; do
         alarms=$((alarms + 1))
         continue
     fi
-    note "$name (on disk)" "$days"
+    note disk "$name" "$days"
 done
 if [ "$found" -eq 0 ]; then
     echo "CERT EXPIRY ALARM: no certificates found under /etc/letsencrypt/live" >&2
@@ -95,11 +116,18 @@ for host in "${SERVED_NAMES[@]}"; do
         alarms=$((alarms + 1))
         continue
     fi
-    note "$host (served)" "$days"
+    note served "$host" "$days"
 done
 
+# Both clauses always print, even on the alarm path: "which half saw what" is
+# the first question when this unit fails, and making the reader re-run it to
+# find out is how a one-line alarm becomes a ten-minute investigation.
+disk_summary=$(summarise disk) || alarms=$((alarms + 1))
+served_summary=$(summarise served) || alarms=$((alarms + 1))
+
 if [ "$alarms" -ne 0 ]; then
+    echo "cert expiry FAILED: $disk_summary; $served_summary" >&2
     exit 1
 fi
 
-echo "cert expiry OK: nearest is $worst_name in $worst_days day(s)"
+echo "cert expiry OK: $disk_summary; $served_summary"
