@@ -83,6 +83,13 @@ final class ChatModel {
         await mirrorPendingSlots()
     }
 
+    /// Pull-to-refresh re-reads *everything* current, not just newer events
+    /// (Henson, 2026-08-01). `syncNewer` alone cannot change the durable slots —
+    /// they are local Keychain records — so this call adds no correctness the
+    /// gesture did not already have. It exists so the gesture means one thing:
+    /// after it, the screen shows current state from every source it has. It is
+    /// also the only path on which a *corrupt* slot would otherwise stay
+    /// unreported, since `pendingSendMalformed` surfaces through here.
     func refresh() async {
         busy = true
         defer { busy = false }
@@ -93,8 +100,13 @@ final class ChatModel {
         } catch {
             lastError = describe(error)
         }
+        await mirrorPendingSlots()
     }
 
+    /// Pagination, and deliberately the one path that does not re-read the
+    /// durable slots: it appends older history and makes no claim about current
+    /// state, so `refresh()` — not this — is the gesture that means "show me
+    /// everything as it is now".
     func loadOlder() async {
         guard !loadingOlder else { return }
         loadingOlder = true
@@ -169,11 +181,15 @@ final class ChatModel {
     func discardUnresolved() async {
         do {
             try await timeline.discardPending()
-            unresolved = nil
             lastError = nil
         } catch {
             lastError = describe(error)
         }
+        // Re-read rather than assigning `unresolved = nil`. The assignment was
+        // right — `discardPending` had succeeded — but it was the last place a
+        // slot's displayed value came from what this code believed instead of
+        // from the slot, and its twin `discardDecision` already re-read.
+        await mirrorPendingSlots()
     }
 
     func beginAnswering(operationID: String, question: String) {
