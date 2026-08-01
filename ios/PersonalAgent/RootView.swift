@@ -106,7 +106,13 @@ struct ServiceStatusView: View {
                 row("设备密钥", model.keyKind ?? "—")
                 if let device = model.selfDevice {
                     row("状态", device.status)
-                    row("推送 token", device.hasPushToken ? "已登记" : "未登记（Personal Team 无 APNs）")
+                    // The parenthetical states why, and the why changed on
+                    // 2026-08-01: a Personal Team could never sign APNs, but a
+                    // paid membership now exists, so the remaining reason is
+                    // that the capability, profile and server-side `.p8` are
+                    // not in place. Saying "Personal Team" here would be a
+                    // stale excuse shown to the one person who knows better.
+                    row("推送 token", device.hasPushToken ? "已登记" : "未登记（推送尚未启用）")
                     row("显示名", device.displayName)
                 }
             }

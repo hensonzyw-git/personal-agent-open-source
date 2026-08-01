@@ -15,7 +15,7 @@ Phase 1 Agent 框架为 Google ADK，业务模型通过可替换 adapter 接入�
   device identity、operator CLI 和 iOS SwiftPM 基础均已实现；
 - 合成测试 Base 已完成真实 GLM → policy → MCP → Feishu 的端到端写入与重复拦截；
 - iOS Simulator 已完成 Secure Enclave 注册、短期 token、capabilities 和撤销实测；
-- Personal Team 无 APNs entitlement，因此 push sender 保持 fail-closed；仍待真机直装验收；
+- APNs：2026-08-01 起已有付费 Apple Developer Program，不再受 Personal Team 限制；但 capability、profile 和服务端 `.p8` 尚未就绪，push sender 在此之前保持 fail-closed；
 - CAP-001 的 Timeline/Session、长话题自动压缩和有界 Context 技术基线已冻结，
   但代码、迁移和 eval 尚未开始；
 - CAP-002–008 记录后续 streaming、voice、memory、routing 和 multimodal 路线，
