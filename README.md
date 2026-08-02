@@ -63,6 +63,22 @@ uv run personal-agent-eval-lint
 
 这些命令默认不会发起模型请求，也不会写入飞书。
 
+`personal-agent-eval-lint` 只验证样本来源与冻结合同，并报告样本分布；它不把样本数量
+冒充模型分数。真实模型评测使用生产同款 Context Builder + ADK/GLM 边界，但仍不会
+执行任何业务工具：
+
+```bash
+set -a
+. ./.env.local
+set +a
+uv run personal-agent-model-eval --out /tmp/personal-agent-eval.jsonl
+uv run personal-agent-eval-score --results /tmp/personal-agent-eval.jsonl
+```
+
+结果按精确来源标签 × Finance/授权/MCP 分列；每条结果绑定来源标签、输入、上下文与
+expected output 的完整语义摘要，旧结果不能套到修改后的样本上，也不能与另一 evaluator
+的结果混合后冒充一次评测。
+
 如需开始真实 GLM Spike，请先在智谱控制台创建一个新的 Key，再使用交互脚本写入本地、被 Git 忽略且权限为 `600` 的 `.env.local`：
 
 ```bash
@@ -83,11 +99,13 @@ uv run personal-agent-online-eval --framework claude --case-id FIN-021
 
 ## Spike 证据边界
 
-- `evals/finance_v0.2.jsonl` 是按冻结合同重建的 48 条基线：每条都用生成的工具 schema 校验过，
-  缺个人/家庭归属一律追问、外币由服务端换算、多笔在 batch 关闭时一笔也不写。
+- `evals/finance_v0.2.jsonl` 是按冻结合同维护的 69 条基线：17 条经 Henson 复核的
+  `user_provided_redacted`、51 条 synthetic、1 条 PRD example。每条都用生成的工具
+  schema 校验；缺个人/家庭归属一律追问、外币由服务端换算、多笔在 batch 关闭时一笔也不写。
 - `evals/finance_expense_v0.1.jsonl` 保留为 Spike 期历史证据。它的期望包含已被推翻的默认个人
   归属、外币追问和两次单笔写，不得用于 Phase 1 验收。
-- 目前没有任何 `user_provided_redacted` 数据；该标签由 DEV-037 在 Henson 实际复核后才可使用。
+- `user_provided_redacted` 不仅钉死 id 和输入，还用完整 SHA-256 绑定 reference time、
+  prior turns 和 expected output；修改语义必须重新复核并显式更新 witness。
 - 离线 eval 验证的是测试集合同和确定性 policy，不是模型准确率。
 - 当前 Claude 证据是 smoke，不是完整准确率、时延或成本基准。
 - ADK v0.2 是按用户决定在 23/30 时停止的部分运行；结果文件的 `case_count` 反映实际完成数量。
@@ -97,9 +115,8 @@ uv run personal-agent-online-eval --framework claude --case-id FIN-021
 
 下一步按以下顺序进行：
 
-1. 实现 CAP-001：单一 Timeline、自动 Session、同 Session 长话题压缩、
-   checkpoint、context hard limit 和历史分页。
-2. CAP-001 验收后进入 DEV-030 / DEV-031 和 G4 真机只读闭环。
+1. 完成 DEV-038 的 ECS 在线重启/网络矩阵及技术方案 §13.2 在线闭合。
+2. 进入 DEV-039：write kill switch、restore 与服务/Nginx 回滚演练。
 3. 继续遵守 G5：在单独授权前不接入生产 Finance 凭据或个人年度账本。
 4. Development Agent Loop 保持独立、非阻塞；Phase 1 满足全部开发完成定义后，
    才可开始 DAL-001–006，随后由 Henson 单独通过 DAL-G0，再实现 DAL-007 起的

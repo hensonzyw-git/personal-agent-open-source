@@ -147,6 +147,7 @@ def test_the_request_is_bounded_and_declares_business_and_internal_tools(envelop
         "finance.log_expense",
         "agent.ask_clarification",
         "agent.fail_batch_unavailable",
+        "agent.fail_safely",
     ]
 
 
@@ -236,6 +237,27 @@ def test_the_declarations_sent_are_the_ones_the_budget_measured(
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {},
+            },
+        },
+        {
+            "name": "agent.fail_safely",
+            "description": (
+                "用户要求当前工具集合以外的能力，或要求修改、删除既有记录时，"
+                "以固定原因和零业务工具调用方式拒绝。"
+            ),
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["reason"],
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "enum": [
+                            ErrorCode.TOOL_NOT_ALLOWLISTED.value,
+                            ErrorCode.UNSUPPORTED_OPERATION.value,
+                        ],
+                    }
+                },
             },
         },
     ]
@@ -395,6 +417,33 @@ def test_structured_clarification_and_batch_gate_are_not_direct_answers(envelope
     assert _propose(batch, envelope) == ProposedFailure(
         ErrorCode.BATCH_ATOMICITY_UNAVAILABLE.value
     )
+
+    unsupported, _ = _gateway(
+        _response(
+            _call(
+                "agent.fail_safely",
+                {"reason": ErrorCode.TOOL_NOT_ALLOWLISTED.value},
+            )
+        )
+    )
+    assert _propose(unsupported, envelope) == ProposedFailure(
+        ErrorCode.TOOL_NOT_ALLOWLISTED.value
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"reason": "INTERNAL_ERROR"},
+        {"reason": ErrorCode.UNSUPPORTED_OPERATION.value, "extra": True},
+    ],
+)
+def test_invalid_fail_safe_reasons_fail_closed(envelope, arguments) -> None:
+    gateway, _ = _gateway(_response(_call("agent.fail_safely", arguments)))
+
+    with pytest.raises(ModelGatewayError, match="fail-safe tool"):
+        _propose(gateway, envelope)
 
 
 @pytest.mark.parametrize(

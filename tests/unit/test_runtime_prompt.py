@@ -30,6 +30,15 @@ def test_prompt_keeps_original_finance_boundaries() -> None:
     assert "不执行银行转账" in prompt
     assert "不要自行读取旧余额" in prompt
     assert "全量分页" in prompt
+    assert "午饭45" in prompt
+    assert "绝不能猜 false 或 true" in prompt
+
+
+def test_prompt_requires_structured_fail_safe_for_out_of_scope_requests() -> None:
+    prompt = build_system_prompt(today="2026-07-24")
+    assert 'agent.fail_safely(reason="TOOL_NOT_ALLOWLISTED")' in prompt
+    assert 'agent.fail_safely(reason="UNSUPPORTED_OPERATION")' in prompt
+    assert "不用自由文本拒绝" in prompt
 
 
 def test_prompt_forbids_model_side_duplicate_judgement() -> None:

@@ -43,6 +43,8 @@ personal-agent-export-deletion-manifest = "personal_agent.backup.export_cli:main
 personal-agent-restore-verify = "personal_agent.backup.restore_cli:main"
 personal-agent-generate-contracts = "personal_agent_core.manifest:main"
 personal-agent-eval-lint = "personal_agent_core.evalset:main"
+personal-agent-eval-score = "personal_agent_core.evalset:score_main"
+personal-agent-model-eval = "personal_agent.eval_cli:main"
 personal-data-mcp = "personal_data_mcp.cli:main"
 personal-data-mcp-db = "personal_data_mcp.storage.db:main"
 personal-data-mcp-ledger = "personal_data_mcp.finance.onboarding:main"
@@ -62,6 +64,9 @@ packages = [
   "src/personal_data_mcp",
   "src/personal_agent_spike",
 ]
+
+[tool.hatch.build.targets.wheel.force-include]
+"evals/finance_v0.2.jsonl" = "personal_agent_core/data/finance_v0.2.jsonl"
 
 [tool.pytest.ini_options]
 addopts = "-q"

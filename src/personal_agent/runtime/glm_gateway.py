@@ -6,9 +6,10 @@ asks ADK for one model turn and converts the result into a framework-neutral
 proposal. It never runs an ADK tool and never treats model prose as evidence of
 an external write.
 
-Two private, side-effect-free function declarations make non-write outcomes
-structured: one parks for clarification and one reports the frozen batch gate.
-They are interpreted locally and never enter the governed business-tool bridge.
+Three private, side-effect-free function declarations make non-write outcomes
+structured: one parks for clarification, one reports the frozen batch gate, and
+one reports a frozen fail-safe reason. They are interpreted locally and never
+enter the governed business-tool bridge.
 """
 
 from __future__ import annotations
@@ -39,7 +40,12 @@ ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4/"
 _ZHIPU_API_BASE = ZHIPU_API_BASE
 _ASK_CLARIFICATION = "agent.ask_clarification"
 _FAIL_BATCH = "agent.fail_batch_unavailable"
+_FAIL_SAFELY = "agent.fail_safely"
 _SUPPORTED_PART_FIELDS = frozenset({"function_call", "text", "thought"})
+_MODEL_FAILURE_REASONS: Final[tuple[str, ...]] = (
+    ErrorCode.TOOL_NOT_ALLOWLISTED.value,
+    ErrorCode.UNSUPPORTED_OPERATION.value,
+)
 
 # Injected only by offline tests. Production always uses `generate_with_adk`.
 Generate = Callable[..., Any]
@@ -255,6 +261,27 @@ def _internal_declarations() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": _FAIL_SAFELY,
+                "description": (
+                    "用户要求当前工具集合以外的能力，或要求修改、删除既有记录时，"
+                    "以固定原因和零业务工具调用方式拒绝。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["reason"],
+                    "properties": {
+                        "reason": {
+                            "type": "string",
+                            "enum": list(_MODEL_FAILURE_REASONS),
+                        }
+                    },
+                },
+            },
+        },
     ]
 
 
@@ -318,6 +345,13 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
             if arguments:
                 raise ModelGatewayError("batch failure tool had unexpected arguments")
             return ProposedFailure(reason=ErrorCode.BATCH_ATOMICITY_UNAVAILABLE.value)
+        if name == _FAIL_SAFELY:
+            if set(arguments) != {"reason"}:
+                raise ModelGatewayError("fail-safe tool had unexpected arguments")
+            reason = arguments.get("reason")
+            if reason not in _MODEL_FAILURE_REASONS:
+                raise ModelGatewayError("fail-safe tool had an unsupported reason")
+            return ProposedFailure(reason=reason)
         return ProposedToolCall(tool=name, arguments=arguments)
 
     answer = "".join(text_parts).strip()
