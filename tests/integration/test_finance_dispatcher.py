@@ -134,16 +134,35 @@ class FakeBridge:
 
 
 class FakeControl:
-    def __init__(self, *, pending=None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        pending=None,
+        error: Exception | None = None,
+        execution: dict[str, Any] | None = None,
+        execution_error: Exception | None = None,
+    ) -> None:
         self.pending = pending
         self.error = error
+        #: Finance's execution row for the key, or None when it never existed.
+        #: `None` is the right default here: every failure this harness injects
+        #: is one Finance raises before an execution row is created.
+        self.execution = execution
+        self.execution_error = execution_error
         self.asked: list[str] = []
+        self.asked_execution: list[str] = []
 
     async def get_pending_duplicate_check(self, key: str):
         self.asked.append(key)
         if self.error is not None:
             raise self.error
         return self.pending
+
+    async def get_execution(self, key: str):
+        self.asked_execution.append(key)
+        if self.execution_error is not None:
+            raise self.execution_error
+        return self.execution
 
 
 def dispatcher(bridge, control=None) -> McpFinanceDispatcher:

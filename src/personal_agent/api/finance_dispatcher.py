@@ -24,8 +24,14 @@ Where the contract has gaps, this module fails closed rather than inventing:
 - a `POSSIBLE_DUPLICATE` whose pending check cannot be read from the control
   plane becomes a *safe failure*, not a silent success and not a decision the
   user cannot answer. The write did not happen either way;
-- a timeout, a transport error or `SOURCE_COMMIT_UNKNOWN` is `CommitUnknown`.
-  A write whose response was lost is never reported as failed;
+- a timeout and a transport error are `CommitUnknown`: a write whose response was
+  lost is never reported as failed;
+- for every other failure, whether anything was written is **read from Finance**
+  (`_classify_by_execution`) rather than inferred from the error code. Claiming
+  "no external record exists" is the strongest thing this module can say, and it
+  is said only on the evidence of Finance's own execution row -- which is
+  committed before any network call, so its absence is proof. An unreachable
+  control plane or an unrecognised state is `CommitUnknown`;
 - a clarification carries only the stable code's catalogue text, because
   `ErrorEnvelope` has nowhere to put the resolver's reason. The question is
   therefore generic today; making it specific needs a contract or control-plane
@@ -58,6 +64,10 @@ from personal_agent.api.orchestrator import (
     ResolveOutcome,
     Written,
 )
+from personal_agent.api.recovery import (
+    FinanceExecutionStatus,
+    proves_zero_write,
+)
 from personal_agent.mcp_client.core import McpTimeoutError, McpTransportError
 from personal_agent.policy.bridge import (
     BridgeCallContext,
@@ -74,11 +84,19 @@ READ_TOOLS: frozenset[str] = frozenset(
     {"finance.query_expenses", "meta.capabilities"}
 )
 
-#: Every commit failure that means "the write may have landed". A create is
-#: never retried on the strength of one of these; the Finance reconciler
-#: resolves the truth from the same client token.
-_UNKNOWN_COMMIT_CODES: frozenset[ErrorCode] = frozenset(
-    {ErrorCode.SOURCE_COMMIT_UNKNOWN, ErrorCode.SOURCE_COMMITTED_MISMATCH}
+
+
+#: Codes whose contract meaning already is "this may have reached the ledger".
+#: They are Finance's own assertion, so they resolve to `CommitUnknown` without
+#: a control-plane read -- both because the read cannot make the answer more
+#: certain, and because it could only ever weaken it.
+_ASSERTS_MAY_HAVE_WRITTEN: frozenset[ErrorCode] = frozenset(
+    {
+        ErrorCode.SOURCE_COMMIT_UNKNOWN,
+        ErrorCode.SOURCE_COMMITTED_MISMATCH,
+        ErrorCode.SOURCE_TIMEOUT_UNKNOWN,
+        ErrorCode.BATCH_COMMIT_UNKNOWN,
+    }
 )
 
 
@@ -228,9 +246,57 @@ class McpFinanceDispatcher:
             return CommitClarificationZeroWrite(
                 question=error.to_envelope().message
             )
-        if error.code in _UNKNOWN_COMMIT_CODES:
+        if error.code in _ASSERTS_MAY_HAVE_WRITTEN:
+            # Finance has already stated the outcome may have reached the source.
+            # Its own claim is authoritative and stronger than anything the
+            # execution row could add, so this must not be re-derived: a row that
+            # had been cleaned up would otherwise downgrade an explicit "unknown"
+            # into a proven zero write.
             return CommitUnknown(reason=error.code.value)
-        return CommitFailedSafe(reason=error.code.value)
+        return self._classify_by_execution(
+            reason=error.code.value, idempotency_key=idempotency_key
+        )
+
+    def _classify_by_execution(
+        self, *, reason: str, idempotency_key: str
+    ) -> CommitOutcome:
+        """Ask Finance whether anything was written; never infer it from a code.
+
+        An error code is a *category*; whether the one create left the process is
+        a *fact*, and Finance holds it in the execution row. Inferring the fact
+        from the category made the strongest claim this system can make -- "no
+        external record exists" -- depend on a distant module never letting
+        certain codes escape from after the create. `INTERNAL_ERROR` is the code
+        Finance emits for any failure it could not name, so it is reachable from
+        exactly there: storage exhaustion at the receipt commit leaves the record
+        in Feishu and puts `INTERNAL_ERROR` on the wire. Reporting that as a safe
+        failure told the user nothing was written *and released the idempotency
+        slot*, so the obvious retry could add a second ledger row.
+
+        The read is the same control endpoint recovery already uses, keyed by the
+        same idempotency key. It fails closed twice over: an unreachable control
+        plane and an unrecognised execution state are both `CommitUnknown`, which
+        parks the operation for reconciliation under the same client token rather
+        than claiming anything.
+        """
+        try:
+            execution = self._run(self._control.get_execution(idempotency_key))
+        except ControlPlaneError:
+            return CommitUnknown(reason=reason)
+
+        if execution is None:
+            status = None
+        else:
+            state = execution.get("state")
+            if not isinstance(state, str):
+                return CommitUnknown(reason=reason)
+            status = FinanceExecutionStatus(
+                state=state, record_id=None, receipt_verified=False
+            )
+
+        if proves_zero_write(status):
+            return CommitFailedSafe(reason=reason)
+        return CommitUnknown(reason=reason)
 
     # --- the one governed call ----------------------------------------------
 

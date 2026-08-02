@@ -342,6 +342,30 @@ class McpClientCore:
                 raise McpTimeoutError(
                     f"{self.connector_id} tools/list timed out"
                 ) from exc
+            except MCPError as exc:
+                # Same split as `call_tool`: v2 reports a request budget expiry
+                # as MCPError -32001, and everything else here is the transport.
+                if exc.code == -32001:
+                    raise McpTimeoutError(
+                        f"{self.connector_id} tools/list timed out"
+                    ) from exc
+                raise McpTransportError(
+                    f"{self.connector_id} tools/list failed: {type(exc).__name__}"
+                ) from exc
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # A server killed mid-session surfaces here as a raw SDK error.
+                # Leaking it would mean callers cannot catch a dead connector
+                # with the same `except` clause that already catches one on
+                # `call_tool`, so composition's discovery diagnosis is skipped
+                # and the operator gets an SDK traceback instead of "the Finance
+                # MCP service could not be reached". The error vocabulary of
+                # this client has to be uniform across its methods, because that
+                # is what every caller's handler is written against.
+                raise McpTransportError(
+                    f"{self.connector_id} tools/list failed: {type(exc).__name__}"
+                ) from exc
             tools.extend(page.tools)
             cursor = page.next_cursor
             if not cursor:

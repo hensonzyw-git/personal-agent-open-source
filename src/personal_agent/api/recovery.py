@@ -91,6 +91,36 @@ _FINANCE_IN_PROGRESS: Final[frozenset[str]] = frozenset(
     }
 )
 
+#: The Finance execution states that prove the one create never left the
+#: process. `prepared` commits *before* any network call and `cancelled_pre_submit`
+#: is reachable only from `prepared`, so both are provably zero-write;
+#: `failed_safe` is Finance's own terminal claim that nothing reached the source.
+#: Everything else -- including a state this Agent does not recognise -- may have
+#: written.
+#:
+#: This mirrors `may_have_reached_source` in Finance's state machine, inverted.
+#: The two services cannot share the module, so the duplication is deliberate and
+#: kept here, in the one Agent module that already owns Finance's state
+#: vocabulary, rather than spread across callers.
+_FINANCE_ZERO_WRITE_STATES: Final[frozenset[str]] = frozenset(
+    {"prepared", "failed_safe", "cancelled_pre_submit"}
+)
+
+
+def proves_zero_write(status: FinanceExecutionStatus | None) -> bool:
+    """Whether Finance's own record proves this key wrote nothing externally.
+
+    `None` means Finance has no execution for the key at all. Because the
+    `prepared` row is committed before any network call, no execution row means
+    no create was ever attempted -- which is the strongest evidence available,
+    and the only thing that may be reported as a proven zero write.
+
+    Fails closed: an unrecognised state is not a proof.
+    """
+    if status is None:
+        return True
+    return status.state in _FINANCE_ZERO_WRITE_STATES
+
 #: Explicit legal walks from a recoverable state to a projected terminal. Paths
 #: are spelled out rather than shortest-path searched so recovery never takes the
 #: read-only `dispatching -> succeeded` shortcut for a write, and every hop stays
