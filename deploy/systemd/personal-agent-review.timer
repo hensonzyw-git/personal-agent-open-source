@@ -1,0 +1,16 @@
+# DEV-036: run the daily Finance review at 00:05 Asia/Shanghai.
+#
+# 00:05, not 00:00: the cards cover the *completed* ledger day, and a few
+# minutes past midnight avoids any late-night write whose timestamp still lands
+# in the previous day being missed by a midnight boundary. Off the :00 mark on
+# principle. Persistent so a box that was down through the window still builds
+# the card (with up to seven days catch-up) on next boot.
+[Unit]
+Description=Personal Agent daily Finance review at 00:05
+
+[Timer]
+OnCalendar=*-*-* 00:05:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

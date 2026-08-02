@@ -19,11 +19,15 @@ for a CLI rather than a background task inside the API: a timer-driven one-shot
 that exits non-zero cannot be prevented from reporting by the very outage it is
 meant to report. An in-process alerter dies with its process.
 
-**What is deliberately absent.** Backup age. `DEV-035` has no backups, so an
-age check would either be dead code or -- worse -- report "no backup overdue"
-because it found no backups at all. `missing_capabilities()` names it instead,
-so the report says what it cannot see rather than staying silent and reading as
-health.
+**Backup age, and why it is read from a marker.** `deploy/backup.sh` writes a
+marker file only after `restic check` passes, so the marker's presence means a
+backup landed in OSS and verified there -- not merely that the script ran. The
+observer cannot call restic itself: it runs as the Finance service user with no
+network and no repository credentials, so the backup job (the one party with
+both) is the witness, and the observer reads what it left. `missing_capabilities`
+no longer names backup age. An immutable monitoring-start timestamp prevents a
+backup that never succeeds from remaining a "fresh install" forever: after 48
+hours without a success marker, the finding becomes a warning.
 
 Nothing here decides *presentation*. Findings carry a severity and a
 machine-readable code; the CLI decides what that means for an exit status.
@@ -42,12 +46,14 @@ from __future__ import annotations
 import os
 import shutil
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, Literal, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from personal_agent_core.timeutil import parse_rfc3339, to_rfc3339
 from personal_data_mcp.finance.reconciler import (
     SCHEMA_DRIFT_BLOCKED_EVENT,
     SCHEMA_DRIFT_RESUMED_EVENT,
@@ -76,6 +82,10 @@ WAL_WARN_BYTES: Final[int] = 64 * 1024 * 1024
 #: here has already outlived its recovery path.
 STUCK_EXECUTION_MINUTES: Final[int] = 60
 
+#: A backup older than this is stale. The backup timer fires daily, so two days
+#: means a run was missed *and* the catch-up (Persistent=true) did not happen --
+#: the box was down through the window and is still down, or restic is failing.
+BACKUP_STALE_AFTER_HOURS: Final[int] = 48
 
 @dataclass(frozen=True)
 class Finding:
@@ -101,6 +111,11 @@ class DerivedFacts:
     wal_bytes: dict[str, int] = field(default_factory=dict)
     disk_free_bytes: int | None = None
     disk_total_bytes: int | None = None
+    backup_last_success_at: datetime | None = None
+    backup_age_hours: float | None = None
+    backup_monitor_started_at: datetime | None = None
+    backup_monitor_age_hours: float | None = None
+    backup_marker_configured: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -112,6 +127,18 @@ class DerivedFacts:
             "wal_bytes": dict(sorted(self.wal_bytes.items())),
             "disk_free_bytes": self.disk_free_bytes,
             "disk_total_bytes": self.disk_total_bytes,
+            "backup_last_success_at": (
+                None
+                if self.backup_last_success_at is None
+                else to_rfc3339(self.backup_last_success_at)
+            ),
+            "backup_age_hours": self.backup_age_hours,
+            "backup_monitor_started_at": (
+                None
+                if self.backup_monitor_started_at is None
+                else to_rfc3339(self.backup_monitor_started_at)
+            ),
+            "backup_monitor_age_hours": self.backup_monitor_age_hours,
         }
 
 
@@ -162,6 +189,39 @@ def disk_free(path: Path) -> tuple[int, int]:
     return usage.free, usage.total
 
 
+def backup_last_success(marker: Path) -> datetime | None:
+    """Read the backup-success marker, or return None when no backup ran.
+
+    The marker is written by `deploy/backup.sh` only after `restic check`
+    passes, so its presence means a backup landed in OSS and verified there --
+    not merely that the script started. Its content is one RFC 3339 UTC
+    timestamp; the file mtime is not used, because a copy or a restore drill
+    would refresh the mtime and lie about when the last *real* backup happened.
+
+    A missing marker is not an error here: the caller decides whether the
+    absence is "never backed up" (info) or "stale" (warning) based on the age.
+    A marker that exists but cannot be parsed is a real fault and raises, so the
+    monitor exits cannot-check rather than silently treating a corrupted
+    witness as "no backup yet".
+    """
+    try:
+        text = marker.read_text().strip()
+    except FileNotFoundError:
+        return None
+    return parse_rfc3339(text)
+
+
+def backup_monitor_started_at(marker: Path) -> datetime:
+    """Read the required monitoring baseline created once by install.sh.
+
+    Unlike the success marker, absence is a deployment fault: without a stable
+    start instant a backup that has never succeeded can remain "fresh install"
+    forever. Let FileNotFoundError or a parse error propagate so the CLI exits
+    cannot-check rather than silently disabling the age transition.
+    """
+    return parse_rfc3339(marker.read_text().strip())
+
+
 def active_schema_drift_count(session: Session) -> int:
     """Count recovery traces whose latest schema state is still blocked."""
     active: set[str] = set()
@@ -189,8 +249,19 @@ def collect(
     databases: dict[str, Path],
     disk_path: Path,
     now,
+    backup_marker: Path | None = None,
+    backup_monitor_start: Path | None = None,
 ) -> DerivedFacts:
-    """Read every durable fact. Never writes, never raises on a missing file."""
+    """Read every durable fact without writing.
+
+    The two backup paths are one contract: callers either configure both, or
+    neither. The success marker may be absent before the first backup; the
+    monitoring-start marker is required so that absence can age into an alert.
+    """
+    if (backup_marker is None) != (backup_monitor_start is None):
+        raise ValueError(
+            "backup_marker and backup_monitor_start must be configured together"
+        )
     states: dict[str, int] = {}
     stuck = 0
     broken = 0
@@ -207,6 +278,24 @@ def collect(
         )
         drift = active_schema_drift_count(finance_session)
     free, total = disk_free(disk_path)
+    last_backup = backup_last_success(backup_marker) if backup_marker else None
+    monitor_started = (
+        backup_monitor_started_at(backup_monitor_start)
+        if backup_monitor_start
+        else None
+    )
+    for label, moment in (
+        ("backup-success marker", last_backup),
+        ("backup monitoring-start marker", monitor_started),
+    ):
+        if moment is not None and moment > now:
+            raise ValueError(f"{label} is in the future")
+    age_hours: float | None = None
+    if last_backup is not None:
+        age_hours = (now - last_backup).total_seconds() / 3600.0
+    monitor_age_hours: float | None = None
+    if monitor_started is not None:
+        monitor_age_hours = (now - monitor_started).total_seconds() / 3600.0
     return DerivedFacts(
         execution_states=states,
         stuck_executions=stuck,
@@ -216,6 +305,11 @@ def collect(
         wal_bytes={name: wal_size_bytes(path) for name, path in databases.items()},
         disk_free_bytes=free,
         disk_total_bytes=total,
+        backup_last_success_at=last_backup,
+        backup_age_hours=age_hours,
+        backup_monitor_started_at=monitor_started,
+        backup_monitor_age_hours=monitor_age_hours,
+        backup_marker_configured=backup_marker is not None,
     )
 
 
@@ -308,6 +402,43 @@ def evaluate(facts: DerivedFacts) -> list[Finding]:
                 )
             )
 
+    if facts.backup_marker_configured and facts.backup_last_success_at is None:
+        # The observer was pointed at a marker file, and that file does not
+        # exist. The backup timer is wired (DEV-036), so this means no backup
+        # has ever succeeded on this box -- not that the check is unwired.
+        # The immutable monitoring-start timestamp distinguishes a fresh install
+        # from a backup that has failed through multiple daily windows.
+        overdue = (
+            facts.backup_monitor_age_hours is not None
+            and facts.backup_monitor_age_hours > BACKUP_STALE_AFTER_HOURS
+        )
+        findings.append(
+            Finding(
+                "backup_never_succeeded",
+                "warning" if overdue else "info",
+                (
+                    "no backup-success marker after the 48-hour startup grace; "
+                    "the daily backup has never landed a verified snapshot in OSS"
+                    if overdue
+                    else "no backup-success marker yet; the 48-hour startup grace "
+                    "has not elapsed"
+                ),
+            )
+        )
+    elif facts.backup_marker_configured and facts.backup_age_hours is not None and (
+        facts.backup_age_hours > BACKUP_STALE_AFTER_HOURS
+    ):
+        days = int(facts.backup_age_hours // 24)
+        findings.append(
+            Finding(
+                "backup_stale",
+                "warning",
+                f"last verified backup was {days} day(s) ago; the daily timer "
+                "missed a run and its Persistent catch-up did not fire -- the "
+                "box was down through the window, or restic is failing",
+            )
+        )
+
     order = {"critical": 0, "warning": 1, "info": 2}
     findings.sort(key=lambda f: (order[f.severity], f.code))
     return findings
@@ -317,17 +448,10 @@ def missing_capabilities() -> list[Finding]:
     """What this report structurally cannot see yet, said out loud.
 
     A monitor that is silent about the thing it cannot measure is worse than one
-    that has no rule at all: the silence is indistinguishable from health. Both
-    entries below disappear when their blocking task lands.
+    that has no rule at all: the silence is indistinguishable from health. The
+    entry below disappears when its blocking task lands.
     """
     return [
-        Finding(
-            "backup_age_unknown",
-            "info",
-            "no backup age check: backups run on a timer and land in OSS "
-            "(DEV-035), but nothing reads their age yet (DEV-036). This is not "
-            "'backups are fresh'",
-        ),
         Finding(
             "push_metrics_unwired",
             "info",

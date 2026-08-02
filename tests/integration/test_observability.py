@@ -312,30 +312,43 @@ def test_a_large_wal_is_a_warning() -> None:
 def test_the_report_says_what_it_cannot_see() -> None:
     """Silence about an unmeasurable thing is indistinguishable from health."""
     gaps = codes(missing_capabilities())
-    assert "backup_age_unknown" in gaps
+    # DEV-036 closed backup age: it is now a real check, not a missing
+    # capability. Only the push-metrics gap remains.
+    assert "backup_age_unknown" not in gaps
     assert "push_metrics_unwired" in gaps
     # Info only: a known gap must not make a healthy box look unhealthy.
     assert worst_severity(missing_capabilities()) == "info"
 
 
-def test_the_backup_gap_does_not_claim_there_are_no_backups() -> None:
-    """A gap message ages with the project, and this one aged into a lie.
+def test_the_backup_gap_message_makes_no_claim_about_backups_existing() -> None:
+    """A gap message ages with the project, and this one once aged into a lie.
 
-    It read "DEV-035 is not built, so there are no backups to age" for as long
-    as that was true, and kept reading it after DEV-035 shipped, timers were
-    enabled and real snapshots were sitting in OSS -- so the daily report was
-    telling its only reader that no backup existed. A message about a missing
-    measurement must never make a claim about the thing being measured.
+    The historical `backup_age_unknown` missing-capability entry read "there
+    are no backups to age" after DEV-035 had shipped real snapshots. DEV-036
+    replaced it with a real check that reads the backup-success marker, so the
+    message about a missing measurement is gone entirely. What remains is the
+    `backup_never_succeeded` finding when the marker is configured but absent;
+    it starts as info and becomes a warning after the startup grace.
     """
-    detail = next(
-        finding.detail
-        for finding in missing_capabilities()
-        if finding.code == "backup_age_unknown"
+    # The missing-capability entry is gone.
+    assert "backup_age_unknown" not in codes(missing_capabilities())
+
+
+def test_the_backup_age_check_only_runs_when_a_marker_is_configured(
+    tmp_path: Path,
+) -> None:
+    # Without a marker path, the check is silent: a caller that does not wire
+    # the marker is not claiming backups are fresh, it is just not checking.
+    facts = collect(
+        finance_session=None,
+        agent_session=None,
+        databases={},
+        disk_path=tmp_path,
+        now=utc_now(),
+        backup_marker=None,
     )
-    assert "not built" not in detail
-    assert "there are no backups" not in detail
-    # It must still refuse to be read as reassurance.
-    assert "backups are fresh" in detail
+    assert "backup_never_succeeded" not in codes(evaluate(facts))
+    assert "backup_stale" not in codes(evaluate(facts))
 
 
 # --- the CLI contract ---------------------------------------------------------
@@ -382,7 +395,7 @@ def test_alerts_go_to_stderr_so_the_journal_ranks_them(database, capsys) -> None
     captured = capsys.readouterr()
     assert "write_commit_unknown" in captured.err
     # Known gaps are info and belong on stdout, not mixed in with alerts.
-    assert "backup_age_unknown" in captured.out
+    assert "push_metrics_unwired" in captured.out
 
 
 def test_json_mode_is_machine_readable(database, capsys) -> None:
@@ -504,3 +517,151 @@ def test_ordinary_audit_events_are_not_counted_as_drift(database) -> None:
     finally:
         engine.dispose()
     assert "schema_drift_blocked_recovery" not in codes(evaluate(facts_for(database)))
+
+
+# --- DEV-036: backup age --------------------------------------------------
+# The marker is written by deploy/backup.sh after `restic check` passes. These
+# tests cover the states the observer must distinguish: no marker inside the
+# startup grace (info), no marker after the grace (warning), a fresh marker (no
+# finding), and a stale marker (warning). Corrupted, future or incompletely
+# configured witnesses fail closed rather than reading as "no backup yet".
+
+
+def _facts_with_marker(
+    tmp_path: Path,
+    marker_text: str | None,
+    *,
+    now=None,
+    monitor_started_text: str | None = None,
+) -> tuple[DerivedFacts, Path]:
+    from personal_agent_core.timeutil import to_rfc3339
+
+    now = now or utc_now()
+    marker = tmp_path / "last-successful-backup"
+    monitor_start = tmp_path / "monitoring-started-at"
+    if marker_text is not None:
+        marker.write_text(marker_text)
+    monitor_start.write_text(
+        monitor_started_text
+        if monitor_started_text is not None
+        else to_rfc3339(now - timedelta(hours=1))
+    )
+    return (
+        collect(
+            finance_session=None,
+            agent_session=None,
+            databases={},
+            disk_path=tmp_path,
+            now=now,
+            backup_marker=marker,
+            backup_monitor_start=monitor_start,
+        ),
+        marker,
+    )
+
+
+def test_no_marker_is_info_not_a_stale_warning(tmp_path: Path) -> None:
+    facts, _ = _facts_with_marker(tmp_path, None)
+    findings = evaluate(facts)
+    assert "backup_never_succeeded" in codes(findings)
+    assert "backup_stale" not in codes(findings)
+    # And the missing-capabilities entry for backup age is gone (DEV-036).
+    assert "backup_age_unknown" not in codes(missing_capabilities())
+
+
+def test_no_success_marker_becomes_a_warning_after_the_startup_grace(
+    tmp_path: Path,
+) -> None:
+    from personal_agent_core.timeutil import to_rfc3339
+
+    now = utc_now()
+    facts, _ = _facts_with_marker(
+        tmp_path,
+        None,
+        now=now,
+        monitor_started_text=to_rfc3339(now - timedelta(hours=72)),
+    )
+    finding = next(
+        finding
+        for finding in evaluate(facts)
+        if finding.code == "backup_never_succeeded"
+    )
+    assert finding.severity == "warning"
+
+
+def test_a_fresh_marker_produces_no_finding(tmp_path: Path) -> None:
+    from personal_agent_core.timeutil import to_rfc3339
+
+    facts, _ = _facts_with_marker(tmp_path, to_rfc3339(utc_now()))
+    assert "backup_never_succeeded" not in codes(evaluate(facts))
+    assert "backup_stale" not in codes(evaluate(facts))
+
+
+def test_a_stale_marker_is_a_warning(tmp_path: Path) -> None:
+    from personal_agent_core.timeutil import to_rfc3339
+
+    old = utc_now() - timedelta(hours=72)
+    facts, _ = _facts_with_marker(tmp_path, to_rfc3339(old))
+    findings = evaluate(facts)
+    assert "backup_stale" in codes(findings)
+    assert "backup_never_succeeded" not in codes(findings)
+
+
+def test_a_marker_just_inside_the_threshold_is_not_stale(tmp_path: Path) -> None:
+    from personal_agent_core.timeutil import to_rfc3339
+
+    from personal_data_mcp.observability import BACKUP_STALE_AFTER_HOURS
+
+    age = timedelta(hours=BACKUP_STALE_AFTER_HOURS, seconds=-1)
+    facts, _ = _facts_with_marker(tmp_path, to_rfc3339(utc_now() - age))
+    assert "backup_stale" not in codes(evaluate(facts))
+
+
+def test_a_corrupted_marker_fails_closed(tmp_path: Path) -> None:
+    # A marker that exists but is not a timestamp must not be read as "no
+    # backup yet". `collect` raises, which the CLI turns into exit 2
+    # (cannot-check) -- the same state as a database it cannot open.
+    import pytest
+
+    with pytest.raises(Exception):
+        _facts_with_marker(tmp_path, "not-a-timestamp")
+
+
+def test_a_missing_monitoring_start_fails_closed(tmp_path: Path) -> None:
+    marker = tmp_path / "last-successful-backup"
+    monitor_start = tmp_path / "missing-monitoring-start"
+
+    with pytest.raises(FileNotFoundError):
+        collect(
+            finance_session=None,
+            agent_session=None,
+            databases={},
+            disk_path=tmp_path,
+            now=utc_now(),
+            backup_marker=marker,
+            backup_monitor_start=monitor_start,
+        )
+
+
+def test_only_one_backup_path_is_a_configuration_error(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="configured together"):
+        collect(
+            finance_session=None,
+            agent_session=None,
+            databases={},
+            disk_path=tmp_path,
+            now=utc_now(),
+            backup_marker=tmp_path / "last-successful-backup",
+        )
+
+
+def test_a_future_success_marker_fails_closed(tmp_path: Path) -> None:
+    from personal_agent_core.timeutil import to_rfc3339
+
+    now = utc_now()
+    with pytest.raises(ValueError, match="in the future"):
+        _facts_with_marker(
+            tmp_path,
+            to_rfc3339(now + timedelta(hours=1)),
+            now=now,
+        )

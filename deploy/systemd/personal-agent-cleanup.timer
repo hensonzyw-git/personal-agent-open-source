@@ -1,0 +1,16 @@
+# DEV-036: run the cleanup job daily at 03:37 Asia/Shanghai.
+#
+# 03:37, off the :00 mark and well away from the 00:05 review and 16:03/16:07
+# backup windows, so its short database write does not overlap the review
+# job's write or the db-backup snapshot. Persistent so a box that was down
+# through the window still cleans up on next boot; the job is idempotent, so a
+# missed day just means the expired rows wait one more day.
+[Unit]
+Description=Personal Agent daily cleanup at 03:37
+
+[Timer]
+OnCalendar=*-*-* 03:37:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

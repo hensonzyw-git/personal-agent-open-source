@@ -1,6 +1,6 @@
 """Console entrypoint for the daily review job (`personal-agent-review`).
 
-`DEV-028`. A systemd timer runs this at 00:00 `Asia/Shanghai` (the timer itself
+`DEV-028`. A systemd timer runs this at 00:05 `Asia/Shanghai` (the timer itself
 is `DEV-036`); it may also be run by hand. Both are safe: the job is idempotent
 on `review_date`, so a second run the same night adds nothing, and a run after
 an outage compensates the last seven days.

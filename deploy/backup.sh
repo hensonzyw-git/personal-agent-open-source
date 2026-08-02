@@ -24,6 +24,8 @@
 set -euo pipefail
 
 STAGING=/var/backups/personal-agent
+BACKUP_STATE_DIR=/var/lib/personal-agent-backup
+MARKER="$BACKUP_STATE_DIR/last-successful-backup"
 API_DB_SNAPSHOT="$STAGING/api/agent.latest.sqlite"
 MCP_DB_SNAPSHOT="$STAGING/mcp/finance.latest.sqlite"
 # The protected ledger config, staged by personal-data-mcp-db-backup. Read from
@@ -34,6 +36,30 @@ UNIT_DIR=/etc/systemd/system
 # The deletion-manifest export the restore must replay. Produced alongside the
 # Agent snapshot by personal-agent-db-backup; see that unit.
 DELETION_MANIFEST="$STAGING/api/deletion-manifest.json"
+
+# DEV-036 idempotency is one successful offsite snapshot per Shanghai calendar
+# day. systemd serialises starts of this unit, while flock also covers an
+# operator invoking the script directly during a timer run. A concurrent caller
+# waits, then re-checks the marker: it skips after success or performs the retry
+# after failure. A second trigger after today's success exits before restic.
+if [ ! -d "$BACKUP_STATE_DIR" ]; then
+  echo "backup state directory missing at $BACKUP_STATE_DIR (run install.sh)" >&2
+  exit 2
+fi
+exec 9>"$BACKUP_STATE_DIR/backup.lock"
+flock 9
+if [ -f "$MARKER" ]; then
+  last_success=$(tr -d '\r\n' < "$MARKER")
+  if ! last_success_day=$(TZ=Asia/Shanghai date -d "$last_success" +%F 2>/dev/null); then
+    echo "invalid backup-success marker at $MARKER" >&2
+    exit 2
+  fi
+  today=$(TZ=Asia/Shanghai date +%F)
+  if [ "$last_success_day" = "$today" ]; then
+    echo "verified backup already succeeded on $today; duplicate trigger is a no-op"
+    exit 0
+  fi
+fi
 
 # Credentials: OSS AccessKey + restic repository + repository password. Root-
 # owned, group-readable by the backup user only. Never logged.
@@ -134,5 +160,21 @@ restic forget \
 
 echo "== restic check =="
 restic check
+
+# DEV-036: write the backup-success marker the health check reads. Only after
+# `restic check` passes, so the marker's presence means a backup landed in OSS
+# *and* verified there -- not merely that the script ran. The content is one
+# RFC 3339 UTC timestamp; the file mtime is deliberately not used, because a
+# restore drill that copies the file would refresh the mtime and lie about when
+# the last real backup happened. The temp file is renamed on the same filesystem
+# so the observer sees either the old complete timestamp or the new one, never a
+# truncated `install(1)` destination.
+tmp=$(mktemp "$BACKUP_STATE_DIR/.last-successful-backup.XXXXXX")
+cleanup_marker_tmp() { rm -f "$tmp"; }
+trap cleanup_marker_tmp EXIT
+date -u +%Y-%m-%dT%H:%M:%SZ > "$tmp"
+chmod 0644 "$tmp"
+mv -f "$tmp" "$MARKER"
+trap - EXIT
 
 echo "== DEV-035 backup OK =="

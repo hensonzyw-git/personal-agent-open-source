@@ -32,10 +32,11 @@ Environment=RESTIC_CACHE_DIR=/var/cache/restic
 ExecStart=/opt/personal-agent/deploy/backup.sh
 TimeoutStartSec=1800s
 
-# Read the staged snapshots and the unit files; write only the restic cache.
-# The live data dirs are 0700 and not listed here.
+# Read the staged snapshots and the unit files; write only the restic cache and
+# the non-secret DEV-036 success witness/lock directory. The live data dirs are
+# 0700 and not listed here.
 ReadOnlyPaths=/var/backups/personal-agent /etc/systemd/system
-ReadWritePaths=/var/cache/restic
+ReadWritePaths=/var/cache/restic /var/lib/personal-agent-backup
 PrivateTmp=yes
 
 NoNewPrivileges=yes

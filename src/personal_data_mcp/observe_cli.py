@@ -63,6 +63,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="filesystem to check for free space; defaults to the database's",
     )
     parser.add_argument(
+        "--backup-marker",
+        type=Path,
+        default=None,
+        help=(
+            "the backup-success marker file written by deploy/backup.sh after "
+            "restic check passes; its age drives the backup_stale finding. "
+            "Configure together with --backup-monitor-start."
+        ),
+    )
+    parser.add_argument(
+        "--backup-monitor-start",
+        type=Path,
+        default=None,
+        help=(
+            "the immutable timestamp created by install.sh when backup-age "
+            "monitoring is enabled; it turns a never-created success marker "
+            "into a warning after the startup grace. Configure together with "
+            "--backup-marker."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="emit one JSON object instead of human-readable lines",
@@ -93,6 +114,8 @@ def main(argv: list[str] | None = None) -> int:
                 databases={"finance": args.database},
                 disk_path=disk_path,
                 now=utc_now(),
+                backup_marker=args.backup_marker,
+                backup_monitor_start=args.backup_monitor_start,
             )
     except Exception as exc:  # noqa: BLE001 - any failure here means "cannot check"
         print(f"cannot check: {type(exc).__name__}", file=sys.stderr)

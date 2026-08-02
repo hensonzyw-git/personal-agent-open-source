@@ -88,6 +88,22 @@ chmod 2770 /var/backups/personal-agent/api /var/backups/personal-agent/mcp
 chgrp "$BACKUP_USER" /var/backups/personal-agent/api /var/backups/personal-agent/mcp
 # The restic cache is the only path the backup unit writes.
 install -d -m 0700 -o "$BACKUP_USER" -g "$BACKUP_USER" /var/cache/restic
+# DEV-036: backup observation state. The backup unit writes the success marker
+# here (owner), while the health-check unit reads both timestamps (others).
+# 0755/0644 expose only timestamps, not repository credentials. The monitoring
+# start is created once and never refreshed by reinstall: otherwise repeatedly
+# running install.sh could keep a never-successful backup at INFO forever.
+BACKUP_STATE_DIR=/var/lib/personal-agent-backup
+BACKUP_MONITOR_START="$BACKUP_STATE_DIR/monitoring-started-at"
+install -d -m 0755 -o "$BACKUP_USER" -g "$BACKUP_USER" "$BACKUP_STATE_DIR"
+if [ ! -e "$BACKUP_MONITOR_START" ]; then
+  monitor_tmp=$(mktemp "$BACKUP_STATE_DIR/.monitoring-started-at.XXXXXX")
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$monitor_tmp"
+  chown "$BACKUP_USER:$BACKUP_USER" "$monitor_tmp"
+  chmod 0644 "$monitor_tmp"
+  mv -n "$monitor_tmp" "$BACKUP_MONITOR_START"
+  rm -f "$monitor_tmp"
+fi
 
 # --- python runtime -----------------------------------------------------------
 if ! python3 -c 'import sys; assert sys.version_info[:2] == (3, 12)' 2>/dev/null; then
@@ -117,6 +133,14 @@ install -m 0644 -o root -g root \
   "$UNIT_SRC/personal-data-mcp-db-backup.timer" \
   "$UNIT_SRC/personal-agent-backup.service" \
   "$UNIT_SRC/personal-agent-backup.timer" /etc/systemd/system/
+# DEV-036 review + cleanup timers. Installed but not enabled: enabling before
+# the application and migrations exist would fail daily. Like the observe and
+# backup timers, the README runbook enables them once the inputs are in place.
+install -m 0644 -o root -g root \
+  "$UNIT_SRC/personal-agent-review.service" \
+  "$UNIT_SRC/personal-agent-review.timer" \
+  "$UNIT_SRC/personal-agent-cleanup.service" \
+  "$UNIT_SRC/personal-agent-cleanup.timer" /etc/systemd/system/
 # The backup script is executed by the backup user from /opt/personal-agent.
 # /opt/personal-agent exists (created above), but its deploy/ subdir does not
 # until the first DEV-035 install, so create it here.
@@ -128,4 +152,4 @@ systemctl daemon-reload
 echo
 echo "Installed. NOT enabled or started. Next: deploy/README.md steps 3-9"
 echo "(keys, environment files, ledger config, application, migrations),"
-echo "then enable the two services AND personal-data-mcp-observe.timer."
+echo "then enable the two services and the observe/review/cleanup/backup timers."

@@ -12,7 +12,9 @@ Type=oneshot
 User=personal-data-mcp
 Group=personal-data-mcp
 ExecStart=/opt/personal-agent/.venv/bin/personal-data-mcp-observe \
-    --database /var/lib/personal-data-mcp/finance.sqlite
+    --database /var/lib/personal-data-mcp/finance.sqlite \
+    --backup-marker /var/lib/personal-agent-backup/last-successful-backup \
+    --backup-monitor-start /var/lib/personal-agent-backup/monitoring-started-at
 # Exit 1 (found problems) and exit 2 (could not check) both mark the unit
 # failed, which is the alert. They stay distinct in the journal line, so
 # `systemctl status` shows which happened.
@@ -21,6 +23,9 @@ TimeoutStartSec=120s
 # Read-only: this must never be able to modify what it reports on.
 ProtectSystem=strict
 ReadOnlyPaths=/var/lib/personal-data-mcp
+# DEV-036: the backup-success marker, written by the backup unit. Read-only
+# here; the observer never writes it.
+ReadOnlyPaths=/var/lib/personal-agent-backup
 NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes

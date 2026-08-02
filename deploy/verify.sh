@@ -33,6 +33,18 @@ expect_refused() { # <description> <command...>; PASS when the command FAILS
   if "$@" >/dev/null 2>&1; then fail "$desc"; else pass "$desc"; fi
 }
 
+expect_oneshot_succeeded() { # <unit>
+  local unit="$1" result started
+  result="$(systemctl show -p Result --value "$unit" 2>/dev/null)"
+  started="$(systemctl show -p ExecMainStartTimestampMonotonic --value "$unit" 2>/dev/null)"
+  if [ "$result" = "success" ] \
+     && [ -n "$started" ] && [ "$started" != "0" ]; then
+    pass "$unit ran successfully"
+  else
+    fail "$unit has no successful run (result=${result:-unknown}, started=${started:-0})"
+  fi
+}
+
 # A refusal check alone proves nothing: `head` on a file that does not exist and
 # `ls` on a missing directory both fail, so a deployment that never created the
 # secret would report every cross-user check as PASS. Each refusal below is
@@ -276,6 +288,89 @@ expect_success "personal-agent-db-backup.timer enabled" \
   systemctl is-enabled --quiet personal-agent-db-backup.timer
 expect_success "personal-data-mcp-db-backup.timer enabled" \
   systemctl is-enabled --quiet personal-data-mcp-db-backup.timer
+# DEV-036: the review and cleanup timers must be enabled, and the backup-age
+# marker directory must exist and be traversable by the observe user (others-x)
+# without being writable by it (others-w). The marker file itself is written by
+# the backup unit; here we only assert the directory contract.
+expect_success "personal-agent-review.timer enabled" \
+  systemctl is-enabled --quiet personal-agent-review.timer
+expect_success "personal-agent-review.timer active" \
+  systemctl is-active --quiet personal-agent-review.timer
+expect_success "personal-agent-cleanup.timer enabled" \
+  systemctl is-enabled --quiet personal-agent-cleanup.timer
+expect_success "personal-agent-cleanup.timer active" \
+  systemctl is-active --quiet personal-agent-cleanup.timer
+expect_oneshot_succeeded personal-agent-review.service
+expect_oneshot_succeeded personal-agent-cleanup.service
+expect_oneshot_succeeded personal-agent-backup.service
+BACKUP_AGE_DIR=/var/lib/personal-agent-backup
+if [ -d "$BACKUP_AGE_DIR" ]; then
+  state_owner="$(stat -c %U "$BACKUP_AGE_DIR")"
+  state_group="$(stat -c %G "$BACKUP_AGE_DIR")"
+  state_mode="$(stat -c %a "$BACKUP_AGE_DIR")"
+  if [ "$state_owner" = "$BACKUP_USER" ] \
+     && [ "$state_group" = "$BACKUP_USER" ] \
+     && [ "$state_mode" = "755" ]; then
+    pass "backup-age state dir is $state_owner:$state_group/$state_mode"
+  else
+    fail "backup-age state dir is $state_owner:$state_group/$state_mode, want $BACKUP_USER:$BACKUP_USER/755"
+  fi
+  expect_refused "observe user cannot write the backup-age dir" \
+    sudo -u "$MCP_USER" test -w "$BACKUP_AGE_DIR"
+else
+  fail "backup-age marker dir $BACKUP_AGE_DIR does not exist (run install.sh)"
+fi
+
+# A directory contract alone is not evidence that backup.sh can write through
+# its systemd sandbox. The deployment runbook starts the real backup before
+# verify.sh; require both timestamp files, their cross-user read boundary and a
+# fresh parseable success. Never use mtime: copying/restoring a file changes it.
+verify_backup_timestamp() { # <label> <path> <max-age-seconds-or-0>
+  local label="$1" path="$2" max_age="$3"
+  local owner group mode raw epoch now_epoch age
+  if [ ! -f "$path" ]; then
+    fail "$label missing at $path"
+    return
+  fi
+  owner="$(stat -c %U "$path")"
+  group="$(stat -c %G "$path")"
+  mode="$(stat -c %a "$path")"
+  if [ "$owner" = "$BACKUP_USER" ] \
+     && [ "$group" = "$BACKUP_USER" ] \
+     && [ "$mode" = "644" ]; then
+    pass "$label is $owner:$group/$mode"
+  else
+    fail "$label is $owner:$group/$mode, want $BACKUP_USER:$BACKUP_USER/644"
+  fi
+  expect_success "backup user can read $label" \
+    sudo -u "$BACKUP_USER" head -c 1 "$path"
+  expect_success "observe user can read $label" \
+    sudo -u "$MCP_USER" head -c 1 "$path"
+  expect_refused "observe user cannot write $label" \
+    sudo -u "$MCP_USER" test -w "$path"
+
+  raw="$(head -n 1 "$path")"
+  if ! epoch="$(date -u -d "$raw" +%s 2>/dev/null)"; then
+    fail "$label is not an RFC 3339 timestamp"
+    return
+  fi
+  now_epoch="$(date -u +%s)"
+  age=$((now_epoch - epoch))
+  if [ "$age" -lt -300 ]; then
+    fail "$label is more than five minutes in the future"
+  elif [ "$max_age" -gt 0 ] && [ "$age" -gt "$max_age" ]; then
+    fail "$label is stale (${age}s old, limit ${max_age}s)"
+  else
+    pass "$label timestamp is parseable and within its allowed age"
+  fi
+}
+
+verify_backup_timestamp \
+  "backup monitoring-start marker" \
+  "$BACKUP_AGE_DIR/monitoring-started-at" 0
+verify_backup_timestamp \
+  "last successful backup marker" \
+  "$BACKUP_AGE_DIR/last-successful-backup" 172800
 # restic.env is root:backup 0640 so the backup user can read OSS creds. The repo
 # password file must be readable by the SAME user -- restic opens it under the
 # unit's User=, so a root-only key fails closed at run time instead of being

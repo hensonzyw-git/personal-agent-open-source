@@ -165,7 +165,24 @@ sudo -u personal-agent-api /opt/personal-agent/.venv/bin/personal-agent-db \
 ```sh
 sudo systemctl enable --now personal-data-mcp personal-agent-api
 sudo systemctl enable --now personal-data-mcp-observe.timer
-# Do not wait fifteen minutes to discover a broken monitor on its first rollout.
+# DEV-036: the daily review and cleanup timers, plus the DEV-035 backup timers.
+# These only run as their own users and need the application + migrations in
+# place (review/cleanup) or restic.env (backup), so they are enabled here, not
+# at install time.
+sudo systemctl enable --now \
+  personal-agent-review.timer \
+  personal-agent-cleanup.timer \
+  personal-agent-db-backup.timer \
+  personal-data-mcp-db-backup.timer \
+  personal-agent-backup.timer
+# Exercise each new oneshot now; timer enablement alone cannot prove that its
+# user, filesystem sandbox, credentials and entrypoint work together. Run them
+# serially so review/cleanup/DB snapshot writes do not contend with each other.
+sudo systemctl start personal-agent-cleanup.service
+sudo systemctl start personal-agent-review.service
+sudo systemctl start personal-agent-backup.service
+# Do not wait fifteen minutes to discover a broken monitor on its first rollout;
+# run it after backup so the success marker path is exercised end to end.
 sudo systemctl start personal-data-mcp-observe.service
 sudo journalctl -u personal-data-mcp -u personal-agent-api --since -2m
 sudo journalctl -u personal-data-mcp-observe --since -2m
@@ -186,7 +203,9 @@ files, key dirs) **each paired with the positive control that the owning user
 can read the same path**, socket group/mode for Nginx, MCP loopback-only, no
 8810 TCP listener, the DEV-034 timer enabled and active with a successful
 immediate report, 405 from the real MCP endpoint, 401 through the real API socket,
-and `https://zhuyawei.com` still 200.
+the DEV-036 review/cleanup/backup oneshots successfully exercised, both backup
+witness timestamps readable but not writable by the observer, the last success
+fresh within 48 hours, and `https://zhuyawei.com` still 200.
 
 The positive controls are not decoration. `head` on a missing file and `ls` on
 a missing directory both fail, so a refusal-only suite reports a deployment
@@ -290,7 +309,7 @@ Two things follow:
   sudo fail2ban-client status sshd    # "Currently banned" tells you if it is this
   ```
 
-## Health check and alerts (DEV-034)
+## Health check and alerts (DEV-034 / DEV-036)
 
 `personal-data-mcp-observe.timer` runs every 15 minutes as `personal-data-mcp`
 and reports to journald. Alerting *is* the unit failing:
@@ -312,17 +331,20 @@ A monitor that cannot read its database and exits 0 is worse than no monitor,
 because the timer then stays green forever while the box is unobserved. That is
 why 2 exists rather than being folded into 1.
 
-Two `INFO` lines are expected on every healthy run and are not noise:
-`backup_age_unknown` (DEV-035 has no backups to age) and `push_metrics_unwired`
-(DEV-028's push half is unwritten). They are printed because silence about an
-unmeasurable thing is indistinguishable from health. They disappear when their
-blocking task lands.
+`push_metrics_unwired` is the one expected `INFO` line on a healthy run because
+DEV-028's push half is unwritten. Backup age is now a real DEV-036 check: the
+backup job atomically records success only after `restic check`; a separate
+install-time timestamp makes "never succeeded" become a warning after 48 hours.
+Missing, unreadable, corrupt or future-dated witness state exits cannot-check.
 
 To read the report by hand, including as JSON:
 
 ```sh
 sudo -u personal-data-mcp /opt/personal-agent/.venv/bin/personal-data-mcp-observe \
-  --database /var/lib/personal-data-mcp/finance.sqlite --json
+  --database /var/lib/personal-data-mcp/finance.sqlite \
+  --backup-marker /var/lib/personal-agent-backup/last-successful-backup \
+  --backup-monitor-start /var/lib/personal-agent-backup/monitoring-started-at \
+  --json
 ```
 
 ## Operator commands on the ECS (devices, review)
@@ -351,10 +373,10 @@ of a rollback.
 
 ## Still outside this rollout
 
-- The daily-review timer — **DEV-036** (`personal-agent-review` is installed
-  but has no timer yet).
+- DEV-036 ECS enablement and first live review/cleanup/backup-age verification;
+  the repository units and fail-closed verification are ready, but live evidence
+  does not exist until the deployment sequence above passes.
 - `finance.query_expenses` — its cursor-signing credential is not loaded by
   server composition; the tool stays unadvertised (unchanged from DEV-027).
-- Encrypted offsite backup/restore and backup-age alerting — **DEV-035**.
 - Real APNs device registration/sending and live receipt evidence — inputs are
   ready, but implementation remains outside this rollout.
