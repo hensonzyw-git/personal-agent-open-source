@@ -198,14 +198,24 @@ class McpFinanceDispatcher:
         idempotency_key: str,
         duplicate_override: str | None,
     ) -> CommitOutcome:
+        dispatched: list[bool] = []
         try:
             result = self._call(
                 tool=intent.tool,
                 model_args=intent.model_args,
                 idempotency_key=idempotency_key,
                 duplicate_override=duplicate_override,
+                dispatched=dispatched,
             )
         except AppError as error:
+            if not dispatched:
+                # Refused on this side -- scope, allowlist, an unresolvable
+                # alias -- before anything could be sent. Nothing was written,
+                # and that is knowable without Finance. Asking anyway would make
+                # a permission error unreportable exactly when Finance is down,
+                # turning "you do not have permission" into "unknown, needs
+                # manual review".
+                return CommitFailedSafe(reason=error.code.value)
             return self._commit_error(error, idempotency_key=idempotency_key)
         except McpTimeoutError:
             # The request left. Whether it landed is unknown by definition.
@@ -307,14 +317,28 @@ class McpFinanceDispatcher:
         model_args: dict[str, Any],
         idempotency_key: str,
         duplicate_override: str | None,
+        dispatched: list[bool] | None = None,
     ) -> dict[str, Any]:
+        """Make the one governed call.
+
+        `dispatched` records whether anything was handed to the bridge for
+        execution. `commit` needs that distinction: a refusal decided on this
+        side is already proof of zero writes, and must not be routed through
+        Finance for an opinion it does not need and may not be able to give.
+        """
         context = self._context
+        # Resolved and authorised here, before anything can leave. The bridge
+        # authorises again inside `execute` -- deliberately, since authorisation
+        # is recomputed rather than cached -- so this is an earlier check whose
+        # *failure* is what carries the information, not a replacement for it.
+        remote_name = self._remote_name(tool)
+        self._bridge.authorize(tool, model_args, context.device)
         host = HostContext(
             agent_id=context.agent_id,
             device_id=context.device.device_id,
             user_id=context.user_id,
             scopes=tuple(sorted(context.device.scopes)),
-            tool=self._remote_name(tool),
+            tool=remote_name,
             request_id=self._new_request_id(),
             trace_id=context.conversation_trace_id,
             idempotency_key=idempotency_key,
@@ -323,6 +347,8 @@ class McpFinanceDispatcher:
             timezone=context.timezone,
             duplicate_override=duplicate_override,
         )
+        if dispatched is not None:
+            dispatched.append(True)
         execution = self._run(
             self._bridge.execute(
                 tool,

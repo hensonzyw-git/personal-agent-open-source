@@ -712,6 +712,44 @@ def test_each_finance_state_maps_to_the_right_claim(
     assert isinstance(outcome, CommitFailedSafe) is proves_zero_write
 
 
+def test_a_local_refusal_does_not_depend_on_finance_being_reachable() -> None:
+    """A denial decided here must not need Finance's opinion to be reported.
+
+    Scope and allowlist are checked on this side, before anything is dispatched,
+    so `zero writes` is already proven locally. Routing that through the control
+    plane means that when Finance is down -- the very moment a permission error
+    is most likely to be seen -- "you do not have permission, nothing was
+    written" degrades into "unknown, needs manual review", which is both wrong
+    and alarming.
+    """
+    sys.path.insert(0, str(Path(__file__).parents[1] / "integration"))
+    import test_finance_dispatcher as harness
+
+    from personal_agent.api.control_client import ControlPlaneError
+    from personal_agent.api.intent import WriteIntent
+    from personal_agent.api.orchestrator import CommitFailedSafe
+    from personal_agent_core.errors import AppError, ErrorCode
+
+    # The bridge refuses locally; the control plane is unreachable.
+    bridge = harness.FakeBridge(error=AppError(ErrorCode.SCOPE_DENIED))
+    bridge.refuses_locally = True
+    control = ControlWithExecution(None, error=ControlPlaneError("unreachable"))
+    dispatcher = harness.dispatcher(bridge, control)
+
+    outcome = dispatcher.commit(
+        intent=WriteIntent(tool="finance.log_expense", model_args={}),
+        idempotency_key="idem-local-denial",
+        duplicate_override=None,
+    )
+
+    assert isinstance(outcome, CommitFailedSafe)
+    assert outcome.reason == ErrorCode.SCOPE_DENIED.value
+    assert control.asked == [], (
+        "a refusal decided before dispatch needs no evidence from Finance"
+    )
+    assert bridge.calls == [], "and nothing may have been dispatched"
+
+
 def test_an_unreadable_control_plane_never_claims_a_zero_write() -> None:
     """Fail closed: not knowing is `CommitUnknown`, not "nothing was written"."""
     sys.path.insert(0, str(Path(__file__).parents[1] / "integration"))

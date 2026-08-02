@@ -117,6 +117,15 @@ class FakeBridge:
         self.result = result if result is not None else {"record_id": "rec1"}
         self.error = error
         self.calls: list[dict[str, Any]] = []
+        #: Raise `error` from `authorize` instead of `execute`, i.e. refuse on
+        #: this side before anything is dispatched -- what the real bridge does
+        #: for a scope or allowlist denial.
+        self.refuses_locally = False
+
+    def authorize(self, alias, arguments, device):
+        if self.refuses_locally and self.error is not None:
+            raise self.error
+        return self.registry.resolve(alias), arguments
 
     async def execute(self, alias, arguments, device, *, call_context):
         self.calls.append(
