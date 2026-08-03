@@ -495,9 +495,6 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 asyncio.shield(task), timeout=deps.sync_wait_seconds
             )
             return processed.response
-        except AppError:
-            # A stable business refusal already has an envelope and a status.
-            raise
         except TimeoutError:
             # The worker owns its session and continues. The client polls this
             # durable operation id; timeout never means the write was cancelled.
@@ -521,9 +518,13 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             # reached the client as HTTP 500 with a `null` body, leaving nothing
             # to poll for a write that had in fact succeeded in Feishu.
             #
-            # This reports the operation's *durable* state, so it claims nothing
-            # the database does not already say -- an operation still in flight
-            # comes back in flight, and recovery resolves it later.
+            # This includes an AppError that escaped the worker. Business
+            # refusals are supposed to become durable terminal operation states
+            # inside `run_operation`; once a task-level exception reaches this
+            # route, its Python type must not decide whether the client keeps the
+            # id. This reports the operation's *durable* state, so it claims
+            # nothing the database does not already say -- an operation still in
+            # flight comes back in flight, and recovery resolves it later.
             logger.exception(
                 "the chat worker failed; returning the durable operation state"
             )

@@ -43,6 +43,7 @@ from personal_agent.storage.engine import (
 from envelope_factory import envelope_factory
 from personal_agent.storage.models import Conversation, Device, Operation
 from personal_agent_core.crypto import KeyRing, generate_key
+from personal_agent_core.errors import AppError, ErrorCode
 
 
 NOW = datetime(2026, 7, 24, 7, 0, tzinfo=timezone.utc)
@@ -828,16 +829,30 @@ def test_cancelling_a_parked_duplicate_is_a_clean_cancellation(
 
 
 class ExplodingInterpreter:
-    """Fails the way SQLite lock contention did: an ordinary, unexpected error."""
+    """Fails with the injected task-level exception after the operation is anchored."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
 
     def interpret(self, *, envelope):
-        raise RuntimeError(
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "worker_error",
+    [
+        RuntimeError(
             "database is locked at /var/lib/personal-agent-api/agent.sqlite"
-        )
-
-
+        ),
+        AppError(
+            ErrorCode.INTERNAL_ERROR,
+            internal_detail="an anchored worker raised a stable AppError",
+        ),
+    ],
+    ids=["ordinary-exception", "app-error"],
+)
 def test_a_worker_failure_still_returns_the_durable_operation_id(
-    engine, token_ring, keyring
+    engine, token_ring, keyring, worker_error
 ) -> None:
     """The client must never lose the id, because the id is the route to truth.
 
@@ -851,7 +866,7 @@ def test_a_worker_failure_still_returns_the_durable_operation_id(
         engine,
         token_ring,
         keyring,
-        interpreter=ExplodingInterpreter(),
+        interpreter=ExplodingInterpreter(worker_error),
         dispatcher=FakeDispatcher(),
     )
 

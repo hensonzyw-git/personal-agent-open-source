@@ -425,10 +425,14 @@ if [ ! -f "$SWITCH_FILE" ]; then
 else
   sw_mode="$(stat -c %a "$SWITCH_FILE")"; while [ "${#sw_mode}" -lt 3 ]; do sw_mode="0$sw_mode"; done
   sw_owner="$(stat -c %U:%G "$SWITCH_FILE")"
-  if [ "$sw_owner" = "root:root" ] && [ "$sw_mode" = "644" ]; then
-    pass "write switch is root:root/0644"
+  sw_dir="$(dirname "$SWITCH_FILE")"
+  sw_dir_owner="$(stat -c %U:%G "$sw_dir")"
+  sw_dir_mode="$(stat -c %a "$sw_dir")"
+  if [ "$sw_owner" = "root:root" ] && [ "$sw_mode" = "644" ] \
+     && [ "$sw_dir_owner" = "root:root" ] && [ "$sw_dir_mode" = "755" ]; then
+    pass "write switch is root:root/0644 under root:root/0755"
   else
-    fail "write switch is $sw_owner/$sw_mode, want root:root/644"
+    fail "write switch is $sw_owner/$sw_mode under $sw_dir_owner/$sw_dir_mode, want root:root/644 under root:root/755"
   fi
   expect_success "api user can open the write switch" \
     sudo -u "$API_USER" head -c 1 "$SWITCH_FILE"
@@ -436,10 +440,19 @@ else
     sudo -u "$MCP_USER" head -c 1 "$SWITCH_FILE"
   # Neither service may flip its own switch: a compromised service that could
   # rewrite this file could re-enable the writes an operator just stopped.
-  expect_refused "api user cannot rewrite the write switch" \
-    sudo -u "$API_USER" test -w "$SWITCH_FILE"
-  expect_refused "mcp user cannot rewrite the write switch" \
-    sudo -u "$MCP_USER" test -w "$SWITCH_FILE"
+  # `test -w` only asks access(2) what would happen. Open the actual inode for
+  # append instead, with O_NOFOLLOW, and require the kernel to refuse it. The
+  # probe closes immediately and writes no bytes even if a regression lets the
+  # open succeed, so verify.sh remains read-only. The parent-directory mode
+  # above independently prevents unlink/rename replacement.
+  WRITE_OPEN_PROBE='import os, sys; fd = os.open(sys.argv[1], os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW); os.close(fd)'
+  expect_refused "api process identities cannot open the write switch for writing" \
+    bash -c 'sudo -u "$1" "$3" -c "$4" "$5" || sudo -u "$2" "$3" -c "$4" "$5"' \
+    _ "$API_USER" www-data /opt/personal-agent/.venv/bin/python \
+    "$WRITE_OPEN_PROBE" "$SWITCH_FILE"
+  expect_refused "mcp user cannot open the write switch for writing" \
+    sudo -u "$MCP_USER" /opt/personal-agent/.venv/bin/python \
+    -c "$WRITE_OPEN_PROBE" "$SWITCH_FILE"
   # Parsed by the production reader, not by grep: the services refuse anything
   # this reader refuses, so this is the only check that means what it says.
   /opt/personal-agent/.venv/bin/personal-agent-write-switch \
