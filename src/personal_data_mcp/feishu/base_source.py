@@ -113,3 +113,41 @@ def require_synthetic_test_base(
             "configured tables do not match the protected synthetic-ledger config"
         )
     return source
+
+
+def require_configured_base(
+    source: BaseSource,
+    *,
+    approved_base_token: str,
+    approved_tables: dict[str, str],
+    approved_ledger_kind: str,
+) -> BaseSource:
+    """Bind an injected source to a protected config, whatever kind it declares.
+
+    The sibling of `require_synthetic_test_base`, for the **read-only** path that
+    may legitimately open the real annual ledger (Henson's 2026-08-03 staged-G5
+    decision). It keeps every identity check -- kind, Base token under a
+    constant-time compare, and the complete table mapping -- and drops only the
+    "must be the synthetic Base" clause, because that clause is what the
+    read-only path exists to step past.
+
+    Deliberately a separate function rather than a `strict=False` parameter on
+    the existing one: a boolean that weakens a red line can be passed by
+    accident, while a differently-named import shows up in review and in an AST
+    check. Nothing on the write path may call this.
+    """
+    if source.ledger_kind != approved_ledger_kind:
+        raise LedgerSourceError(
+            "configured Base kind does not match the protected ledger config"
+        )
+    source_hash = hashlib.sha256(source.base_token.encode("utf-8")).digest()
+    approved_hash = hashlib.sha256(approved_base_token.encode("utf-8")).digest()
+    if not hmac.compare_digest(source_hash, approved_hash):
+        raise LedgerSourceError(
+            "configured Base does not match the protected ledger config"
+        )
+    if source.tables != approved_tables:
+        raise LedgerSourceError(
+            "configured tables do not match the protected ledger config"
+        )
+    return source
