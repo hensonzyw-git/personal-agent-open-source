@@ -412,11 +412,13 @@ It **preserves** users, `/var/lib` data, `/etc/personal-agent` secrets and
 `/opt` code — removing any of those is a separate explicit decision, not part
 of a rollback.
 
-## Still outside this rollout
+## Current boundaries
 
-- DEV-036 ECS enablement and first live review/cleanup/backup-age verification;
-  the repository units and fail-closed verification are ready, but live evidence
-  does not exist until the deployment sequence above passes.
+- DEV-036 ECS enablement and live review/cleanup/backup-age verification are
+  complete. DEV-039 exercised the rollback sequence above on 2026-08-03,
+  including full unit removal/reinstall and Nginx removal/restore while the
+  personal site stayed 200; see
+  `docs/evidence/DEV039完整恢复与回滚演练_2026-08-03.md`.
 - `finance.query_expenses` — its cursor-signing credential is not loaded by
   server composition; the tool stays unadvertised (unchanged from DEV-027).
 - Real APNs device registration/sending and live receipt evidence — inputs are
