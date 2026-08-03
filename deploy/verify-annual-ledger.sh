@@ -18,6 +18,7 @@
 # a second file.
 #
 # Usage (as deploy):
+#   sudo bash ~/personal-agent-deploy/verify-annual-ledger.sh check
 #   sudo bash ~/personal-agent-deploy/verify-annual-ledger.sh freeze
 #   sudo bash ~/personal-agent-deploy/verify-annual-ledger.sh schema
 #   sudo bash ~/personal-agent-deploy/verify-annual-ledger.sh query [--page-all]
@@ -61,7 +62,49 @@ if [ "${FEISHU_FINANCE_LEDGER_KIND:-}" != "production" ]; then
   exit 1
 fi
 
+# Shape expectations are derived from the working synthetic configuration on
+# this same tenant (base token 27 alphanumerics, table id 16 starting `tbl`),
+# not invented. The charset check is the load-bearing one: a terminal with
+# broken bracketed paste embeds `\e[200~` into whatever you paste, and a Feishu
+# identifier looks like noise already, so corruption is invisible by eye.
+check_shape() { # <name> <value> <expected-length> <regex>
+  local name="$1" value="$2" want="$3" pattern="$4"
+  local len="${#value}"
+  if [ "$len" -eq "$want" ] && printf %s "$value" | grep -qE "$pattern"; then
+    echo "  OK    $name  len=$len"
+    return 0
+  fi
+  echo "  BAD   $name  len=$len (want $want, /$pattern/)" >&2
+  case "$value" in
+    *[![:print:]]*) echo "        contains a non-printable character -- looks like a mangled paste" >&2 ;;
+  esac
+  return 1
+}
+
 case "${1:-}" in
+  check)
+    rc=0
+    check_shape FEISHU_FINANCE_BASE_TOKEN "${FEISHU_FINANCE_BASE_TOKEN:-}" 27 '^[A-Za-z0-9]+$' || rc=1
+    for table in EXPENSE INCOME FAMILY_FUND; do
+      eval "value=\${FEISHU_FINANCE_TABLE_$table:-}"
+      check_shape "FEISHU_FINANCE_TABLE_$table" "$value" 16 '^tbl[A-Za-z0-9]+$' || rc=1
+    done
+    secret="${PERSONAL_DATA_MCP_QUERY_CURSOR_SECRET:-}"
+    if [ "${#secret}" -ge 43 ] && printf %s "$secret" | grep -qE '^[A-Za-z0-9_-]+$'; then
+      echo "  OK    PERSONAL_DATA_MCP_QUERY_CURSOR_SECRET  len=${#secret}"
+    else
+      echo "  BAD   PERSONAL_DATA_MCP_QUERY_CURSOR_SECRET  len=${#secret}" >&2
+      rc=1
+    fi
+    # Distinctness, because pasting the same id four times is a real mistake and
+    # every value above would still pass its own shape check.
+    if [ "$(printf '%s\n' "$FEISHU_FINANCE_TABLE_EXPENSE" "$FEISHU_FINANCE_TABLE_INCOME" "$FEISHU_FINANCE_TABLE_FAMILY_FUND" | sort -u | wc -l)" -ne 3 ]; then
+      echo "  BAD   the three table ids are not distinct" >&2
+      rc=1
+    fi
+    [ "$rc" -eq 0 ] && echo "shapes OK -- no values were printed"
+    exit "$rc"
+    ;;
   freeze)
     [ -e "$CONFIG" ] && { echo "refusing: $CONFIG already exists" >&2; exit 1; }
     "$VENV/personal-data-mcp-freeze-ledger" \
@@ -85,7 +128,7 @@ case "${1:-}" in
       --start "$LEDGER_YEAR-01-01" --end "$LEDGER_YEAR-12-31" "$@"
     ;;
   *)
-    echo "usage: $0 {freeze|schema|query [--page-all]}" >&2
+    echo "usage: $0 {check|freeze|schema|query [--page-all]}" >&2
     exit 2
     ;;
 esac
