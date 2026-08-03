@@ -17,7 +17,11 @@ Three things it deliberately does not do:
 - **It never invents a contract.** Names, types, writability and option sets come
   from `EXPECTED_TABLE_FIELDS`; the live Base supplies field ids and nothing
   else. A live schema that disagrees is an error, not a new expectation.
-- **It never freezes production.** The kind must be `synthetic_test` until G5,
+- **It freezes production only on an explicit acknowledgement.** The kind must
+  be `synthetic_test` unless `--allow-production-read-only` is given for the
+  staged-G5 read-only verification, and even then the resulting config cannot
+  write, because the write door refuses any kind but `synthetic_test`.
+  Historically this read: the kind must be `synthetic_test` until G5,
   asserted from two independent inputs -- the operator's explicit flag and the
   injected environment -- so neither alone can widen the blast radius.
 - **It never writes to Feishu.** Every call is the same read the G2 probe makes.
@@ -189,19 +193,30 @@ def build_config(
     return config
 
 
-def require_freezable_kind(source: BaseSource, *, declared_kind: str) -> None:
-    """Refuse to freeze anything but the synthetic test Base, from two inputs.
+def require_freezable_kind(
+    source: BaseSource, *, declared_kind: str, allow_production: bool
+) -> None:
+    """Refuse to freeze the wrong Base, from two independent inputs.
 
     There is no protected config to bind against yet -- this command is what
     produces one -- so the environment marker alone would be the only guard.
     Requiring the operator to declare the kind on the command line as well means
     a stray or copied marker cannot by itself point a freeze at a real ledger.
-    Production is refused outright: that is a G5 decision, not a CLI flag.
+
+    `allow_production` opens the annual ledger for Henson's 2026-08-03 staged-G5
+    decision, and is a **required** parameter so no caller gets it by omission.
+    What makes that safe is worth stating, because it is not obvious: freezing
+    reads field *definitions* and writes a local file -- it never writes Feishu --
+    and the artefact it produces **cannot be used to write**, because the write
+    door (`server/composition.load_protected_config`) still refuses any config
+    whose kind is not `synthetic_test`. This check is therefore defence in depth;
+    the load-bearing gate is over there, and a test pins that it still holds.
     """
-    if declared_kind != SYNTHETIC_TEST_KIND:
+    if declared_kind != SYNTHETIC_TEST_KIND and not allow_production:
         raise ConfigFreezeError(
             f"refusing to freeze kind {declared_kind!r}: only "
-            f"{SYNTHETIC_TEST_KIND!r} may be frozen before G5"
+            f"{SYNTHETIC_TEST_KIND!r} may be frozen without an explicit "
+            "read-only production acknowledgement"
         )
     if source.ledger_kind != declared_kind:
         raise ConfigFreezeError(
@@ -216,11 +231,14 @@ async def freeze(
     ledger_year: int,
     config_version: str,
     declared_kind: str,
+    allow_production: bool,
 ) -> tuple[LedgerConfig, dict[str, Any]]:
     """Run the read-only fetch and return the config plus its redacted report."""
     credentials = load_credentials(env)
     source = load_base_source(env)
-    require_freezable_kind(source, declared_kind=declared_kind)
+    require_freezable_kind(
+        source, declared_kind=declared_kind, allow_production=allow_production
+    )
 
     observed: dict[str, list[ObservedField]] = {}
     async with FeishuAdapter(credentials, now=time.monotonic) as adapter:
@@ -275,8 +293,19 @@ def main() -> None:
         "--ledger-kind",
         required=True,
         help=(
-            "must be 'synthetic_test' and must match the injected environment; "
-            "production is a G5 decision and is refused here"
+            "must match the injected environment. Anything other than "
+            "'synthetic_test' additionally requires "
+            "--allow-production-read-only"
+        ),
+    )
+    parser.add_argument(
+        "--allow-production-read-only",
+        action="store_true",
+        help=(
+            "freeze a non-synthetic ledger for READ-ONLY verification "
+            "(Henson's staged-G5 decision). The resulting config still cannot "
+            "write: the write path refuses any kind but synthetic_test. Use it "
+            "with personal-data-mcp-verify-ledger, never with the server."
         ),
     )
     args = parser.parse_args()
@@ -287,6 +316,7 @@ def main() -> None:
                 ledger_year=args.ledger_year,
                 config_version=args.config_version,
                 declared_kind=args.ledger_kind,
+                allow_production=args.allow_production_read_only,
             )
         )
         write_protected(config, args.out)

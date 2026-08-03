@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import tempfile
 import stat
 from pathlib import Path
 
@@ -163,11 +164,46 @@ def test_an_extra_live_option_is_also_refused() -> None:
 # --- only the synthetic test Base may be frozen ------------------------------
 
 
-def test_production_cannot_be_frozen_by_this_command() -> None:
+def test_production_cannot_be_frozen_without_an_explicit_acknowledgement() -> None:
     env = full_env()
     env["FEISHU_FINANCE_LEDGER_KIND"] = "production"
-    with pytest.raises(ConfigFreezeError, match="before G5"):
-        require_freezable_kind(load_base_source(env), declared_kind="production")
+    with pytest.raises(ConfigFreezeError, match="acknowledgement"):
+        require_freezable_kind(
+            load_base_source(env),
+            declared_kind="production",
+            allow_production=False,
+        )
+
+
+def test_production_can_be_frozen_for_read_only_verification() -> None:
+    """Henson's staged-G5 decision, and why it is safe to allow here.
+
+    Freezing reads field definitions and writes a local file; it never writes
+    Feishu. What keeps this from becoming a production write path is the *write*
+    door, pinned by the test below.
+    """
+    env = full_env()
+    env["FEISHU_FINANCE_LEDGER_KIND"] = "production"
+    require_freezable_kind(
+        load_base_source(env), declared_kind="production", allow_production=True
+    )
+
+
+def test_a_production_config_still_cannot_reach_the_write_path() -> None:
+    """The load-bearing gate, asserted from the other side.
+
+    Relaxing the freeze guard is only defence-in-depth relaxation. If this ever
+    stops holding, freezing production really would become a way to write it.
+    """
+    from personal_data_mcp.server.composition import load_protected_config
+    from personal_data_mcp.feishu.base_source import LedgerSourceError
+
+    production = CONFIG.model_copy(update={"ledger_kind": "production"})
+    path = Path(tempfile.mkdtemp()) / "annual.json"
+    path.write_text(production.model_dump_json(), encoding="utf-8")
+
+    with pytest.raises(LedgerSourceError, match="G5"):
+        load_protected_config(path)
 
 
 def test_a_declared_kind_that_the_environment_contradicts_is_refused() -> None:
@@ -175,13 +211,17 @@ def test_a_declared_kind_that_the_environment_contradicts_is_refused() -> None:
     env["FEISHU_FINANCE_LEDGER_KIND"] = "production"
     with pytest.raises(ConfigFreezeError, match="does not match"):
         require_freezable_kind(
-            load_base_source(env), declared_kind="synthetic_test"
+            load_base_source(env),
+            declared_kind="synthetic_test",
+            allow_production=False,
         )
 
 
 def test_the_synthetic_environment_is_freezable() -> None:
     require_freezable_kind(
-        load_base_source(full_env()), declared_kind="synthetic_test"
+        load_base_source(full_env()),
+        declared_kind="synthetic_test",
+        allow_production=False,
     )
 
 
@@ -251,6 +291,7 @@ def test_the_fetch_produces_the_config_and_a_report_without_raw_ids(
             ledger_year=2026,
             config_version="2026.1",
             declared_kind="synthetic_test",
+            allow_production=False,
         )
     )
     assert config.checksum() == CONFIG.checksum()
@@ -276,5 +317,6 @@ def test_the_fetch_refuses_a_non_synthetic_environment(monkeypatch) -> None:
                 ledger_year=2026,
                 config_version="2026.1",
                 declared_kind="synthetic_test",
+                allow_production=False,
             )
         )
