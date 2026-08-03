@@ -27,7 +27,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from types import SimpleNamespace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -49,6 +49,7 @@ from personal_agent.api.control_client import ControlPlaneError
 from personal_agent.api.intent import WriteIntent
 from personal_agent.api.orchestrator import CommitFailedSafe, ResolveFailedSafe
 from personal_agent.api.operation_store import open_operation, transition_operation
+from personal_agent.api.recovery import RECOVERY_QUIET_PERIOD
 from personal_agent.auth.tokens import issue_access_token
 from personal_agent.context.budget import ComponentKind
 from personal_agent.context.config import (
@@ -1228,11 +1229,26 @@ class BodyControl:
 
 
 def seed_in_flight_operation(
-    database: Path, key: str, *, target: str = "source_in_progress"
+    database: Path,
+    key: str,
+    *,
+    target: str = "source_in_progress",
+    stranded: bool = True,
 ) -> str:
+    """Seed an operation these recovery tests can adopt.
+
+    `stranded` backdates every transition past `RECOVERY_QUIET_PERIOD`, which is
+    what "in flight when the process died" actually looks like: the row stopped
+    moving before the restart. Seeding it at `utc_now()` would describe an
+    operation a live worker still owns, and since 2026-08-03 recovery correctly
+    refuses to touch one of those -- so a test that seeds it that way is not
+    testing startup recovery at all.
+    """
     engine = create_database_engine(database)
     with session_factory(engine)() as session:
         now = utc_now()
+        if stranded:
+            now = now - RECOVERY_QUIET_PERIOD - timedelta(seconds=1)
         operation = open_operation(
             session,
             device_id=DEVICE_ID,
@@ -1416,6 +1432,54 @@ def test_periodic_recovery_projects_an_operation_without_a_service_restart(
     operation = read_operation(agent_db, operation_id)
     assert operation.state == "succeeded"
     assert operation.safe_result == f"rec_{key}"
+
+
+def test_periodic_recovery_never_adopts_an_operation_a_worker_still_owns(
+    keys, agent_db, tmp_path: Path
+) -> None:
+    """The 2026-08-03 P0, at the composition root rather than at the planner.
+
+    Same wiring as the test above -- a real Finance MCP over a socket, the real
+    control client, recovery running continuously -- but the operation is fresh,
+    which is what a turn in progress looks like. Finance already reports success
+    for the key, so a recovery worker that ignored liveness would happily and
+    *correctly-looking-ly* resolve it, and race the live worker's own transition
+    while doing so. It must leave the row exactly where it found it.
+    """
+    finance_db = tmp_path / "finance-live.sqlite"
+    key = str(uuid.uuid4())
+    _seed_finance_success(finance_db, key)
+
+    service = LoopbackFinanceService(
+        {
+            MCP_KID_ENV: "svc-test",
+            MCP_PEM_ENV: str(keys.service_public_pem),
+        },
+        database=finance_db,
+    )
+    try:
+
+        async def scenario():
+            async with agent_service(
+                config_for(agent_db, service),
+                recovery_interval_seconds=0.01,
+                write_switch=shared_enabled_write_switch(),
+            ):
+                operation_id = seed_in_flight_operation(
+                    agent_db, key, stranded=False
+                )
+                # Many scans, all of which must decline to touch it.
+                await asyncio.sleep(0.5)
+                return operation_id
+
+        operation_id = asyncio.run(scenario())
+    finally:
+        service.stop()
+
+    operation = read_operation(agent_db, operation_id)
+    assert operation.state == "source_in_progress"
+    assert operation.safe_result is None
+    assert operation.failure_reason is None
 
 
 def _seed_finance_success(database: Path, key: str) -> None:

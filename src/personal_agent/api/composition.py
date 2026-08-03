@@ -433,7 +433,18 @@ def recover_at_startup(
     """Run one projection of Finance truth onto every recoverable operation.
 
     The composition root calls this at boot and once per minute, as required by
-    technical design 7.6.1. An unreadable control plane rolls the whole scan back
+    technical design 7.6.1.
+
+    Since the 2026-08-03 fix a scan only adopts operations that have been quiet
+    for `RECOVERY_QUIET_PERIOD`, which slightly delays the boot case: if the
+    service crashed and came back within that window, a genuinely stranded
+    operation waits for a later scan instead of the first one. That is the
+    intended trade. Recovering a stranded operation a minute late costs a minute
+    on a durable id the client is already polling; adopting one that a live
+    worker still owns cost a successful ledger write being recorded as "finance
+    has no execution".
+
+    An unreadable control plane rolls the whole scan back
     rather than leaving half a projection behind: the operations stay recoverable
     and the next scheduled scan tries again. Refusing to run the service instead
     would wedge the Agent whenever Finance is down, and guessing would be worse

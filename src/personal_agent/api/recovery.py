@@ -29,14 +29,34 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Final
 
 from personal_agent.api.operation_store import transition_operation
+from personal_agent.mcp_client.core import TRANSPORT_READ_TIMEOUT
 from personal_agent.storage.models import (
     RECOVERABLE_OPERATION_STATES,
     Operation,
+)
+
+
+#: How long an operation must have sat at the same state before recovery may
+#: adopt it.
+#:
+#: Derived, not chosen. `updated_at` moves on every transition, so the question
+#: is: what is the longest a *live* worker can legitimately go without one? Every
+#: gap on a recoverable operation is bounded by a call budget -- the model turn
+#: (25s) happens at `dispatching`, and the longest of all, the governed MCP write,
+#: is bounded by `TRANSPORT_READ_TIMEOUT`. A worker cannot exceed its own ceiling
+#: without failing, so anything quiet for longer than that ceiling really has
+#: been abandoned. The margin on top is so the two are never merely equal.
+#:
+#: Importing the ceiling rather than restating it keeps the derivation true if
+#: the timeout ever changes; a test pins the inequality so it cannot silently
+#: invert.
+RECOVERY_QUIET_PERIOD: Final[timedelta] = TRANSPORT_READ_TIMEOUT + timedelta(
+    seconds=30
 )
 
 
@@ -143,15 +163,38 @@ _RECOVERY_PATHS: Final[dict[tuple[str, str], tuple[str, ...]]] = {
 
 
 def plan_recovery(
-    agent_state: str, finance_status: FinanceExecutionStatus | None
+    agent_state: str,
+    finance_status: FinanceExecutionStatus | None,
+    *,
+    quiet: bool,
 ) -> RecoveryPlan:
     """Decide how to project a Finance status onto a recoverable operation.
 
     Pure: no database, no clock. The applier turns a plan into legal transitions.
+
+    `quiet` says the operation has not changed state for longer than any live
+    worker can legitimately hold it (see `RECOVERY_QUIET_PERIOD`). It is a
+    required parameter rather than a filter applied by the caller, because the
+    branch it protects is the one that read an *absence* as evidence: on
+    2026-08-03 this function resolved a live operation to `needs_manual_review`
+    with "finance has no execution" **3.2 seconds before Finance committed that
+    execution**, and the write then succeeded in full. §5.2 and DEV-038's slice B
+    already state the rule -- an absent row is a race, not proof -- and it had
+    been applied to the dispatcher and never here. Making it a parameter means a
+    future caller cannot reach the branch without answering the question.
     """
     if agent_state not in RECOVERABLE_OPERATION_STATES:
         raise ValueError(f"{agent_state} is not a recoverable operation state")
     agent_pre_submit = agent_state == _PRE_SUBMIT_RECOVERABLE
+
+    if not quiet:
+        # Someone else is holding this one. Recovery exists for what a crash left
+        # behind, and a still-running turn is indistinguishable from that by
+        # state alone -- so the state is not what decides it.
+        return RecoveryPlan(
+            RecoveryAction.LEAVE,
+            reason="a live worker may still own this operation",
+        )
 
     if finance_status is None:
         if agent_pre_submit:
@@ -230,18 +273,33 @@ def plan_recovery(
     )
 
 
+def is_quiet(updated_at: datetime, *, now: datetime) -> bool:
+    """Whether an operation has sat still long enough for recovery to adopt it.
+
+    A time-based proxy for ownership, not a lease. It is sound here for one
+    specific reason: every gap between two state changes on a recoverable
+    operation is bounded by a call budget shorter than `RECOVERY_QUIET_PERIOD`,
+    so a worker cannot stay silent past it and still be running. If a future
+    change introduces an unbounded wait inside a recoverable state, this stops
+    being true and the proxy has to become a real lease -- the shape Finance's
+    own reconciler already uses with `recovery_lease_owner`.
+    """
+    return now - updated_at >= RECOVERY_QUIET_PERIOD
+
+
 def apply_recovery(
     session,
     operation: Operation,
     finance_status: FinanceExecutionStatus | None,
     *,
     now: datetime,
+    quiet: bool,
 ) -> RecoveryPlan:
     """Project a Finance status onto one operation, walking legal transitions.
 
     Returns the plan that was applied. `LEAVE` changes no state.
     """
-    plan = plan_recovery(operation.state, finance_status)
+    plan = plan_recovery(operation.state, finance_status, quiet=quiet)
 
     if plan.action is RecoveryAction.ADVANCE_IN_PROGRESS:
         _walk(session, operation, ("source_in_progress",), now, plan)
@@ -260,24 +318,53 @@ def recover_pending(
 
     Returns `(operation_id, plan)` for each so the composition root can log the
     projection without having to re-read the affected rows.
+
+    An operation that is still quiet-period-young is left alone *and* is not
+    even read from the control plane: it belongs to a live worker, so asking
+    Finance about it can only produce an answer that is already out of date, and
+    the write that would follow is the one that collided with the live worker's
+    own transition and surfaced as `database is locked`.
     """
     pending = list(
         session.query(Operation)
         .filter(Operation.state.in_(sorted(RECOVERABLE_OPERATION_STATES)))
         .all()
     )
+    # Snapshotted before the commit below, because reading it afterwards would
+    # re-fetch each row and the quietness of an operation must be judged at one
+    # instant, not at whatever moment each attribute happened to be refreshed.
+    quiet_by_id = {
+        operation.operation_id: is_quiet(operation.updated_at, now=now)
+        for operation in pending
+    }
     # Every control-plane read happens first, with no transaction open. Holding
     # one across these calls would mean the first write afterwards fails if
     # anything else committed in between, and reading them all before touching
     # any row is also what keeps this projection all-or-nothing: an unreadable
     # control plane aborts before a single operation has moved.
-    keys = [operation.idempotency_key for operation in pending]
+    adoptable = [
+        operation
+        for operation in pending
+        if quiet_by_id[operation.operation_id]
+    ]
+    keys = [operation.idempotency_key for operation in adoptable]
     session.commit()
     statuses = [read_status(key) for key in keys]
+    status_by_id = {
+        operation.operation_id: status
+        for operation, status in zip(adoptable, statuses, strict=True)
+    }
 
     results: list[tuple[str, RecoveryPlan]] = []
-    for operation, status in zip(pending, statuses, strict=True):
-        plan = apply_recovery(session, operation, status, now=now)
+    for operation in pending:
+        quiet = quiet_by_id[operation.operation_id]
+        plan = apply_recovery(
+            session,
+            operation,
+            status_by_id.get(operation.operation_id),
+            now=now,
+            quiet=quiet,
+        )
         results.append((operation.operation_id, plan))
     return results
 
