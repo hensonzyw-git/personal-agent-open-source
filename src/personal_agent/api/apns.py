@@ -50,9 +50,17 @@ from personal_agent_core.crypto import CryptoError, KeyRing
 
 #: The only two hosts a provider token may be sent to. Selected by name from the
 #: environment; never assembled from it.
+#:
+#: The sandbox estate has two accepted spellings because Apple uses both: the
+#: iOS entitlement calls it `development` (`aps-environment: development`) while
+#: the host calls it `sandbox`, and the ECS was provisioned with the host's
+#: word. Accepting both widens the input vocabulary without widening the output:
+#: there are still exactly two reachable hosts, which is the property that
+#: matters. A *default* would be a different thing entirely, and there is none.
 _HOSTS: Final[dict[str, str]] = {
     "production": "api.push.apple.com",
     "development": "api.sandbox.push.apple.com",
+    "sandbox": "api.sandbox.push.apple.com",
 }
 
 ENVIRONMENT_ENV: Final[str] = "PERSONAL_AGENT_APNS_ENVIRONMENT"

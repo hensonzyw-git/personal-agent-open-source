@@ -138,6 +138,25 @@ def test_the_environment_selects_a_pinned_host_by_name(private_key_pem) -> None:
     assert set(_HOSTS.values()) == {development.host, production.host}
 
 
+def test_both_of_apples_names_for_the_sandbox_reach_the_same_pinned_host(
+    private_key_pem,
+) -> None:
+    """Apple calls the sandbox estate `development` in the iOS entitlement and
+    `sandbox` in the host name; the ECS was provisioned with the host's word.
+
+    Widening the input vocabulary must not widen the output: there are still
+    exactly two reachable hosts, which is the property §5.1 is about.
+    """
+    by_entitlement = load_apns_config(
+        _env(private_key_pem, PERSONAL_AGENT_APNS_ENVIRONMENT="development")
+    )
+    by_host = load_apns_config(
+        _env(private_key_pem, PERSONAL_AGENT_APNS_ENVIRONMENT="sandbox")
+    )
+    assert by_entitlement.host == by_host.host == "api.sandbox.push.apple.com"
+    assert len(set(_HOSTS.values())) == 2
+
+
 def test_an_unrecognised_environment_is_refused_not_defaulted(
     private_key_pem,
 ) -> None:
