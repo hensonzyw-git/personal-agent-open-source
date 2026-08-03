@@ -495,6 +495,9 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 asyncio.shield(task), timeout=deps.sync_wait_seconds
             )
             return processed.response
+        except AppError:
+            # A stable business refusal already has an envelope and a status.
+            raise
         except TimeoutError:
             # The worker owns its session and continues. The client polls this
             # durable operation id; timeout never means the write was cancelled.
@@ -510,6 +513,25 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                     "duplicate_check_id": None,
                 },
                 status_code=202,
+            )
+        except Exception:
+            # The worker died without producing a projection. The operation is
+            # already anchored and durable, so the one thing the client must not
+            # lose is its id: on 2026-08-03 an unhandled `database is locked`
+            # reached the client as HTTP 500 with a `null` body, leaving nothing
+            # to poll for a write that had in fact succeeded in Feishu.
+            #
+            # This reports the operation's *durable* state, so it claims nothing
+            # the database does not already say -- an operation still in flight
+            # comes back in flight, and recovery resolves it later.
+            logger.exception(
+                "the chat worker failed; returning the durable operation state"
+            )
+            return await asyncio.to_thread(
+                _load_operation_response,
+                deps,
+                anchored.operation_id,
+                auth.device_id,
             )
 
     @app.get("/v1/operations/{operation_id}")
@@ -701,6 +723,23 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
     @app.exception_handler(AppError)
     async def _on_app_error(request: Request, exc: AppError):
         return _error_response(exc)
+
+    @app.exception_handler(Exception)
+    async def _on_unexpected(request: Request, exc: Exception):
+        """Nothing leaves this service as a bare 500 with a `null` body.
+
+        Added after 2026-08-03, when an unhandled `database is locked` did
+        exactly that and the client was left with no code to act on and no
+        operation id to poll. The envelope is the same fixed-text one every
+        other refusal uses, so this adds no leak: the exception's own message,
+        which can name paths and identifiers, stays in the journal.
+
+        It deliberately says nothing about whether anything was written. An
+        unexpected failure is not evidence either way, and the caller's route to
+        the truth is the durable operation id, not this response.
+        """
+        logger.exception("unhandled error on %s", request.url.path)
+        return _error_response(AppError(ErrorCode.INTERNAL_ERROR))
 
     return app
 

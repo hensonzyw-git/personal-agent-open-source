@@ -8,6 +8,7 @@ duplicate decision are tested as the wire sees them.
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -818,3 +819,98 @@ def test_cancelling_a_parked_duplicate_is_a_clean_cancellation(
     assert resp.status_code == 200
     assert resp.json()["state"] == "cancelled_pre_submit"
     assert resp.json()["cancel_requested"] is True
+
+
+# --- 2026-08-03: nothing leaves as a bare 500 with a null body ---------------
+# Live evidence: docs/evidence/DEV038_线上半_2026-08-03.md §2.1-2.2. An
+# unhandled `database is locked` reached the client as HTTP 500 / `null`, so a
+# write that had in fact succeeded in Feishu left nothing to poll.
+
+
+class ExplodingInterpreter:
+    """Fails the way SQLite lock contention did: an ordinary, unexpected error."""
+
+    def interpret(self, *, envelope):
+        raise RuntimeError(
+            "database is locked at /var/lib/personal-agent-api/agent.sqlite"
+        )
+
+
+def test_a_worker_failure_still_returns_the_durable_operation_id(
+    engine, token_ring, keyring
+) -> None:
+    """The client must never lose the id, because the id is the route to truth.
+
+    The operation is anchored before any model work, so even when the worker
+    dies the durable row exists and can be reported. Its state is whatever the
+    database says -- this claims nothing about whether anything was written, and
+    an operation still in flight correctly comes back in flight for recovery to
+    resolve.
+    """
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=ExplodingInterpreter(),
+        dispatcher=FakeDispatcher(),
+    )
+
+    response = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "咖啡 18 个人支出"},
+        headers=_auth(token_ring),
+    )
+
+    body = response.json()
+    assert body is not None, "a null body is what left the client with nothing"
+    operation_id = body.get("operation_id")
+    assert operation_id, body
+    # And it is genuinely pollable, which is the whole point of returning it.
+    polled = client.get(
+        f"/v1/operations/{operation_id}",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert polled.status_code in (200, 202)
+    assert polled.json()["operation_id"] == operation_id
+    # Nothing was claimed about the outcome.
+    assert polled.json()["record_id"] is None
+
+
+def test_an_unexpected_error_never_reaches_the_client_as_a_bare_500(
+    engine, token_ring, keyring
+) -> None:
+    """The catch-all envelope, on a route with no operation to fall back to.
+
+    Also pins the redaction: the exception text names a filesystem path, and the
+    envelope is fixed-text, so none of it can travel.
+    """
+    deps = AgentApiDeps(
+        session_factory=session_factory(engine),
+        token_ring=token_ring,
+        keyring=keyring,
+        identifier_key=IDENTIFIER_KEY,
+        cursor_key=CURSOR_KEY,
+        build_interpreter=lambda auth: FakeInterpreter(DirectAnswer("hi")),
+        build_envelope=envelope_factory(keyring),
+        build_dispatcher=lambda auth, trace_id: FakeDispatcher(),
+        build_authorizer=lambda auth: (lambda *, tool, model_args: dict(model_args)),
+        capabilities=_exploding_capabilities,
+        now=lambda: NOW,
+    )
+    client = TestClient(build_app(deps), raise_server_exceptions=False)
+
+    response = client.get(
+        "/v1/capabilities",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+
+    body = response.json()
+    assert body is not None
+    assert body["error"]["code"] == "INTERNAL_ERROR"
+    serialised = json.dumps(body, ensure_ascii=False)
+    assert "/var/lib" not in serialised
+    assert "agent.sqlite" not in serialised
+
+
+def _exploding_capabilities(auth):
+    raise RuntimeError("secret path /var/lib/personal-agent-api/agent.sqlite")

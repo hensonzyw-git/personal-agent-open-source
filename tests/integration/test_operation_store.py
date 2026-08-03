@@ -333,3 +333,54 @@ def _advance(session, op: Operation, states: list[str]) -> None:
             now=NOW,
         )
     session.refresh(op)
+
+
+# --- the 2026-08-03 cross-device replay, live evidence in --------------------
+# docs/evidence/DEV038_线上半_2026-08-03.md §2.3
+
+
+def test_another_devices_key_is_a_conflict_not_an_unhandled_constraint(
+    session,
+) -> None:
+    """Two constraints can fire in `open_operation` and they mean opposites.
+
+    `idempotency_key` is globally unique, so a second device presenting a key
+    the first already anchored is not a race to re-read -- it is a client error.
+    Before the fix the re-read was scoped to (device, key), found nothing, and
+    re-raised, which reached production as HTTP 500 with a `null` body.
+    """
+    first = _open(session, key="shared-key")
+    session.commit()
+    session.add(_device("dev-2"))
+    session.flush()
+
+    with pytest.raises(AppError) as excinfo:
+        open_operation(
+            session,
+            device_id="dev-2",
+            client_request_id="shared-key",
+            request_fingerprint=FP,
+            now=NOW,
+        )
+
+    assert excinfo.value.code is ErrorCode.IDEMPOTENCY_CONFLICT
+    # And the first device's operation is untouched: the refusal creates nothing.
+    session.rollback()
+    assert (
+        session.query(Operation)
+        .filter(Operation.idempotency_key == "shared-key")
+        .count()
+        == 1
+    )
+    assert (
+        session.query(Operation).one().operation_id == first.operation.operation_id
+    )
+
+
+def test_the_owning_device_still_replays_the_same_key(session) -> None:
+    """The fix must not turn a legitimate same-device retry into a conflict."""
+    first = _open(session, key="mine")
+    session.commit()
+    again = _open(session, key="mine")
+    assert again.created is False
+    assert again.operation.operation_id == first.operation.operation_id

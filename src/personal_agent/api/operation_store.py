@@ -120,17 +120,47 @@ def open_operation(
             session.add(operation)
         return OpenedOperation(operation=operation, created=True)
     except IntegrityError:
-        # Another worker won the (device_id, client_request_id) race. The winner's
-        # row is authoritative; read it back and treat this as a replay.
+        # Two different constraints can fire here and they mean opposite things.
+        #
+        # `(device_id, client_request_id)`: another worker for *this* device won
+        # the race. Its row is authoritative; read it back and treat this as a
+        # replay.
         contender = _existing_operation(session, device_id, client_request_id)
-        if contender is None:  # pragma: no cover - the constraint just fired
-            raise
-        return _reuse(contender, request_fingerprint, client_request_id)
+        if contender is not None:
+            return _reuse(contender, request_fingerprint, client_request_id)
+
+        # `operations.idempotency_key`: the key is globally unique, so another
+        # *device* already owns it. That is a client error, not a race, and on
+        # 2026-08-03 it reached production as a bare HTTP 500 with a null body --
+        # the re-read above was by (device, key), found nothing, and re-raised.
+        # Nothing was dispatched, so the refusal is a proven zero write.
+        if _operation_for_key(session, client_request_id) is not None:
+            raise AppError(
+                ErrorCode.IDEMPOTENCY_CONFLICT,
+                internal_detail=(
+                    f"client_request_id {client_request_id} is already bound to "
+                    "another device's request"
+                ),
+            ) from None
+        raise  # pragma: no cover - a constraint this code does not know about
 
 
 def new_traceparent() -> str:
     """Create the W3C traceparent persisted for one operation end to end."""
     return f"00-{uuid.uuid4().hex}-{uuid.uuid4().hex[:16]}-01"
+
+
+def _operation_for_key(session, client_request_id: str) -> Operation | None:
+    """Any operation holding this idempotency key, whichever device owns it.
+
+    Deliberately not scoped by device: it answers "did the globally unique key
+    collide", which is the question `_existing_operation` cannot answer.
+    """
+    return (
+        session.query(Operation)
+        .filter(Operation.idempotency_key == client_request_id)
+        .one_or_none()
+    )
 
 
 def _existing_operation(
