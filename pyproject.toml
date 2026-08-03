@@ -20,6 +20,7 @@ dependencies = [
   "cryptography>=49,<50",
   "pyjwt>=2.13,<3",
   "jsonschema>=4.23,<5",
+  "h2>=4,<5",
 ]
 
 [project.optional-dependencies]

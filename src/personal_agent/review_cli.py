@@ -5,10 +5,15 @@ is `DEV-036`); it may also be run by hand. Both are safe: the job is idempotent
 on `review_date`, so a second run the same night adds nothing, and a run after
 an outage compensates the last seven days.
 
-It composes only what it needs -- the Agent database and the Finance control
-channel. No model, no MCP session, no data key. The summary it prints is
-deliberately counts and dates: record ids are resource identifiers, and this
-output goes to the journal.
+It composes only what it needs -- the Agent database, the Finance control
+channel, and (since `DEV-040`) the Agent data key, because a push cannot be
+sent without opening the device's push token, which is encrypted at rest. Still
+no model and no MCP session. The summary it prints is deliberately counts and
+dates: record ids are resource identifiers, and this output goes to the journal.
+
+When no APNs variable is set the job keeps `UnavailablePushSender` and says so;
+when they are only *partly* set it refuses to start, because that is a typo
+rather than a decision to go without push.
 """
 
 from __future__ import annotations
@@ -17,9 +22,11 @@ import argparse
 from datetime import date
 from pathlib import Path
 
+from personal_agent.api.apns import ApnsConfigError, build_push_sender
 from personal_agent.api.composition import build_review_control
 from personal_agent.api.daily_review import MAX_CATCH_UP_DAYS
 from personal_agent.api.review_job import run_daily_review
+from personal_agent.keys import load_agent_data_keyring
 from personal_agent.storage.engine import (
     check_integrity,
     create_database_engine,
@@ -81,10 +88,20 @@ def main() -> None:
     control = build_review_control(finance_control_url=args.finance_control_url)
 
     try:
+        sender = build_push_sender(
+            session_factory=sessions, keyring=load_agent_data_keyring()
+        )
+    except ApnsConfigError as exc:
+        engine.dispose()
+        raise SystemExit(str(exc)) from exc
+
+    try:
         report = run_daily_review(
-            sessions, control, today=today, max_days=args.max_days
+            sessions, control, send=sender, today=today, max_days=args.max_days
         )
     finally:
+        if sender is not None:
+            sender.close()
         engine.dispose()
 
     for outcome in report.outcomes:
