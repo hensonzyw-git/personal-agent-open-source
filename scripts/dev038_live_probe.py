@@ -395,8 +395,69 @@ def probe_wrong_audience(device: ProbeDevice, args) -> int:
     return 0
 
 
+def _switch(action: str, reason: str) -> str:
+    """Flip the deployed kill switch over SSH, as the operator would."""
+    argv = [part.replace("~", str(__import__("pathlib").Path.home())) for part in SSH]
+    command = (
+        "sudo /opt/personal-agent/.venv/bin/personal-agent-write-switch "
+        "--path /etc/personal-agent/write-switch.json "
+        f"{action}"
+    )
+    if action != "status":
+        command += f" --reason '{reason}'"
+    result = subprocess.run(
+        [*argv, command], capture_output=True, text=True, timeout=120
+    )
+    return f"exit={result.returncode} {result.stdout.strip()}{result.stderr.strip()}"
+
+
+def probe_kill_switch(device: ProbeDevice, args) -> int:
+    """DEV-039's live drill: writes off, reads alive, then writes back on.
+
+    The same token is used throughout and is never refreshed, so the catalog
+    changing across the flip is evidence that the switch is re-read per call
+    rather than baked into anything.
+    """
+    device.enrol(args.code, args.display_name)
+    print(f"device_id={device.device_id}")
+    device.authenticate()
+
+    print("--- switch state at the start")
+    print(_switch("status", ""))
+
+    def catalog() -> list[str]:
+        response = device.capabilities()
+        response.raise_for_status()
+        return sorted(tool["alias"] for tool in response.json()["tools"])
+
+    print(f"catalog with writes DISABLED: {catalog()}")
+    conversation_id = device.canonical_conversation_id()
+    _show(
+        "write attempt with writes DISABLED",
+        device.chat(
+            args.text,
+            conversation_id=conversation_id,
+            idempotency_key=str(uuid.uuid4()),
+        ),
+    )
+
+    print("--- enabling, without restarting anything")
+    print(_switch("enable", "DEV-039 live drill"))
+    print(f"catalog with writes ENABLED (same token): {catalog()}")
+    _show(
+        "write attempt with writes ENABLED",
+        device.chat(
+            args.text,
+            conversation_id=conversation_id,
+            idempotency_key=str(uuid.uuid4()),
+        ),
+    )
+    return 0
+
+
 PROBES = {
     "enrol": probe_enrol,
+    "kill-switch": probe_kill_switch,
     "wrong-audience": probe_wrong_audience,
     "scope-refusal": probe_scope_refusal,
     "replay": probe_replay,
