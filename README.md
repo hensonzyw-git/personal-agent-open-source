@@ -116,7 +116,8 @@ uv run personal-agent-online-eval --framework claude --case-id FIN-021
 下一步按以下顺序进行：
 
 1. 完成 DEV-038 的 ECS 在线重启/网络矩阵及技术方案 §13.2 在线闭合。
-2. 进入 DEV-039：write kill switch、restore 与服务/Nginx 回滚演练。
+2. 进入 DEV-039：write kill switch 已建成（离线证据齐全，线上演练待做），
+   余下 restore 与服务/Nginx 回滚演练。
 3. 继续遵守 G5：在单独授权前不接入生产 Finance 凭据或个人年度账本。
 4. Development Agent Loop 保持独立、非阻塞；Phase 1 满足全部开发完成定义后，
    才可开始 DAL-001–006，随后由 Henson 单独通过 DAL-G0，再实现 DAL-007 起的

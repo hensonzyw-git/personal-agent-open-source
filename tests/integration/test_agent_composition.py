@@ -99,6 +99,7 @@ from personal_data_mcp.storage.engine import (
     session_factory as finance_session_factory,
 )
 from personal_data_mcp.storage.models import AuditEvent, ToolExecution
+from write_switch_fixtures import shared_enabled_write_switch
 
 
 MANIFEST_VERSION = load_manifest()["allowed_tools_version"]
@@ -328,7 +329,8 @@ def test_a_non_loopback_finance_url_is_refused(keys, agent_db, url) -> None:
                 finance_mcp_url=url,
                 finance_control_url="http://127.0.0.1:8811",
                 user_id=USER_ID,
-            )
+            ),
+            write_switch=shared_enabled_write_switch(),
         ):
             pytest.fail("composition should have refused")
 
@@ -344,7 +346,8 @@ def test_a_non_loopback_control_url_is_refused(keys, agent_db) -> None:
                 finance_mcp_url="http://127.0.0.1:8811/mcp",
                 finance_control_url="http://control.example.com",
                 user_id=USER_ID,
-            )
+            ),
+            write_switch=shared_enabled_write_switch(),
         ):
             pytest.fail("composition should have refused")
 
@@ -372,7 +375,8 @@ def test_a_malformed_ledger_url_is_refused(keys, agent_db, url) -> None:
                 finance_control_url="http://127.0.0.1:8811",
                 user_id=USER_ID,
                 ledger_url=url,
-            )
+            ),
+            write_switch=shared_enabled_write_switch(),
         ):
             pytest.fail("composition should have refused")
 
@@ -391,7 +395,8 @@ def test_an_absent_finance_service_fails_composition(keys, agent_db) -> None:
                 finance_mcp_url=f"http://127.0.0.1:{port}/mcp",
                 finance_control_url=f"http://127.0.0.1:{port}",
                 user_id=USER_ID,
-            )
+            ),
+            write_switch=shared_enabled_write_switch(),
         ):
             pytest.fail("composition should have refused")
 
@@ -405,7 +410,7 @@ def test_a_missing_model_credential_fails_composition(
     monkeypatch.delenv("ZAI_API_KEY")
 
     async def scenario():
-        async with agent_service(config_for(agent_db, finance)):
+        async with agent_service(config_for(agent_db, finance), write_switch=shared_enabled_write_switch()):
             pytest.fail("composition should have refused")
 
     with pytest.raises(CompositionError, match="model gateway"):
@@ -419,7 +424,7 @@ def test_a_tampered_model_endpoint_fails_composition(
     monkeypatch.setenv("GLM_OPENAI_BASE_URL", "https://open.bigmodel.cn.evil.test/api/paas/v4/")
 
     async def scenario():
-        async with agent_service(config_for(agent_db, finance)):
+        async with agent_service(config_for(agent_db, finance), write_switch=shared_enabled_write_switch()):
             pytest.fail("composition should have refused")
 
     with pytest.raises(CompositionError, match="model gateway"):
@@ -435,7 +440,8 @@ def test_an_allowlist_naming_an_unknown_tool_is_refused(
                 agent_db,
                 finance,
                 allowed_tools=frozenset({"finance.log_expence"}),
-            )
+            ),
+            write_switch=shared_enabled_write_switch(),
         ):
             pytest.fail("composition should have refused")
 
@@ -452,7 +458,8 @@ def test_a_disabled_contract_may_not_be_allowlisted(keys, agent_db, finance) -> 
                 agent_db,
                 finance,
                 allowed_tools=frozenset({"finance.log_expense_batch"}),
-            )
+            ),
+            write_switch=shared_enabled_write_switch(),
         ):
             pytest.fail("composition should have refused")
 
@@ -470,6 +477,7 @@ def test_composition_discovers_the_real_credential_free_catalog(
         async with agent_service(
             config_for(agent_db, finance),
             build_gateway=lambda: FakeGateway(ProposedAnswer(text="hi")),
+            write_switch=shared_enabled_write_switch(),
         ) as composed:
             return composed.catalog_aliases, composed.quarantined
 
@@ -491,7 +499,8 @@ def test_a_read_tool_call_runs_through_the_real_governed_path(
 
     async def scenario():
         async with agent_service(
-            config_for(agent_db, finance), build_gateway=lambda: gateway
+            config_for(agent_db, finance), build_gateway=lambda: gateway,
+            write_switch=shared_enabled_write_switch(),
         ) as composed:
             async with http_for(composed.deps) as client:
                 return await client.post(
@@ -529,7 +538,8 @@ def test_a_second_message_reaches_the_model_with_the_first_turn_in_context(
 
     async def scenario():
         async with agent_service(
-            config_for(agent_db, finance), build_gateway=lambda: gateway
+            config_for(agent_db, finance), build_gateway=lambda: gateway,
+            write_switch=shared_enabled_write_switch(),
         ) as composed:
             async with http_for(composed.deps) as client:
                 first = await client.post(
@@ -685,6 +695,7 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
             build_gateway=lambda: gateway,
             build_structured_client=structured_client,
             context_config=eager,
+            write_switch=shared_enabled_write_switch(),
         ) as composed:
             app = build_app(composed.deps)
             async with httpx.AsyncClient(
@@ -776,6 +787,7 @@ def test_a_turn_that_cannot_be_assembled_fails_safe_without_calling_the_model(
             config_for(agent_db, finance),
             build_gateway=lambda: gateway,
             context_config=impossible,
+            write_switch=shared_enabled_write_switch(),
         ) as composed:
             async with http_for(composed.deps) as client:
                 return await client.post(
@@ -812,6 +824,7 @@ def test_unavailable_context_fails_safe_without_calling_the_model(
         async with agent_service(
             config_for(agent_db, finance),
             build_gateway=lambda: gateway,
+            write_switch=shared_enabled_write_switch(),
         ) as composed:
             async with http_for(composed.deps) as client:
                 return await client.post(
@@ -864,7 +877,8 @@ def test_an_expense_write_crosses_both_composition_roots_offline(
 
         async def scenario():
             async with agent_service(
-                config_for(agent_db, service), build_gateway=lambda: gateway
+                config_for(agent_db, service), build_gateway=lambda: gateway,
+                write_switch=shared_enabled_write_switch(),
             ) as composed:
                 async with http_for(composed.deps) as client:
                     token = access_token(
@@ -929,7 +943,8 @@ def test_a_host_context_the_server_cannot_verify_fails_safe(
 
         async def scenario():
             async with agent_service(
-                config_for(agent_db, service), build_gateway=lambda: gateway
+                config_for(agent_db, service), build_gateway=lambda: gateway,
+                write_switch=shared_enabled_write_switch(),
             ) as composed:
                 async with http_for(composed.deps) as client:
                     return await client.post(
@@ -951,6 +966,7 @@ def test_a_direct_answer_needs_no_connector(keys, agent_db, finance) -> None:
         async with agent_service(
             config_for(agent_db, finance),
             build_gateway=lambda: FakeGateway(ProposedAnswer(text="你好")),
+            write_switch=shared_enabled_write_switch(),
         ) as composed:
             async with http_for(composed.deps) as client:
                 return await client.post(
@@ -969,6 +985,7 @@ def test_a_model_failure_is_a_safe_failure(keys, agent_db, finance) -> None:
         async with agent_service(
             config_for(agent_db, finance),
             build_gateway=lambda: FakeGateway(None, fail=True),
+            write_switch=shared_enabled_write_switch(),
         ) as composed:
             async with http_for(composed.deps) as client:
                 return await client.post(
@@ -1001,7 +1018,8 @@ def test_a_tool_the_service_never_composed_is_refused(keys, agent_db, finance) -
 
     async def scenario():
         async with agent_service(
-            config_for(agent_db, finance), build_gateway=lambda: gateway
+            config_for(agent_db, finance), build_gateway=lambda: gateway,
+            write_switch=shared_enabled_write_switch(),
         ) as composed:
             async with http_for(composed.deps) as client:
                 return await client.post(
@@ -1027,6 +1045,7 @@ def test_a_tool_outside_the_configured_allowlist_is_invisible(
                 agent_db, finance, allowed_tools=frozenset({"finance.query_expenses"})
             ),
             build_gateway=lambda: gateway,
+            write_switch=shared_enabled_write_switch(),
         ) as composed:
             async with http_for(composed.deps) as client:
                 chat = await client.post(
@@ -1063,7 +1082,8 @@ def test_a_device_revoked_during_the_model_turn_cannot_dispatch(
 
     async def scenario():
         async with agent_service(
-            config_for(agent_db, finance), build_gateway=lambda: gateway
+            config_for(agent_db, finance), build_gateway=lambda: gateway,
+            write_switch=shared_enabled_write_switch(),
         ) as composed:
             async with http_for(composed.deps) as client:
                 return await client.post(
@@ -1126,7 +1146,8 @@ def test_a_device_bound_to_another_manifest_sees_nothing(
 
     async def scenario():
         async with agent_service(
-            config_for(agent_db, finance), build_gateway=lambda: gateway
+            config_for(agent_db, finance), build_gateway=lambda: gateway,
+            write_switch=shared_enabled_write_switch(),
         ) as composed:
             async with http_for(composed.deps) as client:
                 token = issue_access_token(
@@ -1166,6 +1187,7 @@ def test_capabilities_reports_the_effective_tools_without_schemas(
         async with agent_service(
             config_for(agent_db, finance),
             build_gateway=lambda: FakeGateway(ProposedAnswer(text="hi")),
+            write_switch=shared_enabled_write_switch(),
         ) as composed:
             async with http_for(composed.deps) as client:
                 return await client.get(
@@ -1345,7 +1367,7 @@ def test_startup_recovery_reads_the_real_control_plane(
     try:
 
         async def scenario():
-            async with agent_service(config_for(agent_db, service)) as composed:
+            async with agent_service(config_for(agent_db, service), write_switch=shared_enabled_write_switch()) as composed:
                 assert composed.catalog_aliases == ("meta.capabilities",)
 
         asyncio.run(scenario())
@@ -1378,6 +1400,7 @@ def test_periodic_recovery_projects_an_operation_without_a_service_restart(
             async with agent_service(
                 config_for(agent_db, service),
                 recovery_interval_seconds=0.01,
+                write_switch=shared_enabled_write_switch(),
             ):
                 operation_id = seed_in_flight_operation(agent_db, key)
                 for _ in range(100):
@@ -1524,6 +1547,7 @@ def test_opening_a_card_reaches_the_real_finance_control_plane(
             async with agent_service(
                 config_for(agent_db, service),
                 build_gateway=lambda: FakeGateway(ProposedAnswer(text="hi")),
+                write_switch=shared_enabled_write_switch(),
             ) as composed:
                 async with http_for(composed.deps) as client:
                     return await client.get(
@@ -1552,6 +1576,7 @@ def test_the_review_list_is_served_by_the_composed_app(
         async with agent_service(
             config_for(agent_db, finance),
             build_gateway=lambda: FakeGateway(ProposedAnswer(text="hi")),
+            write_switch=shared_enabled_write_switch(),
         ) as composed:
             async with http_for(composed.deps) as client:
                 listed = await client.get(

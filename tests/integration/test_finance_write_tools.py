@@ -61,6 +61,7 @@ from personal_data_mcp.storage.models import (
     FxEvidence,
     ToolExecution,
 )
+from write_switch_fixtures import shared_enabled_write_switch
 
 
 LEDGER_FIXTURES = Path(__file__).parents[1] / "fixtures" / "ledger"
@@ -314,7 +315,8 @@ async def call(
                 tool,
                 arguments,
                 {key.lower(): value for key, value in sent.items()},
-            )
+            shared_enabled_write_switch(),
+        )
     return result, key
 
 

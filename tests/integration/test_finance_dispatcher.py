@@ -472,3 +472,44 @@ def test_a_transport_failure_is_a_control_plane_error() -> None:
 
     with pytest.raises(ControlPlaneError):
         asyncio.run(control_client(handler).get_pending_duplicate_check("k"))
+
+
+# --- DEV-039: the write kill switch, seen from the dispatcher ----------------
+
+
+def test_a_kill_switch_refusal_at_the_agent_layer_is_a_safe_failure() -> None:
+    """Refused before the bridge dispatched, so zero writes is knowable here.
+
+    Routing it through Finance would be strictly worse: the control plane is
+    exactly what an operator may be in the middle of stopping, and "writes are
+    off" must not degrade into "unknown, needs manual review" because the
+    service the operator just quietened could not be asked.
+    """
+    bridge = FakeBridge(error=AppError(ErrorCode.WRITES_DISABLED))
+    bridge.refuses_locally = True
+    control = FakeControl()
+    outcome = dispatcher(bridge, control).commit(
+        intent=INTENT, idempotency_key="idem-switch", duplicate_override=None
+    )
+
+    assert outcome == CommitFailedSafe(reason=ErrorCode.WRITES_DISABLED.value)
+    assert control.asked_execution == []
+    assert bridge.calls == []
+
+
+def test_a_kill_switch_refusal_from_finance_is_decided_by_the_execution_row() -> None:
+    """The switch flipped between the two layers, or the Agent was bypassed.
+
+    Finance refuses before the handler runs, so there is no execution row -- and
+    the dispatcher reaches that conclusion by *reading* the row rather than by
+    special-casing another error code. A new code that never learns about this
+    branch still gets the right answer.
+    """
+    bridge = FakeBridge(error=AppError(ErrorCode.WRITES_DISABLED))
+    control = FakeControl(execution=None)
+    outcome = dispatcher(bridge, control).commit(
+        intent=INTENT, idempotency_key="idem-switch-2", duplicate_override=None
+    )
+
+    assert outcome == CommitFailedSafe(reason=ErrorCode.WRITES_DISABLED.value)
+    assert control.asked_execution == ["idem-switch-2"]

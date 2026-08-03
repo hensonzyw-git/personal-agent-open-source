@@ -162,7 +162,21 @@ sudo -u personal-agent-api /opt/personal-agent/.venv/bin/personal-agent-db \
 
 ### 7. Enable and start (ECS)
 
+`install.sh` lays the write kill switch down **disabled**, so external writes
+refuse until you turn them on deliberately. That ordering is intentional: a
+freshly deployed service must not start writing to the ledger because nobody
+remembered to think about it.
+
 ```sh
+# DEV-039: the external-write kill switch. Enable it only once you intend this
+# deployment to write. `status` exits 0 enabled / 1 deliberately disabled /
+# 2 state could not be established.
+sudo /opt/personal-agent/.venv/bin/personal-agent-write-switch \
+  --path /etc/personal-agent/write-switch.json status
+sudo /opt/personal-agent/.venv/bin/personal-agent-write-switch \
+  --path /etc/personal-agent/write-switch.json \
+  enable --reason "first rollout, DEV-039"
+
 sudo systemctl enable --now personal-data-mcp personal-agent-api
 sudo systemctl enable --now personal-data-mcp-observe.timer
 # DEV-036: the daily review and cleanup timers, plus the DEV-035 backup timers.
@@ -205,7 +219,14 @@ can read the same path**, socket group/mode for Nginx, MCP loopback-only, no
 immediate report, 405 from the real MCP endpoint, 401 through the real API socket,
 the DEV-036 review/cleanup/backup oneshots successfully exercised, both backup
 witness timestamps readable but not writable by the observer, the last success
-fresh within 48 hours, and `https://zhuyawei.com` still 200.
+fresh within 48 hours, the DEV-039 write switch present as root:root/0644 with
+both service users able to open it and neither able to rewrite it, both units
+carrying `PERSONAL_AGENT_WRITE_SWITCH_FILE`, and `https://zhuyawei.com` still
+200.
+
+`verify.sh` reports the switch's *position* but never fails on it: enabled and
+disabled are both legitimate operational states. It fails only when the file is
+missing, unreadable, malformed, or not what the services are pointed at.
 
 The positive controls are not decoration. `head` on a missing file and `ls` on
 a missing directory both fail, so a refusal-only suite reports a deployment
@@ -361,6 +382,26 @@ The wrapper runs the CLI as `personal-agent-api` with `api.env` loaded; the
 is what keeps the audit trail honest about which identity touched it.
 
 ## Rollback
+
+```sh
+sudo bash ~/personal-agent-deploy/rollback.sh
+```
+
+The **first** rollback unit is not this script. Design 10.6 orders it: close
+every write tool first, keeping reads, device identity and chat alive, and only
+escalate to stopping services if that is not enough.
+
+```sh
+# Step 1 — stop all external writes. No restart, so nothing in flight is torn
+# down; recovery keeps finishing the writes that already left the process.
+sudo /opt/personal-agent/.venv/bin/personal-agent-write-switch \
+  --path /etc/personal-agent/write-switch.json \
+  disable --reason "<what you saw>"
+```
+
+Step 2 is stopping `personal-data-mcp`; step 3 is removing the Agent upstream
+from Nginx while the personal site's configuration stays untouched. Only then
+the full unit removal:
 
 ```sh
 sudo bash ~/personal-agent-deploy/rollback.sh

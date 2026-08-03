@@ -22,6 +22,7 @@ import httpx
 import uvicorn
 
 from personal_agent_core.crypto import KeyRing, generate_key
+from personal_agent_core.write_switch import load_write_switch
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
 from personal_data_mcp.feishu.credentials import FeishuCredentials
@@ -184,8 +185,18 @@ def main() -> None:
         if len(sys.argv) > 3 and sys.argv[3] == "write-fixture":
             registry = write_fixture_registry(sessions)
 
+    # From the environment, exactly as the production entrypoint does: a test
+    # that spawns this process is therefore also testing that the deployed
+    # service refuses to start without a switch.
+    write_switch = load_write_switch()
+
     uvicorn.run(
-        build_app(config, registry=registry, session_factory=sessions),
+        build_app(
+            config,
+            registry=registry,
+            session_factory=sessions,
+            write_switch=write_switch,
+        ),
         host=config.host,
         port=config.port,
         log_level="warning",

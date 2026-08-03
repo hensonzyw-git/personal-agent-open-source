@@ -67,6 +67,28 @@ install -d -m 0755 -o root -g root /etc/personal-agent
 install -d -m 0750 -o root -g "$API_USER" /etc/personal-agent/keys/api
 install -d -m 0750 -o root -g "$MCP_USER" /etc/personal-agent/keys/mcp
 
+# DEV-039: the external-write kill switch. Both services read it on every write,
+# so it is world-readable; only root writes it, so a compromised service cannot
+# turn its own writes back on. It is created here in the *disabled* position and
+# is never overwritten by a reinstall: the switch's position is an operational
+# decision, and a deploy that silently re-enabled writes would be exactly the
+# silent failure the fail-closed design exists to prevent.
+WRITE_SWITCH=/etc/personal-agent/write-switch.json
+if [ ! -e "$WRITE_SWITCH" ]; then
+  switch_tmp=$(mktemp /etc/personal-agent/.write-switch.XXXXXX)
+  cat > "$switch_tmp" <<'SWITCH'
+{
+  "changed_at": "install",
+  "reason": "installed disabled; enable deliberately with personal-agent-write-switch",
+  "writes": "disabled"
+}
+SWITCH
+  chown root:root "$switch_tmp"
+  chmod 0644 "$switch_tmp"
+  mv -n "$switch_tmp" "$WRITE_SWITCH"
+  rm -f "$switch_tmp"
+fi
+
 # Application code: owned by the deploy user; services only read and execute.
 install -d -m 0755 -o "$DEPLOY_USER" -g "$DEPLOY_USER" /opt/personal-agent
 

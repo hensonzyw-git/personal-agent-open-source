@@ -36,6 +36,7 @@ from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.host_context import HOST_ONLY_FIELDS, ServiceKeyRing
 from personal_agent_core.mcp_protocol import ModernProtocolOnlyMiddleware
+from personal_agent_core.write_switch import WriteSwitch
 from personal_data_mcp.server.authz import Authorizer
 from personal_data_mcp.server.config import ServerConfig
 from personal_data_mcp.server.control import (
@@ -114,6 +115,7 @@ async def dispatch(
     name: str,
     arguments: dict[str, Any],
     headers: dict[str, str],
+    write_switch: WriteSwitch,
 ) -> CallToolResult:
     """Resolve one `tools/call` to a result, with no path that raises.
 
@@ -122,6 +124,12 @@ async def dispatch(
     execution record, so a rejected call cannot leave one behind. Every branch,
     including an unexpected exception, leaves through the error envelope, so the
     wire can only ever carry a stable code.
+
+    `write_switch` is read here rather than inside the write path, because this
+    is the layer that survives a compromised or buggy Agent: the Agent bridge
+    refuses first in production, which is exactly why it cannot be the only
+    place the switch is honoured. It is a required parameter and not an optional
+    one -- a caller that forgot to pass it would otherwise get writes.
     """
     try:
         contract = registry.contract(name)
@@ -150,6 +158,18 @@ async def dispatch(
             headers=headers,
             required_scopes=tuple(contract["required_scopes"]),
         )
+        # After authorisation, so that an unauthenticated caller cannot probe
+        # the switch's position, and before anything that can create state. The
+        # test is the contract's `effect`, not a list of tool names: a write
+        # tool added later is covered without anyone remembering to add it.
+        if contract["effect"] != "read":
+            switch_state = write_switch.read()
+            if not switch_state.writes_allowed:
+                raise AppError(
+                    ErrorCode.WRITES_DISABLED,
+                    internal_detail=f"{name} refused: {switch_state.detail}",
+                )
+
         forbidden = sorted(set(arguments) & HOST_ONLY_FIELDS)
         if forbidden:
             raise AppError(
@@ -221,7 +241,14 @@ def build_server(
     authorizer: Authorizer | None = None,
     *,
     verification_ring: ServiceKeyRing | None = None,
+    write_switch: WriteSwitch,
 ) -> Server:
+    """The MCP server. `write_switch` has no default, deliberately.
+
+    Every other dependency here can fall back to a safe construction. A kill
+    switch cannot: the only possible default would be "writes allowed", which is
+    the one answer a caller must never receive by forgetting to ask.
+    """
     config = config or ServerConfig()
     registry = registry if registry is not None else build_registry()
     if authorizer is None:
@@ -249,6 +276,7 @@ def build_server(
         return await dispatch(
             registry, authorizer, params.name, arguments,
             current_request_headers(),
+            write_switch,
         )
 
     server = Server(
@@ -269,6 +297,7 @@ def build_app(
     session_factory: SessionFactory | None = None,
     record_reader: RecordReader | None = None,
     data_keyring: KeyRing | None = None,
+    write_switch: WriteSwitch,
 ) -> Starlette:
     """The ASGI application: the MCP endpoint, and the control API if a database
     is wired.
@@ -280,7 +309,9 @@ def build_app(
     """
     config = config or ServerConfig()
     ring = verification_ring or load_verification_ring()
-    server = build_server(config, registry, Authorizer(ring))
+    server = build_server(
+        config, registry, Authorizer(ring), write_switch=write_switch
+    )
     app = server.streamable_http_app(
         streamable_http_path=config.mcp_path,
         json_response=True,

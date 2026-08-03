@@ -27,6 +27,15 @@ from personal_agent.policy.bridge import (
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.host_context import HostContext, ServiceKey, ServiceKeyRing
 from personal_agent_core.manifest import load_manifest
+from personal_agent_core.write_switch import (
+    WRITES_DISABLED,
+    WRITES_ENABLED,
+    WriteSwitch,
+)
+from write_switch_fixtures import (
+    shared_enabled_write_switch,
+    write_switch_state,
+)
 
 
 ENV = {"PYTHONPATH": "src:tests", "PATH": "/usr/bin:/bin"}
@@ -97,7 +106,9 @@ def device(**overrides) -> DeviceAuthorization:
 
 def bridge(registry, allowlist=None) -> GovernedToolBridge:
     return GovernedToolBridge(
-        registry, global_allowlist=allowlist if allowlist is not None else ENABLED
+        registry,
+        global_allowlist=allowlist if allowlist is not None else ENABLED,
+        write_switch=shared_enabled_write_switch(),
     )
 
 
@@ -402,7 +413,10 @@ def test_a_signed_override_is_sent_on_its_own_header_not_as_an_argument(
     subject = device()
     client = RecordingClient(None)
     governed = GovernedToolBridge(
-        registry, global_allowlist=ENABLED, clients={"personal-data": client}
+        registry,
+        global_allowlist=ENABLED,
+        write_switch=shared_enabled_write_switch(),
+        clients={"personal-data": client},
     )
 
     asyncio.run(
@@ -431,7 +445,10 @@ def test_a_plain_call_carries_no_override_header_or_claim(registry) -> None:
     subject = device()
     client = RecordingClient(None)
     governed = GovernedToolBridge(
-        registry, global_allowlist=ENABLED, clients={"personal-data": client}
+        registry,
+        global_allowlist=ENABLED,
+        write_switch=shared_enabled_write_switch(),
+        clients={"personal-data": client},
     )
 
     asyncio.run(
@@ -462,7 +479,10 @@ def test_the_call_budget_comes_from_the_contract_effect(registry) -> None:
     subject = device()
     client = RecordingClient(None)
     governed = GovernedToolBridge(
-        registry, global_allowlist=ENABLED, clients={"personal-data": client}
+        registry,
+        global_allowlist=ENABLED,
+        write_switch=shared_enabled_write_switch(),
+        clients={"personal-data": client},
     )
 
     asyncio.run(
@@ -500,6 +520,7 @@ def test_execute_injects_context_and_filters_the_model_result(registry) -> None:
     governed = GovernedToolBridge(
         registry,
         global_allowlist=ENABLED,
+        write_switch=shared_enabled_write_switch(),
         clients={"personal-data": client},
     )
 
@@ -543,6 +564,7 @@ def test_invalid_mcp_output_is_not_returned_to_the_model(registry) -> None:
     governed = GovernedToolBridge(
         registry,
         global_allowlist=ENABLED,
+        write_switch=shared_enabled_write_switch(),
         clients={"personal-data": RecordingClient({"status": "created"})},
     )
     with pytest.raises(AppError) as excinfo:
@@ -564,6 +586,7 @@ def test_oversized_mcp_output_is_not_returned_to_the_model(registry) -> None:
     governed = GovernedToolBridge(
         registry,
         global_allowlist=ENABLED,
+        write_switch=shared_enabled_write_switch(),
         clients={"personal-data": RecordingClient(receipt)},
     )
     with pytest.raises(AppError) as excinfo:
@@ -585,6 +608,7 @@ def test_adk_wrapper_rechecks_device_and_uses_only_the_bridge(registry) -> None:
     governed = GovernedToolBridge(
         registry,
         global_allowlist=ENABLED,
+        write_switch=shared_enabled_write_switch(),
         clients={"personal-data": client},
     )
 
@@ -608,3 +632,97 @@ def test_adk_wrapper_rechecks_device_and_uses_only_the_bridge(registry) -> None:
         asyncio.run(tool.run_async(args=EXPENSE, tool_context=None))
     assert excinfo.value.code is ErrorCode.SCOPE_DENIED
     assert client.calls == []
+
+
+# --- DEV-039: the write kill switch, at the Agent layer ----------------------
+
+
+def switched_bridge(registry, tmp_path, *, enabled: bool) -> GovernedToolBridge:
+    """A bridge holding a real state file, not a stub that answers a boolean."""
+    return GovernedToolBridge(
+        registry,
+        global_allowlist=ENABLED,
+        write_switch=WriteSwitch(
+            write_switch_state(
+                tmp_path / "write-switch.json",
+                writes=WRITES_ENABLED if enabled else WRITES_DISABLED,
+            )
+        ),
+    )
+
+
+def test_a_disabled_switch_removes_every_write_tool_from_the_catalog(
+    registry, tmp_path
+) -> None:
+    """Design 10.6's rollback unit: close the writes, keep the reads.
+
+    Narrowing the catalog matters as much as refusing the call. A model shown a
+    tool it cannot use will propose it, and the user then sees a refusal instead
+    of an answer.
+    """
+    governed = switched_bridge(registry, tmp_path, enabled=False)
+    visible = {tool.alias for tool in governed.visible_tools(device())}
+
+    assert "finance.log_expense" not in visible
+    assert "finance.log_income" not in visible
+    assert "finance.update_family_fund" not in visible
+    # Reads are untouched: this is a write kill switch, not a kill switch.
+    assert "finance.query_expenses" in visible
+
+
+def test_the_same_catalog_carries_the_write_tools_when_the_switch_is_on(
+    registry, tmp_path
+) -> None:
+    governed = switched_bridge(registry, tmp_path, enabled=True)
+    visible = {tool.alias for tool in governed.visible_tools(device())}
+    assert "finance.log_expense" in visible
+    assert "finance.query_expenses" in visible
+
+
+def test_a_disabled_switch_refuses_authorisation_with_its_own_code(
+    registry, tmp_path
+) -> None:
+    """Not the opaque `TOOL_NOT_ALLOWLISTED` every other narrowing shares.
+
+    The others are hidden because distinguishing them would map the surface.
+    This one is the only user's own deliberate act, so naming it is the point.
+    """
+    governed = switched_bridge(registry, tmp_path, enabled=False)
+    with pytest.raises(AppError) as excinfo:
+        governed.authorize("finance.log_expense", EXPENSE, device())
+    assert excinfo.value.code is ErrorCode.WRITES_DISABLED
+
+
+def test_a_read_is_still_authorised_while_writes_are_disabled(
+    registry, tmp_path
+) -> None:
+    governed = switched_bridge(registry, tmp_path, enabled=False)
+    entry, _ = governed.authorize(
+        "finance.query_expenses", {"view": "total"}, device()
+    )
+    assert entry.connector_id == "personal-data"
+
+
+def test_the_agent_layer_switch_needs_no_restart(registry, tmp_path) -> None:
+    governed = switched_bridge(registry, tmp_path, enabled=True)
+    path = tmp_path / "write-switch.json"
+
+    governed.authorize("finance.log_expense", EXPENSE, device())
+    write_switch_state(path, writes=WRITES_DISABLED, reason="incident")
+    with pytest.raises(AppError) as excinfo:
+        governed.authorize("finance.log_expense", EXPENSE, device())
+    assert excinfo.value.code is ErrorCode.WRITES_DISABLED
+    write_switch_state(path, writes=WRITES_ENABLED, reason="resolved")
+    governed.authorize("finance.log_expense", EXPENSE, device())
+
+
+def test_a_missing_state_file_closes_the_agent_layer_too(registry, tmp_path) -> None:
+    """The fail-closed default has to hold at both layers, or it holds at one."""
+    governed = GovernedToolBridge(
+        registry,
+        global_allowlist=ENABLED,
+        write_switch=WriteSwitch(tmp_path / "never-created.json"),
+    )
+    visible = {tool.alias for tool in governed.visible_tools(device())}
+    assert "finance.log_expense" not in visible
+    assert "finance.query_expenses" in visible

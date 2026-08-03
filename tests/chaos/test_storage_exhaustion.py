@@ -56,6 +56,7 @@ from personal_data_mcp.storage.models import (
     ExternalReceipt,
     ToolExecution,
 )
+from write_switch_fixtures import shared_enabled_write_switch
 
 
 LEDGER_FIXTURES = Path(__file__).parents[1] / "fixtures" / "ledger"
@@ -566,7 +567,8 @@ def test_the_wire_carries_a_code_not_a_filesystem_path(tmp_path: Path) -> None:
 
     result = asyncio.run(
         dispatch(
-            registry, caller.authorizer(), "finance.log_expense", EXPENSE, headers
+            registry, caller.authorizer(), "finance.log_expense", EXPENSE, headers,
+            shared_enabled_write_switch(),
         )
     )
 

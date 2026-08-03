@@ -40,6 +40,7 @@ from personal_data_mcp.storage.execution_store import (
     record_receipt,
     transition,
 )
+from write_switch_fixtures import shared_enabled_write_switch
 
 
 COMMIT_UTC = datetime(2026, 7, 23, 14, 0, tzinfo=timezone.utc)
@@ -151,6 +152,7 @@ def make_client(caller, sf, reader):
         verification_ring=caller.ring,
         session_factory=sf,
         record_reader=reader,
+        write_switch=shared_enabled_write_switch(),
     )
     transport = httpx.ASGITransport(app=app)
 

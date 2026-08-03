@@ -7,11 +7,20 @@ the deployed ones. Pass a database path to get `/internal` as well.
 
 from __future__ import annotations
 
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+
+from personal_agent_core.write_switch import (
+    WRITES_DISABLED,
+    WRITES_ENABLED,
+    WriteSwitch,
+    render_state_file,
+)
 
 
 MODULE = "fixtures.production_mcp_server"
@@ -33,8 +42,18 @@ class LoopbackFinanceService:
         *,
         database: Path | None = None,
         write_fixture: bool = False,
+        writes_enabled: bool = True,
     ) -> None:
         self.port = free_port()
+        # A real state file in its own directory, read by the child process
+        # through the production loader. `set_writes` rewrites it while the
+        # service is running, which is the only way to prove that flipping the
+        # switch needs no restart.
+        self._switch_dir = tempfile.mkdtemp(prefix="loopback-write-switch.")
+        self.write_switch = WriteSwitch(
+            Path(self._switch_dir) / "write-switch.json"
+        )
+        self.set_writes(enabled=writes_enabled)
         args = [sys.executable, "-m", MODULE, str(self.port)]
         if database is not None:
             args.append(str(database))
@@ -44,11 +63,26 @@ class LoopbackFinanceService:
             args.append("write-fixture")
         self.process = subprocess.Popen(
             args,
-            env={**BASE_ENV, **key_env},
+            env={
+                **BASE_ENV,
+                "PERSONAL_AGENT_WRITE_SWITCH_FILE": str(self.write_switch.path),
+                **key_env,
+            },
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         self._wait_ready()
+
+    def set_writes(self, *, enabled: bool) -> None:
+        """Flip the running service's kill switch, as an operator would."""
+        self.write_switch.path.write_text(
+            render_state_file(
+                writes=WRITES_ENABLED if enabled else WRITES_DISABLED,
+                reason="loopback fixture",
+                changed_at="2026-08-02T00:00:00+00:00",
+            ),
+            encoding="utf-8",
+        )
 
     @property
     def mcp_url(self) -> str:
@@ -77,3 +111,4 @@ class LoopbackFinanceService:
         except subprocess.TimeoutExpired:  # pragma: no cover - defensive
             self.process.kill()
             self.process.wait(timeout=10)
+        shutil.rmtree(self._switch_dir, ignore_errors=True)

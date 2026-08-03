@@ -674,3 +674,60 @@ def session_payload(sessions, key, keyring) -> str:
     return json.dumps(
         open_create_payload(sealed, keyring=keyring, idempotency_key=key)
     )
+
+
+# --- DEV-039: the write kill switch does not stop recovery -------------------
+
+
+def test_recovery_completes_an_in_flight_write_while_writes_are_disabled(
+    sessions, keyring, tmp_path
+) -> None:
+    """Henson's decision, 2026-08-02, made checkable rather than remembered.
+
+    A same-token replay finishes a write the user already asked for and that
+    already left the process; it creates no new intent, and Feishu deduplicates
+    it on the token. Stopping recovery with the switch would strand every
+    in-flight execution at `commit_unknown`, which is both a false alarm and an
+    obstacle at exactly the moment the operator is trying to make the system
+    quiet. The switch stops *new* writes; it does not abandon the ones already
+    decided.
+    """
+    from write_switch_fixtures import disabled_write_switch_file
+
+    # A real disabled switch exists on this host while recovery runs.
+    switch = disabled_write_switch_file(tmp_path)
+    assert switch.read().writes_allowed is False
+
+    fake = DedupingFeishu()
+    run(drive_to_commit_unknown(fake, sessions, keyring))
+    assert fake.row_count == 0
+
+    result = reconcile(fake, sessions, keyring)
+
+    assert result.final_state == "succeeded"
+    assert fake.row_count == 1
+    assert receipt_of(sessions).verified_at is not None
+
+
+def test_no_recovery_module_consults_the_write_switch() -> None:
+    """Structural, so the decision above cannot be reversed by accident.
+
+    A behavioural test alone would keep passing if someone wired the switch into
+    recovery *and* the test happened to run with it enabled.
+    """
+    import ast
+    import pathlib
+
+    for module in (
+        "src/personal_data_mcp/finance/reconciler.py",
+        "src/personal_data_mcp/server/composition.py",
+    ):
+        source = pathlib.Path(module).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        names = {
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        assert not any("write_switch" in name for name in names), module
+        assert "write_switch" not in source, module

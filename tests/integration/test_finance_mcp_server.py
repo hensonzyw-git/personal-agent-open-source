@@ -8,10 +8,13 @@ discovery behaviours that will be deployed, not a fixture's approximation.
 from __future__ import annotations
 
 import asyncio
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -19,6 +22,7 @@ import pytest
 from fixtures.service_keys import SignedCaller
 from personal_agent.mcp_client.core import McpClientCore, StreamableHttpTransport
 from personal_agent_core.manifest import load_manifest
+from personal_agent_core.write_switch import WRITES_ENABLED, render_state_file
 
 
 PROD_MODULE = "fixtures.production_mcp_server"
@@ -42,9 +46,26 @@ def free_port() -> int:
 class ProdServer:
     def __init__(self, key_env: dict[str, str]) -> None:
         self.port = free_port()
+        # A real state file, read by the child through the production loader:
+        # this process is the deployed entrypoint, so it must be configured the
+        # way the deployed one is.
+        self._switch_dir = tempfile.mkdtemp(prefix="prod-server-write-switch.")
+        switch_path = Path(self._switch_dir) / "write-switch.json"
+        switch_path.write_text(
+            render_state_file(
+                writes=WRITES_ENABLED,
+                reason="server transport test",
+                changed_at="2026-08-02T00:00:00+00:00",
+            ),
+            encoding="utf-8",
+        )
         self.process = subprocess.Popen(
             [sys.executable, "-m", PROD_MODULE, str(self.port)],
-            env={**BASE_ENV, **key_env},
+            env={
+                **BASE_ENV,
+                "PERSONAL_AGENT_WRITE_SWITCH_FILE": str(switch_path),
+                **key_env,
+            },
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -69,6 +90,7 @@ class ProdServer:
             self.process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             self.process.kill()
+        shutil.rmtree(self._switch_dir, ignore_errors=True)
 
 
 @pytest.fixture(scope="module")

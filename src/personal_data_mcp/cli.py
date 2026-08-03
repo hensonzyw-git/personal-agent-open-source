@@ -8,6 +8,11 @@ from pathlib import Path
 
 import uvicorn
 
+from personal_agent_core.write_switch import (
+    WriteSwitchConfigError,
+    disabled_write_switch,
+    load_write_switch,
+)
 from personal_data_mcp.server.app import build_app
 from personal_data_mcp.server.config import ServerConfig
 
@@ -54,6 +59,20 @@ def main() -> None:
     # here, before a socket exists.
     config = ServerConfig(host=args.host, port=args.port)
 
+    # Resolved before anything else is built, so a host that has no kill switch
+    # configured never reaches a socket. The restore probe is pinned off rather
+    # than exempted: a recovery host has no switch file, and "no file" must not
+    # be the same thing as "no switch".
+    if args.restore_read_only:
+        write_switch = disabled_write_switch(
+            "restore read-only probe: this composition may never write"
+        )
+    else:
+        try:
+            write_switch = load_write_switch()
+        except WriteSwitchConfigError as error:
+            raise SystemExit(str(error)) from error
+
     session_factory = None
     engine = None
     if args.database is not None:
@@ -87,7 +106,11 @@ def main() -> None:
         load_protected_config(args.ledger_config)
         try:
             uvicorn.run(
-                build_app(config, session_factory=session_factory),
+                build_app(
+                    config,
+                    session_factory=session_factory,
+                    write_switch=write_switch,
+                ),
                 host=config.host,
                 port=config.port,
                 log_level=args.log_level,
@@ -99,7 +122,11 @@ def main() -> None:
 
     if args.ledger_config is None:
         uvicorn.run(
-            build_app(config, session_factory=session_factory),
+            build_app(
+                config,
+                session_factory=session_factory,
+                write_switch=write_switch,
+            ),
             host=config.host,
             port=config.port,
             log_level=args.log_level,
@@ -117,11 +144,14 @@ def main() -> None:
             config,
             args,
             session_factory=session_factory,
+            write_switch=write_switch,
         )
     )
 
 
-async def _serve_with_finance_tools(config, args, *, session_factory) -> None:
+async def _serve_with_finance_tools(
+    config, args, *, session_factory, write_switch
+) -> None:
     """Serve with the Finance write tools composed for the process lifetime.
 
     The adapter and the FX connector own HTTP clients, so they are opened once
@@ -139,6 +169,7 @@ async def _serve_with_finance_tools(config, args, *, session_factory) -> None:
             session_factory=session_factory,
             record_reader=composed.record_reader,
             data_keyring=composed.dependencies.keyring,
+            write_switch=write_switch,
         )
         server = uvicorn.Server(
             uvicorn.Config(

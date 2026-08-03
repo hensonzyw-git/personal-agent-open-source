@@ -28,6 +28,7 @@ class ErrorCode(StrEnum):
     UNSUPPORTED_OPERATION = "UNSUPPORTED_OPERATION"
     HOST_CONTEXT_MISMATCH = "HOST_CONTEXT_MISMATCH"
     IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
+    WRITES_DISABLED = "WRITES_DISABLED"
 
     # Finance semantics
     CLARIFICATION_REQUIRED = "CLARIFICATION_REQUIRED"
@@ -71,6 +72,7 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.UNSUPPORTED_OPERATION: "该操作一期不开放，请在电脑端飞书账本处理",
     ErrorCode.HOST_CONTEXT_MISMATCH: "调用上下文与签名不一致，已拒绝执行",
     ErrorCode.IDEMPOTENCY_CONFLICT: "同一请求键对应了不同的请求内容",
+    ErrorCode.WRITES_DISABLED: "写入已被手动停用，未写入任何记录",
     ErrorCode.CLARIFICATION_REQUIRED: "信息不完整，需要先确认后才能记账",
     ErrorCode.CATEGORY_NOT_ALLOWED: "分类不在账本的合法选项内",
     ErrorCode.POSSIBLE_DUPLICATE: "发现同日完全相同的记录，请确认是否仍然记录",

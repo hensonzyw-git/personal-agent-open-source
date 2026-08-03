@@ -7,6 +7,7 @@ Technical design 4.4 fixes the set of tools a model may see and use:
               ∩ contract schema hash matches
               ∩ device allowed tools
               ∩ device scopes
+              ∩ (write kill switch enabled, for any effect other than read)
 
 The same intersection is recomputed when the model's catalog is built and again
 immediately before execution. Computing it once and caching it would mean a
@@ -42,6 +43,7 @@ from personal_agent_core.host_context import (
     strip_host_only_fields,
 )
 from personal_agent_core.manifest import canonical_json, load_manifest
+from personal_agent_core.write_switch import WriteSwitch
 
 
 MAX_RESULT_BYTES = 64 * 1024
@@ -147,10 +149,12 @@ class GovernedToolBridge:
         registry: ConnectorRegistry,
         *,
         global_allowlist: frozenset[str],
+        write_switch: WriteSwitch,
         clients: Mapping[str, McpClientCore] | None = None,
     ) -> None:
         self.registry = registry
         self.global_allowlist = global_allowlist
+        self._write_switch = write_switch
         self._clients = dict(clients or {})
         manifest = load_manifest()
         self._contracts = {tool["name"]: tool for tool in manifest["tools"]}
@@ -159,16 +163,35 @@ class GovernedToolBridge:
     def _contract(self, entry: CatalogEntry) -> dict[str, Any] | None:
         return self._contracts.get(entry.remote_name)
 
+    def _contract_for_alias(self, alias: str) -> dict[str, Any] | None:
+        """The trusted contract behind an alias, or None if there is no entry."""
+        try:
+            entry = self.registry.resolve(alias)
+        except (KeyError, RuntimeError):
+            return None
+        return self._contract(entry)
+
     def _effective_aliases(self, device: DeviceAuthorization) -> set[str]:
         if device.status != "active":
             # A revoked device sees nothing, regardless of its token.
             return set()
+
+        # Read once per intersection, not once per alias: a switch that flipped
+        # between two aliases of the same catalog would otherwise produce a
+        # catalog that was never a real state of the system.
+        writes_allowed = self._write_switch.read().writes_allowed
 
         effective: set[str] = set()
         for alias in self.registry.all_aliases():
             entry = self.registry.resolve(alias)
             contract = self._contract(entry)
             if contract is None or not contract["enabled"]:
+                continue
+            if not writes_allowed and contract["effect"] != "read":
+                # Design 10.6's first rollback unit: close every write tool and
+                # keep read-only. Narrowing the catalog here means the model is
+                # never shown a tool it cannot use, so it answers the user
+                # instead of proposing a write that Finance would refuse.
                 continue
             if alias not in self.global_allowlist:
                 continue
@@ -217,6 +240,19 @@ class GovernedToolBridge:
                 ErrorCode.SCOPE_DENIED,
                 internal_detail=f"device {device.device_id} is {device.status}",
             )
+        # Checked before the generic membership test purely so the refusal is
+        # actionable. Everything else that removes a tool from the effective set
+        # shares one opaque code, because distinguishing them would map out the
+        # surface. The kill switch is different: it is the only user's own
+        # deliberate act, and telling him "writes are off" is the whole point.
+        contract_for_switch = self._contract_for_alias(alias)
+        if contract_for_switch is not None and contract_for_switch["effect"] != "read":
+            switch_state = self._write_switch.read()
+            if not switch_state.writes_allowed:
+                raise AppError(
+                    ErrorCode.WRITES_DISABLED,
+                    internal_detail=f"{alias} refused: {switch_state.detail}",
+                )
         if alias not in self._effective_aliases(device):
             # One code for "not allowlisted", "not discovered", "schema drifted"
             # and "not granted to this device": distinguishing them for the

@@ -36,6 +36,7 @@ from personal_data_mcp.storage.engine import (
 )
 from personal_data_mcp.storage.execution_store import prepare_execution
 from personal_data_mcp.storage.models import ToolExecution
+from write_switch_fixtures import shared_enabled_write_switch
 
 
 NOW = datetime(2026, 7, 23, 7, 0, tzinfo=timezone.utc)
@@ -160,6 +161,7 @@ def test_a_rejected_call_creates_no_execution_row(
             "finance.log_expense",
             EXPENSE,
             headers,
+            shared_enabled_write_switch(),
         )
     )
     assert result.is_error is True
@@ -185,6 +187,7 @@ def test_tampered_arguments_create_no_execution_row(
             "finance.log_expense",
             tampered,
             headers,
+            shared_enabled_write_switch(),
         )
     )
     assert result.is_error is True
@@ -211,6 +214,7 @@ def test_host_only_arguments_are_rejected_before_the_handler(
             "finance.log_expense",
             forged,
             headers,
+            shared_enabled_write_switch(),
         )
     )
     assert result.is_error is True
@@ -239,6 +243,7 @@ def test_signed_but_schema_invalid_arguments_are_rejected(
             "finance.log_expense",
             invalid,
             headers,
+            shared_enabled_write_switch(),
         )
     )
     assert result.is_error is True
@@ -271,6 +276,7 @@ def test_a_verified_call_runs_the_handler_and_creates_one_row(
             "finance.log_expense",
             EXPENSE,
             headers,
+            shared_enabled_write_switch(),
         )
     )
     assert result.is_error is False
@@ -295,7 +301,7 @@ def test_a_token_bound_to_a_different_tool_is_refused(caller) -> None:
     # handler in this registry, so it is refused as not-allowlisted before the
     # binding is even checked -- which is the correct order.
     result = run(
-        dispatch(registry, caller.authorizer(), "finance.log_expense", {}, headers)
+        dispatch(registry, caller.authorizer(), "finance.log_expense", {}, headers, shared_enabled_write_switch())
     )
     assert (
         json.loads(result.content[0].text)["error"]["code"]
@@ -311,7 +317,7 @@ def test_a_meta_call_with_a_valid_context_succeeds(caller) -> None:
         for k, v in caller.headers("meta.capabilities", {}).items()
     }
     result = run(
-        dispatch(registry, caller.authorizer(), "meta.capabilities", {}, headers)
+        dispatch(registry, caller.authorizer(), "meta.capabilities", {}, headers, shared_enabled_write_switch())
     )
     assert result.is_error is False
     assert result.structured_content["status"] == "ok"
@@ -337,6 +343,7 @@ def test_a_stale_allowed_tools_version_is_refused(caller) -> None:
             "meta.capabilities",
             {},
             headers,
+            shared_enabled_write_switch(),
         )
     )
     assert result.is_error is True

@@ -39,6 +39,11 @@ SupplementaryGroups=personal-agent-api
 # 0600 and costs nothing: nothing but this service ever opens them, and the
 # socket's mode does not come from here.
 UMask=0077
+# DEV-039: the external-write kill switch. Declared in the unit rather than in
+# the env file, because the env files hold secrets and are edited by hand: this
+# path is a safety control and belongs in version-controlled configuration. The
+# service refuses to start if it is unset, so the setting cannot be lost quietly.
+Environment=PERSONAL_AGENT_WRITE_SWITCH_FILE=/etc/personal-agent/write-switch.json
 EnvironmentFile=/etc/personal-agent/api.env
 ExecStart=/opt/personal-agent/.venv/bin/personal-agent-api \
     --database /var/lib/personal-agent-api/agent.sqlite \

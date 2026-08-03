@@ -23,6 +23,10 @@ from personal_agent.api.composition import (
     CompositionError,
     agent_service,
 )
+from personal_agent_core.write_switch import (
+    WriteSwitchConfigError,
+    load_write_switch,
+)
 
 
 DEFAULT_FINANCE_CONTROL_URL = "http://127.0.0.1:8811"
@@ -123,6 +127,13 @@ def main() -> None:
         _serve_restore_read_only(args.database, args, bind)
         return
 
+    # The kill switch is resolved before the config is built, so a host that
+    # has not been told where its switch lives never opens a socket.
+    try:
+        write_switch = load_write_switch()
+    except WriteSwitchConfigError as error:
+        raise SystemExit(str(error)) from error
+
     user_id = os.environ.get("PERSONAL_AGENT_USER_ID", "").strip()
     if not user_id:
         # It names a person and travels into Finance's audit trail, so it is
@@ -145,13 +156,15 @@ def main() -> None:
         ledger_url=ledger_url,
     )
     try:
-        asyncio.run(_serve(config, args, bind))
+        asyncio.run(_serve(config, args, bind, write_switch=write_switch))
     except CompositionError as exc:
         raise SystemExit(str(exc)) from exc
 
 
-async def _serve(config: AgentServiceConfig, args, bind: BindTarget) -> None:
-    async with agent_service(config) as composed:
+async def _serve(
+    config: AgentServiceConfig, args, bind: BindTarget, *, write_switch
+) -> None:
+    async with agent_service(config, write_switch=write_switch) as composed:
         if bind.uds is not None:
             server_config = uvicorn.Config(
                 build_app(composed.deps),

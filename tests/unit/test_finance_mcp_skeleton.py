@@ -16,6 +16,7 @@ from personal_data_mcp.server.handlers import (
     ToolRegistrationError,
     ToolRegistry,
 )
+from write_switch_fixtures import shared_enabled_write_switch
 
 
 def run(coro):
@@ -136,7 +137,7 @@ def test_an_unexpected_handler_exception_becomes_internal_error() -> None:
         k.lower(): v for k, v in caller.headers("meta.capabilities", {}).items()
     }
     result = run(
-        dispatch(registry, caller.authorizer(), "meta.capabilities", {}, headers)
+        dispatch(registry, caller.authorizer(), "meta.capabilities", {}, headers, shared_enabled_write_switch())
     )
     assert result.is_error is True
     body = json.loads(result.content[0].text)
@@ -151,7 +152,7 @@ def test_an_unknown_tool_is_not_allowlisted() -> None:
     # An unknown tool is refused before authorisation, so no context is needed.
     caller = SignedCaller()
     result = run(
-        dispatch(registry, caller.authorizer(), "finance.made_up", {}, {})
+        dispatch(registry, caller.authorizer(), "finance.made_up", {}, {}, shared_enabled_write_switch())
     )
     body = json.loads(result.content[0].text)
     assert body["error"]["code"] == "TOOL_NOT_ALLOWLISTED"
@@ -181,7 +182,7 @@ def test_the_server_refuses_to_build_without_a_verification_key() -> None:
             if k.startswith("PERSONAL_DATA_MCP_SERVICE_")
         }
         try:
-            build_app()
+            build_app(write_switch=shared_enabled_write_switch())
         finally:
             os.environ.update(saved)
 

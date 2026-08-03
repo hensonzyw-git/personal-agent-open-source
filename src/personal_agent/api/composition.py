@@ -114,6 +114,7 @@ from personal_agent_core.timeutil import (
     ledger_date,
     utc_now,
 )
+from personal_agent_core.write_switch import WriteSwitch
 
 
 logger = logging.getLogger(__name__)
@@ -501,6 +502,7 @@ def _engine_for(database: Path) -> Iterator[Any]:
 async def agent_service(
     config: AgentServiceConfig,
     *,
+    write_switch: WriteSwitch,
     now: Callable[[], datetime] = utc_now,
     build_gateway: Callable[[], Any] = glm_gateway_from_env,
     build_structured_client: Callable[..., Any] = structured_client_from_env,
@@ -582,6 +584,7 @@ async def agent_service(
         bridge = GovernedToolBridge(
             registry,
             global_allowlist=allowlist,
+            write_switch=write_switch,
             clients={config.connector_id: client},
         )
         control = FinanceControlClient(

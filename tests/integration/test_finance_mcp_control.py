@@ -39,6 +39,7 @@ from personal_data_mcp.storage.execution_store import (
     transition,
 )
 from personal_data_mcp.storage.models import ToolExecution
+from write_switch_fixtures import shared_enabled_write_switch
 
 
 # A commit instant that lands on 2026-07-23 in Asia/Shanghai (UTC+8): local
@@ -128,6 +129,7 @@ def client(caller, sf):
         verification_ring=caller.ring,
         session_factory=sf,
         data_keyring=DUPLICATE_KEYRING,
+        write_switch=shared_enabled_write_switch(),
     )
     transport = httpx.ASGITransport(app=app)
 
@@ -447,6 +449,7 @@ def test_a_pending_check_without_the_data_key_fails_closed(caller, sf) -> None:
         verification_ring=caller.ring,
         session_factory=sf,
         data_keyring=None,
+        write_switch=shared_enabled_write_switch(),
     )
 
     async def scenario():

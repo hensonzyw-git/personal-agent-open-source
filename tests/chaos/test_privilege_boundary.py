@@ -56,6 +56,7 @@ from personal_data_mcp.storage.models import ToolExecution
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "fixtures"))
 from service_keys import SignedCaller  # noqa: E402
+from write_switch_fixtures import shared_enabled_write_switch
 
 
 EXPENSE = {
@@ -226,7 +227,7 @@ def test_finance_refuses_even_when_the_agent_bridge_is_bypassed(
     tool, arguments, headers, expected = violation(caller)
     registry = registry_with_probe(finance_session)
 
-    result = run(dispatch(registry, caller.authorizer(), tool, arguments, headers))
+    result = run(dispatch(registry, caller.authorizer(), tool, arguments, headers, shared_enabled_write_switch()))
 
     assert result.is_error is True
     assert json.loads(result.content[0].text)["error"]["code"] == expected.value
@@ -249,7 +250,8 @@ def test_the_probe_really_would_have_recorded_a_row(
 
     result = run(
         dispatch(
-            registry, caller.authorizer(), "finance.log_expense", EXPENSE, headers
+            registry, caller.authorizer(), "finance.log_expense", EXPENSE, headers,
+            shared_enabled_write_switch(),
         )
     )
 

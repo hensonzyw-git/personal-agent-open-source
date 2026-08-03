@@ -411,6 +411,55 @@ if [ -f /etc/personal-agent/restic.env ]; then
   fi
 fi
 
+echo "== write kill switch =="
+# DEV-039. The switch decides whether any external write may happen, so the
+# checks are about *reachability and ownership*, not the position: the position
+# is an operational decision and either value is legitimate.
+#
+# Both service users must be able to OPEN it, not merely list its directory --
+# the 2026-08-01 backup defect was exactly that distinction, and a switch the
+# services cannot read fails every write closed.
+SWITCH_FILE=/etc/personal-agent/write-switch.json
+if [ ! -f "$SWITCH_FILE" ]; then
+  fail "write switch state file is missing; every write will refuse"
+else
+  sw_mode="$(stat -c %a "$SWITCH_FILE")"; while [ "${#sw_mode}" -lt 3 ]; do sw_mode="0$sw_mode"; done
+  sw_owner="$(stat -c %U:%G "$SWITCH_FILE")"
+  if [ "$sw_owner" = "root:root" ] && [ "$sw_mode" = "644" ]; then
+    pass "write switch is root:root/0644"
+  else
+    fail "write switch is $sw_owner/$sw_mode, want root:root/644"
+  fi
+  expect_success "api user can open the write switch" \
+    sudo -u "$API_USER" head -c 1 "$SWITCH_FILE"
+  expect_success "mcp user can open the write switch" \
+    sudo -u "$MCP_USER" head -c 1 "$SWITCH_FILE"
+  # Neither service may flip its own switch: a compromised service that could
+  # rewrite this file could re-enable the writes an operator just stopped.
+  expect_refused "api user cannot rewrite the write switch" \
+    sudo -u "$API_USER" test -w "$SWITCH_FILE"
+  expect_refused "mcp user cannot rewrite the write switch" \
+    sudo -u "$MCP_USER" test -w "$SWITCH_FILE"
+  # Parsed by the production reader, not by grep: the services refuse anything
+  # this reader refuses, so this is the only check that means what it says.
+  /opt/personal-agent/.venv/bin/personal-agent-write-switch \
+    --path "$SWITCH_FILE" status >/dev/null 2>&1
+  sw_status=$?
+  case "$sw_status" in
+    0) pass "write switch parses; external writes are ENABLED" ;;
+    1) pass "write switch parses; external writes are DISABLED" ;;
+    *) fail "write switch state file is unreadable or malformed (exit $sw_status)" ;;
+  esac
+fi
+for unit in personal-agent-api personal-data-mcp; do
+  if systemctl show -p Environment --value "$unit" 2>/dev/null \
+     | grep -q "PERSONAL_AGENT_WRITE_SWITCH_FILE=$SWITCH_FILE"; then
+    pass "$unit points at the write switch"
+  else
+    fail "$unit does not carry PERSONAL_AGENT_WRITE_SWITCH_FILE=$SWITCH_FILE"
+  fi
+done
+
 echo "== operator cli =="
 # The wrapper is the only honest path to the database for an operator. sudo
 # hands the service user a bare PATH, so a wrapper that forgets the venv makes
