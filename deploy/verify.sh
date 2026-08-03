@@ -446,6 +446,20 @@ else
   # open succeed, so verify.sh remains read-only. The parent-directory mode
   # above independently prevents unlink/rename replacement.
   WRITE_OPEN_PROBE='import os, sys; fd = os.open(sys.argv[1], os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW); os.close(fd)'
+  # The probe's own positive control, and it is not decoration. A refusal-only
+  # assertion passes for any reason the command fails: measured on 2026-08-03,
+  # a wrong interpreter path and a wrong target path both exit non-zero, which
+  # this block would have read as "correctly refused" forever. The adjacent
+  # `head -c 1` covers a wrong *target*, but nothing else here runs this
+  # interpreter, so a typo in it would silently disarm both checks below.
+  # Proving the probe can succeed where writing IS allowed is what makes its
+  # refusal mean permission rather than breakage -- the same lesson as the
+  # DEV-035 `ls`-on-a-directory defect and the `test -w` this replaced, one
+  # level up. The temp file is the probe user's own and is removed immediately.
+  expect_success "the write-open probe can actually open a writable file" \
+    sudo -u "$MCP_USER" bash -c \
+    't=$(mktemp) || exit 1; "$1" -c "$2" "$t"; rc=$?; rm -f "$t"; exit $rc' \
+    _ /opt/personal-agent/.venv/bin/python "$WRITE_OPEN_PROBE"
   expect_refused "api process identities cannot open the write switch for writing" \
     bash -c 'sudo -u "$1" "$3" -c "$4" "$5" || sudo -u "$2" "$3" -c "$4" "$5"' \
     _ "$API_USER" www-data /opt/personal-agent/.venv/bin/python \
