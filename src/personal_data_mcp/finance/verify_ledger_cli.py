@@ -36,6 +36,7 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -110,7 +111,10 @@ async def open_ledger(config_path: Path) -> ReadOnlyLedger:
         approved_ledger_kind=config.ledger_kind,
     )
     return ReadOnlyLedger(
-        adapter=FeishuAdapter(load_credentials()),
+        # `now` is the monotonic clock the adapter uses for its token cache
+        # and rate limiter -- keyword-only and required, exactly as the write
+        # composition passes it.
+        adapter=FeishuAdapter(load_credentials(), now=time.monotonic),
         source=source,
         config=config,
     )

@@ -307,3 +307,54 @@ def test_only_base64url_is_accepted_because_hex_overlaps_with_it() -> None:
 
     with pytest.raises(SystemExit, match="base64url"):
         cli._cursor_secret(env={cli.CURSOR_SECRET_ENV: "not valid base64!!"})
+
+
+# --- the composition itself, with real objects ---------------------------------
+
+
+def test_open_ledger_builds_a_real_adapter(tmp_path, monkeypatch) -> None:
+    """Every test above used `object()` for the adapter, so none of them ran the
+    real constructor -- and the real one takes a required keyword-only `now`.
+
+    The result was a `TypeError` on the first live run against the annual
+    ledger, after the config had already been frozen. Exactly §5.1's warning:
+    a fake built from the same assumptions as the code confirms only those
+    assumptions. This test constructs the production object.
+    """
+    from personal_data_mcp.feishu.adapter import FeishuAdapter
+    from personal_data_mcp.finance.ledger_config import LedgerConfig
+
+    config_path = tmp_path / "annual.json"
+    config = _minimal_production_config()
+    config_path.write_text(config.model_dump_json(), encoding="utf-8")
+
+    for name, value in {
+        "FEISHU_FINANCE_APP_ID": "cli_probe",
+        "FEISHU_FINANCE_APP_SECRET": "secret",
+        "FEISHU_FINANCE_BASE_TOKEN": config.base_token,
+        "FEISHU_FINANCE_LEDGER_KIND": config.ledger_kind,
+        "FEISHU_FINANCE_TABLE_EXPENSE": config.tables["expense"].table_id,
+        "FEISHU_FINANCE_TABLE_INCOME": config.tables["income"].table_id,
+        "FEISHU_FINANCE_TABLE_FAMILY_FUND": config.tables["family_fund"].table_id,
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    import asyncio
+
+    ledger = asyncio.run(cli.open_ledger(config_path))
+    try:
+        assert isinstance(ledger.adapter, FeishuAdapter)
+        assert isinstance(ledger.config, LedgerConfig)
+        assert ledger.source.ledger_kind == "production"
+    finally:
+        asyncio.run(ledger.adapter.aclose())
+
+
+def _minimal_production_config():
+    """The smallest config the loader accepts, borrowed from the freeze tests."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "unit"))
+    from test_ledger_config_freeze import CONFIG
+
+    return CONFIG.model_copy(update={"ledger_kind": "production"})
