@@ -487,6 +487,34 @@ for unit in personal-agent-api personal-data-mcp; do
   fi
 done
 
+echo "== push sender (DEV-040) =="
+# The review job now composes a real APNs sender, which needs (a) the Agent data
+# key to open the sealed device token and (b) either all five APNs variables or
+# none of them — a partial set is a typo that must refuse to start, not silently
+# fall back to UnavailablePushSender. h2 is a runtime dep of httpx2's HTTP/2; if
+# the requirements install dropped it, build_push_sender only fails at send time.
+REVIEW_ENV=/etc/personal-agent/api.env
+if [ -f "$REVIEW_ENV" ]; then
+  apns_present=0
+  for v in PERSONAL_AGENT_APNS_KEY_PATH PERSONAL_AGENT_APNS_KEY_ID \
+           PERSONAL_AGENT_APNS_TEAM_ID PERSONAL_AGENT_APNS_TOPIC \
+           PERSONAL_AGENT_APNS_ENVIRONMENT; do
+    if grep -q "^${v}=" "$REVIEW_ENV"; then apns_present=$((apns_present+1)); fi
+  done
+  case $apns_present in
+    0) pass "no APNs variables set; review job keeps UnavailablePushSender (a legitimate choice)" ;;
+    5)
+      expect_success "the apns auth key is readable by the api user" \
+        sudo -u "$API_USER" test -r "$(grep '^PERSONAL_AGENT_APNS_KEY_PATH=' "$REVIEW_ENV" | cut -d= -f2-)"
+      ;;
+    *) fail "APNs is partially configured ($apns_present of 5 variables); the review job will refuse to start" ;;
+  esac
+  expect_success "the review job can import its push sender (h2 is installed)" \
+    /opt/personal-agent/.venv/bin/python -c "import personal_agent.api.apns, h2"
+else
+  fail "review service env file $REVIEW_ENV is missing"
+fi
+
 echo "== operator cli =="
 # The wrapper is the only honest path to the database for an operator. sudo
 # hands the service user a bare PATH, so a wrapper that forgets the venv makes

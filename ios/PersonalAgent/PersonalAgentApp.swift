@@ -8,12 +8,22 @@ import SwiftUI
 /// problem from a model problem during the first real rollout.
 @main
 struct PersonalAgentApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
 
     var body: some Scene {
         WindowGroup {
             RootView(model: model)
-                .task { await model.start() }
+                .task {
+                    // The delegate is wired before `start` runs so iOS's
+                    // remote-notification callbacks always have a coordinator
+                    // to reach. `start` creates the coordinator once a session
+                    // exists, because uploading a token needs a device id and
+                    // an access token.
+                    model.bindPushCoordinator(into: appDelegate)
+                    await model.start()
+                    await model.registerPushIfPermitted()
+                }
         }
     }
 }

@@ -130,13 +130,16 @@ def run_daily_review(
                 raise
         report.outcomes.append(outcome)
 
+    # `deliver_pending` commits each row itself, so no transaction is held
+    # across a provider call. A real APNs sender crosses the network to Apple;
+    # holding one transaction across N sends would let a concurrent commit cost
+    # the whole batch its delivery records after Apple already accepted them.
     with sessions() as session:
         try:
             attempted = deliver_pending(
                 session, send or UnavailablePushSender(), now=moment
             )
             report.attempted_notifications = len(attempted)
-            session.commit()
         except Exception:
             session.rollback()
             raise

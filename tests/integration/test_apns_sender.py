@@ -274,6 +274,7 @@ def test_a_200_is_acceptance_and_carries_the_right_request(
     assert seen["headers"]["apns-topic"] == config.topic
     assert seen["headers"]["apns-push-type"] == "alert"
     assert seen["headers"]["authorization"].startswith("bearer ")
+    assert seen["headers"]["apns-collapse-id"] == "review:rev_1"
     assert seen["body"]["aps"]["badge"] == 3
 
 
@@ -295,7 +296,11 @@ def test_apples_permanent_reasons_stop_the_retry_loop(
     with pytest.raises(PushSendError) as excinfo:
         _sender(config, sessions, keyring, handler)(NOTIFICATION)
     assert excinfo.value.permanent is True
-    assert reason in str(excinfo.value)
+    # The reason is not echoed in the message: it is provider-controlled text
+    # that reaches logs, so only the status code does. The closed known set is
+    # still consulted to decide *permanence*, which is the property that matters.
+    assert reason not in str(excinfo.value)
+    assert str(status) in str(excinfo.value)
 
 
 def test_a_410_is_permanent_whatever_the_body_says(
@@ -355,6 +360,28 @@ def test_an_unparseable_error_body_still_fails_and_leaks_nothing(
     with pytest.raises(PushSendError) as excinfo:
         _sender(config, sessions, keyring, handler)(NOTIFICATION)
     assert "not json at all" not in str(excinfo.value)
+
+
+def test_an_unrecognised_reason_string_never_reaches_the_message(
+    config, sessions, keyring
+) -> None:
+    """§5.1: a provider must not bound its own behaviour.
+
+    Apple's `reason` field is provider-controlled free text. Only a reason in
+    the closed known set is trusted to branch on; an unrecognised value is
+    collapsed to `unspecified` and never echoed, because that string reaches
+    logs and a future provider change could put anything there.
+    """
+
+    def handler(request):
+        return httpx2.Response(
+            400, json={"reason": "ExploitAttempt\x00header-injection"}
+        )
+
+    with pytest.raises(PushSendError) as excinfo:
+        _sender(config, sessions, keyring, handler)(NOTIFICATION)
+    assert "ExploitAttempt" not in str(excinfo.value)
+    assert "header-injection" not in str(excinfo.value)
 
 
 # --- resolving the device's token ---------------------------------------------

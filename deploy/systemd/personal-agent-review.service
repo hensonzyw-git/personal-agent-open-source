@@ -2,10 +2,13 @@
 #
 # Runs as the API service user because the job signs a Host Context to read the
 # Finance control plane (`PERSONAL_AGENT_SERVICE_ACTIVE_*`), and the Agent
-# database it writes review cards into is the API's 0700 data dir. No model, no
-# MCP session, no Feishu call, no data key: the CLI composes only the control
-# reader. Idempotent on `review_date`, so a repeat fire (a timer race, a manual
-# rerun, a Persistent catch-up after downtime) adds nothing.
+# database it writes review cards into is the API's 0700 data dir. Since DEV-040
+# it also reads the Agent data key (`PERSONAL_AGENT_DATA_ACTIVE_*`) to open the
+# sealed device push token, and composes the real APNs sender when all five
+# `PERSONAL_AGENT_APNS_*` variables are present (otherwise it keeps
+# UnavailablePushSender). Still no model and no MCP session. Idempotent on
+# `review_date`, so a repeat fire (a timer race, a manual rerun, a Persistent
+# catch-up after downtime) adds nothing.
 [Unit]
 Description=Personal Agent daily Finance review cards
 After=personal-data-mcp.service

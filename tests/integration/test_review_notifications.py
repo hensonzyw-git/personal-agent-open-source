@@ -233,7 +233,10 @@ def test_a_device_revoked_after_queue_is_not_sent_to(sessions) -> None:
         attempted = deliver_pending(session, recorder, now=NOW)
         session.commit()
 
-        assert attempted == []
+        # The revoked row was processed (marked undeliverable) but never sent
+        # to. `attempted` reflects processing; `seen` reflects what reached a
+        # provider, and a revoked device reaches nothing.
+        assert len(attempted) == 1
         assert recorder.seen == []
         assert outbox(session)[0].provider_status == "undeliverable"
 
@@ -320,6 +323,72 @@ def test_the_only_shipped_sender_refuses_rather_than_claiming_delivery(
 
         assert outbox(session)[0].provider_status == "undeliverable"
         assert session.get(DailyReview, "rev-1").status == "pending"
+
+
+def test_no_transaction_is_held_across_the_provider_call(sessions) -> None:
+    """§5.2: a provider call crosses the network; no transaction may be open.
+
+    The real APNs sender makes an HTTP/2 call to Apple inside `send`. If a
+    transaction is open across it, a concurrent commit on this engine costs the
+    whole batch its delivery records after Apple already accepted them, and the
+    next run re-pushes. This test commits from a *second* session inside the
+    sender and then asserts the accepted outcome still lands -- which is only
+    possible if `deliver_pending` had committed the attempt and closed its
+    transaction before calling `send`.
+    """
+    add_device_session = sessions
+    with add_device_session() as setup:
+        add_device(setup, "dev-1")
+        add_device(setup, "dev-2")
+        add_review(setup, "rev-1")
+        setup.commit()
+        enqueue_review_notification(setup, review_id="rev-1", now=NOW)
+        setup.commit()
+
+    other = sessions
+
+    class ConcurrentSender:
+        def __init__(self) -> None:
+            self.seen: list[PushNotification] = []
+            self._n = 0
+
+        def __call__(self, notification: PushNotification) -> None:
+            self.seen.append(notification)
+            self._n += 1
+            # A second session commits while this send is "in flight". Under the
+            # old single-transaction design this would poison the snapshot of
+            # the delivering session and the post-send write would fail. The
+            # commit touches an unrelated row so no unique constraint on the
+            # outbox is what fails it.
+            with other() as interloper:
+                interloper.add(
+                    DailyReview(
+                        review_id=f"noise-{self._n}",
+                        review_date=f"2024-01-{self._n:02d}",
+                        status="pending",
+                        created_at=NOW,
+                    )
+                )
+                interloper.commit()
+
+    sender = ConcurrentSender()
+    with sessions() as session:
+        deliver_pending(session, sender, now=NOW)
+
+    with sessions() as session:
+        rows = {
+            r.device_id: r
+            for r in session.scalars(
+                select(NotificationOutbox).where(NotificationOutbox.review_id == "rev-1")
+            )
+        }
+    # Both original rows were accepted by the provider and that outcome survived
+    # the concurrent commit. If the transaction had been held open, the
+    # post-send write would have hit a snapshot conflict and the rows would be
+    # stuck at "pending" with attempts incremented but no acceptance recorded.
+    assert rows["dev-1"].provider_status == "provider_accepted"
+    assert rows["dev-2"].provider_status == "provider_accepted"
+    assert {n.device_id for n in sender.seen} == {"dev-1", "dev-2"}
 
 
 def test_a_status_outside_the_closed_set_is_rejected_by_the_database(

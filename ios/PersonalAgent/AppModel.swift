@@ -44,6 +44,10 @@ final class AppModel {
     private var session: DeviceSession?
     private var chatTimeline: ChatTimeline?
     private var reviewCenter: ReviewCenter?
+    /// `DEV-040`. Built once a session exists; the app delegate forwards iOS's
+    /// remote-notification callbacks into it. Nil until enrollment, because a
+    /// token cannot be uploaded without a device id and access token.
+    private var pushCoordinator: PushCoordinator?
 
     // --- lifecycle -----------------------------------------------------------
 
@@ -141,6 +145,10 @@ final class AppModel {
             chatTimeline = nil
             review = nil
             reviewCenter = nil
+            // A revoked device's stored token is dead weight; forgetting it
+            // here means a re-enrollment (new device id) re-registers rather
+            // than assuming this token already belongs to the new row.
+            PushCoordinator.forgetConfirmedToken()
             lastError = nil
         } catch {
             lastError = describe(error)
@@ -162,6 +170,7 @@ final class AppModel {
             chatTimeline = nil
             review = nil
             reviewCenter = nil
+            PushCoordinator.forgetConfirmedToken()
             // The previous phase's error described a device that no longer exists
             // here; carrying it onto the enrollment screen would report a failure
             // for a device that was just forgotten.
@@ -170,6 +179,45 @@ final class AppModel {
         } catch {
             lastError = describe(error)
         }
+    }
+
+    // --- push (`DEV-040`) ----------------------------------------------------
+
+    /// Hand the coordinator to the app delegate so iOS's callbacks reach it.
+    /// Called once at launch, before `start`. The coordinator is built lazily
+    /// in `registerPushIfPermitted`, so this only stores the reference the
+    /// delegate will read when iOS fires `didRegisterForRemoteNotifications`.
+    func bindPushCoordinator(into delegate: AppDelegate) {
+        if pushCoordinator == nil {
+            pushCoordinator = PushCoordinator { [weak self] token in
+                guard let self, let session = self.session else {
+                    throw DeviceSessionError.notEnrolled
+                }
+                try await session.setPushToken(token)
+            }
+        }
+        delegate.pushCoordinator = pushCoordinator
+    }
+
+    /// Ask the user, ask iOS, and upload — or return quietly. Failing to
+    /// register a push token must never block a launch or hide chat behind an
+    /// error; the review card is in the app either way. The simulator has no
+    /// APNs token to give, so this is a no-op there rather than an error.
+    func registerPushIfPermitted() async {
+        #if targetEnvironment(simulator)
+        // The simulator entitlement deliberately omits aps-environment, so
+        // registerForRemoteNotifications would only fail. Treat it as a place
+        // push does not run, not as a launch error.
+        return
+        #else
+        guard let pushCoordinator else { return }
+        do {
+            try await pushCoordinator.registerIfPermitted()
+        } catch {
+            // Swallowed on purpose: a declined prompt, a malformed token, or an
+            // unreachable server are all non-fatal. The next launch retries.
+        }
+        #endif
     }
 
     // --- helpers -------------------------------------------------------------

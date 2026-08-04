@@ -217,6 +217,7 @@ class ApnsPushSender:
         self._config = config
         self._sessions = session_factory
         self._keyring = keyring
+        self._now = now
         self._token = ProviderToken(config, now=now)
         # HTTP/2 is not optional: APNs speaks nothing else.
         self._client = client or httpx2.Client(
@@ -274,8 +275,15 @@ class ApnsPushSender:
                     "apns-push-type": "alert",
                     "apns-priority": "5",
                     "apns-expiration": str(
-                        int(time.time() + EXPIRATION.total_seconds())
+                        int(self._now() + EXPIRATION.total_seconds())
                     ),
+                    # The review id is the natural collapse key: a requeued or
+                    # retried delivery of the same card should replace a still-
+                    # pending banner rather than stack a second one. Apple keeps
+                    # one pending notification per (device, topic, collapse-id),
+                    # so without this a retry that raced the first would land as
+                    # two "有 N 笔待复核" banners on one lock screen.
+                    "apns-collapse-id": f"review:{notification.review_id}",
                 },
             )
         except Exception as error:  # noqa: BLE001 - any transport failure retries
@@ -291,16 +299,28 @@ class ApnsPushSender:
             # 410 is Apple telling us the token is dead. Retrying it forever
             # would keep a dead device in the queue; the card is still in the app.
             raise PushSendError(
-                f"APNs rejected permanently: {response.status_code} {reason}",
+                f"APNs rejected permanently: {response.status_code}",
                 permanent=True,
             )
-        raise PushSendError(f"APNs refused: {response.status_code} {reason}")
+        raise PushSendError(f"APNs refused: {response.status_code}")
+
+
+#: The full set of reason strings this code ever trusts enough to branch on.
+#: Anything Apple returns outside this set is treated as `unspecified` and never
+#: reaches a message, because §5.1 says a provider must not bound its own output:
+#: the reason field is provider-controlled free text that reaches logs.
+_KNOWN_REASONS: Final[frozenset[str]] = _PERMANENT_REASONS | frozenset(
+    {"Unspecified", "PayloadEmpty", "TooManyRequests"}
+)
 
 
 def _reason_of(response: Any) -> str:
     """Apple's machine-readable reason, or a stable placeholder.
 
-    Never the raw body: it is provider output, and this string reaches logs.
+    Never the raw body, and never an unrecognised reason string: both are
+    provider output, and this value reaches logs and the decision of whether a
+    failure is permanent. Only a reason in the closed known set is passed
+    through; everything else collapses to `unspecified`.
     """
     try:
         body = response.json()
@@ -309,7 +329,9 @@ def _reason_of(response: Any) -> str:
     if not isinstance(body, dict):
         return "unparseable"
     reason = body.get("reason")
-    return reason if isinstance(reason, str) and reason else "unspecified"
+    if isinstance(reason, str) and reason in _KNOWN_REASONS:
+        return reason
+    return "unspecified"
 
 
 def apns_sender_from_env(

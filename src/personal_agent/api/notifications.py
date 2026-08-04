@@ -167,12 +167,14 @@ def deliver_pending(
     next attempt rather than looping here: a provider that is down should not be
     hammered inside one job run.
 
-    The caller commits once, after the loop. That is safe only while the sender
-    reaches nothing: `UnavailablePushSender` is the only one shipped. Wiring a
-    real APNs sender must also split this so no transaction stays open across a
-    provider call -- otherwise a concurrent commit costs the whole batch its
-    delivery records after APNs already accepted them, and the next run sends
-    them again.
+    **No transaction is held across a provider call.** A real APNs sender
+    crosses the network to Apple, and on this engine a session that has read can
+    no longer write once another session has committed (§5.2). Holding one
+    transaction open across N sends would let a concurrent commit cost the
+    whole batch its delivery records *after* Apple already accepted them, so the
+    next run would push them again. Each row is therefore committed in two
+    halves with the send between them: the "attempt started" increment first,
+    then the send with no transaction open, then the outcome.
     """
     due = list(
         session.scalars(
@@ -195,31 +197,73 @@ def deliver_pending(
         ):
             row.provider_status = "undeliverable"
             row.next_attempt_at = None
+            session.commit()
+            attempted.append(row)
             continue
         count = _item_count(session, row.review_id)
         row.attempts += 1
-        attempted.append(row)
+        # The PK pair is immutable, so it survives the commit that expires the
+        # row. Capturing it lets us reload the row after the send without the
+        # old in-memory object standing in for committed state.
+        row_id = (row.review_id, row.device_id)
+        session.commit()
+
         try:
             send(
                 PushNotification(
-                    device_id=row.device_id,
-                    review_id=row.review_id or "",
+                    device_id=row_id[1],
+                    review_id=row_id[0] or "",
                     item_count=count,
                 )
             )
         except PushSendError as exc:
-            if exc.permanent or row.attempts >= max_attempts:
-                row.provider_status = "undeliverable"
-                row.next_attempt_at = None
-            else:
-                row.next_attempt_at = now + _backoff_for(row.attempts)
+            _record_outcome(
+                session, row_id, now, exc=exc, max_attempts=max_attempts
+            )
+            attempted.append(row)
             continue
-        # Accepted by the provider. That is not delivery, and it is certainly
-        # not review: `daily_reviews.status` is untouched here.
-        row.provider_status = "provider_accepted"
-        row.next_attempt_at = None
+        _record_outcome(session, row_id, now, exc=None, max_attempts=max_attempts)
+        attempted.append(row)
 
     return attempted
+
+
+def _record_outcome(
+    session: Session,
+    row_id: tuple[str | None, str],
+    now: datetime,
+    *,
+    exc: PushSendError | None,
+    max_attempts: int,
+) -> None:
+    """Persist one row's send outcome in its own transaction.
+
+    Called after the provider call returns, with no transaction open: the
+    "attempt started" increment was already committed, so this only writes the
+    result. `provider_accepted` is not delivery and is certainly not review;
+    `daily_reviews.status` is untouched here.
+    """
+    review_id, device_id = row_id
+    row = session.execute(
+        select(NotificationOutbox).where(
+            NotificationOutbox.review_id == review_id,
+            NotificationOutbox.device_id == device_id,
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        # A concurrent run already resolved or removed it; nothing to write.
+        session.rollback()
+        return
+    if exc is not None:
+        if exc.permanent or row.attempts >= max_attempts:
+            row.provider_status = "undeliverable"
+            row.next_attempt_at = None
+        else:
+            row.next_attempt_at = now + _backoff_for(row.attempts)
+    else:
+        row.provider_status = "provider_accepted"
+        row.next_attempt_at = None
+    session.commit()
 
 
 def _item_count(session: Session, review_id: str | None) -> int:

@@ -311,6 +311,21 @@ public actor DeviceSession {
         try await authorized { try await self.client.deferReview(reviewID: reviewID, token: $0) }
     }
 
+    /// `DEV-040`. Upload this device's APNs token (or clear it with `nil`).
+    /// Self only, by design: the route rejects any caller whose device id is
+    /// not the authenticated one, so a push token can never be redirected.
+    @discardableResult
+    public func setPushToken(_ pushToken: String?) async throws -> PushTokenState {
+        guard let deviceID else {
+            throw DeviceSessionError.notEnrolled
+        }
+        return try await authorized {
+            try await self.client.setPushToken(
+                deviceID: deviceID, pushToken: pushToken, token: $0
+            )
+        }
+    }
+
     private func authorized<T>(_ call: (String) async throws -> T) async throws -> T {
         let first = try await accessToken(forceRefresh: false)
         do {
