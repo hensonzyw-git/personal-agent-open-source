@@ -341,8 +341,9 @@ conflict instead of silently choosing an old default.
   accepted the notification and the device wrote `daily_reviews.reviewed_at`
   back 17s later (`docs/evidence/DEV040_真机推送端到端_2026-08-04.md`). That run
   also found `needs_manual_review` to be a terminal state with no human
-  resolution path. 打开飞书账本 stays unexercised because
-  `PERSONAL_AGENT_LEDGER_URL` is still unset on the ECS.
+  resolution path. 打开飞书账本 closed on 2026-08-04:
+  `PERSONAL_AGENT_LEDGER_URL` is configured on the ECS and the button appeared
+  on the real iPhone.
 - `ECS安全加固实施记录_2026-07-23.md` — security, encryption, snapshot, and
   rollback record.
 - `docs/iOS开发环境_Personal_Team_v0.1.md` — Personal Team constraints, the iOS
