@@ -59,10 +59,6 @@ struct ChatView: View {
                         .disabled(model.loadingOlder)
                     }
 
-                    if let pending = model.unresolved {
-                        unresolvedCard(pending)
-                    }
-
                     ForEach(model.events) { event in
                         entry(event).id(event.eventID)
                     }
@@ -352,6 +348,13 @@ struct ChatView: View {
                     Button("取消") { model.cancelAnswering() }.font(.caption)
                 }
             }
+            if let pending = model.unresolved {
+                // The escape from a held slot must sit next to the blocked input,
+                // not at the top of the timeline where a long history hides it
+                // (2026-08-04: a needs_manual_review receipt looked fully stuck
+                // because the only actionable card was a screen away).
+                unresolvedCard(pending)
+            }
             HStack(spacing: 8) {
                 TextField("记一笔，或问一句", text: $model.draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
@@ -374,7 +377,7 @@ struct ChatView: View {
                 )
             }
             if model.unresolved != nil {
-                Text("先处理上面那条未确认的消息，再发新的：否则同一笔可能被记两次。")
+                Text("先处理上面那张卡片里的未确认消息，再发新的：否则同一笔可能被记两次。")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
