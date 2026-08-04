@@ -221,12 +221,20 @@ the DEV-036 review/cleanup/backup oneshots successfully exercised, both backup
 witness timestamps readable but not writable by the observer, the last success
 fresh within 48 hours, the DEV-039 write switch present as root:root/0644 with
 both service users able to open it and neither able to rewrite it, both units
-carrying `PERSONAL_AGENT_WRITE_SWITCH_FILE`, and `https://zhuyawei.com` still
-200.
+carrying `PERSONAL_AGENT_WRITE_SWITCH_FILE`, the DEV-040 fault breakpoint absent
+(or, if present, root:root/0644, readable but not rewritable by the Finance user,
+and parsing through the production reader) with `personal-data-mcp` carrying
+`PERSONAL_AGENT_FAULT_BREAKPOINT_FILE`, and `https://zhuyawei.com` still 200.
 
 `verify.sh` reports the switch's *position* but never fails on it: enabled and
 disabled are both legitimate operational states. It fails only when the file is
 missing, unreadable, malformed, or not what the services are pointed at.
+
+The fault breakpoint is the opposite case and is treated as such. It has only
+one correct steady state — absent — so `verify.sh` **fails** on an armed one,
+because a breakpoint left armed after a drill pauses every matching production
+write and nothing else in the system takes it back down. Export
+`ALLOW_ARMED_FAULT_BREAKPOINT=1` while a drill is actually in progress.
 
 The positive controls are not decoration. `head` on a missing file and `ls` on
 a missing directory both fail, so a refusal-only suite reports a deployment
@@ -380,6 +388,49 @@ sudo -u personal-data-mcp /opt/personal-agent/.venv/bin/personal-data-mcp-observ
 The wrapper runs the CLI as `personal-agent-api` with `api.env` loaded; the
 0700 data directory gives `deploy` no direct path to the database, which
 is what keeps the audit trail honest about which identity touched it.
+
+## Fault breakpoint (DEV-040 §13.2 chaos drill)
+
+`personal-data-mcp` reads `/etc/personal-agent/fault-breakpoint.json` on every
+write. Armed, it holds a live write at one named point of the write path long
+enough for you to kill the process exactly there — the `prepared` window is
+microseconds wide, so no amount of polling can land a `kill` on it from outside.
+
+`install.sh` deliberately does **not** create this file. Absence is the disarmed
+position, which means a reinstall can neither resurrect nor clobber an armed
+drill, and a missing file can never mean "pause".
+
+```sh
+# Arm. The pause is bounded to 1..20s; the bound is derived from the Agent's
+# 30s write-call budget, so an arm can never turn the intended crash into a
+# transport timeout. Breakpoints: before_prepare, prepared, submitting,
+# committed_unverified.
+sudo /opt/personal-agent/.venv/bin/personal-agent-fault-breakpoint \
+  --path /etc/personal-agent/fault-breakpoint.json \
+  arm --breakpoint prepared --seconds 10 --reason "DEV-040 §13.2 drill"
+
+# Disarm. Do this the moment the drill step is over -- see verify.sh above.
+sudo /opt/personal-agent/.venv/bin/personal-agent-fault-breakpoint \
+  --path /etc/personal-agent/fault-breakpoint.json \
+  disarm --reason "drill complete"
+```
+
+`arm` and `disarm` exit 0 on success. `status` is the question, not a command,
+and answers with 0 armed / 1 disarmed / 2 present but unreadable — a corrupt file
+must not share a code with a deliberate absence.
+
+The drill itself is driven from the Mac, which arms, fires one real chat write,
+confirms it is genuinely stuck at the target state, kills, disarms and then
+asserts recovery:
+
+```sh
+python scripts/dev038_live_probe.py --code <one-time-code> breakpoint-restart
+```
+
+It confirms the pause by observation rather than by trusting the file, because
+this control fails *towards not pausing*: an unreadable file means the write
+proceeds, and a drill that silently did not pause would turn the kill into a
+guess.
 
 ## Rollback
 

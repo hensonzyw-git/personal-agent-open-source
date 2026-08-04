@@ -53,6 +53,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.fault_breakpoint import FaultBreakpoint
 from personal_agent_core.timeutil import parse_ledger_date, to_rfc3339, utc_now
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
@@ -102,6 +103,9 @@ class FinanceWriteDependencies:
     keyring: KeyRing
     fx: FxConnector
     now: Callable[[], datetime] = utc_now
+    # §13.2 drill hook, injected by composition. Unset in tests and in the
+    # credential-free default surface: a write tool without it never pauses.
+    fault_breakpoint: FaultBreakpoint | None = None
 
 
 async def fresh_validation(
@@ -288,6 +292,7 @@ def build_expense_handler(
                 money, idempotency_key=call.idempotency_key
             ),
             now=dependencies.now,
+            fault_breakpoint=dependencies.fault_breakpoint,
         ))
         if isinstance(outcome, DuplicateFinding):
             raise _duplicate_refusal()
@@ -346,6 +351,7 @@ def build_income_handler(
                 money, idempotency_key=call.idempotency_key
             ),
             now=dependencies.now,
+            fault_breakpoint=dependencies.fault_breakpoint,
         ))
         if isinstance(outcome, IncomeClarification):
             raise _clarification_refusal(outcome.value)
@@ -392,6 +398,7 @@ def build_family_fund_handler(
             trace_id=call.trace_id,
             keyring=dependencies.keyring,
             now=dependencies.now,
+            fault_breakpoint=dependencies.fault_breakpoint,
         )
         return {
             "status": outcome.status,

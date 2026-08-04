@@ -20,6 +20,11 @@ UMask=0077
 # path is a safety control and belongs in version-controlled configuration. The
 # service refuses to start if it is unset, so the setting cannot be lost quietly.
 Environment=PERSONAL_AGENT_WRITE_SWITCH_FILE=/etc/personal-agent/write-switch.json
+# DEV-040 §13.2: the per-breakpoint fault-injection pause for the live chaos
+# drill. Same treatment as the write switch: version-controlled path, service
+# refuses to start if unset. The file itself is absent in the disarmed position
+# (no file means no pause), and is only written during a drill.
+Environment=PERSONAL_AGENT_FAULT_BREAKPOINT_FILE=/etc/personal-agent/fault-breakpoint.json
 EnvironmentFile=/etc/personal-agent/mcp.env
 ExecStart=/opt/personal-agent/.venv/bin/personal-data-mcp \
     --database /var/lib/personal-data-mcp/finance.sqlite \

@@ -36,6 +36,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.fault_breakpoint import (
+    BREAKPOINT_BEFORE_PREPARE,
+    BREAKPOINT_COMMITTED_UNVERIFIED,
+    BREAKPOINT_PREPARED,
+    BREAKPOINT_SUBMITTING,
+    FaultBreakpoint,
+)
 from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import utc_now
 from personal_data_mcp.feishu.adapter import FeishuAdapter
@@ -209,6 +216,7 @@ async def execute_governed_write(
     keyring: KeyRing | None = None,
     now: Callable[[], datetime] = utc_now,
     new_client_token: Callable[[], str] = lambda: str(uuid.uuid4()),
+    fault_breakpoint: FaultBreakpoint | None = None,
 ) -> WriteOutcome:
     """The crash-safe create-and-verify skeleton, shared by every write tool.
 
@@ -219,7 +227,17 @@ async def execute_governed_write(
     read-back. `verify` returns the logical names of any fields whose read-back
     disagrees with what was sent -- an empty list is the only thing that reaches
     `succeeded`. Nothing here retries a create or writes a correction.
+
+    `fault_breakpoint`, when given, is the §13.2 drill hook: each
+    `pause_if_armed` call sits between the ordering-critical `with sessions()`
+    blocks, never inside one, so a pause never holds a transaction (§5.2). When
+    unset -- the normal composition and every test -- it is a no-op.
     """
+    if fault_breakpoint is not None:
+        # before_prepare: no execution row exists yet, so a process death here
+        # leaves nothing to recover and nothing was sent.
+        await fault_breakpoint.pause_if_armed(BREAKPOINT_BEFORE_PREPARE)
+
     sealed_payload = (
         seal_create_payload(
             payload,
@@ -275,6 +293,12 @@ async def execute_governed_write(
         )
         session.commit()
 
+    if fault_breakpoint is not None:
+        # prepared: the token is persisted and committed; nothing has reached
+        # Feishu yet. A process death here is recovered by re-submitting under
+        # the same persisted token (reconciler).
+        await fault_breakpoint.pause_if_armed(BREAKPOINT_PREPARED)
+
     # --- step 2: submitting, committed before the request leaves -------------
     with sessions() as session:
         state_version = transition(
@@ -286,6 +310,11 @@ async def execute_governed_write(
             now=now(),
         )
         session.commit()
+
+    if fault_breakpoint is not None:
+        # submitting: the create may or may not have reached Feishu. A death
+        # here is recovered by the same-token replay, which dedupes to one row.
+        await fault_breakpoint.pause_if_armed(BREAKPOINT_SUBMITTING)
 
     # --- step 3: the one create ----------------------------------------------
     try:
@@ -360,6 +389,11 @@ async def execute_governed_write(
             now=now(),
         )
         session.commit()
+
+    if fault_breakpoint is not None:
+        # committed_unverified: the record id is persisted; only the read-back
+        # is pending. A death here is recovered by reading back, never re-created.
+        await fault_breakpoint.pause_if_armed(BREAKPOINT_COMMITTED_UNVERIFIED)
 
     # --- step 5: read back ---------------------------------------------------
     stored: dict[str, Any] | None = None
@@ -540,6 +574,7 @@ async def write_expense(
     on_prepared: Callable[[Session], None] | None = None,
     now: Callable[[], datetime] = utc_now,
     new_client_token: Callable[[], str] = lambda: str(uuid.uuid4()),
+    fault_breakpoint: FaultBreakpoint | None = None,
 ) -> WriteOutcome:
     """Write one expense and return external evidence, or raise.
 
@@ -580,4 +615,5 @@ async def write_expense(
         keyring=keyring,
         now=now,
         new_client_token=new_client_token,
+        fault_breakpoint=fault_breakpoint,
     )

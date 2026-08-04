@@ -25,9 +25,11 @@ indistinguishable.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from typing import Any
@@ -455,6 +457,316 @@ def probe_kill_switch(device: ProbeDevice, args) -> int:
     return 0
 
 
+# --- breakpoint-level restart drill (DEV-040 §13.2) --------------------------
+
+
+FINANCE_DB = "/var/lib/personal-data-mcp/finance.sqlite"
+AGENT_DB = "/var/lib/personal-agent-api/agent.sqlite"
+FAULT_BREAKPOINT = (
+    "sudo /opt/personal-agent/.venv/bin/personal-agent-fault-breakpoint "
+    "--path /etc/personal-agent/fault-breakpoint.json"
+)
+#: The write-path states at which a live SIGKILL must leave the operation
+#: consistent. `before_prepare` is deliberately excluded: a kill there produces
+#: an Agent-side `needs_manual_review` (post-submit with no Finance execution --
+#: the conservative classification, and the exact false alarm whose resolution
+#: path does not exist yet), so it stays covered by the offline fault matrix.
+BREAKPOINTS = ["prepared", "submitting", "committed_unverified"]
+
+
+def _remote(command: str) -> str:
+    """Run one command on the ECS and return stdout, raising on failure."""
+    argv = [part.replace("~", str(__import__("pathlib").Path.home())) for part in SSH]
+    result = subprocess.run(
+        [*argv, command], capture_output=True, text=True, timeout=180
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"remote command failed: {result.stderr.strip()}"
+        )
+    return result.stdout
+
+
+#: Every observation this drill makes is a *read*, so each one opens the database
+#: read-only. Not a style choice: the drill deliberately kills the service, and a
+#: root-owned read-write connection opened during that window can recover the WAL
+#: and leave `-wal`/`-shm` owned by root -- which the service user then cannot
+#: write, turning an observation into an outage.
+_READ_ONLY_CONNECT = "sqlite3.connect('file:{path}?mode=ro', uri=True)"
+
+
+def _sudo_python(script: str) -> str:
+    """Run a short Python snippet on the ECS as root. Base64 avoids quote hell."""
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    return _remote(
+        f"echo {encoded} | base64 -d | sudo /opt/personal-agent/.venv/bin/python -"
+    )
+
+
+def _query(database: str, sql: str, parameter: str) -> str:
+    """One read-only single-row query on an ECS database, as root."""
+    script = (
+        "import sqlite3;"
+        f"c={_READ_ONLY_CONNECT.format(path=database)};"
+        f"r=c.execute({sql!r},({parameter!r},)).fetchone();"
+        "print('' if r is None else ' '.join(str(v) for v in r))"
+    )
+    return _sudo_python(script).strip()
+
+
+def _finance_state(idempotency_key: str) -> str | None:
+    return (
+        _query(
+            FINANCE_DB,
+            "SELECT state FROM tool_executions WHERE idempotency_key=?",
+            idempotency_key,
+        )
+        or None
+    )
+
+
+def _finance_counts(idempotency_key: str) -> tuple[int, int]:
+    out = _query(
+        FINANCE_DB,
+        "SELECT (SELECT COUNT(*) FROM tool_executions WHERE idempotency_key=?1), "
+        "(SELECT COUNT(*) FROM external_receipts WHERE idempotency_key=?1)",
+        idempotency_key,
+    )
+    executions, receipts = out.split()
+    return int(executions), int(receipts)
+
+
+def _agent_operation_id(idempotency_key: str) -> str | None:
+    # `operations` has no `id`: its primary key is `operation_id`.
+    return (
+        _query(
+            AGENT_DB,
+            "SELECT operation_id FROM operations WHERE idempotency_key=?",
+            idempotency_key,
+        )
+        or None
+    )
+
+
+#: Long enough for two confirming reads plus the SSH round trip that carries the
+#: kill, and short enough to stay well inside the Agent's 30s write-call budget
+#: (`DEFAULT_WRITE_CALL_TIMEOUT`). An arm that outlives that budget converts the
+#: intended crash into a transport timeout -- a different scenario, scored by the
+#: same assertions, which is how a drill comes to certify something it never ran.
+ARM_SECONDS = 10
+
+
+def _arm_breakpoint(name: str, seconds: int = ARM_SECONDS) -> str:
+    return _remote(
+        f"{FAULT_BREAKPOINT} arm --breakpoint {name} --seconds {seconds} "
+        "--reason 'DEV-040 breakpoint drill'"
+    )
+
+
+def _disarm_breakpoint() -> str:
+    return _remote(f"{FAULT_BREAKPOINT} disarm --reason 'DEV-040 breakpoint drill'")
+
+
+def _kill_finance() -> str:
+    # `systemctl kill -s KILL` also signals auxiliary/control processes and
+    # errors with "Failed to send signal SIGKILL to auxiliary processes: Invalid
+    # argument" on this systemd, which the drill read as a kill failure (the
+    # main process WAS killed, but the non-zero exit aborted the probe after the
+    # pause and left the write to resume). Target the main PID directly instead.
+    return _remote(
+        "sudo kill -9 $(systemctl show -p MainPID --value personal-data-mcp)"
+    )
+
+
+def _authenticate(device: ProbeDevice) -> None:
+    """Mint a fresh token, tolerating the ~12s of 502 the API serves while it
+    restarts after a Finance kill (`Requires=` propagation). A 502 there is not
+    an auth refusal; anything else still raises."""
+    for attempt in range(6):
+        try:
+            device.authenticate()
+            return
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 502 and attempt < 5:
+                time.sleep(5)
+                continue
+            raise
+
+
+#: Finance's terminal execution states (`TERMINAL_EXECUTION_STATES`). Reaching
+#: one while waiting for the pause means the write ran to completion, so the arm
+#: never took effect and there is nothing left to kill.
+TERMINAL_FINANCE_STATES = (
+    "succeeded",
+    "failed_safe",
+    "needs_manual_review",
+    "cancelled_pre_submit",
+)
+
+
+def _wait_paused(
+    idempotency_key: str, target: str, timeout: float = 120.0
+) -> bool:
+    """Confirm the armed pause is holding the write at `target`.
+
+    Two consecutive reads at the target state mean the write is genuinely stuck
+    there (the pause), not just passing through. A state that has advanced past
+    the breakpoint means the arm did not take effect, which the drill must fail
+    loudly rather than misread.
+
+    The timeout is deliberately NOT bounded by the arm: it covers the latency
+    from firing the chat to the write reaching the breakpoint. The chat returns
+    202 after the sync bound, and the model turn then continues detached before
+    the tool call is dispatched -- measured on the deployed service, a write
+    reached Finance ~63s after the chat was fired, long after the original 10s
+    wait had given up (the write still landed `succeeded`). Misreading a resumed
+    write is guarded against by the terminal-state check below, not by the
+    timeout.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            state = _finance_state(idempotency_key)
+        except RuntimeError:
+            state = None
+        if state == target:
+            time.sleep(0.3)
+            try:
+                if _finance_state(idempotency_key) == target:
+                    return True
+            except RuntimeError:
+                pass
+        if state in TERMINAL_FINANCE_STATES:
+            return False
+        time.sleep(0.3)
+    return False
+
+
+def _await_terminal(device: ProbeDevice, operation_id: str, tries: int = 60) -> dict | None:
+    """Poll the public operation until it leaves `accepted`.
+
+    Tolerates transient non-200s: the Agent API itself restarts after a Finance
+    kill (Requires=), and a 502 during that window is not evidence.
+    """
+    for _ in range(tries):
+        time.sleep(3)
+        try:
+            response = device.operation(operation_id)
+        except Exception:
+            continue
+        if response.status_code != 200:
+            continue
+        body = response.json()
+        if body.get("state") != "accepted":
+            _show("operation resolved", response)
+            return body
+    return None
+
+
+def probe_breakpoint_restart(device: ProbeDevice, args) -> int:
+    """§13.2: SIGKILL the Finance MCP at each ordering-critical breakpoint.
+
+    For each breakpoint: arm the pause, drive one real chat write to it, confirm
+    the write is held at the target state, SIGKILL the process, disarm, and after
+    the systemd restart + startup recovery assert the operation reaches
+    `succeeded` with exactly one external record and one receipt.
+    """
+    device.enrol(args.code, args.display_name)
+    print(f"device_id={device.device_id}")
+    # The token must exist before any authenticated read. The per-breakpoint
+    # re-authenticate below refreshes it; the one here mints the first.
+    _authenticate(device)
+    conversation_id = device.canonical_conversation_id()
+    failures = 0
+    for index, breakpoint in enumerate(BREAKPOINTS, start=1):
+        key = str(uuid.uuid4())
+        # The duplicate gate matches on stored values (date + amount + name +
+        # category). A fixed text would collide with a previous drill run's row
+        # on the same ledger day and park the write as `waiting_for_duplicate_decision`
+        # instead of reaching the breakpoint -- measured on the deployed service.
+        # Deriving the amount from the fresh key keeps every drill write unique.
+        amount = 5 + (int(key[:8], 16) % 95)
+        text = f"午饭演练{index} {amount} 个人"
+        print(f"\n=== breakpoint {breakpoint} (idempotency_key={key}) ===")
+        try:
+            _authenticate(device)  # a fresh 10-minute token per breakpoint
+            print(_arm_breakpoint(breakpoint).strip() or "(armed)")
+
+            holder: list = []
+
+            def fire():
+                try:
+                    holder.append(
+                        device.chat(
+                            text,
+                            conversation_id=conversation_id,
+                            idempotency_key=key,
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001 - informational only
+                    holder.append(exc)
+
+            thread = threading.Thread(target=fire, daemon=True)
+            thread.start()
+
+            if not _wait_paused(key, breakpoint):
+                print(f"FAIL: the write never paused at {breakpoint}")
+                failures += 1
+                continue
+            print(f"confirmed the write is paused at {breakpoint}")
+            print("--- SIGKILL personal-data-mcp")
+            print(_kill_finance().strip() or "(killed)")
+            print(_disarm_breakpoint().strip() or "(disarmed)")
+            thread.join(timeout=45)
+
+            operation_id = _agent_operation_id(key)
+            print(f"operation_id={operation_id}")
+            if operation_id is None:
+                print("FAIL: no Agent operation for the idempotency key")
+                failures += 1
+                continue
+
+            _authenticate(device)
+            terminal = _await_terminal(device, operation_id)
+            if terminal is None:
+                print("FAIL: operation never reached a terminal state")
+                failures += 1
+                continue
+            executions, receipts = _finance_counts(key)
+            state = terminal.get("state")
+            print(
+                f"operation state={state} executions={executions} receipts={receipts}"
+            )
+            if state != "succeeded":
+                print(f"FAIL: expected succeeded, got {state}")
+                failures += 1
+            elif executions != 1 or receipts != 1:
+                print(
+                    "FAIL: expected exactly one execution and one external receipt "
+                    f"for {key}"
+                )
+                failures += 1
+            else:
+                print(f"PASS: {breakpoint} -> succeeded, exactly one external record")
+        except Exception as exc:  # noqa: BLE001
+            print(f"FAIL: {type(exc).__name__}: {exc}")
+            failures += 1
+        finally:
+            # Arming is an acquisition and must be released on *every* exit path,
+            # including Ctrl-C. A breakpoint left armed on production pauses every
+            # matching write for the whole arm window, and nothing else in the
+            # system will take it back down.
+            try:
+                _disarm_breakpoint()
+            except Exception as exc:  # noqa: BLE001
+                print(f"WARNING: could not disarm the breakpoint: {exc}")
+
+    print("\n--- revoking the throwaway device")
+    print(operator(f"revoke --device-id {device.device_id}"))
+    print(f"failures={failures}")
+    return 0 if failures == 0 else 1
+
+
 PROBES = {
     "enrol": probe_enrol,
     "kill-switch": probe_kill_switch,
@@ -462,6 +774,7 @@ PROBES = {
     "scope-refusal": probe_scope_refusal,
     "replay": probe_replay,
     "after-revocation": probe_after_revocation,
+    "breakpoint-restart": probe_breakpoint_restart,
 }
 
 

@@ -39,6 +39,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.fault_breakpoint import FaultBreakpoint
 from personal_agent_core.timeutil import ledger_date, ledger_day_epoch_millis, utc_now
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
@@ -283,6 +284,7 @@ async def update_family_fund(
     owner: str | None = None,
     now: Callable[[], datetime] = utc_now,
     new_client_token: Callable[[], str] = lambda: str(uuid.uuid4()),
+    fault_breakpoint: FaultBreakpoint | None = None,
 ) -> FundOutcome:
     """Serialise, read the balance, write one recharge, verify against target."""
     require_validated_source(
@@ -421,6 +423,7 @@ async def update_family_fund(
             keyring=keyring,
             now=now,
             new_client_token=new_client_token,
+            fault_breakpoint=fault_breakpoint,
         )
     finally:
         with sessions() as session:

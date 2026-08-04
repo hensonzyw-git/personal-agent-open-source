@@ -44,6 +44,7 @@ personal-agent-export-deletion-manifest = "personal_agent.backup.export_cli:main
 personal-agent-restore-verify = "personal_agent.backup.restore_cli:main"
 personal-agent-generate-contracts = "personal_agent_core.manifest:main"
 personal-agent-write-switch = "personal_agent_core.write_switch_cli:main"
+personal-agent-fault-breakpoint = "personal_agent_core.fault_breakpoint_cli:main"
 personal-agent-eval-lint = "personal_agent_core.evalset:main"
 personal-agent-eval-score = "personal_agent_core.evalset:score_main"
 personal-agent-model-eval = "personal_agent.eval_cli:main"

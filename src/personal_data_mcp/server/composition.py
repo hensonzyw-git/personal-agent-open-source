@@ -36,6 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Callable, Final
 
+from personal_agent_core.fault_breakpoint import FaultBreakpoint
 from personal_agent_core.timeutil import utc_now
 from personal_data_mcp.crypto.keys import load_data_keyring
 from personal_data_mcp.feishu.adapter import FeishuAdapter
@@ -178,6 +179,7 @@ async def finance_tools(
     sessions,
     now: Callable[[], datetime] = utc_now,
     recovery_interval_seconds: float = RECOVERY_INTERVAL_SECONDS,
+    fault_breakpoint: FaultBreakpoint | None = None,
 ) -> AsyncIterator[FinanceComposition]:
     """Open the Finance write surface for the lifetime of the service."""
     if recovery_interval_seconds <= 0:
@@ -204,6 +206,7 @@ async def finance_tools(
             keyring=load_data_keyring(),
             fx=fx,
             now=now,
+            fault_breakpoint=fault_breakpoint,
         )
         # Fail at boot rather than at the first write. This validation is
         # deliberately discarded: the handlers revalidate inside each call.

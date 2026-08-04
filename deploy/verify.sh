@@ -420,6 +420,20 @@ echo "== write kill switch =="
 # the 2026-08-01 backup defect was exactly that distinction, and a switch the
 # services cannot read fails every write closed.
 SWITCH_FILE=/etc/personal-agent/write-switch.json
+# Defined out here, not inside the branch below, because the fault-breakpoint
+# block also uses it. Under `set -u` a definition reachable only when the switch
+# file exists would abort the whole script at the first later use -- taking the
+# remaining checks with it -- in exactly the run where the switch is missing and
+# the rest of the report matters most.
+#
+# Neither service may flip its own switch: a compromised service that could
+# rewrite this file could re-enable the writes an operator just stopped.
+# `test -w` only asks access(2) what would happen. Open the actual inode for
+# append instead, with O_NOFOLLOW, and require the kernel to refuse it. The
+# probe closes immediately and writes no bytes even if a regression lets the
+# open succeed, so verify.sh remains read-only. The parent-directory mode
+# checked below independently prevents unlink/rename replacement.
+WRITE_OPEN_PROBE='import os, sys; fd = os.open(sys.argv[1], os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW); os.close(fd)'
 if [ ! -f "$SWITCH_FILE" ]; then
   fail "write switch state file is missing; every write will refuse"
 else
@@ -438,14 +452,6 @@ else
     sudo -u "$API_USER" head -c 1 "$SWITCH_FILE"
   expect_success "mcp user can open the write switch" \
     sudo -u "$MCP_USER" head -c 1 "$SWITCH_FILE"
-  # Neither service may flip its own switch: a compromised service that could
-  # rewrite this file could re-enable the writes an operator just stopped.
-  # `test -w` only asks access(2) what would happen. Open the actual inode for
-  # append instead, with O_NOFOLLOW, and require the kernel to refuse it. The
-  # probe closes immediately and writes no bytes even if a regression lets the
-  # open succeed, so verify.sh remains read-only. The parent-directory mode
-  # above independently prevents unlink/rename replacement.
-  WRITE_OPEN_PROBE='import os, sys; fd = os.open(sys.argv[1], os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW); os.close(fd)'
   # The probe's own positive control, and it is not decoration. A refusal-only
   # assertion passes for any reason the command fails: measured on 2026-08-03,
   # a wrong interpreter path and a wrong target path both exit non-zero, which
@@ -486,6 +492,58 @@ for unit in personal-agent-api personal-data-mcp; do
     fail "$unit does not carry PERSONAL_AGENT_WRITE_SWITCH_FILE=$SWITCH_FILE"
   fi
 done
+
+echo "== fault breakpoint (DEV-040 §13.2) =="
+# The per-breakpoint drill pause. Absence is the *disarmed* position and is the
+# only correct steady state; a present file must be root-owned, readable by the
+# Finance user (its only reader), rewrite-proof, and parse through the production
+# reader.
+#
+# Unlike the write switch, the position here is NOT merely an operational
+# decision to report. The switch has two legitimate steady states; this file has
+# one. A breakpoint left armed after a drill pauses every matching production
+# write for the whole arm window, and nothing in the system takes it back down --
+# so a routine verify run that printed PASS for "armed" would be applauding the
+# exact failure it is here to catch. During an actual drill, export
+# ALLOW_ARMED_FAULT_BREAKPOINT=1 to say so deliberately.
+FAULT_FILE=/etc/personal-agent/fault-breakpoint.json
+if [ ! -f "$FAULT_FILE" ]; then
+  pass "no fault breakpoint armed (the disarmed steady state)"
+else
+  fb_mode="$(stat -c %a "$FAULT_FILE")"; while [ "${#fb_mode}" -lt 3 ]; do fb_mode="0$fb_mode"; done
+  fb_owner="$(stat -c %U:%G "$FAULT_FILE")"
+  if [ "$fb_owner" = "root:root" ] && [ "$fb_mode" = "644" ]; then
+    pass "fault breakpoint is root:root/0644"
+  else
+    fail "fault breakpoint is $fb_owner/$fb_mode, want root:root/644"
+  fi
+  expect_success "mcp user can open the fault breakpoint" \
+    sudo -u "$MCP_USER" head -c 1 "$FAULT_FILE"
+  expect_refused "mcp user cannot open the fault breakpoint for writing" \
+    sudo -u "$MCP_USER" /opt/personal-agent/.venv/bin/python \
+    -c "$WRITE_OPEN_PROBE" "$FAULT_FILE"
+  # Parsed by the production reader, not by grep: a file this reader refuses
+  # would silently disarm the drill, turning the operator's kill into a guess.
+  /opt/personal-agent/.venv/bin/personal-agent-fault-breakpoint \
+    --path "$FAULT_FILE" status >/dev/null 2>&1
+  fb_status=$?
+  case "$fb_status" in
+    0)
+      if [ "${ALLOW_ARMED_FAULT_BREAKPOINT:-0}" = "1" ]; then
+        pass "fault breakpoint parses and is armed (drill declared)"
+      else
+        fail "a fault breakpoint is ARMED; production writes will pause. Disarm with: sudo /opt/personal-agent/.venv/bin/personal-agent-fault-breakpoint --path $FAULT_FILE disarm --reason '...'"
+      fi
+      ;;
+    *) fail "fault breakpoint state file is unreadable or malformed (exit $fb_status)" ;;
+  esac
+fi
+if systemctl show -p Environment --value personal-data-mcp 2>/dev/null \
+   | grep -q "PERSONAL_AGENT_FAULT_BREAKPOINT_FILE=$FAULT_FILE"; then
+  pass "personal-data-mcp points at the fault breakpoint"
+else
+  fail "personal-data-mcp does not carry PERSONAL_AGENT_FAULT_BREAKPOINT_FILE=$FAULT_FILE"
+fi
 
 echo "== push sender (DEV-040) =="
 # The review job now composes a real APNs sender, which needs (a) the Agent data

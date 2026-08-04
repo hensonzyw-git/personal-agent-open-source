@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import time
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -20,6 +21,14 @@ import httpx
 import pytest
 
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.fault_breakpoint import (
+    BREAKPOINT_BEFORE_PREPARE,
+    BREAKPOINT_COMMITTED_UNVERIFIED,
+    BREAKPOINT_PREPARED,
+    BREAKPOINT_SUBMITTING,
+    FaultBreakpoint,
+    render_state_file,
+)
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
 from personal_data_mcp.finance.expense_record import (
@@ -166,6 +175,7 @@ async def do_write(
     validation: SchemaValidation = VALIDATION,
     config=CONFIG,
     source=SOURCE,
+    fault_breakpoint: FaultBreakpoint | None = None,
 ):
     async with adapter_for(fake) as adapter:
         return await write_expense(
@@ -178,6 +188,7 @@ async def do_write(
             idempotency_key=key,
             request_fingerprint=fingerprint,
             trace_id="trace-1",
+            fault_breakpoint=fault_breakpoint,
         )
 
 
@@ -743,3 +754,97 @@ def test_a_late_evening_entry_keeps_its_shanghai_ledger_date(sessions) -> None:
     # must still be 2026-01-01, which the successful verification proves.
     assert fields["日期"] == 1767196800000
     assert state_of(sessions) == "succeeded"
+
+
+# --- §13.2 fault-breakpoint wiring -------------------------------------------
+
+
+def test_execute_governed_write_visits_all_breakpoints_in_order(
+    sessions, monkeypatch
+) -> None:
+    """The four pause call sites exist, in the ordering-critical order.
+
+    This pins the placement: `before_prepare` before any execution row,
+    `prepared` after the prepared commit, `submitting` after the submitting
+    commit, `committed_unverified` after the receipt commit -- exactly the
+    windows the live drill needs to hold a write open. A future refactor that
+    moves or drops one of them fails here regardless of what the offline fault
+    matrix says about the states.
+    """
+    fake = FakeFeishu()
+    seen: list[str] = []
+    breakpoint = FaultBreakpoint(Path("/nonexistent/fault-breakpoint.json"))
+
+    async def recording(name: str) -> None:
+        seen.append(name)
+        return None
+
+    monkeypatch.setattr(breakpoint, "pause_if_armed", recording)
+    outcome = run(
+        do_write(
+            fake,
+            sessions,
+            key="idem-bp-order",
+            fault_breakpoint=breakpoint,
+        )
+    )
+    assert outcome.status == "created"
+    assert seen == [
+        BREAKPOINT_BEFORE_PREPARE,
+        BREAKPOINT_PREPARED,
+        BREAKPOINT_SUBMITTING,
+        BREAKPOINT_COMMITTED_UNVERIFIED,
+    ]
+
+
+def test_armed_fault_breakpoint_pauses_the_write_then_succeeds(
+    sessions, tmp_path
+) -> None:
+    """Armed at `prepared`, a real write is held after the prepared commit.
+
+    The hold is observable as wall-clock time and the write still lands exactly
+    once -- the pause never changes the outcome, it only keeps the process alive
+    long enough for an operator to take it down.
+    """
+    bp_file = tmp_path / "fault-breakpoint.json"
+    bp_file.write_text(
+        render_state_file(
+            breakpoint=BREAKPOINT_PREPARED,
+            seconds=1,
+            reason="test",
+            changed_at="2026-08-04T00:00:00+00:00",
+        ),
+        encoding="utf-8",
+    )
+    fake = FakeFeishu()
+    start = time.monotonic()
+    outcome = run(
+        do_write(
+            fake,
+            sessions,
+            key="idem-armed",
+            fault_breakpoint=FaultBreakpoint(bp_file),
+        )
+    )
+    elapsed = time.monotonic() - start
+    assert outcome.status == "created"
+    assert len(fake.creates) == 1
+    assert state_of(sessions, "idem-armed") == "succeeded"
+    assert elapsed >= 0.9, f"expected the armed pause to hold the write, got {elapsed:.2f}s"
+
+
+def test_unarmed_fault_breakpoint_is_a_noop(sessions, tmp_path) -> None:
+    """Absent breakpoint file: no pause, no behaviour change."""
+    fake = FakeFeishu()
+    start = time.monotonic()
+    outcome = run(
+        do_write(
+            fake,
+            sessions,
+            key="idem-unarmed",
+            fault_breakpoint=FaultBreakpoint(tmp_path / "absent.json"),
+        )
+    )
+    elapsed = time.monotonic() - start
+    assert outcome.status == "created"
+    assert elapsed < 0.5, f"expected no pause, got {elapsed:.2f}s"

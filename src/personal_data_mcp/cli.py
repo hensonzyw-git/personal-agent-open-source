@@ -8,6 +8,11 @@ from pathlib import Path
 
 import uvicorn
 
+from personal_agent_core.fault_breakpoint import (
+    FaultBreakpoint,
+    FaultBreakpointConfigError,
+    load_fault_breakpoint,
+)
 from personal_agent_core.write_switch import (
     WriteSwitchConfigError,
     disabled_write_switch,
@@ -139,18 +144,26 @@ def main() -> None:
             "--ledger-config requires --database: a write cannot be governed "
             "without the execution store."
         )
+    # The §13.2 drill hook must be findable before the write surface is served,
+    # mirroring the write switch: a host that cannot locate its breakpoint file
+    # has silently lost the only tool that closes the gate.
+    try:
+        fault_breakpoint = load_fault_breakpoint()
+    except FaultBreakpointConfigError as error:
+        raise SystemExit(str(error)) from error
     asyncio.run(
         _serve_with_finance_tools(
             config,
             args,
             session_factory=session_factory,
             write_switch=write_switch,
+            fault_breakpoint=fault_breakpoint,
         )
     )
 
 
 async def _serve_with_finance_tools(
-    config, args, *, session_factory, write_switch
+    config, args, *, session_factory, write_switch, fault_breakpoint: FaultBreakpoint
 ) -> None:
     """Serve with the Finance write tools composed for the process lifetime.
 
@@ -161,7 +174,9 @@ async def _serve_with_finance_tools(
     from personal_data_mcp.server.composition import finance_tools
 
     async with finance_tools(
-        config_path=args.ledger_config, sessions=session_factory
+        config_path=args.ledger_config,
+        sessions=session_factory,
+        fault_breakpoint=fault_breakpoint,
     ) as composed:
         app = build_app(
             config,

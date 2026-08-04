@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.fault_breakpoint import FaultBreakpoint
 from personal_agent_core.money import quantize_cny
 from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import ledger_day_epoch_millis, utc_now
@@ -163,6 +164,7 @@ async def write_income(
     on_prepared: Callable[[Session], None] | None = None,
     now: Callable[[], datetime] = utc_now,
     new_client_token: Callable[[], str] = lambda: str(uuid.uuid4()),
+    fault_breakpoint: FaultBreakpoint | None = None,
 ) -> WriteOutcome | IncomeClarification | DuplicateFinding:
     """Resolve the income, then write it. A clarification writes nothing."""
     resolved = resolve_income(description)
@@ -256,4 +258,5 @@ async def write_income(
         keyring=keyring,
         now=now,
         new_client_token=new_client_token,
+        fault_breakpoint=fault_breakpoint,
     )

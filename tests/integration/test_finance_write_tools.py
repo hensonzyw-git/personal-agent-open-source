@@ -249,7 +249,9 @@ def caller() -> SignedCaller:
     return SignedCaller(scopes=SCOPES)
 
 
-def dependencies(fake, sessions, keyring, *, adapter, fx) -> FinanceWriteDependencies:
+def dependencies(
+    fake, sessions, keyring, *, adapter, fx, fault_breakpoint=None
+) -> FinanceWriteDependencies:
     return FinanceWriteDependencies(
         adapter=adapter,
         source=SOURCE,
@@ -258,6 +260,7 @@ def dependencies(fake, sessions, keyring, *, adapter, fx) -> FinanceWriteDepende
         keyring=keyring,
         fx=fx,
         now=now,
+        fault_breakpoint=fault_breakpoint,
     )
 
 
@@ -284,6 +287,7 @@ async def call(
     duplicate_override: str | None = None,
     fx_rate: str | None = "0.04141",
     headers: dict | None = None,
+    fault_breakpoint=None,
 ):
     arguments = LUNCH if arguments is None else arguments
     key = idempotency_key or str(uuid.uuid4())
@@ -296,7 +300,12 @@ async def call(
             now=lambda: NOW, transport=fx_transport(fx_rate)
         ) as fx:
             deps = dependencies(
-                fake, sessions, keyring, adapter=adapter, fx=fx
+                fake,
+                sessions,
+                keyring,
+                adapter=adapter,
+                fx=fx,
+                fault_breakpoint=fault_breakpoint,
             )
             registry = registry_for(deps)
             sent = headers or caller.headers(
@@ -784,3 +793,142 @@ def test_the_default_server_advertises_no_finance_tool() -> None:
 
     names = build_registry().names()
     assert names == {"meta.capabilities"}
+
+
+# --- §13.2 fault breakpoint: the production wiring, not the seam -------------
+#
+# `test_finance_write_path.py` proves the four pause sites exist inside
+# `execute_governed_write` by handing the breakpoint straight to `write_expense`.
+# That is the seam, and a seam wired only in tests is not wiring (§7): the object
+# still has to travel composition -> `FinanceWriteDependencies` -> each handler
+# -> the write function. Drop `fault_breakpoint=` at any one of those four hops
+# and every existing test stays green while the live drill silently never pauses
+# -- and a drill that does not pause reports the operator's `kill` as a guess.
+#
+# These cases close that gap for all three write tools by dispatching a real
+# governed call and requiring the *same instance* to be asked for a pause.
+
+
+@pytest.mark.parametrize(
+    "tool, arguments",
+    [
+        ("finance.log_expense", None),
+        (
+            "finance.log_income",
+            {
+                "income_description": "发工资",
+                "input_amount": "100",
+                "input_currency": "CNY",
+                "occurred_on": "2026-07-24",
+            },
+        ),
+        (
+            "finance.update_family_fund",
+            {"mode": "top_up", "recharge_amount_cny": "10"},
+        ),
+    ],
+)
+def test_every_write_tool_carries_the_fault_breakpoint_to_the_write_path(
+    sessions, keyring, caller, tool, arguments
+) -> None:
+    from personal_agent_core.fault_breakpoint import (
+        BREAKPOINT_BEFORE_PREPARE,
+        BREAKPOINT_COMMITTED_UNVERIFIED,
+        BREAKPOINT_PREPARED,
+        BREAKPOINT_SUBMITTING,
+        FaultBreakpoint,
+    )
+
+    fake = FakeBitable()
+    if tool == "finance.update_family_fund":
+        fake.add_row(
+            "family_fund",
+            {"充值金额": 100, "家庭基金余额": {"type": 2, "value": [1000]}},
+        )
+
+    # A path that cannot exist: the recorder replaces the sleep entirely, so the
+    # test asserts on delivery of the object, never on wall-clock time.
+    breakpoint = FaultBreakpoint(Path("/nonexistent/fault-breakpoint.json"))
+    asked: list[str] = []
+
+    async def recording(name: str) -> None:
+        asked.append(name)
+        return None
+
+    breakpoint.pause_if_armed = recording  # type: ignore[method-assign]
+
+    result, _ = run(
+        call(
+            fake,
+            sessions,
+            keyring,
+            caller,
+            tool=tool,
+            arguments=arguments,
+            fault_breakpoint=breakpoint,
+        )
+    )
+
+    assert not result.is_error, result.content[0].text
+    assert asked == [
+        BREAKPOINT_BEFORE_PREPARE,
+        BREAKPOINT_PREPARED,
+        BREAKPOINT_SUBMITTING,
+        BREAKPOINT_COMMITTED_UNVERIFIED,
+    ]
+
+
+def test_composition_hands_the_fault_breakpoint_to_the_write_dependencies(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The first hop: `finance_tools(fault_breakpoint=…)` must not drop it.
+
+    Composition opens real network clients and a recovery task, so this stops at
+    the point the object is placed on `FinanceWriteDependencies` -- which is the
+    hop no other test covers.
+    """
+    from personal_agent_core.fault_breakpoint import FaultBreakpoint
+    from personal_data_mcp.server import composition
+
+    breakpoint = FaultBreakpoint(Path("/nonexistent/fault-breakpoint.json"))
+    seen: list[object] = []
+
+    class Stop(RuntimeError):
+        pass
+
+    async def capture(deps):
+        seen.append(deps.fault_breakpoint)
+        raise Stop
+
+    monkeypatch.setattr(composition, "fresh_validation", capture)
+    monkeypatch.setattr(composition, "load_credentials", lambda: object())
+    monkeypatch.setattr(composition, "load_data_keyring", lambda: object())
+    monkeypatch.setattr(
+        composition, "require_synthetic_test_base", lambda source, **_kwargs: SOURCE
+    )
+    monkeypatch.setattr(composition, "load_base_source", lambda: SOURCE)
+    monkeypatch.setattr(
+        composition, "FeishuAdapter", lambda *_args, **_kwargs: _NoopClient()
+    )
+    monkeypatch.setattr(
+        composition, "FxConnector", lambda *_args, **_kwargs: _NoopClient()
+    )
+
+    async def drive():
+        async with composition.finance_tools(
+            config_path=LEDGER_FIXTURES / "config.synthetic.json",
+            sessions=None,
+            fault_breakpoint=breakpoint,
+        ):
+            pass
+
+    with pytest.raises(Stop):
+        run(drive())
+    assert seen == [breakpoint]
+
+
+class _NoopClient:
+    """Stands in for the adapter and FX connector, which own HTTP clients."""
+
+    async def aclose(self) -> None:
+        return None

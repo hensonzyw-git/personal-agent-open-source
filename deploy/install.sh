@@ -89,6 +89,13 @@ SWITCH
   rm -f "$switch_tmp"
 fi
 
+# DEV-040 §13.2: the fault breakpoint file is deliberately NOT created here. For
+# the write switch, "missing" must mean "writes off"; for the drill pause, a
+# missing file is the *disarmed* position (no file means no pause), so a reinstall
+# can never resurrect or clobber an armed drill. The operator arms it with
+# personal-agent-fault-breakpoint arm --breakpoint ... --seconds ... --reason ...
+# and disarms it the same way; absence is the safe default.
+
 # Application code: owned by the deploy user; services only read and execute.
 install -d -m 0755 -o "$DEPLOY_USER" -g "$DEPLOY_USER" /opt/personal-agent
 
