@@ -336,9 +336,13 @@ conflict instead of silently choosing an old default.
   `docs/密钥清单_v0.1.md`. The
   ECS clock was checked and is correct
   (`docs/evidence/DEV035_ECS时钟核对_2026-08-01.md`). DEV-036 follows DEV-035.
-  APNs inputs are complete but sender/device-registration code is not built,
-  and 打开飞书账本 stays unexercised because `PERSONAL_AGENT_LEDGER_URL` is
-  unset on the ECS.
+  **Push closed on 2026-08-04**: the APNs sender and iOS device-token
+  registration are built, deployed and proven on the real iPhone — Apple
+  accepted the notification and the device wrote `daily_reviews.reviewed_at`
+  back 17s later (`docs/evidence/DEV040_真机推送端到端_2026-08-04.md`). That run
+  also found `needs_manual_review` to be a terminal state with no human
+  resolution path. 打开飞书账本 stays unexercised because
+  `PERSONAL_AGENT_LEDGER_URL` is still unset on the ECS.
 - `ECS安全加固实施记录_2026-07-23.md` — security, encryption, snapshot, and
   rollback record.
 - `docs/iOS开发环境_Personal_Team_v0.1.md` — Personal Team constraints, the iOS
