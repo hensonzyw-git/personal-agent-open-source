@@ -48,6 +48,11 @@ from personal_agent.auth.device_keys import (
 BASE_URL = "https://agent.example.invalid"
 TIMEOUT = httpx.Timeout(60.0, connect=15.0)
 
+#: How many times one non-write request may be re-sent after a transport error.
+#: Bounded: a path that cannot carry three handshakes is an operator problem to
+#: see, not one to keep retrying around.
+TRANSPORT_ATTEMPTS = 3
+
 #: The operator half runs over SSH from this same process rather than as a
 #: manual pause. Not for convenience: the interesting probes need an operator
 #: action to happen *between* two client calls with a live token in hand, and a
@@ -61,17 +66,14 @@ OPERATOR = (
 
 
 def operator(command: str) -> str:
-    """Run one operator CLI command on the ECS and return its output."""
-    argv = [part.replace("~", str(__import__("pathlib").Path.home())) for part in SSH]
-    result = subprocess.run(
-        [*argv, f"{OPERATOR} {command}"],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"operator command failed: {result.stderr.strip()}")
-    return result.stdout
+    """Run one operator CLI command on the ECS and return its output.
+
+    Goes through `_remote` so a dropped connection is retried while a genuine
+    non-zero exit still raises on the spot. This matters most for the `revoke`
+    at the end of a probe: a throwaway device left enrolled because ssh happened
+    to drop is a real, if small, standing grant.
+    """
+    return _remote(f"{OPERATOR} {command}")
 
 
 class ProbeDevice:
@@ -93,6 +95,41 @@ class ProbeDevice:
     def close(self) -> None:
         self._client.close()
 
+    # --- transport ----------------------------------------------------------
+
+    def _send(self, method: str, path: str, **kwargs) -> httpx.Response:
+        """One request, retried only when the connection never carried it.
+
+        The 11-second auth pacing below means almost every request in a drill
+        opens a *fresh* TLS connection, and on 2026-08-05 the Mac's path to the
+        ECS was dropping roughly one handshake in ten (measured: 9/10 curl
+        handshakes succeeded, ping 10ms 0% loss, and four consecutive drill runs
+        each died on the first request after enrolment). A client-side handshake
+        that never reached Nginx is not a §13.2 result -- same reasoning as the
+        `NO_WRITE` retry: a drill must fail on what it is testing, not on the
+        operator's network.
+
+        Only `httpx.TransportError` is retried, and only where the request is
+        provably not a write. A transport error means no response was received,
+        so the *server's* state is unknown; that is safe to re-ask for a read or
+        an auth exchange, which is why `chat()` deliberately does not use this.
+        """
+        last: Exception | None = None
+        for attempt in range(1, TRANSPORT_ATTEMPTS + 1):
+            try:
+                return self._client.request(method, path, **kwargs)
+            except httpx.TransportError as exc:
+                last = exc
+                print(
+                    f"    (transport {type(exc).__name__} on {method} {path}, "
+                    f"attempt {attempt}/{TRANSPORT_ATTEMPTS}; the request never "
+                    "reached the service)"
+                )
+                if attempt < TRANSPORT_ATTEMPTS:
+                    time.sleep(2.0 * attempt)
+        assert last is not None
+        raise last
+
     # --- enrolment ----------------------------------------------------------
 
     def _pace(self) -> None:
@@ -103,7 +140,8 @@ class ProbeDevice:
 
     def enrol(self, code: str, display_name: str) -> dict[str, Any]:
         self._pace()
-        response = self._client.post(
+        response = self._send(
+            "POST",
             "/v1/enrollments/claim",
             json={
                 "code": code,
@@ -120,8 +158,8 @@ class ProbeDevice:
         """Challenge -> signature -> a 10-minute access token."""
         assert self.device_id is not None
         self._pace()
-        challenge = self._client.post(
-            "/v1/auth/challenges", json={"device_id": self.device_id}
+        challenge = self._send(
+            "POST", "/v1/auth/challenges", json={"device_id": self.device_id}
         )
         challenge.raise_for_status()
         issued = challenge.json()
@@ -132,7 +170,8 @@ class ProbeDevice:
         )
         der = self._private.sign(signing_input, ec.ECDSA(_sha256()))
         self._pace()
-        token = self._client.post(
+        token = self._send(
+            "POST",
             "/v1/auth/tokens",
             json={
                 "challenge_id": issued["challenge_id"],
@@ -154,8 +193,8 @@ class ProbeDevice:
         """
         assert self.device_id is not None
         self._pace()
-        challenge = self._client.post(
-            "/v1/auth/challenges", json={"device_id": self.device_id}
+        challenge = self._send(
+            "POST", "/v1/auth/challenges", json={"device_id": self.device_id}
         )
         challenge.raise_for_status()
         issued = challenge.json()
@@ -170,7 +209,8 @@ class ProbeDevice:
         ).encode("utf-8")
         der = self._private.sign(tampered, ec.ECDSA(_sha256()))
         self._pace()
-        return self._client.post(
+        return self._send(
+            "POST",
             "/v1/auth/tokens",
             json={
                 "challenge_id": issued["challenge_id"],
@@ -189,7 +229,7 @@ class ProbeDevice:
         return headers
 
     def capabilities(self) -> httpx.Response:
-        return self._client.get("/v1/capabilities", headers=self._headers())
+        return self._send("GET", "/v1/capabilities", headers=self._headers())
 
     def canonical_conversation_id(self) -> str:
         """The server's Timeline id. `CAP-001`: the client never invents one.
@@ -209,6 +249,10 @@ class ProbeDevice:
         conversation_id: str,
         idempotency_key: str,
     ) -> httpx.Response:
+        # Deliberately NOT `_send`. A transport error here means the write may
+        # already be in flight, and the drill's whole question is *where* it was
+        # when the process died -- a silent re-send would arm the assertions
+        # against a different attempt. The caller sees the exception.
         return self._client.post(
             "/v1/chat/messages",
             headers=self._headers(idempotency_key),
@@ -216,8 +260,8 @@ class ProbeDevice:
         )
 
     def operation(self, operation_id: str) -> httpx.Response:
-        return self._client.get(
-            f"/v1/operations/{operation_id}", headers=self._headers()
+        return self._send(
+            "GET", f"/v1/operations/{operation_id}", headers=self._headers()
         )
 
 
@@ -474,17 +518,39 @@ FAULT_BREAKPOINT = (
 BREAKPOINTS = ["prepared", "submitting", "committed_unverified"]
 
 
-def _remote(command: str) -> str:
-    """Run one command on the ECS and return stdout, raising on failure."""
+class RemoteUnreachable(RuntimeError):
+    """ssh itself failed; the command never ran, so nothing was observed.
+
+    Separate from a plain `RuntimeError` because the difference decides a
+    verdict: a command that ran and exited non-zero is a fact about the server,
+    while a connection that never opened is a fact about the operator's network
+    and must never be projected onto the system under test.
+    """
+
+
+def _remote(command: str, attempts: int = 3) -> str:
+    """Run one command on the ECS and return stdout, raising on failure.
+
+    `ssh` reserves exit 255 for its own failures, which is the only reliable way
+    to tell "the connection dropped" from "the command ran and failed". Only the
+    former is retried, and only that one raises `RemoteUnreachable`: retrying a
+    command that genuinely failed would turn one server fact into three.
+    """
     argv = [part.replace("~", str(__import__("pathlib").Path.home())) for part in SSH]
-    result = subprocess.run(
-        [*argv, command], capture_output=True, text=True, timeout=180
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"remote command failed: {result.stderr.strip()}"
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(
+            [*argv, command], capture_output=True, text=True, timeout=180
         )
-    return result.stdout
+        if result.returncode == 0:
+            return result.stdout
+        if result.returncode != 255:
+            raise RuntimeError(f"remote command failed: {result.stderr.strip()}")
+        if attempt < attempts:
+            time.sleep(2.0 * attempt)
+    raise RemoteUnreachable(
+        f"ssh could not reach the ECS in {attempts} attempts: "
+        f"{result.stderr.strip()}"
+    )
 
 
 #: Every observation this drill makes is a *read*, so each one opens the database
@@ -609,6 +675,10 @@ TERMINAL_FINANCE_STATES = (
 PAUSED = "paused"
 RAN_PAST = "ran_past"
 NO_WRITE = "no_write"
+#: The drill could not read Finance at all during the whole wait. Neither a pass
+#: nor a §13.2 failure: it is the operator's network, and reporting it as either
+#: would put a verdict on the system under test that no observation supports.
+UNREADABLE = "unreadable"
 
 
 def _wait_paused(
@@ -642,10 +712,17 @@ def _wait_paused(
     """
     deadline = time.monotonic() + timeout
     seen_execution = False
+    read_succeeded = False
     while time.monotonic() < deadline:
         try:
             state = _finance_state(idempotency_key)
+            read_succeeded = True
         except RuntimeError:
+            # An unreadable row is NOT an absent row. Swallowing this into
+            # `state = None` is what let a flaky SSH path report `NO_WRITE`
+            # three times in a row on 2026-08-05 while the write may well have
+            # been sitting at the breakpoint -- the §5.1 rule ("an absent row is
+            # a race, not proof") applied to the drill's own observations.
             state = None
         if state is not None:
             seen_execution = True
@@ -661,7 +738,10 @@ def _wait_paused(
         time.sleep(0.3)
     # Timed out. An execution row that never reached the breakpoint still means
     # the write was dispatched, so that is a real failure; no row at all means
-    # the turn produced no write and there is nothing to score.
+    # the turn produced no write and there is nothing to score -- but only if
+    # this drill could actually see Finance at all.
+    if not read_succeeded:
+        return UNREADABLE
     return RAN_PAST if seen_execution else NO_WRITE
 
 
@@ -737,6 +817,17 @@ def _drill_one_breakpoint(
         verdict = _attempt_breakpoint(
             device, breakpoint, index, conversation_id, attempt
         )
+        if verdict is UNREADABLE:
+            # Not retried and not scored. Retrying would keep firing real writes
+            # while blind to where they end up, and calling it a §13.2 failure
+            # would put a verdict on the system under test that no observation
+            # supports. The operator has to fix the path and re-run.
+            print(
+                f"ABORT: the drill could not read Finance at all while driving "
+                f"{breakpoint}; the ECS was unreachable, so nothing about the "
+                "breakpoint was observed. Fix the connection and re-run."
+            )
+            return False
         if verdict is not NO_WRITE:
             return verdict
         print(
@@ -766,8 +857,21 @@ def _attempt_breakpoint(
     # instead of reaching the breakpoint -- measured on the deployed service.
     # Deriving the amount from the fresh key keeps every drill write unique,
     # which also makes a retry a genuinely new write rather than a duplicate.
-    amount = 5 + (int(key[:8], 16) % 95)
-    text = f"午饭演练{index} {amount} 个人"
+    #
+    # The range is wide on purpose. A drill fires up to twelve writes on one
+    # ledger day, and the old 5..99 range made a collision with an earlier
+    # attempt more likely than not -- which parks the write at
+    # `waiting_for_duplicate_decision` with no Finance execution row, i.e.
+    # indistinguishable from "the model called no tool".
+    amount = 100 + (int(key[:8], 16) % 9900)
+    # Phrasing measured, not guessed. `午饭演练N {amount} 个人` produced a
+    # tool-free prose answer on **9 of 9** turns on 2026-08-05 (every operation
+    # ended `succeeded` with `tool=null`), and cost two of three breakpoints on
+    # 2026-08-04 the same way: 演练 reads to the model as "this is a rehearsal",
+    # not as an expense to record. §13.2 is about what a restart does to a write
+    # in flight, so the drill needs a sentence the model reliably treats as a
+    # real expense -- this is the shape the live smoke has always used.
+    text = f"午饭 {amount} 个人支出"
     print(
         f"\n=== breakpoint {breakpoint} attempt {attempt} "
         f"(idempotency_key={key}) ==="
