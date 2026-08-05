@@ -17,6 +17,8 @@ import pytest
 
 from context_envelopes import envelope_for
 from personal_agent.api.duplicate_flow import decide_duplicate
+from personal_agent.api.operation_state import is_recoverable, is_terminal
+from personal_agent.api.recovery import _RECOVERY_PATHS
 from personal_agent.api.intent import WriteIntent, open_intent
 from personal_agent.api.operation_store import (
     open_operation,
@@ -343,7 +345,20 @@ def test_a_resolve_failure_fails_safe(session, keyring) -> None:
     assert result.failure_reason == "FX_RATE_UNAVAILABLE"
 
 
-def test_a_commit_unknown_needs_manual_review(session, keyring) -> None:
+def test_a_commit_unknown_stays_recoverable_instead_of_resolving(
+    session, keyring
+) -> None:
+    """An unknown commit must not be resolved by the worker that lost sight of it.
+
+    This used to end at terminal `needs_manual_review`, and terminal is the whole
+    problem: recovery never re-reads a terminal operation, so when Finance later
+    reconciled the same idempotency key to `succeeded`, the Agent kept showing
+    "needs manual review" forever. The §13.2 drill on 2026-08-04 produced exactly
+    that pair -- Finance verified `recvrlVQllHop0`, the Agent said `record_id=null`.
+
+    Staying at `source_in_progress` is what hands the verdict to the one component
+    that can still read Finance afterwards.
+    """
     op = _fresh_operation(session)
     intent = WriteIntent("finance.log_expense", {"name": "午饭"})
     result = _run(
@@ -352,9 +367,34 @@ def test_a_commit_unknown_needs_manual_review(session, keyring) -> None:
         dispatcher=FakeDispatcher(resolve=Resolved(intent), commit=CommitUnknown("timeout")),
         keyring=keyring,
     )
-    assert result.state == "needs_manual_review"
+    assert result.state == "source_in_progress"
+    # The reason reaches the caller, but is not stamped onto the row: it would
+    # age `updated_at` (delaying recovery) and describe a failure that has not
+    # been established.
+    assert result.failure_reason == "timeout"
     session.refresh(op)
-    assert op.state == "needs_manual_review"
+    assert op.state == "source_in_progress"
+    assert op.failure_reason is None
+    assert is_recoverable(op.state)
+
+
+def test_a_commit_unknown_is_not_terminal_so_recovery_can_still_claim_it(
+    session, keyring
+) -> None:
+    """The property the fix exists for, stated against the state machine itself."""
+    op = _fresh_operation(session)
+    intent = WriteIntent("finance.log_expense", {"name": "午饭"})
+    _run(
+        session, op,
+        interpreter=FakeInterpreter(ToolCall("finance.log_expense", {"name": "午饭"})),
+        dispatcher=FakeDispatcher(resolve=Resolved(intent), commit=CommitUnknown("timeout")),
+        keyring=keyring,
+    )
+    session.refresh(op)
+    assert not is_terminal(op.state)
+    # And the projection recovery will later perform is a legal walk, so the
+    # self-healing path is reachable rather than merely intended.
+    assert ("source_in_progress", "succeeded") in _RECOVERY_PATHS
 
 
 def test_a_commit_failed_safe_fails_safe(session, keyring) -> None:
@@ -435,11 +475,20 @@ def test_parking_on_proven_zero_writes_restores_an_honest_cancel(
 
 def test_an_unknown_commit_still_cannot_park(session, keyring) -> None:
     # The contrast that makes the rule meaningful: an unknown commit has no
-    # zero-write proof, so it escalates instead of parking.
+    # zero-write proof, so it may not take either parking edge. It now holds at
+    # `source_in_progress` rather than escalating to a terminal review, but the
+    # property under test is unchanged and is the one that matters -- parking
+    # claims "nothing was written", and nothing here proves that.
     op, result = _commit_outcome(session, keyring, CommitUnknown("timeout"))
-    assert result.state == "needs_manual_review"
+    assert result.state == "source_in_progress"
     session.refresh(op)
-    assert op.state == "needs_manual_review"
+    assert op.state == "source_in_progress"
+    assert op.state not in {
+        "waiting_for_duplicate_decision",
+        "waiting_for_clarification",
+        "cancelled_pre_submit",
+    }
+    assert op.duplicate_check_id is None
 
 
 # --- the duplicate decision flow ---------------------------------------------
@@ -592,3 +641,130 @@ def test_a_parked_duplicate_can_still_be_cancelled_cleanly(session, keyring) -> 
     outcome = request_cancel(session, operation_id=op.operation_id, now=NOW)
     assert outcome.cancelled is True
     assert outcome.state == "cancelled_pre_submit"
+
+
+# --- the §13.2 drill defect, closed end to end --------------------------------
+#
+# 2026-08-04, production ECS: the drill killed Finance while a write sat at
+# `prepared`. Finance restarted, reconciled the same idempotency key and verified
+# record `recvrlVQllHop0`. The Agent operation, however, had already been resolved
+# to terminal `needs_manual_review` the moment the MCP call died -- so recovery
+# never looked at it again and the two state machines disagreed permanently.
+#
+# The unit tests above pin the orchestrator half (it no longer resolves). These
+# pin the property that actually matters and that neither module can demonstrate
+# alone: after an unknown commit, recovery reaches Finance's real answer.
+
+
+def _unknown_commit(session, keyring, key="req-1"):
+    """Drive one operation to an unknown commit and return it."""
+    op = _fresh_operation(session, key=key)
+    intent = WriteIntent("finance.log_expense", {"name": "午饭", "amount": "45"})
+    result = _run(
+        session, op,
+        interpreter=FakeInterpreter(ToolCall("finance.log_expense", {"name": "午饭"})),
+        dispatcher=FakeDispatcher(
+            resolve=Resolved(intent), commit=CommitUnknown("source_commit_unknown")
+        ),
+        keyring=keyring,
+    )
+    session.refresh(op)
+    return op, result
+
+
+def _finance(state: str, *, record_id=None, verified=False):
+    from personal_agent.api.recovery import FinanceExecutionStatus
+
+    return FinanceExecutionStatus(
+        state=state, record_id=record_id, receipt_verified=verified
+    )
+
+
+def test_an_unknown_commit_self_heals_to_finance_s_verified_success(
+    session, keyring
+) -> None:
+    """The drill's exact pair, now ending in agreement instead of contradiction."""
+    from personal_agent.api.recovery import recover_pending
+
+    op, result = _unknown_commit(session, keyring)
+    assert result.state == "source_in_progress"
+
+    # Finance did what it did on the ECS: reconciled the same key to a verified
+    # success. Recovery runs once the operation has been quiet longer than any
+    # live worker's ceiling.
+    resolved = dict(
+        recover_pending(
+            session,
+            lambda key: _finance(
+                "succeeded", record_id="recvrlVQllHop0", verified=True
+            ),
+            now=NOW + timedelta(hours=1),
+        )
+    )
+    assert resolved[op.operation_id].target_state == "succeeded"
+    session.refresh(op)
+    assert op.state == "succeeded"
+    assert op.safe_result == "recvrlVQllHop0"
+
+
+def test_an_unknown_commit_is_not_adopted_while_the_worker_may_still_own_it(
+    session, keyring
+) -> None:
+    """The counterpart property: self-healing must not become a new race.
+
+    An operation that just went quiet is indistinguishable by state from one a
+    live worker still holds, so recovery must leave it -- the 2026-08-03 P0 in
+    the other direction. Without this, making the state recoverable would trade
+    a stuck operation for a concurrent one.
+    """
+    from personal_agent.api.recovery import RecoveryAction, recover_pending
+
+    op, _ = _unknown_commit(session, keyring)
+    resolved = dict(
+        recover_pending(
+            session,
+            lambda key: _finance("succeeded", record_id="recX", verified=True),
+            now=NOW,  # not quiet
+        )
+    )
+    # The scan sees it and deliberately declines it, rather than not seeing it.
+    assert resolved[op.operation_id].action is RecoveryAction.LEAVE
+    session.refresh(op)
+    assert op.state == "source_in_progress"
+    assert op.safe_result is None
+
+
+def test_an_unknown_commit_with_no_finance_execution_still_escalates(
+    session, keyring
+) -> None:
+    """Self-healing is not optimism.
+
+    Past submit with no execution at Finance, once quiet, is the case a human
+    must look at. It must still reach `needs_manual_review` -- and now it does so
+    on evidence read after the fact, rather than on the worker's own blindness.
+    """
+    from personal_agent.api.recovery import recover_pending
+
+    op, _ = _unknown_commit(session, keyring)
+    resolved = dict(
+        recover_pending(session, lambda key: None, now=NOW + timedelta(hours=1))
+    )
+    assert resolved[op.operation_id].target_state == "needs_manual_review"
+    session.refresh(op)
+    assert op.state == "needs_manual_review"
+
+
+def test_an_unknown_commit_projects_a_finance_failure_as_a_safe_failure(
+    session, keyring
+) -> None:
+    from personal_agent.api.recovery import recover_pending
+
+    op, _ = _unknown_commit(session, keyring)
+    resolved = dict(
+        recover_pending(
+            session, lambda key: _finance("failed_safe"), now=NOW + timedelta(hours=1)
+        )
+    )
+    assert resolved[op.operation_id].target_state == "failed_safe"
+    session.refresh(op)
+    assert op.state == "failed_safe"

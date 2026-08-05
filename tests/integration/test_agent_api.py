@@ -929,3 +929,184 @@ def test_an_unexpected_error_never_reaches_the_client_as_a_bare_500(
 
 def _exploding_capabilities(auth):
     raise RuntimeError("secret path /var/lib/personal-agent-api/agent.sqlite")
+
+
+# --- DEV-040 §13.2 option B: closing the loop on needs_manual_review ----------
+#
+# `needs_manual_review` is where an operation lands when the system cannot
+# establish what happened. Option A made the *automatic* half self-heal, so what
+# reaches a human now is the residue: Finance genuinely has no execution, and the
+# only remaining fact source is the ledger. Until this endpoint existed there was
+# nothing a person could do with that card -- the push run on 2026-08-04 found
+# the dead end, and the breakpoint drill stranded four rows in it.
+
+
+def _stranded_operation(client, token_ring, key=REQUEST_ID_1) -> str:
+    """Drive one chat message to a terminal `needs_manual_review`."""
+    response = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=key),
+    )
+    body = response.json()
+    return body["operation_id"]
+
+
+def _manual_review_client(engine, token_ring, keyring):
+    """A write whose verified record id never arrives: terminal manual review."""
+    intent = WriteIntent("finance.log_expense", {"name": "午饭"})
+    return _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=FakeInterpreter(ToolCall("finance.log_expense", {"name": "午饭"})),
+        # An empty verified record id is the server's own "succeeded without
+        # evidence" path, which resolves to terminal needs_manual_review.
+        dispatcher=FakeDispatcher(resolve=Resolved(intent), commit=Written("   ")),
+    )
+
+
+def test_a_person_can_close_a_stranded_manual_review(
+    engine, token_ring, keyring
+) -> None:
+    client = _manual_review_client(engine, token_ring, keyring)
+    operation_id = _stranded_operation(client, token_ring)
+
+    resolved = client.post(
+        f"/v1/operations/{operation_id}/resolution",
+        json={"resolution": "confirmed_not_written"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert resolved.status_code == 200, resolved.text
+    body = resolved.json()
+    assert body["manual_resolution"] == "confirmed_not_written"
+    assert body["recorded"] is True
+    # The accounting outcome is untouched. A person reporting what they saw is
+    # not evidence that the system verified anything, and the state is the only
+    # thing that ever means that.
+    assert body["state"] == "needs_manual_review"
+
+
+def test_resolving_twice_the_same_way_is_a_replay_not_a_conflict(
+    engine, token_ring, keyring
+) -> None:
+    client = _manual_review_client(engine, token_ring, keyring)
+    operation_id = _stranded_operation(client, token_ring)
+    headers = _auth(token_ring, key=REQUEST_ID_2)
+    first = client.post(
+        f"/v1/operations/{operation_id}/resolution",
+        json={"resolution": "confirmed_written"},
+        headers=headers,
+    )
+    second = client.post(
+        f"/v1/operations/{operation_id}/resolution",
+        json={"resolution": "confirmed_written"},
+        headers=headers,
+    )
+    assert first.status_code == second.status_code == 200
+    assert first.json()["recorded"] is True
+    assert second.json()["recorded"] is False
+
+
+def test_a_contradicting_second_reading_is_refused(
+    engine, token_ring, keyring
+) -> None:
+    """Two different answers about one ledger is a discrepancy, not an edit."""
+    client = _manual_review_client(engine, token_ring, keyring)
+    operation_id = _stranded_operation(client, token_ring)
+    client.post(
+        f"/v1/operations/{operation_id}/resolution",
+        json={"resolution": "confirmed_written"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    conflict = client.post(
+        f"/v1/operations/{operation_id}/resolution",
+        json={"resolution": "confirmed_not_written"},
+        headers=_auth(token_ring, key=REQUEST_ID_3),
+    )
+    assert conflict.status_code != 200
+    assert conflict.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
+
+
+def test_an_operation_that_is_not_under_review_cannot_be_resolved(
+    engine, token_ring, keyring
+) -> None:
+    """A succeeded write must not acquire a human 'verdict' after the fact."""
+    intent = WriteIntent("finance.log_expense", {"name": "午饭"})
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=FakeInterpreter(ToolCall("finance.log_expense", {"name": "午饭"})),
+        dispatcher=FakeDispatcher(resolve=Resolved(intent), commit=Written("recABC")),
+    )
+    operation_id = _stranded_operation(client, token_ring)
+    refused = client.post(
+        f"/v1/operations/{operation_id}/resolution",
+        json={"resolution": "confirmed_written"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert refused.status_code != 200
+    assert refused.json()["error"]["code"] == "UNSUPPORTED_OPERATION"
+
+
+def test_an_unknown_resolution_value_is_refused(
+    engine, token_ring, keyring
+) -> None:
+    client = _manual_review_client(engine, token_ring, keyring)
+    operation_id = _stranded_operation(client, token_ring)
+    refused = client.post(
+        f"/v1/operations/{operation_id}/resolution",
+        json={"resolution": "probably_fine"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert refused.status_code != 200
+    assert refused.json()["error"]["code"] == "INVALID_ARGUMENT"
+
+
+def test_resolving_an_unknown_operation_is_refused_without_leaking_existence(
+    engine, token_ring, keyring
+) -> None:
+    client = _manual_review_client(engine, token_ring, keyring)
+    refused = client.post(
+        "/v1/operations/op_does_not_exist/resolution",
+        json={"resolution": "confirmed_written"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert refused.status_code != 200
+    assert refused.json()["error"]["code"] == "INVALID_ARGUMENT"
+
+
+def test_resolving_requires_authentication(engine, token_ring, keyring) -> None:
+    client = _manual_review_client(engine, token_ring, keyring)
+    operation_id = _stranded_operation(client, token_ring)
+    refused = client.post(
+        f"/v1/operations/{operation_id}/resolution",
+        json={"resolution": "confirmed_written"},
+    )
+    assert refused.status_code == 401
+
+
+def test_the_resolution_lands_on_the_timeline_exactly_once(
+    engine, token_ring, keyring
+) -> None:
+    client = _manual_review_client(engine, token_ring, keyring)
+    operation_id = _stranded_operation(client, token_ring)
+    headers = _auth(token_ring, key=REQUEST_ID_2)
+    for _ in range(2):
+        client.post(
+            f"/v1/operations/{operation_id}/resolution",
+            json={"resolution": "confirmed_not_written"},
+            headers=headers,
+        )
+    timeline = client.get(
+        "/v1/conversations/c1/events",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    markers = [
+        event
+        for event in timeline.json()["events"]
+        if event["event_type"] == "manual_review_resolved"
+    ]
+    assert len(markers) == 1
+    assert markers[0]["content"]["resolution"] == "confirmed_not_written"

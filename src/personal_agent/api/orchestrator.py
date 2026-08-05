@@ -473,11 +473,29 @@ def _commit(
         _step(session, operation, "succeeded", now, safe_result=record_id)
         return RunResult(state="succeeded", record_id=record_id)
     if isinstance(outcome, CommitUnknown):
-        _step(
-            session, operation, "needs_manual_review", now,
-            failure_reason=outcome.reason,
-        )
-        return RunResult(state="needs_manual_review", failure_reason=outcome.reason)
+        # An unknown commit is *not* an outcome. It is the absence of one, and
+        # this branch used to record it as the most conservative outcome it could
+        # name -- terminal `needs_manual_review`. Terminal means recovery never
+        # looks at it again, so when Finance went on to reconcile the very same
+        # idempotency key to `succeeded`, the two state machines disagreed
+        # permanently: the 2026-08-04 §13.2 drill killed Finance at `prepared`,
+        # Finance recovered and verified record `recvrlVQllHop0`, and the Agent
+        # still showed "needs manual review" with `record_id=null`.
+        #
+        # So leave it exactly where it is: `source_in_progress`, committed before
+        # the call left, which is a recoverable state. `plan_recovery` already
+        # knows how to project every Finance status onto it -- including the
+        # absence of an execution, which it treats as a race rather than proof
+        # once the operation has been quiet longer than any live worker's ceiling.
+        # Recovery, not this worker, decides what happened, because recovery is
+        # the only one that can read Finance *after* the fact.
+        #
+        # Nothing is written here on purpose: a self-transition is not a legal
+        # edge, and stamping `failure_reason` would age `updated_at` and describe
+        # a failure that has not been established. The reason travels to the
+        # caller only, as the transient explanation of why this turn ended
+        # without a verdict.
+        return RunResult(state=operation.state, failure_reason=outcome.reason)
     if isinstance(outcome, CommitFailedSafe):
         _step(session, operation, "failed_safe", now, failure_reason=outcome.reason)
         return RunResult(state="failed_safe", failure_reason=outcome.reason)

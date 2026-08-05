@@ -83,6 +83,16 @@ RECOVERABLE_OPERATION_STATES: Final[tuple[str, ...]] = (
 DEVICE_STATUSES: Final[tuple[str, ...]] = ("active", "revoked")
 REVIEW_STATUSES: Final[tuple[str, ...]] = ("pending", "deferred", "reviewed")
 
+#: What a human concluded after checking the ledger for an operation that ended
+#: at `needs_manual_review`. Deliberately not an accounting outcome: the pair is
+#: "the record is there" / "it is not", recorded as a reviewed observation
+#: alongside the terminal state rather than replacing it. Closing the loop is a
+#: human act; deciding the books is still evidence's job.
+MANUAL_RESOLUTIONS: Final[tuple[str, ...]] = (
+    "confirmed_written",
+    "confirmed_not_written",
+)
+
 #: What the push provider has said, which is never what the user has done.
 #: `provider_accepted` means APNs took the notification, nothing more; only an
 #: explicit `/ack` moves the review itself to `reviewed` (design 7.7 step 6).
@@ -556,12 +566,39 @@ class Operation(Base):
     )
     duplicate_check_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     safe_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: What a human concluded after looking at the ledger, for an operation that
+    #: ended at `needs_manual_review`. A *flag*, not a state, for the same reason
+    #: `cancel_requested` is one: the accounting outcome belongs to the state
+    #: machine and its evidence, and a person saying "I checked" is neither. The
+    #: state stays terminal, so recovery still never re-drives the operation, and
+    #: nothing here is ever read back as proof that a write happened.
+    manual_resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    manual_resolved_at: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
 
     __table_args__ = (
         CheckConstraint(_in_set("state", OPERATION_STATES), name="state"),
         CheckConstraint("state_version >= 1", name="state_version_positive"),
+        CheckConstraint(
+            _in_set("manual_resolution", MANUAL_RESOLUTIONS)
+            + " OR manual_resolution IS NULL",
+            name="manual_resolution",
+        ),
+        # A resolution and its timestamp are one fact; neither half is meaningful
+        # without the other, and a half-written pair would make "has this been
+        # reviewed?" unanswerable.
+        CheckConstraint(
+            "(manual_resolution IS NULL) = (manual_resolved_at IS NULL)",
+            name="manual_resolution_pairs_with_its_time",
+        ),
+        # Only an operation a human was actually asked to look at may carry one.
+        CheckConstraint(
+            "manual_resolution IS NULL OR state = 'needs_manual_review'",
+            name="manual_resolution_only_for_review",
+        ),
         Index("ix_operations_state", "state"),
     )
 

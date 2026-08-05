@@ -37,6 +37,11 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text as text_clause
 
 from personal_agent.api import events
+from personal_agent.api.manual_review import (
+    append_resolution_event,
+    resolve_manual_review,
+)
+from personal_agent_core.timeutil import to_rfc3339
 from personal_agent.api.device_api import (
     DeviceAuthRejected,
     EnrollmentRejected,
@@ -684,6 +689,21 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
 
             return _commit(session, work)
 
+    @app.post("/v1/operations/{operation_id}/resolution")
+    async def post_manual_resolution(operation_id: str, request: Request):
+        """Record what a person found in the ledger for a reviewed operation.
+
+        Reads and writes only the Agent database -- it contacts no model and no
+        external service, so it is safe to re-run against fresh state and takes
+        the default retrying commit.
+        """
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        body = await _json_body(request)
+        resolution = _required(body, "resolution")
+        return await asyncio.to_thread(
+            _process_manual_resolution, deps, auth, operation_id, resolution
+        )
+
     @app.post("/v1/duplicate-checks/{duplicate_check_id}/decision")
     async def post_decision(duplicate_check_id: str, request: Request):
         auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
@@ -1305,6 +1325,55 @@ def _load_operation_response(
     with deps.session_factory() as session:
         operation = _owned_operation(session, operation_id, device_id=device_id)
         return _operation_response(operation)
+
+
+def _process_manual_resolution(
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    operation_id: str,
+    resolution: str,
+) -> JSONResponse:
+    with deps.session_factory() as session:
+        def work():
+            outcome = resolve_manual_review(
+                session,
+                deps.keyring,
+                operation_id=operation_id,
+                device_id=auth.device_id,
+                resolution=resolution,
+                now=deps.now(),
+            )
+            if outcome.recorded:
+                anchor = _anchor_event(session, outcome.operation.operation_id)
+                append_resolution_event(
+                    session,
+                    deps.keyring,
+                    operation=outcome.operation,
+                    conversation_id=anchor.conversation_id,
+                    session_id=anchor.session_id,
+                    turn_id=anchor.turn_id,
+                    resolution=resolution,
+                    now=deps.now(),
+                )
+            # Deliberately NOT `_operation_response`. That body is the frozen
+            # `chat_receipt_projection_v2` contract the iOS client reads from a
+            # shared vector file, and a manual resolution is not a chat receipt:
+            # widening the receipt would make every existing case carry a field
+            # about a surface that does not display it yet, and would drag a
+            # cross-language contract bump into a server-only change. This
+            # endpoint answers about the resolution it just recorded.
+            operation = outcome.operation
+            return JSONResponse(
+                {
+                    "operation_id": operation.operation_id,
+                    "state": operation.state,
+                    "manual_resolution": operation.manual_resolution,
+                    "manual_resolved_at": to_rfc3339(operation.manual_resolved_at),
+                    "recorded": outcome.recorded,
+                }
+            )
+
+        return _commit(session, work)
 
 
 def _process_duplicate_decision(

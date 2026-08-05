@@ -604,15 +604,24 @@ TERMINAL_FINANCE_STATES = (
 )
 
 
+#: Why a wait for the pause ended. The drill scores only `PAUSED` and `RAN_PAST`;
+#: `NO_WRITE` is not a result about the system under test at all.
+PAUSED = "paused"
+RAN_PAST = "ran_past"
+NO_WRITE = "no_write"
+
+
 def _wait_paused(
     idempotency_key: str, target: str, timeout: float = 120.0
-) -> bool:
-    """Confirm the armed pause is holding the write at `target`.
+) -> str:
+    """Wait for the armed pause to hold the write at `target`.
+
+    Returns `PAUSED`, `RAN_PAST` (the write executed without stopping -- the arm
+    did not take effect, a real failure), or `NO_WRITE` (nothing ever reached
+    Finance for this key).
 
     Two consecutive reads at the target state mean the write is genuinely stuck
-    there (the pause), not just passing through. A state that has advanced past
-    the breakpoint means the arm did not take effect, which the drill must fail
-    loudly rather than misread.
+    there (the pause), not just passing through.
 
     The timeout is deliberately NOT bounded by the arm: it covers the latency
     from firing the chat to the write reaching the breakpoint. The chat returns
@@ -622,24 +631,38 @@ def _wait_paused(
     wait had given up (the write still landed `succeeded`). Misreading a resumed
     write is guarded against by the terminal-state check below, not by the
     timeout.
+
+    `NO_WRITE` exists because the drill drives the breakpoint through a real
+    model turn, and the model is not part of what §13.2 is testing. On
+    2026-08-04 two of the three breakpoints were lost this way -- one to a
+    transient `model_unavailable`, one to an answer that called no tool -- and
+    both were scored as drill failures. They are not: no write was ever dispatched,
+    so the restart behaviour at that breakpoint was never exercised. Telling the
+    two apart is the difference between "the pause is broken" and "roll again".
     """
     deadline = time.monotonic() + timeout
+    seen_execution = False
     while time.monotonic() < deadline:
         try:
             state = _finance_state(idempotency_key)
         except RuntimeError:
             state = None
+        if state is not None:
+            seen_execution = True
         if state == target:
             time.sleep(0.3)
             try:
                 if _finance_state(idempotency_key) == target:
-                    return True
+                    return PAUSED
             except RuntimeError:
                 pass
         if state in TERMINAL_FINANCE_STATES:
-            return False
+            return RAN_PAST
         time.sleep(0.3)
-    return False
+    # Timed out. An execution row that never reached the breakpoint still means
+    # the write was dispatched, so that is a real failure; no row at all means
+    # the turn produced no write and there is nothing to score.
+    return RAN_PAST if seen_execution else NO_WRITE
 
 
 def _await_terminal(device: ProbeDevice, operation_id: str, tries: int = 60) -> dict | None:
@@ -670,6 +693,14 @@ def probe_breakpoint_restart(device: ProbeDevice, args) -> int:
     the write is held at the target state, SIGKILL the process, disarm, and after
     the systemd restart + startup recovery assert the operation reaches
     `succeeded` with exactly one external record and one receipt.
+
+    A breakpoint is re-driven when the model turn produced no write at all. The
+    drill reaches its breakpoints through a real model turn, but the model is not
+    what §13.2 is testing: on 2026-08-04 a transient `model_unavailable` and an
+    answer that called no tool cost two of the three breakpoints, and both were
+    reported as drill failures even though no write had been dispatched and the
+    restart path was never exercised. Retrying those, and only those, is what
+    makes a `failures=0` run mean the breakpoints actually held.
     """
     device.enrol(args.code, args.display_name)
     print(f"device_id={device.device_id}")
@@ -679,92 +710,145 @@ def probe_breakpoint_restart(device: ProbeDevice, args) -> int:
     conversation_id = device.canonical_conversation_id()
     failures = 0
     for index, breakpoint in enumerate(BREAKPOINTS, start=1):
-        key = str(uuid.uuid4())
-        # The duplicate gate matches on stored values (date + amount + name +
-        # category). A fixed text would collide with a previous drill run's row
-        # on the same ledger day and park the write as `waiting_for_duplicate_decision`
-        # instead of reaching the breakpoint -- measured on the deployed service.
-        # Deriving the amount from the fresh key keeps every drill write unique.
-        amount = 5 + (int(key[:8], 16) % 95)
-        text = f"午饭演练{index} {amount} 个人"
-        print(f"\n=== breakpoint {breakpoint} (idempotency_key={key}) ===")
-        try:
-            _authenticate(device)  # a fresh 10-minute token per breakpoint
-            print(_arm_breakpoint(breakpoint).strip() or "(armed)")
-
-            holder: list = []
-
-            def fire():
-                try:
-                    holder.append(
-                        device.chat(
-                            text,
-                            conversation_id=conversation_id,
-                            idempotency_key=key,
-                        )
-                    )
-                except Exception as exc:  # noqa: BLE001 - informational only
-                    holder.append(exc)
-
-            thread = threading.Thread(target=fire, daemon=True)
-            thread.start()
-
-            if not _wait_paused(key, breakpoint):
-                print(f"FAIL: the write never paused at {breakpoint}")
-                failures += 1
-                continue
-            print(f"confirmed the write is paused at {breakpoint}")
-            print("--- SIGKILL personal-data-mcp")
-            print(_kill_finance().strip() or "(killed)")
-            print(_disarm_breakpoint().strip() or "(disarmed)")
-            thread.join(timeout=45)
-
-            operation_id = _agent_operation_id(key)
-            print(f"operation_id={operation_id}")
-            if operation_id is None:
-                print("FAIL: no Agent operation for the idempotency key")
-                failures += 1
-                continue
-
-            _authenticate(device)
-            terminal = _await_terminal(device, operation_id)
-            if terminal is None:
-                print("FAIL: operation never reached a terminal state")
-                failures += 1
-                continue
-            executions, receipts = _finance_counts(key)
-            state = terminal.get("state")
-            print(
-                f"operation state={state} executions={executions} receipts={receipts}"
-            )
-            if state != "succeeded":
-                print(f"FAIL: expected succeeded, got {state}")
-                failures += 1
-            elif executions != 1 or receipts != 1:
-                print(
-                    "FAIL: expected exactly one execution and one external receipt "
-                    f"for {key}"
-                )
-                failures += 1
-            else:
-                print(f"PASS: {breakpoint} -> succeeded, exactly one external record")
-        except Exception as exc:  # noqa: BLE001
-            print(f"FAIL: {type(exc).__name__}: {exc}")
+        outcome = _drill_one_breakpoint(
+            device, breakpoint, index, conversation_id
+        )
+        if outcome is False:
             failures += 1
-        finally:
-            # Arming is an acquisition and must be released on *every* exit path,
-            # including Ctrl-C. A breakpoint left armed on production pauses every
-            # matching write for the whole arm window, and nothing else in the
-            # system will take it back down.
-            try:
-                _disarm_breakpoint()
-            except Exception as exc:  # noqa: BLE001
-                print(f"WARNING: could not disarm the breakpoint: {exc}")
 
     print("\n--- revoking the throwaway device")
     print(operator(f"revoke --device-id {device.device_id}"))
     print(f"failures={failures}")
     return 0 if failures == 0 else 1
+
+
+#: How many times one breakpoint may be re-driven when the model turn produced no
+#: write at all. Bounded rather than unbounded: a persistent inability to get a
+#: write dispatched is itself something the operator has to see, not something to
+#: keep rolling the dice on.
+MAX_NO_WRITE_ATTEMPTS = 4
+
+
+def _drill_one_breakpoint(
+    device: ProbeDevice, breakpoint: str, index: int, conversation_id: str
+) -> bool:
+    """Drive one breakpoint to a verdict, re-driving turns that wrote nothing."""
+    for attempt in range(1, MAX_NO_WRITE_ATTEMPTS + 1):
+        verdict = _attempt_breakpoint(
+            device, breakpoint, index, conversation_id, attempt
+        )
+        if verdict is not NO_WRITE:
+            return verdict
+        print(
+            f"--- no write reached Finance (attempt {attempt}"
+            f"/{MAX_NO_WRITE_ATTEMPTS}); the model turn produced no tool call, "
+            "which is not a §13.2 result. Retrying."
+        )
+    print(
+        f"FAIL: {breakpoint} never received a write in "
+        f"{MAX_NO_WRITE_ATTEMPTS} attempts; the drill could not be run for it"
+    )
+    return False
+
+
+def _attempt_breakpoint(
+    device: ProbeDevice,
+    breakpoint: str,
+    index: int,
+    conversation_id: str,
+    attempt: int,
+) -> bool | str:
+    """One attempt. Returns True/False for a real verdict, or `NO_WRITE`."""
+    key = str(uuid.uuid4())
+    # The duplicate gate matches on stored values (date + amount + name +
+    # category). A fixed text would collide with a previous drill run's row
+    # on the same ledger day and park the write as `waiting_for_duplicate_decision`
+    # instead of reaching the breakpoint -- measured on the deployed service.
+    # Deriving the amount from the fresh key keeps every drill write unique,
+    # which also makes a retry a genuinely new write rather than a duplicate.
+    amount = 5 + (int(key[:8], 16) % 95)
+    text = f"午饭演练{index} {amount} 个人"
+    print(
+        f"\n=== breakpoint {breakpoint} attempt {attempt} "
+        f"(idempotency_key={key}) ==="
+    )
+    try:
+        _authenticate(device)  # a fresh 10-minute token per attempt
+        print(_arm_breakpoint(breakpoint).strip() or "(armed)")
+
+        holder: list = []
+
+        def fire():
+            try:
+                holder.append(
+                    device.chat(
+                        text,
+                        conversation_id=conversation_id,
+                        idempotency_key=key,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - informational only
+                holder.append(exc)
+
+        thread = threading.Thread(target=fire, daemon=True)
+        thread.start()
+
+        waited = _wait_paused(key, breakpoint)
+        if waited is NO_WRITE:
+            # Nothing was dispatched, so nothing about the restart behaviour was
+            # exercised. Hand it back to the caller to re-drive.
+            return NO_WRITE
+        if waited is RAN_PAST:
+            print(
+                f"FAIL: a write reached Finance but never paused at {breakpoint}"
+            )
+            return False
+
+        print(f"confirmed the write is paused at {breakpoint}")
+        print("--- SIGKILL personal-data-mcp")
+        print(_kill_finance().strip() or "(killed)")
+        print(_disarm_breakpoint().strip() or "(disarmed)")
+        thread.join(timeout=45)
+
+        operation_id = _agent_operation_id(key)
+        print(f"operation_id={operation_id}")
+        if operation_id is None:
+            print("FAIL: no Agent operation for the idempotency key")
+            return False
+
+        _authenticate(device)
+        terminal = _await_terminal(device, operation_id)
+        if terminal is None:
+            print("FAIL: operation never reached a terminal state")
+            return False
+        executions, receipts = _finance_counts(key)
+        state = terminal.get("state")
+        print(
+            f"operation state={state} executions={executions} receipts={receipts}"
+        )
+        if state != "succeeded":
+            print(f"FAIL: expected succeeded, got {state}")
+            return False
+        if executions != 1 or receipts != 1:
+            print(
+                "FAIL: expected exactly one execution and one external receipt "
+                f"for {key}"
+            )
+            return False
+        print(f"PASS: {breakpoint} -> succeeded, exactly one external record")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"FAIL: {type(exc).__name__}: {exc}")
+        return False
+    finally:
+        # Arming is an acquisition and must be released on *every* exit path,
+        # including Ctrl-C. A breakpoint left armed on production pauses every
+        # matching write for the whole arm window, and nothing else in the
+        # system will take it back down.
+        try:
+            _disarm_breakpoint()
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARNING: could not disarm the breakpoint: {exc}")
 
 
 PROBES = {
