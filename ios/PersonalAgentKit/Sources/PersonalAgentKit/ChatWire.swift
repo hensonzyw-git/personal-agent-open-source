@@ -372,6 +372,69 @@ public enum DuplicateDecision: String, Sendable, Equatable, Codable {
     case writeAnyway = "write_anyway"
 }
 
+// --- the manual-review resolution (`DEV-040`) ---------------------------------
+
+/// What a person reports having found in the ledger for an operation that ended
+/// at `needs_manual_review`.
+///
+/// The server's vocabulary, so a build that does not know a future value can
+/// never send one. It is deliberately **not** a claim about `state`: the server
+/// records this beside the state, never instead of it, because a mistaken tap
+/// must stay distinguishable from verified evidence forever after. This client
+/// keeps the same separation — nothing here can turn a resolution into
+/// `OperationOutcome.recorded`.
+public enum ManualResolution: String, Sendable, Equatable, Codable {
+    /// The row is in the ledger. The write happened; the system simply could not
+    /// prove it at the time.
+    case confirmedWritten = "confirmed_written"
+    /// The row is not in the ledger. Nothing was written, so re-entering it is
+    /// safe.
+    case confirmedNotWritten = "confirmed_not_written"
+}
+
+/// The reply to `POST /v1/operations/{id}/resolution`.
+///
+/// Deliberately *not* an `OperationReceipt`. The server refused to widen
+/// `chat_receipt_projection_v2` for this — a manual resolution is not a chat
+/// receipt — and decoding it as one here would quietly re-couple the two
+/// contracts from the client side. `state` is carried so the screen can still
+/// see what the system proved, and it is never overwritten by `resolution`.
+public struct ManualResolutionReceipt: Sendable, Equatable {
+    public let operationID: String
+    public let state: OperationState
+    /// The raw wire value, not `ManualResolution`. A value this build cannot name
+    /// is still a resolution that was recorded, and dropping it would render an
+    /// answered card as unanswered — which invites a second, contradicting tap
+    /// that the server would then refuse.
+    public let resolution: String
+    public let resolvedAt: String?
+    /// False when this call replayed an identical, already-recorded resolution.
+    /// Not a failure: it is what a retried tap is supposed to return.
+    public let recorded: Bool
+}
+
+extension ManualResolutionReceipt: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case operationID = "operation_id"
+        case state
+        case resolution = "manual_resolution"
+        case resolvedAt = "manual_resolved_at"
+        case recorded
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        operationID = try container.decode(String.self, forKey: .operationID)
+        state = OperationState(wire: try container.decode(String.self, forKey: .state))
+        // Required, all three. A body without `manual_resolution` is not evidence
+        // that anything was recorded, and defaulting `recorded` to either value
+        // would make "did this land?" answerable from a body that never said.
+        resolution = try container.decode(String.self, forKey: .resolution)
+        recorded = try container.decode(Bool.self, forKey: .recorded)
+        resolvedAt = try container.decodeIfPresent(String.self, forKey: .resolvedAt)
+    }
+}
+
 // --- Timeline ----------------------------------------------------------------
 
 /// One JSON scalar from an event's `content`.
@@ -421,6 +484,10 @@ public enum TimelineEntryKind: Sendable, Equatable {
     /// `DEV-031`. The permanent marker that closes an earlier duplicate prompt.
     /// It is presentation state and never model dialogue.
     case duplicateDecision(checkID: String, decision: String)
+    /// `DEV-040`. The permanent marker recording what a person found in the
+    /// ledger for an operation parked at `needs_manual_review`. Presentation
+    /// state, never dialogue — and never evidence that a write happened.
+    case manualReviewResolved(resolution: String)
     /// An event type this build does not know. Kept visible rather than dropped:
     /// a silently-missing entry is a history that lies about what happened.
     case unrecognised(eventType: String)
@@ -504,6 +571,17 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                 return .unrecognised(eventType: eventType)
             }
             return .duplicateDecision(checkID: checkID, decision: decision)
+        case "manual_review_resolved":
+            guard
+                let resolution = content["resolution"]?.stringValue,
+                !resolution.isEmpty
+            else {
+                // An unreadable marker is not a blank one. Rendering it as
+                // "resolved" with no conclusion would be worse than saying this
+                // client could not read the entry.
+                return .unrecognised(eventType: eventType)
+            }
+            return .manualReviewResolved(resolution: resolution)
         case "session_divider", "session_boundary_corrected":
             return .sessionDivider(
                 reason: content["reason"]?.stringValue,

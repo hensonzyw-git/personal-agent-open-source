@@ -347,6 +347,42 @@ public actor ChatTimeline {
         try removeDecision(checkID)
     }
 
+    // --- the manual-review resolution (`DEV-040`) -----------------------------
+
+    /// Record what the user found in the ledger for an operation that ended at
+    /// `needs_manual_review`, and release the durable slot that operation was
+    /// holding.
+    ///
+    /// The slot release is the point of this method, and it is a *stronger* exit
+    /// than the one it replaces. `releasesPendingSlot` is false for
+    /// `needs_manual_review` because the operation may still hold a write and
+    /// nobody has checked; until now the only way out was `discardPending()`,
+    /// which asks for no verification at all and leaves no trace. A resolution is
+    /// the verification — durable, server-side, and refused if it later
+    /// contradicts itself — so once one is recorded the slot has nothing left to
+    /// protect. Both values release it: `confirmed_written` means the entry is in
+    /// the ledger and the user should move on, `confirmed_not_written` means
+    /// re-entering it is exactly the right next step.
+    ///
+    /// Nothing is released unless the server accepted. A thrown request leaves the
+    /// slot standing, because a failed report is not a report.
+    @discardableResult
+    public func resolveManualReview(
+        operationID: String, resolution: ManualResolution
+    ) async throws -> ManualResolutionReceipt {
+        let receipt = try await backend.resolveManualReview(
+            operationID: operationID, resolution: resolution
+        )
+        // Bind to the *server's* operation id, not the argument: the slot must
+        // only ever be released for the operation the server actually answered
+        // about.
+        if let pending = try loadPending(),
+           pending.operationID == receipt.operationID {
+            try clearPending()
+        }
+        return receipt
+    }
+
     /// Send one decision and clear its slot once the server's answer is known.
     private func sendDecision(
         _ record: PendingDuplicateDecision
@@ -532,4 +568,11 @@ public protocol ChatBackend: Sendable {
         decision: DuplicateDecision,
         idempotencyKey: String
     ) async throws -> OperationReceipt
+
+    /// `DEV-040`. Record what a person found in the ledger for one operation
+    /// parked at `needs_manual_review`. No client key: see `AgentClient`.
+    func resolveManualReview(
+        operationID: String,
+        resolution: ManualResolution
+    ) async throws -> ManualResolutionReceipt
 }

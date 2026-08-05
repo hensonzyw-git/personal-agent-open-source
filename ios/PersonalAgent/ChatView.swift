@@ -14,6 +14,15 @@ struct ChatView: View {
     /// The check awaiting the user's 仍然记录 confirmation. `write_anyway`
     /// forces a write past the duplicate gate, so it is never one tap.
     @State private var confirmingWriteAnyway: String?
+    /// `DEV-040`. The manual-review conclusion awaiting confirmation. Also never
+    /// one tap: the server records the first answer and refuses a contradicting
+    /// one, so a mis-tap cannot be corrected in the app.
+    @State private var confirmingResolution: ResolutionIntent?
+
+    struct ResolutionIntent: Equatable {
+        let operationID: String
+        let resolution: ManualResolution
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,6 +47,38 @@ struct ChatView: View {
                 }
             }
             Button("再想想", role: .cancel) { confirmingWriteAnyway = nil }
+        }
+        .confirmationDialog(
+            confirmingResolution.map(resolutionPrompt) ?? "",
+            isPresented: Binding(
+                get: { confirmingResolution != nil },
+                set: { if !$0 { confirmingResolution = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("确认，我已在账本里核对过") {
+                if let intent = confirmingResolution {
+                    confirmingResolution = nil
+                    Task {
+                        await model.resolveManualReview(
+                            operationID: intent.operationID,
+                            resolution: intent.resolution
+                        )
+                    }
+                }
+            }
+            Button("再想想", role: .cancel) { confirmingResolution = nil }
+        } message: {
+            Text("这个结论记录后不能在应用里改判：服务端会拒绝相反的答复。它只写在这次操作旁边，不会改动账本。")
+        }
+    }
+
+    private func resolutionPrompt(_ intent: ResolutionIntent) -> String {
+        switch intent.resolution {
+        case .confirmedWritten:
+            return "确认飞书账本里已经有这一笔？"
+        case .confirmedNotWritten:
+            return "确认飞书账本里没有这一笔？"
         }
     }
 
@@ -131,6 +172,14 @@ struct ChatView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .accessibilityHint("duplicate_check_id \(checkID)")
+
+        case .manualReviewResolved(let resolution):
+            Label(
+                "已人工核对：\(manualResolutionText(resolution))",
+                systemImage: "person.crop.circle.badge.checkmark"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
 
         case .unrecognised(let eventType):
             // Not dropped: a history that silently omits entries is a history that
@@ -241,6 +290,9 @@ struct ChatView: View {
                     .foregroundStyle(.orange)
                 if let reason { field("原因", reason) }
                 if let recordID { field("记录 ID", recordID) }
+                if let operationID {
+                    manualReviewResolution(operationID: operationID)
+                }
 
             case .cancelledBeforeSubmit:
                 Label("已取消，未写入", systemImage: "slash.circle")
@@ -289,6 +341,56 @@ struct ChatView: View {
         }
     }
 
+    /// `DEV-040`. The human resolution path for a `needs_manual_review` card.
+    ///
+    /// It answers the question the state itself cannot: the system could not
+    /// establish whether the row reached the ledger, and only a person looking at
+    /// the ledger can. What it deliberately does **not** do is change the receipt
+    /// above it — 需要人工核对 stays exactly as rendered, because that is still what
+    /// the *system* proved. The resolution is shown beside it as what a person
+    /// reported.
+    @ViewBuilder
+    private func manualReviewResolution(operationID: String) -> some View {
+        if let resolved = model.resolvedManualReviews[operationID] {
+            Label(
+                "已人工核对：\(manualResolutionText(resolved))",
+                systemImage: "checkmark.circle"
+            )
+            .foregroundStyle(.secondary)
+            Text("这是你核对账本后的结论，不是系统验证的结果。要改判需要重新人工核对，服务端会拒绝相反的答复。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Text("请先在飞书账本里核对这一笔（复核页有「打开飞书账本」），再选择结论。选择只记录你看到的事实，不会改动账本。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("账本里有这笔") {
+                    confirmingResolution = .init(
+                        operationID: operationID, resolution: .confirmedWritten
+                    )
+                }
+                Spacer()
+                Button("账本里没有") {
+                    confirmingResolution = .init(
+                        operationID: operationID, resolution: .confirmedNotWritten
+                    )
+                }
+            }
+            .font(.footnote)
+            .disabled(model.busy)
+        }
+    }
+
+    private func manualResolutionText(_ wire: String) -> String {
+        switch wire {
+        case ManualResolution.confirmedWritten.rawValue: return "账本里有这笔"
+        case ManualResolution.confirmedNotWritten.rawValue: return "账本里没有这笔"
+        // A conclusion this build cannot name is still one that was recorded.
+        default: return "服务端结论 \(wire)"
+        }
+    }
+
     private func duplicateDecisionText(_ wire: String) -> String {
         switch wire {
         case DuplicateDecision.writeAnyway.rawValue: return "仍然记录"
@@ -304,6 +406,18 @@ struct ChatView: View {
             Text(pending.text).font(.callout)
             if let operationID = pending.operationID {
                 field("operation_id", operationID)
+                // `DEV-040`. The resolution is repeated here, next to the blocked
+                // composer, for the same reason the card itself was moved here on
+                // 2026-08-04: a `needs_manual_review` slot is exactly the case
+                // where the app looks stuck, and the way out must not be a scroll
+                // away. Only shown when this slot's own operation is the parked
+                // one, and the action is idempotent, so seeing it in both places
+                // costs nothing.
+                if let receipt = model.liveReceipt,
+                   receipt.operationID == operationID,
+                   case .needsManualReview = receipt.outcome {
+                    manualReviewResolution(operationID: operationID)
+                }
             } else {
                 Text("尚未拿到 operation_id：服务端可能已收到，也可能没有。")
                     .font(.caption)

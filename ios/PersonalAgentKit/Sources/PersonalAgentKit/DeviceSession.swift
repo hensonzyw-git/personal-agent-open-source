@@ -289,6 +289,22 @@ public actor DeviceSession {
         }
     }
 
+    /// `DEV-040`. Safe under the one-retry refresh policy without any client key:
+    /// the *same* operation and the *same* resolution are presented again, and the
+    /// server replays what it already recorded rather than recording a second one.
+    public func resolveManualReview(
+        operationID: String,
+        resolution: ManualResolution
+    ) async throws -> ManualResolutionReceipt {
+        try await authorized {
+            try await self.client.resolveManualReview(
+                operationID: operationID,
+                resolution: resolution,
+                token: $0
+            )
+        }
+    }
+
     // --- `DEV-031` daily review ------------------------------------------------
     //
     // All four are safe under the one-retry policy without any client key: the

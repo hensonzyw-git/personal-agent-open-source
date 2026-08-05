@@ -229,6 +229,33 @@ public struct AgentClient: Sendable {
         )
     }
 
+    /// Record what a person found in the ledger for an operation that ended at
+    /// `needs_manual_review` (`DEV-040`, option B of Henson's 2026-08-04
+    /// decision).
+    ///
+    /// **No `Idempotency-Key`, on purpose.** The other two write paths mint one
+    /// because a replay could otherwise create a *second* thing — a second ledger
+    /// row, a second duplicate decision. Here the operation id and the resolution
+    /// value are themselves the key: the server records at most one resolution per
+    /// operation, replays an identical one as `recorded: false`, and refuses a
+    /// contradicting one with `409`. Minting a key would add a durable local slot
+    /// with nothing to protect, and a second slot that can be left held is exactly
+    /// the failure this whole affordance exists to end.
+    public func resolveManualReview(
+        operationID: String,
+        resolution: ManualResolution,
+        token: String
+    ) async throws -> ManualResolutionReceipt {
+        try await send(
+            method: "POST",
+            path: "/v1/operations/\(operationID)/resolution",
+            body: ["resolution": resolution.rawValue],
+            token: token,
+            accepting: [200],
+            as: ManualResolutionReceipt.self
+        )
+    }
+
     // --- the daily review (`DEV-031`, design 5.3 and 7.7) ----------------------
 
     /// The card list, newest day first. `status` is a filter the server

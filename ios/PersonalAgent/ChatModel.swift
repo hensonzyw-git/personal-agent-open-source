@@ -32,6 +32,12 @@ final class ChatModel {
     /// duplicate prompts consult this map so a handled card never offers the
     /// buttons again after a refresh or app restart.
     var resolvedDuplicateDecisions: [String: String] = [:]
+    /// `DEV-040`. Operations whose `needs_manual_review` card a person has already
+    /// answered, keyed by operation id, holding the raw resolution wire value.
+    /// Populated the same way as `resolvedDuplicateDecisions`: from this session's
+    /// own accepted call, and from the permanent Timeline marker once it is inside
+    /// the loaded window.
+    var resolvedManualReviews: [String: String] = [:]
     var lastError: String?
     var busy = false
     var loadingOlder = false
@@ -52,6 +58,7 @@ final class ChatModel {
         // `mirror()` merges rather than replaces, and this is the one place that
         // is allowed to forget.
         resolvedDuplicateDecisions = [:]
+        resolvedManualReviews = [:]
         busy = true
         defer { busy = false }
         do {
@@ -229,6 +236,37 @@ final class ChatModel {
         await decideDuplicate(checkID: pending.checkID, decision: pending.decision)
     }
 
+    // --- the manual-review resolution (`DEV-040`) ------------------------------
+
+    /// Report what the user found in the ledger for a parked
+    /// `needs_manual_review` operation.
+    ///
+    /// The local map is written only after the server accepts, and from the
+    /// resolution the server echoed rather than the one that was tapped — so a
+    /// replay of an earlier, different answer shows what is actually recorded
+    /// instead of what this tap asked for. A refusal (`409` on a contradicting
+    /// answer) leaves the card exactly as it was and says why.
+    func resolveManualReview(
+        operationID: String, resolution: ManualResolution
+    ) async {
+        busy = true
+        defer { busy = false }
+        do {
+            let receipt = try await timeline.resolveManualReview(
+                operationID: operationID, resolution: resolution
+            )
+            resolvedManualReviews[receipt.operationID] = receipt.resolution
+            try await timeline.syncNewer()
+            await mirror()
+            lastError = nil
+        } catch {
+            lastError = describe(error)
+        }
+        // The resolution may have released the durable send slot, which is what
+        // unblocks the composer.
+        await mirrorPendingSlots()
+    }
+
     /// Forget an unconfirmed decision locally. Deliberately not automatic: the
     /// server may already have recorded it, so the check id is shown first and
     /// the user decides.
@@ -288,6 +326,15 @@ final class ChatModel {
         for event in events {
             if case .duplicateDecision(let checkID, let decision) = event.kind {
                 resolvedDuplicateDecisions[checkID] = decision
+            }
+            // Same merge rule, same reason: the card that offered the buttons and
+            // the marker that closes it are different events, and a rebuild from
+            // `events` alone would re-offer a conclusion the server has already
+            // recorded — where the second tap is either a no-op or, if the user
+            // changes their mind, a `409` the screen would have invited.
+            if case .manualReviewResolved(let resolution) = event.kind,
+               let operationID = event.operationID {
+                resolvedManualReviews[operationID] = resolution
             }
         }
     }
