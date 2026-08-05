@@ -29,6 +29,10 @@ class ErrorCode(StrEnum):
     HOST_CONTEXT_MISMATCH = "HOST_CONTEXT_MISMATCH"
     IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
     WRITES_DISABLED = "WRITES_DISABLED"
+    # DEV-040: the model answered a bookkeeping request with prose and no tool
+    # call. `DirectAnswer` carries no side effect, so a "我来帮你记录" that
+    # never invoked a write tool must not look like success.
+    BOOKKEEPING_TOOL_REQUIRED = "BOOKKEEPING_TOOL_REQUIRED"
 
     # Finance semantics
     CLARIFICATION_REQUIRED = "CLARIFICATION_REQUIRED"
@@ -73,6 +77,9 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.HOST_CONTEXT_MISMATCH: "调用上下文与签名不一致，已拒绝执行",
     ErrorCode.IDEMPOTENCY_CONFLICT: "同一请求键对应了不同的请求内容",
     ErrorCode.WRITES_DISABLED: "写入已被手动停用，未写入任何记录",
+    ErrorCode.BOOKKEEPING_TOOL_REQUIRED: (
+        "这是记账请求，但未调用记账工具，没有写入任何记录"
+    ),
     ErrorCode.CLARIFICATION_REQUIRED: "信息不完整，需要先确认后才能记账",
     ErrorCode.CATEGORY_NOT_ALLOWED: "分类不在账本的合法选项内",
     ErrorCode.POSSIBLE_DUPLICATE: "发现同日完全相同的记录，请确认是否仍然记录",

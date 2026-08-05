@@ -173,11 +173,41 @@ def test_a_direct_answer_succeeds_with_no_tool(session, keyring) -> None:
         interpreter=FakeInterpreter(DirectAnswer("你好")),
         dispatcher=FakeDispatcher(resolve=None),
         keyring=keyring,
+        # Non-bookkeeping input: a direct answer is fine when no write is being
+        # claimed. The default `_run` text is a bookkeeping shape, which the
+        # DEV-040 guard refuses, so it must be overridden here.
+        text="你好",
     )
     assert result.state == "succeeded"
     assert result.answer == "你好"
     session.refresh(op)
     assert op.state == "succeeded"
+
+
+def test_a_bookkeeping_direct_answer_fails_safe(session, keyring) -> None:
+    """`DEV-040`: prose "我来帮你记录…" on a bookkeeping request is not a write.
+
+    The model produced exactly this for a whole day without calling any tool,
+    and every operation was recorded `succeeded` with `record_id=None`. A
+    `DirectAnswer` carries no side effect, so the guard refuses it; the reason
+    is the stable `BOOKKEEPING_TOOL_REQUIRED` code, never a claimed success.
+    """
+    op = _fresh_operation(session)
+    result = _run(
+        session, op,
+        interpreter=FakeInterpreter(
+            DirectAnswer("我来帮你记录这笔支出。现在为你提交记录。")
+        ),
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        text="咖啡 18 个人支出",
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
+    assert result.record_id is None
+    session.refresh(op)
+    assert op.state == "failed_safe"
+    assert op.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
 
 
 class RaisingInterpreter:

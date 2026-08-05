@@ -35,6 +35,7 @@ from personal_agent.api.duplicate_flow import record_possible_duplicate
 from personal_agent.api.intent import WriteIntent, open_intent
 from personal_agent.api.operation_store import transition_operation
 from personal_agent.context.builder import ContextEnvelope
+from personal_agent.runtime.bookkeeping_intent import is_bookkeeping_write_request
 from personal_agent.storage.models import Operation
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
@@ -328,6 +329,23 @@ def run_operation(
         )
 
     if isinstance(interpretation, DirectAnswer):
+        if is_bookkeeping_write_request(envelope.user_text):
+            # `DEV-040`: a bookkeeping request answered with prose is not a
+            # write. A `DirectAnswer` carries no side effect, so accepting it
+            # here would record a fake success with zero writes -- exactly what
+            # §5.1 forbids. Refuse; the model may still call the tool on a
+            # retry, and the refusal itself does not become a success projection.
+            _step(
+                session,
+                operation,
+                "failed_safe",
+                now,
+                failure_reason=ErrorCode.BOOKKEEPING_TOOL_REQUIRED.value,
+            )
+            return RunResult(
+                state="failed_safe",
+                failure_reason=ErrorCode.BOOKKEEPING_TOOL_REQUIRED.value,
+            )
         _step(session, operation, "succeeded", now, safe_result=interpretation.text)
         return RunResult(state="succeeded", answer=interpretation.text)
 
