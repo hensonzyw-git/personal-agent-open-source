@@ -36,8 +36,6 @@ from personal_agent_core.errors import ErrorCode
 
 
 ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4/"
-#: Kept as the module-private spelling used throughout this file.
-_ZHIPU_API_BASE = ZHIPU_API_BASE
 _ASK_CLARIFICATION = "agent.ask_clarification"
 _FAIL_BATCH = "agent.fail_batch_unavailable"
 _FAIL_SAFELY = "agent.fail_safely"
@@ -64,7 +62,7 @@ class GlmGateway:
         *,
         model: str,
         api_key: str,
-        api_base: str = _ZHIPU_API_BASE,
+        api_base: str = ZHIPU_API_BASE,
         generate: Generate | None = None,
         timeout: float = 25.0,
         max_tokens: int = 512,
@@ -117,7 +115,7 @@ def glm_gateway_from_env(*, generate: Generate | None = None) -> GlmGateway:
     """
 
     api_key = require_env("ZAI_API_KEY")
-    api_base = os.environ.get("GLM_OPENAI_BASE_URL", _ZHIPU_API_BASE)
+    api_base = os.environ.get("GLM_OPENAI_BASE_URL", ZHIPU_API_BASE)
     model = os.environ.get("GLM_MODEL", "glm-5.2")
     return GlmGateway(
         model=f"openai/{model}",
@@ -413,7 +411,7 @@ def validated_api_base(value: str) -> str:
         raise ModelGatewayError(
             "GLM_OPENAI_BASE_URL must be Zhipu's pinned HTTPS API endpoint"
         )
-    return _ZHIPU_API_BASE
+    return ZHIPU_API_BASE
 
 
 def require_env(name: str) -> str:
