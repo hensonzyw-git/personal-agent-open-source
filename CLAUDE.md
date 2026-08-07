@@ -263,6 +263,13 @@ conflict instead of silently choosing an old default.
   pass", "one happy-path live call succeeded", and "the failure modes were
   exercised live". Passing tests written against one's own assumptions is the
   weakest of the three, and must not be reported as the strongest.
+- When evaluating a non-deterministic component (model, provider, any sampled
+  path), fill in `docs/Eval结论边界模板_v0.1.md` **before** writing any
+  conclusion. A single run never supports a causal claim; separating a stable
+  defect from sampling variance requires repeated runs at a fixed version;
+  cross-round comparisons must keep numerator and denominator inside the subset
+  the rounds share; and a failure that stopped before the tool is not the same
+  finding as one that actually called out.
 - When updating `PROJECT_STATUS.md`, re-read the sections a change affects and
   fix the ones it contradicts. Two sections disagreeing about who owns a piece
   of work is a defect, not a documentation detail.
@@ -274,6 +281,11 @@ conflict instead of silently choosing an old default.
 - `docs/MCP工具IR_v0.1.md` — cross-domain IR baseline; archived Finance text is
   non-normative, while its Finance contract summary is current.
 - `docs/Finance MCP工具设计草案_v0.1.md` — canonical detailed Finance contract.
+- `docs/Eval结论边界模板_v0.1.md` — reusable "可以写 / 不能写" boundary sheet for
+  any evaluation of a non-deterministic component: evidence binding, same-denominator
+  comparison, safe-versus-strict metrics, stable defect versus sampling variance, and
+  the claims that are forbidden by default. Derived from the 2026-08-07 Finance
+  robustness and friction eval evidence in `docs/evidence/`.
 - `docs/Agent横向能力PRD_v1.0.md` — frozen cross-cutting product contract for
   Timeline/Session, context compaction, memory, routing, multimodal input and
   streaming.
