@@ -223,10 +223,15 @@ class StructuredModelClient:
 #: live run measured 8.3s, 12.2s and 16.7s for the flagship, with one 20s
 #: timeout, on a call that sits in the request path before the message is
 #: anchored -- unusable as latency, however correct the answers were. This is a
-#: closed-schema judgement, not a conversation, so the deployment names a fast
-#: model here. It is **not** given a default of its own: inventing a model id
-#: that may not exist would fail at runtime, so an unset value keeps today's
+#: closed-schema judgement, not a conversation, so a deployment should name a
+#: fast model here. It is **not** given a default of its own: inventing a model
+#: id that may not exist would fail at runtime, so an unset value keeps today's
 #: behaviour and the operator opts in.
+#:
+#: Read-only check on 2026-08-07: the ECS deployment sets neither this nor
+#: ``GLM_MODEL``, so the classifier still falls back to the Chat model and both
+#: run on the same one. The isolation exists in code and not yet in production.
+#: Do not read the paragraph above as a description of what is deployed.
 CLASSIFIER_MODEL_ENV: Final[str] = "GLM_CLASSIFIER_MODEL"
 
 #: The in-path deadline. Shorter than the Compactor's on purpose: a classifier
