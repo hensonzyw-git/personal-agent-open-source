@@ -1,4 +1,4 @@
-"""Run the current v0.2 eval set through the production model boundary.
+"""Run a contract-valid eval set through the production model boundary.
 
 This is deliberately a model-only evaluator: it builds a real budget-validated
 ``ContextEnvelope`` and calls the same ADK-first GLM gateway as the API, but it
@@ -20,11 +20,13 @@ import tempfile
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from personal_agent.api.events import USER_MESSAGE, append_event
+from personal_agent.api.events import OPERATION_RESULT, USER_MESSAGE, append_event
+from personal_agent.api.operation_store import open_operation
 from personal_agent.api.orchestrator import (
     Clarification,
     DirectAnswer,
@@ -36,6 +38,7 @@ from personal_agent.api.orchestrator import (
 from personal_agent.context.builder import ContextBuilder, ContextEnvelope
 from personal_agent.context.compactor import Compactor
 from personal_agent.context.config import default_context_config
+from personal_agent.context.continuation import ClarificationContext
 from personal_agent.keys import HmacKey
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.runtime.glm_gateway import glm_gateway_from_env
@@ -259,6 +262,13 @@ def envelope_factory(
                         )
                     )
                     db.flush()
+                    clarification_context = _materialize_prior_turns(
+                        db,
+                        keyring,
+                        case=case,
+                        session_id=session_id,
+                        current_moment=moment,
+                    )
                     event_id = append_event(
                         db,
                         keyring,
@@ -282,12 +292,128 @@ def envelope_factory(
                         system_instruction=build_system_prompt(today=today),
                         user_text=case.input,
                         effective_tools=tools,
-                        clarification_context=None,
+                        clarification_context=clarification_context,
                     )
 
                 yield assemble
         finally:
             engine.dispose()
+
+
+def _materialize_prior_turns(
+    db,
+    keyring: KeyRing,
+    *,
+    case: EvalCase,
+    session_id: str,
+    current_moment,
+) -> ClarificationContext | None:
+    """Replay typed eval history as real Timeline and operation facts.
+
+    A list of prose snippets is not a multi-turn test: production distinguishes
+    user messages, evidenced operation results and exact clarification
+    continuations. The eval schema carries those types, and this function uses
+    the same rows the Context Builder consumes in the API composition.
+    """
+
+    active = None
+    active_text: str | None = None
+    active_turn_id: str | None = None
+    clarification: ClarificationContext | None = None
+    total = len(case.prior_turns)
+
+    for index, prior in enumerate(case.prior_turns):
+        event_moment = current_moment - timedelta(seconds=total - index + 1)
+        if prior.event_type == USER_MESSAGE:
+            if active is not None:
+                raise ValueError(
+                    f"{case.id}: a prior user message has no operation result"
+                )
+            opened = open_operation(
+                db,
+                device_id=EVAL_DEVICE,
+                client_request_id=f"eval-prior-{case.id.lower()}-{index}",
+                request_fingerprint=f"eval-prior-fingerprint-{case.id.lower()}-{index}",
+                now=event_moment,
+            )
+            active = opened.operation
+            active_text = str(prior.content["text"])
+            active_turn_id = f"trn-eval-{case.id.lower()}-prior-{index}"
+            append_event(
+                db,
+                keyring,
+                conversation_id=EVAL_TIMELINE,
+                session_id=session_id,
+                turn_id=active_turn_id,
+                event_type=USER_MESSAGE,
+                content=prior.content,
+                operation_id=active.operation_id,
+                now=event_moment,
+            )
+            continue
+
+        if active is None or active_text is None or active_turn_id is None:
+            raise ValueError(
+                f"{case.id}: operation_result prior turn has no user message"
+            )
+        content = dict(prior.content)
+        state = str(content["state"])
+        active.tool = prior.tool
+        active.state = state
+        active.state_version = 2
+        active.updated_at = event_moment
+        if state == "waiting_for_clarification":
+            question = content.get("clarification")
+            if not isinstance(question, str) or not question.strip():
+                raise ValueError(
+                    f"{case.id}: waiting clarification needs a question"
+                )
+            active.safe_result = question
+            clarification = ClarificationContext(
+                original_user_text=active_text,
+                question=question,
+                source_operation_ids=(active.operation_id,),
+            )
+            if index != total - 1:
+                raise ValueError(
+                    f"{case.id}: waiting clarification must be the final prior result"
+                )
+        elif state == "succeeded":
+            safe_result = content.get("record_id", content.get("answer"))
+            if safe_result is not None:
+                active.safe_result = str(safe_result)
+        elif state == "needs_manual_review":
+            failure_reason = content.get("failure_reason")
+            if failure_reason is not None:
+                active.failure_reason = str(failure_reason)
+        append_event(
+            db,
+            keyring,
+            conversation_id=EVAL_TIMELINE,
+            session_id=session_id,
+            turn_id=active_turn_id,
+            event_type=OPERATION_RESULT,
+            content=content,
+            operation_id=active.operation_id,
+            now=event_moment,
+        )
+        if state == "waiting_for_clarification":
+            # Production cancels the parked source before interpreting its
+            # answer. The exact transcript remains mandatory through the
+            # separately bound ClarificationContext above.
+            active.state = "cancelled_pre_submit"
+            active.state_version = 3
+        active = None
+        active_text = None
+        active_turn_id = None
+
+    if active is not None:
+        raise ValueError(f"{case.id}: final prior user message has no result")
+    return clarification
+
+
+def _is_repository_baseline(path: Path) -> bool:
+    return path.resolve() == DEFAULT_DATASET.resolve()
 
 
 def _write_outcomes(path: Path, outcomes: list[EvalOutcome]) -> None:
@@ -319,7 +445,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     cases = load_cases(args.dataset)
-    problems = lint_cases(cases, complete_provenance=True)
+    problems = lint_cases(
+        cases,
+        complete_provenance=_is_repository_baseline(args.dataset),
+    )
     if problems:
         parser.error("dataset lint failed: " + "; ".join(problems))
     if args.list:
@@ -329,7 +458,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.out is None:
         parser.error("--out is required for a model run so evidence is not discarded")
 
-    complete_dataset = args.case_ids is None
     if args.case_ids:
         wanted = set(args.case_ids)
         unknown = wanted - {case.id for case in cases}
@@ -361,9 +489,7 @@ def main(argv: list[str] | None = None) -> int:
         cases,
         outcomes,
         require_complete=True,
-        required_domains=("finance", "authorization", "mcp")
-        if complete_dataset
-        else (),
+        required_domains=tuple(sorted({domain_of(case) for case in cases})),
     )
     print("\nscores by source and domain:")
     for (source, domain), cell in cells.items():
