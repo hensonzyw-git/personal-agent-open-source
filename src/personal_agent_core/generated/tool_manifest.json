@@ -74,7 +74,7 @@
   "disabled_tools": [
     "finance.log_expense_batch"
   ],
-  "allowed_tools_version": "b3fec68e004e1d00c831ac8e85ce3cee8ac47bcad7ba1cf2d00973ae95bf65a3",
+  "allowed_tools_version": "5b44139001ee6330ca4948f0ba7d90c274e1a4730e1d812d4b1e74821a86b92d",
   "tools": [
     {
       "name": "finance.log_expense",
@@ -103,12 +103,12 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 80,
-            "description": "用户表达的事项文本，原样保留。不润色、不纠错、不缩写、不重命名。旅行场次和外币后缀由服务端追加，不要自己拼进来。"
+            "description": "用户表达的事项文本，原样保留。不润色、不纠错、不缩写、不重命名。仅当可高置信拆出通用餐食/场景提示与明确商户名时，提示只参与分类，name 只保留商户名；边界不清必须追问。旅行场次和外币后缀由服务端追加，不要自己拼进来。"
           },
           "input_amount": {
             "type": "string",
             "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$",
-            "description": "原始输入金额的非零绝对值，最多两位小数。不要输入负号：账务符号完全由 entry_kind 决定。",
+            "description": "原始输入金额的非零绝对值，最多两位小数。不要输入负号：账务符号完全由 entry_kind 决定。缺失或区间/近似金额必须先追问，不得估算。",
             "not": {
               "enum": [
                 "0",
@@ -156,7 +156,7 @@
               null
             ],
             "default": null,
-            "description": "普通支出必须是合法分类。退款和 AA 收款可为空，由服务端在唯一高置信原消费匹配时继承；无法可靠判定时追问，绝不新建分类。"
+            "description": "普通支出必须是合法分类。退款和 AA 收款可为空，由服务端在唯一高置信原消费匹配时继承；无法可靠判定时追问，绝不新建分类，也不只凭模型声称认识一个不透明商户名来猜测。"
           },
           "occurred_on": {
             "type": "string",
@@ -337,8 +337,8 @@
         "SOURCE_COMMIT_UNKNOWN",
         "SOURCE_COMMITTED_MISMATCH"
       ],
-      "input_schema_hash": "58b2dcc62272f953373def75845868a91bf06083eb28410656e1cf55fa84f8c8",
-      "contract_hash": "d4ae2dded5cf62a04a92ddbd0dd9f141cac688e72a21e1ebf1ff8c1c3fb78e91"
+      "input_schema_hash": "5690b4bfaf971fd824b2052c3bea66feaaa89eda014083d461802b1935f060d0",
+      "contract_hash": "5bb8192b5133c8e3e79b0fd4d43b06af3657f832717bee042d91dd3bcd7dc49b"
     },
     {
       "name": "finance.log_expense_batch",
@@ -378,12 +378,12 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 80,
-                  "description": "用户表达的事项文本，原样保留。不润色、不纠错、不缩写、不重命名。旅行场次和外币后缀由服务端追加，不要自己拼进来。"
+                  "description": "用户表达的事项文本，原样保留。不润色、不纠错、不缩写、不重命名。仅当可高置信拆出通用餐食/场景提示与明确商户名时，提示只参与分类，name 只保留商户名；边界不清必须追问。旅行场次和外币后缀由服务端追加，不要自己拼进来。"
                 },
                 "input_amount": {
                   "type": "string",
                   "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,2})?$",
-                  "description": "原始输入金额的非零绝对值，最多两位小数。不要输入负号：账务符号完全由 entry_kind 决定。",
+                  "description": "原始输入金额的非零绝对值，最多两位小数。不要输入负号：账务符号完全由 entry_kind 决定。缺失或区间/近似金额必须先追问，不得估算。",
                   "not": {
                     "enum": [
                       "0",
@@ -431,7 +431,7 @@
                     null
                   ],
                   "default": null,
-                  "description": "普通支出必须是合法分类。退款和 AA 收款可为空，由服务端在唯一高置信原消费匹配时继承；无法可靠判定时追问，绝不新建分类。"
+                  "description": "普通支出必须是合法分类。退款和 AA 收款可为空，由服务端在唯一高置信原消费匹配时继承；无法可靠判定时追问，绝不新建分类，也不只凭模型声称认识一个不透明商户名来猜测。"
                 },
                 "occurred_on": {
                   "type": "string",
@@ -638,8 +638,8 @@
         "SOURCE_COMMIT_UNKNOWN",
         "SOURCE_COMMITTED_MISMATCH"
       ],
-      "input_schema_hash": "11af0d4a7c77b491004f98d9ba944c40fcdaea45ccebeb743a9d0947c35ffd43",
-      "contract_hash": "a67e78c71c7479da89285874867b832b2606e31a38cd741b1e8b7577af82f6ad"
+      "input_schema_hash": "d1a4ea90cd969d624c4f37f45abbb4d647786663c7aabd1ed181893e66f21557",
+      "contract_hash": "8dc18000e10381750040766399b991d2be9b2b3b434d71a8c227a6d817a5cd52"
     },
     {
       "name": "finance.log_income",

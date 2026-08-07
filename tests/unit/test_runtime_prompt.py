@@ -66,13 +66,32 @@ def test_prompt_states_the_output_discipline_the_adapter_enforces() -> None:
     assert "任何需要用户回答的问句都必须" in prompt
     assert "不带任何解释文字" in prompt
     assert "日期缺失永远不是澄清理由" in prompt
+    assert "前两天" in prompt
+    assert "不能唯一确定日期" in prompt
 
 
 def test_prompt_closes_the_expense_clarification_set() -> None:
     prompt = build_system_prompt(today="2026-07-24")
-    assert "本工具只在四种情形澄清" in prompt
+    assert "本工具在以下情形澄清" in prompt
     assert "没有写明充电宝是买的还是借/租的" in prompt
     assert "不要另外追问" in prompt
+    assert "金额缺失" in prompt
+    assert "区间/近似值" in prompt
+    assert "不透明商户名" in prompt
+
+
+def test_prompt_contains_hensons_robustness_decisions() -> None:
+    prompt = build_system_prompt(today="2026-07-24")
+    for rule in (
+        "晚饭示例餐馆",
+        "示例餐馆",
+        "自称认识商户",
+        "还了某人",
+        "TOOL_NOT_ALLOWLISTED",
+        "四五十",
+        "六百多",
+    ):
+        assert rule in prompt
 
 
 def test_prompt_contains_the_frozen_expense_classification_contract() -> None:

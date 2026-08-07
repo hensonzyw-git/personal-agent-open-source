@@ -212,13 +212,16 @@ _EXPENSE_ENTRY_SCHEMA: Final[dict[str, Any]] = {
             "maxLength": 80,
             "description": (
                 "用户表达的事项文本，原样保留。不润色、不纠错、不缩写、不重命名。"
+                "仅当可高置信拆出通用餐食/场景提示与明确商户名时，提示只参与分类，"
+                "name 只保留商户名；边界不清必须追问。"
                 "旅行场次和外币后缀由服务端追加，不要自己拼进来。"
             ),
         },
         "input_amount": _positive_amount(
             (
                 "原始输入金额的非零绝对值，最多两位小数。不要输入负号："
-                "账务符号完全由 entry_kind 决定。"
+                "账务符号完全由 entry_kind 决定。缺失或区间/近似金额必须先追问，"
+                "不得估算。"
             )
         ),
         "input_currency": {
@@ -239,7 +242,8 @@ _EXPENSE_ENTRY_SCHEMA: Final[dict[str, Any]] = {
             "default": None,
             "description": (
                 "普通支出必须是合法分类。退款和 AA 收款可为空，由服务端在唯一高置信"
-                "原消费匹配时继承；无法可靠判定时追问，绝不新建分类。"
+                "原消费匹配时继承；无法可靠判定时追问，绝不新建分类，也不只凭模型"
+                "声称认识一个不透明商户名来猜测。"
             ),
         },
         "occurred_on": {
