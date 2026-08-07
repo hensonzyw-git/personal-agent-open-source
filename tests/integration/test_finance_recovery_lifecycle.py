@@ -30,7 +30,9 @@ def test_finance_composition_runs_startup_and_periodic_recovery(
         ledger_kind="synthetic_test",
         tables={},
     )
-    monkeypatch.setattr(composition, "load_protected_config", lambda _: config)
+    monkeypatch.setattr(
+        composition, "load_protected_config", lambda _, **kwargs: config
+    )
     monkeypatch.setattr(composition, "load_credentials", lambda: object())
     monkeypatch.setattr(composition, "load_base_source", lambda: object())
     monkeypatch.setattr(

@@ -21,6 +21,7 @@ from personal_data_mcp.feishu.base_source import (
     LedgerSourceError,
     require_configured_base,
     require_synthetic_test_base,
+    require_write_base,
 )
 from personal_data_mcp.finance import verify_ledger_cli as cli
 
@@ -99,6 +100,56 @@ def test_the_write_guard_still_refuses_production() -> None:
             approved_tables=dict(APPROVED_TABLES),
             approved_ledger_kind="production",
         )
+
+
+# --- the write-path binding: same identity checks, explicit G5-only naming ----
+#
+# `require_write_base` is the G5-authorized write-path twin of
+# `require_configured_base`. It must enforce exactly the same identity checks
+# (kind, constant-time token compare, exact table mapping) so that opening the
+# write door cannot widen which Base the write path will accept.
+
+
+def _write_bind(source: BaseSource, *, kind: str = "production") -> BaseSource:
+    return require_write_base(
+        source,
+        approved_base_token="bascPRODUCTION",
+        approved_tables=dict(APPROVED_TABLES),
+        approved_ledger_kind=kind,
+    )
+
+
+def test_write_binding_accepts_a_matching_production_base() -> None:
+    assert _write_bind(_source()).ledger_kind == "production"
+
+
+def test_write_binding_accepts_a_matching_synthetic_base() -> None:
+    synthetic = _source(ledger_kind="synthetic_test")
+    assert _write_bind(synthetic, kind="synthetic_test").ledger_kind == "synthetic_test"
+
+
+def test_write_binding_refuses_a_different_base_token() -> None:
+    with pytest.raises(LedgerSourceError, match="does not match"):
+        _write_bind(_source(base_token="bascSOMEONEELSE"))
+
+
+def test_write_binding_refuses_a_different_kind() -> None:
+    with pytest.raises(LedgerSourceError, match="kind"):
+        _write_bind(_source(ledger_kind="synthetic_test"))
+
+
+@pytest.mark.parametrize(
+    "tables",
+    [
+        {**APPROVED_TABLES, "expense": "tblSOMETHINGELSE"},
+        {"expense": "tblEXPENSE"},
+        {**APPROVED_TABLES, "extra": "tblEXTRA"},
+    ],
+    ids=["swapped", "missing", "extra"],
+)
+def test_write_binding_refuses_a_table_mapping_that_is_not_exact(tables) -> None:
+    with pytest.raises(LedgerSourceError, match="tables"):
+        _write_bind(_source(tables=tables))
 
 
 # --- the structural guarantee --------------------------------------------------

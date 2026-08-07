@@ -769,10 +769,10 @@ def test_the_disabled_batch_tool_cannot_be_registered(
 # --- the composition root refuses before a socket exists ---------------------
 
 
-def test_a_non_synthetic_ledger_config_is_refused_at_composition(
+def test_a_production_ledger_config_is_refused_without_the_g5_switch(
     tmp_path: Path,
 ) -> None:
-    """Production is a G5 decision, not a command-line flag."""
+    """A production write is a G5 decision: without the explicit switch, refused."""
     from personal_data_mcp.feishu.base_source import LedgerSourceError
     from personal_data_mcp.server.composition import load_protected_config
 
@@ -785,6 +785,23 @@ def test_a_non_synthetic_ledger_config_is_refused_at_composition(
 
     with pytest.raises(LedgerSourceError):
         load_protected_config(path)
+
+
+def test_a_production_ledger_config_is_accepted_with_the_g5_switch(
+    tmp_path: Path,
+) -> None:
+    """The G5 switch (PERSONAL_AGENT_ALLOW_PRODUCTION_WRITE=1) admits production."""
+    from personal_data_mcp.server.composition import load_protected_config
+
+    document = json.loads(
+        (LEDGER_FIXTURES / "config.synthetic.json").read_text(encoding="utf-8")
+    )
+    document["ledger_kind"] = "production"
+    path = tmp_path / "ledger.production.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    config = load_protected_config(path, allow_production=True)
+    assert config.ledger_kind == "production"
 
 
 def test_the_default_server_advertises_no_finance_tool() -> None:

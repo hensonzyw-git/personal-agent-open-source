@@ -28,9 +28,25 @@ TABLE_FAMILY_FUND_ENV: Final[str] = "FEISHU_FINANCE_TABLE_FAMILY_FUND"
 LEDGER_KIND_ENV: Final[str] = "FEISHU_FINANCE_LEDGER_KIND"
 
 SYNTHETIC_TEST_KIND: Final[str] = "synthetic_test"
+PRODUCTION_KIND: Final[str] = "production"
 REQUIRED_TABLE_KINDS: Final[frozenset[str]] = frozenset(
     {"expense", "income", "family_fund"}
 )
+
+#: The explicit G5 production-write authorisation. Only an exact `"1"` grants it;
+#: absent, empty or anything else keeps the fail-closed default (synthetic only).
+PRODUCTION_WRITE_ALLOW_ENV: Final[str] = "PERSONAL_AGENT_ALLOW_PRODUCTION_WRITE"
+
+
+def production_write_allowed(env: dict[str, str] | None = None) -> bool:
+    """Whether the G5 production-write switch is explicitly on.
+
+    Fail-closed: only the literal value `"1"` returns True. A missing, empty or
+    different value means the write path keeps refusing a `production` ledger,
+    exactly as before G5.
+    """
+    env = env if env is not None else dict(os.environ)
+    return env.get(PRODUCTION_WRITE_ALLOW_ENV) == "1"
 
 
 class LedgerSourceError(RuntimeError):
@@ -135,6 +151,46 @@ def require_configured_base(
     the existing one: a boolean that weakens a red line can be passed by
     accident, while a differently-named import shows up in review and in an AST
     check. Nothing on the write path may call this.
+    """
+    if source.ledger_kind != approved_ledger_kind:
+        raise LedgerSourceError(
+            "configured Base kind does not match the protected ledger config"
+        )
+    source_hash = hashlib.sha256(source.base_token.encode("utf-8")).digest()
+    approved_hash = hashlib.sha256(approved_base_token.encode("utf-8")).digest()
+    if not hmac.compare_digest(source_hash, approved_hash):
+        raise LedgerSourceError(
+            "configured Base does not match the protected ledger config"
+        )
+    if source.tables != approved_tables:
+        raise LedgerSourceError(
+            "configured tables do not match the protected ledger config"
+        )
+    return source
+
+
+def require_write_base(
+    source: BaseSource,
+    *,
+    approved_base_token: str,
+    approved_tables: dict[str, str],
+    approved_ledger_kind: str,
+) -> BaseSource:
+    """Bind an injected source to a protected config on the *write* path.
+
+    The sibling of `require_configured_base` for the write path, reachable only
+    after the explicit G5 production-write authorisation has been granted (see
+    `server.composition.load_protected_config`'s `allow_production`). It keeps
+    every identity check -- kind, Base token under a constant-time compare, and
+    the complete table mapping -- and drops only the "must be the synthetic
+    Base" clause.
+
+    This is deliberately a separate function from `require_configured_base`, not
+    a reused one: `require_configured_base`'s docstring promises nothing on the
+    write path may call it, and a name that says "write" makes the call site
+    self-documenting in review. The write gate that admits `production` is the
+    only caller, so an accidental call from a synthetic-only path is a review
+    finding rather than a silent widening.
     """
     if source.ledger_kind != approved_ledger_kind:
         raise LedgerSourceError(

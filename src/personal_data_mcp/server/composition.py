@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -41,10 +42,13 @@ from personal_agent_core.timeutil import utc_now
 from personal_data_mcp.crypto.keys import load_data_keyring
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import (
+    PRODUCTION_KIND,
     SYNTHETIC_TEST_KIND,
     LedgerSourceError,
     load_base_source,
+    production_write_allowed,
     require_synthetic_test_base,
+    require_write_base,
 )
 from personal_data_mcp.feishu.credentials import load_credentials
 from personal_data_mcp.finance.fx_connector import FxConnector
@@ -161,15 +165,27 @@ async def _recover_periodically(
             )
 
 
-def load_protected_config(path: Path) -> LedgerConfig:
-    """Read the frozen annual config, or refuse to serve Finance tools."""
+def load_protected_config(
+    path: Path, *, allow_production: bool = False
+) -> LedgerConfig:
+    """Read the frozen annual config, or refuse to serve Finance tools.
+
+    `allow_production` is the G5 switch: when False (the default, and the only
+    value before G5) a config whose kind is not `synthetic_test` is refused
+    outright; when True, a `production` config is accepted. The synthetic-only
+    gate stays the default so that nothing on the write path opens for the real
+    ledger without the explicit authorisation.
+    """
     config = load_ledger_config(json.loads(path.read_text(encoding="utf-8")))
-    if config.ledger_kind != SYNTHETIC_TEST_KIND:
-        raise LedgerSourceError(
-            f"refusing to serve Finance write tools with a "
-            f"{config.ledger_kind!r} ledger config: production is a G5 decision"
-        )
-    return config
+    if config.ledger_kind == SYNTHETIC_TEST_KIND:
+        return config
+    if allow_production and config.ledger_kind == PRODUCTION_KIND:
+        return config
+    raise LedgerSourceError(
+        f"refusing to serve Finance write tools with a "
+        f"{config.ledger_kind!r} ledger config: a production write is a G5 "
+        "decision and requires PERSONAL_AGENT_ALLOW_PRODUCTION_WRITE=1"
+    )
 
 
 @asynccontextmanager
@@ -184,9 +200,20 @@ async def finance_tools(
     """Open the Finance write surface for the lifetime of the service."""
     if recovery_interval_seconds <= 0:
         raise ValueError("recovery_interval_seconds must be positive")
-    config = load_protected_config(config_path)
+    allow_production = production_write_allowed()
+    config = load_protected_config(config_path, allow_production=allow_production)
     credentials = load_credentials()
-    source = require_synthetic_test_base(
+    # The binding is chosen by the same switch that admitted the config: a
+    # synthetic config always binds through `require_synthetic_test_base`; a
+    # production config -- reachable only with the explicit G5 switch on -- binds
+    # through the write-path authorisation. Keeping them as two named functions
+    # means the synthetic path never silently acquires a production binding.
+    source_loader = (
+        require_write_base
+        if allow_production and config.ledger_kind == PRODUCTION_KIND
+        else require_synthetic_test_base
+    )
+    source = source_loader(
         load_base_source(),
         approved_base_token=config.base_token,
         approved_tables={

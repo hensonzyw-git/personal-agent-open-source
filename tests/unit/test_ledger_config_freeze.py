@@ -192,8 +192,9 @@ def test_production_can_be_frozen_for_read_only_verification() -> None:
 def test_a_production_config_still_cannot_reach_the_write_path() -> None:
     """The load-bearing gate, asserted from the other side.
 
-    Relaxing the freeze guard is only defence-in-depth relaxation. If this ever
-    stops holding, freezing production really would become a way to write it.
+    Relaxing the freeze guard is only defence-in-depth relaxation. The write door
+    still refuses a `production` config unless the explicit G5 switch is granted
+    -- so freezing production never becomes a way to write it by itself.
     """
     from personal_data_mcp.server.composition import load_protected_config
     from personal_data_mcp.feishu.base_source import LedgerSourceError
@@ -202,8 +203,13 @@ def test_a_production_config_still_cannot_reach_the_write_path() -> None:
     path = Path(tempfile.mkdtemp()) / "annual.json"
     path.write_text(production.model_dump_json(), encoding="utf-8")
 
+    # Without the G5 switch: refused, exactly as before G5.
     with pytest.raises(LedgerSourceError, match="G5"):
         load_protected_config(path)
+
+    # With the explicit G5 switch: admitted.
+    admitted = load_protected_config(path, allow_production=True)
+    assert admitted.ledger_kind == "production"
 
 
 def test_a_declared_kind_that_the_environment_contradicts_is_refused() -> None:

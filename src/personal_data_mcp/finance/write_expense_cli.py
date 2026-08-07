@@ -45,10 +45,13 @@ from personal_agent_core.tool_ir import ENTRY_KINDS
 from personal_agent_core.timeutil import ledger_date, parse_ledger_date, utc_now
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import (
+    PRODUCTION_KIND,
     SYNTHETIC_TEST_KIND,
     LedgerSourceError,
     load_base_source,
+    production_write_allowed,
     require_synthetic_test_base,
+    require_write_base,
 )
 from personal_data_mcp.feishu.credentials import load_credentials
 from personal_data_mcp.feishu.redaction import redact_for_log
@@ -124,14 +127,18 @@ async def run(
     config = load_ledger_config(
         json.loads(config_path.read_text(encoding="utf-8"))
     )
-    if config.ledger_kind != SYNTHETIC_TEST_KIND:
+    if config.ledger_kind == SYNTHETIC_TEST_KIND:
+        source_loader = require_synthetic_test_base
+    elif config.ledger_kind == PRODUCTION_KIND and production_write_allowed():
+        source_loader = require_write_base
+    else:
         raise LedgerSourceError(
-            f"refusing to write: this command only accepts a "
-            f"{SYNTHETIC_TEST_KIND!r} config. A production write is a G5 "
-            "decision."
+            f"refusing to write: this command accepts a {SYNTHETIC_TEST_KIND!r} "
+            "config, or a production config only with "
+            "PERSONAL_AGENT_ALLOW_PRODUCTION_WRITE=1 (the G5 switch)"
         )
     credentials = load_credentials()
-    source = require_synthetic_test_base(
+    source = source_loader(
         load_base_source(),
         approved_base_token=config.base_token,
         approved_tables={

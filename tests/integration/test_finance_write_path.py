@@ -661,8 +661,11 @@ def test_both_live_read_shapes_verify_as_the_same_record() -> None:
     assert verify_expense_record(LUNCH, search_records_shape, config=CONFIG) == []
 
 
-def test_the_g3_operator_command_refuses_a_production_config(tmp_path) -> None:
-    """The write CLI is synthetic-only, checked before any credential is read."""
+def test_the_g3_operator_command_refuses_a_production_config(
+    tmp_path, monkeypatch
+) -> None:
+    """The write CLI is synthetic-only by default: production refused without the
+    explicit G5 switch, admitted (past the kind gate) with it."""
     from personal_data_mcp.feishu.base_source import LedgerSourceError
     from personal_data_mcp.finance import write_expense_cli
 
@@ -675,6 +678,7 @@ def test_the_g3_operator_command_refuses_a_production_config(tmp_path) -> None:
         json.dumps(document, ensure_ascii=False), encoding="utf-8"
     )
 
+    # Without the G5 switch: refused at the kind gate with a G5 message.
     with pytest.raises(LedgerSourceError, match="G5"):
         run(
             write_expense_cli.run(
@@ -682,6 +686,22 @@ def test_the_g3_operator_command_refuses_a_production_config(tmp_path) -> None:
                 config_path=config_path,
                 db_path=tmp_path / "finance.sqlite",
                 idempotency_key="idem-prod",
+            )
+        )
+
+    # With the G5 switch: the kind gate admits production. The run now fails
+    # later -- at credential loading -- because no Finance credentials are set,
+    # but that failure is not a G5 refusal, proving the switch opened the gate.
+    monkeypatch.setenv("PERSONAL_AGENT_ALLOW_PRODUCTION_WRITE", "1")
+    from personal_data_mcp.feishu.credentials import MissingCredentialError
+
+    with pytest.raises(MissingCredentialError):
+        run(
+            write_expense_cli.run(
+                LUNCH,
+                config_path=config_path,
+                db_path=tmp_path / "finance.sqlite",
+                idempotency_key="idem-prod-2",
             )
         )
 
