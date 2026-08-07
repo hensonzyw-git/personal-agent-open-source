@@ -64,7 +64,7 @@ def private_key_pem(tmp_path: Path) -> Path:
 
 def _env(key_path: Path, **overrides) -> dict[str, str]:
     env = {
-        "PERSONAL_AGENT_APNS_ENVIRONMENT": "development",
+        "PERSONAL_AGENT_APNS_ENVIRONMENT": "sandbox",
         "PERSONAL_AGENT_APNS_KEY_PATH": str(key_path),
         "PERSONAL_AGENT_APNS_KEY_ID": "KEYID12345",
         "PERSONAL_AGENT_APNS_TEAM_ID": "TEAMID6789",
@@ -129,31 +129,34 @@ def config(private_key_pem: Path) -> ApnsConfig:
 
 
 def test_the_environment_selects_a_pinned_host_by_name(private_key_pem) -> None:
-    development = load_apns_config(_env(private_key_pem))
+    sandbox = load_apns_config(_env(private_key_pem))
     production = load_apns_config(
         _env(private_key_pem, PERSONAL_AGENT_APNS_ENVIRONMENT="production")
     )
-    assert development.host == "api.sandbox.push.apple.com"
+    assert sandbox.host == "api.sandbox.push.apple.com"
     assert production.host == "api.push.apple.com"
-    assert set(_HOSTS.values()) == {development.host, production.host}
+    assert set(_HOSTS.values()) == {sandbox.host, production.host}
 
 
-def test_both_of_apples_names_for_the_sandbox_reach_the_same_pinned_host(
+def test_the_entitlements_development_spelling_is_refused(
     private_key_pem,
 ) -> None:
     """Apple calls the sandbox estate `development` in the iOS entitlement and
-    `sandbox` in the host name; the ECS was provisioned with the host's word.
+    `sandbox` in the host name; the ECS is provisioned with the host's word.
 
-    Widening the input vocabulary must not widen the output: there are still
-    exactly two reachable hosts, which is the property §5.1 is about.
+    Exactly one spelling is accepted, and it is the deployed one. Refusing the
+    entitlement's word keeps the name-to-host mapping injective: there are
+    exactly two reachable hosts and exactly one name for each, which is the
+    property §5.1 is about.
     """
-    by_entitlement = load_apns_config(
-        _env(private_key_pem, PERSONAL_AGENT_APNS_ENVIRONMENT="development")
-    )
+    with pytest.raises(ApnsConfigError, match="must be one of"):
+        load_apns_config(
+            _env(private_key_pem, PERSONAL_AGENT_APNS_ENVIRONMENT="development")
+        )
     by_host = load_apns_config(
         _env(private_key_pem, PERSONAL_AGENT_APNS_ENVIRONMENT="sandbox")
     )
-    assert by_entitlement.host == by_host.host == "api.sandbox.push.apple.com"
+    assert by_host.host == "api.sandbox.push.apple.com"
     assert len(set(_HOSTS.values())) == 2
 
 

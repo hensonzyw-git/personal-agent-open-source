@@ -41,6 +41,7 @@ from typing import Any, Callable, Final
 
 import httpx2
 import jwt
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from personal_agent.api.notifications import PushNotification, PushSendError
@@ -51,15 +52,16 @@ from personal_agent_core.crypto import CryptoError, KeyRing
 #: The only two hosts a provider token may be sent to. Selected by name from the
 #: environment; never assembled from it.
 #:
-#: The sandbox estate has two accepted spellings because Apple uses both: the
-#: iOS entitlement calls it `development` (`aps-environment: development`) while
-#: the host calls it `sandbox`, and the ECS was provisioned with the host's
-#: word. Accepting both widens the input vocabulary without widening the output:
-#: there are still exactly two reachable hosts, which is the property that
-#: matters. A *default* would be a different thing entirely, and there is none.
+#: The sandbox estate has exactly one accepted spelling: the host's word,
+#: `sandbox`. The iOS entitlement calls the same estate `development`
+#: (`aps-environment: development`), but that is Apple's client-side vocabulary,
+#: not this service's. The ECS is provisioned with `sandbox`
+#: (`docs/evidence/DEV040_真机推送端到端_2026-08-04.md`), and accepting the
+#: entitlement's spelling too would double the accepted input for no operational
+#: reason -- the property §5.1 cares about is that exactly two hosts are
+#: reachable, and one spelling per estate keeps the mapping injective.
 _HOSTS: Final[dict[str, str]] = {
     "production": "api.push.apple.com",
-    "development": "api.sandbox.push.apple.com",
     "sandbox": "api.sandbox.push.apple.com",
 }
 
@@ -238,12 +240,23 @@ class ApnsPushSender:
         retrying cannot make a missing token appear.
         """
         with self._sessions() as session:
-            device = session.get(Device, device_id)
-            if device is None or device.status != "active":
+            # An ORM `select`, not `session.get`: §5.2. The outbox worker's
+            # session may have read this row earlier in its retry loop, and the
+            # identity map would hand back that stale object even after another
+            # session committed a revocation. A permanent-failure decision must
+            # be made from the database's current state, never from a cached
+            # snapshot. The ORM form (rather than a raw string) keeps the
+            # `EncryptedEnvelope` TypeDecorator's decoding on the result column.
+            row = session.execute(
+                select(Device.status, Device.encrypted_push_token).where(
+                    Device.device_id == device_id
+                )
+            ).one_or_none()
+            if row is None or row[0] != "active":
                 raise PushSendError(
                     "device is unknown or revoked", permanent=True
                 )
-            envelope = device.encrypted_push_token
+            envelope = row[1]
             if envelope is None:
                 raise PushSendError("device has no push token", permanent=True)
             try:
