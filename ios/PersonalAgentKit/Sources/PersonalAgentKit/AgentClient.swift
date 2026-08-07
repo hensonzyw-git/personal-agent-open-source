@@ -20,7 +20,12 @@ public struct AgentClient: Sendable {
 
     /// - Parameter baseURL: the service origin, e.g. `https://agent.example.com`.
     ///   A non-HTTP(S) scheme is refused here rather than at the first request.
-    public init(baseURL: URL, session: URLSession = .shared) throws {
+    ///
+    /// The default session is **ephemeral**, not `.shared`: this API authenticates
+    /// with a Bearer header and has no cookies, and a shared session would still
+    /// persist a cookie/cache store to disk where a short-lived access token's
+    /// response body could outlive it. Tests inject their own session.
+    public init(baseURL: URL, session: URLSession = AgentClient.makeDefaultSession()) throws {
         guard let scheme = baseURL.scheme?.lowercased(),
               scheme == "https" || scheme == "http"
         else {
@@ -28,6 +33,17 @@ public struct AgentClient: Sendable {
         }
         self.baseURL = baseURL
         self.session = session
+    }
+
+    /// The production session: in-memory only, no persistent cookie or cache store.
+    /// A default argument can only name a `public` method, so this is part of the
+    /// API surface; it builds the same ephemeral session every time.
+    public static func makeDefaultSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        return URLSession(configuration: configuration)
     }
 
     // --- unauthenticated: enrollment and tokens ------------------------------
