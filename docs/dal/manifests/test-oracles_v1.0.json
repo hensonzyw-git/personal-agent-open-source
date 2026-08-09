@@ -1,6 +1,6 @@
 {
-  "catalog_sha256": "39cca68262718d5d93cddd6abc012a534935a6371980949250a5133d17483799",
-  "evidence_registry_sha256": "d6e877cada3463c619361258160a9e4abb4036cdf12050f90e486abeebc89574",
+  "catalog_sha256": "becfcb6d0ffe697fb7a76ad13bf9aa3fd9e8b156a6b51f8add151dea9b082fef",
+  "evidence_registry_sha256": "84d8d7e6b6bf1f7a7b53b4ec2bf78fea53d2f100dabc32e4861c49fac221c956",
   "guard_registry_sha256": "f4cecb5f4eb15ab84bc6b29363466227f869b57604e6e5a53cce61ed5fa78a18",
   "operation_registry_sha256": "7305b6a5c8ba000852a253d29b09c6371d2701c9660aa5f494be48771d9d2245",
   "oracles": {
@@ -5061,6 +5061,78 @@
       "test_id": "DAL-T-EVENT-ORDER-001",
       "variant_id": "out_of_order_event"
     },
+    "dal.oracle/DAL-T-EVIDENCE-BINDING-001/completed_ascii_whitespace_authoritative_receipt/G1/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "RECONCILE-COMPLETED-NONSTATE--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "reconciling",
+        "reconciling"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "reconciliation_required"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reconciliation_required",
+        "reconciliation_required"
+      ],
+      "forbidden_side_effects": [
+        "provider_call",
+        "github_write",
+        "worker_start",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EVIDENCE-BINDING-001/completed_ascii_whitespace_authoritative_receipt/G1/1.0",
+        "occurrence": 1,
+        "operation_id": "completed_ascii_whitespace_authoritative_receipt",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reconciliation_required",
+        "version": 7
+      },
+      "run_gate": "G1",
+      "scenario_assertions": [
+        {
+          "field": "evidence_validation_stage",
+          "operator": "equals",
+          "value": "schema"
+        },
+        {
+          "field": "evidence_binding_valid",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EVIDENCE-BINDING-001",
+      "variant_id": "completed_ascii_whitespace_authoritative_receipt"
+    },
     "dal.oracle/DAL-T-EVIDENCE-BINDING-001/completed_empty_authoritative_receipt/G1/1.0": {
       "allowed_write_set": [],
       "coverage_ref": "RECONCILE-COMPLETED-NONSTATE--coding",
@@ -5204,6 +5276,78 @@
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-EVIDENCE-BINDING-001",
       "variant_id": "completed_null_authoritative_receipt"
+    },
+    "dal.oracle/DAL-T-EVIDENCE-BINDING-001/completed_unicode_whitespace_authoritative_receipt/G1/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "RECONCILE-COMPLETED-NONSTATE--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "reconciling",
+        "reconciling"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "reconciliation_required"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reconciliation_required",
+        "reconciliation_required"
+      ],
+      "forbidden_side_effects": [
+        "provider_call",
+        "github_write",
+        "worker_start",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EVIDENCE-BINDING-001/completed_unicode_whitespace_authoritative_receipt/G1/1.0",
+        "occurrence": 1,
+        "operation_id": "completed_unicode_whitespace_authoritative_receipt",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reconciliation_required",
+        "version": 7
+      },
+      "run_gate": "G1",
+      "scenario_assertions": [
+        {
+          "field": "evidence_validation_stage",
+          "operator": "equals",
+          "value": "schema"
+        },
+        {
+          "field": "evidence_binding_valid",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EVIDENCE-BINDING-001",
+      "variant_id": "completed_unicode_whitespace_authoritative_receipt"
     },
     "dal.oracle/DAL-T-EVIDENCE-BINDING-001/correct_shape_wrong_effect/G5/1.0": {
       "allowed_write_set": [],
