@@ -1114,7 +1114,7 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
     )
     direct_reconcile = outcome_call(
         "external_effect", "fixture-effect", 11, "record_reconciled_completed",
-        {"target_state": "confirmed_completed", "effect_outcome": None, "owner_aggregate_type": "recovery_case"},
+        spec_by_id["EE-RECONCILE-COMPLETED"]["command_parameters"],
         ["dal.evidence.counterparty-receipt/1.0"], "direct-reconcile", "service", ["counterparty-adapter"],
     )
     add(
@@ -1147,6 +1147,22 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
         scenario_assertions=[{"field": "root_version_increment", "operator": "equals", "value": 1}, {"field": "effect_version_increment", "operator": "equals", "value": 1}],
         receipt_schema_override="dal.operation-receipt/1.0",
     )
+    add(
+        "DAL-T-EFFECT-OWNERSHIP-001", "owner_root_then_removed_effect_command", "G5", ["DAL-009", "DAL-010", "DAL-011"],
+        "awaiting_merge", "merged", None, None, "APPLIED", "confirmed_completed", ["merge.completed", "external_effect.outcome_recorded"],
+        operation_sequence=outcome_sequence("feature", "awaiting_merge", "dispatch_started", "feature", [merge_root, direct_completed], "root-then-removed-effect"),
+        expected_receipts_override=[
+            {"schema_version": "dal.transition-receipt/1.0", "code": "APPLIED", "count": 1},
+            {"schema_version": "dal.external-effect-transition-receipt/1.0", "code": "APPLIED", "count": 1},
+            {"schema_version": "dal.external-effect-transition-receipt/1.0", "code": "ILLEGAL_TRANSITION", "count": 1},
+        ],
+        expected_state_trace_override=["awaiting_merge", "merged", "merged"],
+        external_effect_trace=["dispatch_started", "confirmed_completed", "confirmed_completed"],
+        related_snapshots=[{"entity_type": "external_effect", "snapshot_key": "external_effect", "state": "confirmed_completed"}],
+        allowed_writes=spec_by_id["SM-MERGED-DISPATCHED"]["atomic_write_set"],
+        scenario_assertions=[{"field": "root_version_increment", "operator": "equals", "value": 1}, {"field": "effect_version_increment", "operator": "equals", "value": 1}, {"field": "successful_root_command_count", "operator": "equals", "value": 1}],
+        receipt_schema_override="dal.operation-receipt/1.0",
+    )
     merge_root_a = outcome_call(
         "feature", "fixture-root", 7, "record_managed_merge",
         spec_by_id["SM-MERGED-DISPATCHED"]["command_parameters"],
@@ -1172,14 +1188,16 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
         scenario_assertions=[{"field": "root_version_increment", "operator": "equals", "value": 1}, {"field": "effect_version_increment", "operator": "equals", "value": 1}, {"field": "successful_root_command_count", "operator": "equals", "value": 1}],
         receipt_schema_override="dal.operation-receipt/1.0",
     )
-    add(
-        "DAL-T-EFFECT-OWNERSHIP-001", "companion_write_failure_rolls_back_root", "G5", ["DAL-009", "DAL-010", "DAL-011"],
-        "awaiting_merge", "awaiting_merge", None, None, None, "dispatch_started", [],
-        operation_sequence=outcome_sequence("feature", "awaiting_merge", "dispatch_started", "feature", [merge_root], "companion-failure", "external_effect_transition_receipt"),
-        expected_receipts_override=[], external_effect_trace=["dispatch_started", "dispatch_started"], allowed_writes=[],
-        scenario_assertions=[{"field": "root_version_increment", "operator": "equals", "value": 0}, {"field": "effect_version_increment", "operator": "equals", "value": 0}, {"field": "business_event_count", "operator": "equals", "value": 0}],
-        receipt_schema_override="dal.operation-receipt/1.0",
-    )
+    merge_companion_writes = spec_by_id["SM-MERGED-DISPATCHED"]["atomic_companion_transitions"][0]["atomic_write_set"]
+    for failed_member in merge_companion_writes:
+        add(
+            "DAL-T-EFFECT-OWNERSHIP-001", f"companion_write_failure_rolls_back_root--{failed_member.replace('_', '-')}", "G5", ["DAL-009", "DAL-010", "DAL-011"],
+            "awaiting_merge", "awaiting_merge", None, None, None, "dispatch_started", [],
+            operation_sequence=outcome_sequence("feature", "awaiting_merge", "dispatch_started", "feature", [merge_root], f"companion-failure-{failed_member}", failed_member),
+            expected_receipts_override=[], external_effect_trace=["dispatch_started", "dispatch_started"], allowed_writes=[],
+            scenario_assertions=[{"field": "root_version_increment", "operator": "equals", "value": 0}, {"field": "effect_version_increment", "operator": "equals", "value": 0}, {"field": "business_event_count", "operator": "equals", "value": 0}, {"field": "failed_atomic_write_member", "operator": "equals", "value": failed_member}],
+            receipt_schema_override="dal.operation-receipt/1.0",
+        )
     recovery_root = outcome_call(
         "recovery_case", "fixture-root", 7, "record_recovery_execution",
         spec_by_id["RC-EXECUTED"]["command_parameters"],

@@ -1,8 +1,8 @@
 {
-  "catalog_sha256": "678adf5ac4e43c02e7305dc1583dc747f0b7940eaa54511f57ffd80e60cdefcf",
+  "catalog_sha256": "ca06ce723a0963e7c05a8630edeb9049aa54da749ef889d84af3f67de63385fc",
   "evidence_registry_sha256": "72e98bbdfaded240249e5c969c6a950ccefe3d878ffc3756e548c5d98b03c041",
   "guard_registry_sha256": "091396081be0b2a55b584d446d5ea67ecf2fe4ea75991acbf709eabff1b50bbf",
-  "operation_registry_sha256": "1e4548870420d5efaba0dc08cb6a5e68099a5dcccc85d2162a1c1ba4579d93bb",
+  "operation_registry_sha256": "7305b6a5c8ba000852a253d29b09c6371d2701c9660aa5f494be48771d9d2245",
   "oracles": {
     "dal.oracle/DAL-T-APP-001/concurrent_consume/G1/1.0": {
       "allowed_write_set": [
@@ -3356,7 +3356,7 @@
       "test_id": "DAL-T-DOCK-001",
       "variant_id": "tie"
     },
-    "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/companion_write_failure_rolls_back_root/G5/1.0": {
+    "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/companion_write_failure_rolls_back_root--audit/G5/1.0": {
       "allowed_write_set": [],
       "coverage_ref": null,
       "expected_atomic_companion_transitions": [],
@@ -3382,9 +3382,9 @@
         "production_access"
       ],
       "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-EFFECT-OWNERSHIP-001/companion_write_failure_rolls_back_root/G5/1.0",
+        "injection_point": "dal.inject/DAL-T-EFFECT-OWNERSHIP-001/companion_write_failure_rolls_back_root--audit/G5/1.0",
         "occurrence": 1,
-        "operation_id": "companion_write_failure_rolls_back_root",
+        "operation_id": "companion_write_failure_rolls_back_root--audit",
         "schema_version": "dal.test-injection/1.0"
       },
       "pre_state": {
@@ -3409,11 +3409,272 @@
           "field": "business_event_count",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "failed_atomic_write_member",
+          "operator": "equals",
+          "value": "audit"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
-      "variant_id": "companion_write_failure_rolls_back_root"
+      "variant_id": "companion_write_failure_rolls_back_root--audit"
+    },
+    "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/companion_write_failure_rolls_back_root--authoritative-receipt/G5/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "dispatch_started"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "awaiting_merge"
+      },
+      "expected_receipts": [],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "awaiting_merge",
+        "awaiting_merge"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EFFECT-OWNERSHIP-001/companion_write_failure_rolls_back_root--authoritative-receipt/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "companion_write_failure_rolls_back_root--authoritative-receipt",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "awaiting_merge",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "business_event_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_atomic_write_member",
+          "operator": "equals",
+          "value": "authoritative_receipt"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
+      "variant_id": "companion_write_failure_rolls_back_root--authoritative-receipt"
+    },
+    "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/companion_write_failure_rolls_back_root--business-event/G5/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "dispatch_started"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "awaiting_merge"
+      },
+      "expected_receipts": [],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "awaiting_merge",
+        "awaiting_merge"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EFFECT-OWNERSHIP-001/companion_write_failure_rolls_back_root--business-event/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "companion_write_failure_rolls_back_root--business-event",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "awaiting_merge",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "business_event_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_atomic_write_member",
+          "operator": "equals",
+          "value": "business_event"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
+      "variant_id": "companion_write_failure_rolls_back_root--business-event"
+    },
+    "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/companion_write_failure_rolls_back_root--external-effect-transition-receipt/G5/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "dispatch_started"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "awaiting_merge"
+      },
+      "expected_receipts": [],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "awaiting_merge",
+        "awaiting_merge"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EFFECT-OWNERSHIP-001/companion_write_failure_rolls_back_root--external-effect-transition-receipt/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "companion_write_failure_rolls_back_root--external-effect-transition-receipt",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "awaiting_merge",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "business_event_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_atomic_write_member",
+          "operator": "equals",
+          "value": "external_effect_transition_receipt"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
+      "variant_id": "companion_write_failure_rolls_back_root--external-effect-transition-receipt"
+    },
+    "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/companion_write_failure_rolls_back_root--external-effect/G5/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "dispatch_started"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "awaiting_merge"
+      },
+      "expected_receipts": [],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "awaiting_merge",
+        "awaiting_merge"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EFFECT-OWNERSHIP-001/companion_write_failure_rolls_back_root--external-effect/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "companion_write_failure_rolls_back_root--external-effect",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "awaiting_merge",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "business_event_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_atomic_write_member",
+          "operator": "equals",
+          "value": "external_effect"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
+      "variant_id": "companion_write_failure_rolls_back_root--external-effect"
     },
     "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/concurrent_owner_roots_single_winner/G5/1.0": {
       "allowed_write_set": [
@@ -3722,6 +3983,102 @@
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
       "variant_id": "feature_reconciliation_root_closes_effect"
+    },
+    "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/owner_root_then_removed_effect_command/G5/1.0": {
+      "allowed_write_set": [
+        "external_effect_outcome",
+        "authoritative_post_read",
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "external_effect",
+        "external_effect_transition_receipt",
+        "authoritative_receipt"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "merge.completed",
+        "external_effect.outcome_recorded"
+      ],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "confirmed_completed",
+        "confirmed_completed"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "merged"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        },
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.external-effect-transition-receipt/1.0"
+        },
+        {
+          "code": "ILLEGAL_TRANSITION",
+          "count": 1,
+          "schema_version": "dal.external-effect-transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [
+        {
+          "entity_type": "external_effect",
+          "snapshot_key": "external_effect",
+          "state": "confirmed_completed"
+        }
+      ],
+      "expected_state_trace": [
+        "awaiting_merge",
+        "merged",
+        "merged"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EFFECT-OWNERSHIP-001/owner_root_then_removed_effect_command/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "owner_root_then_removed_effect_command",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "awaiting_merge",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "successful_root_command_count",
+          "operator": "equals",
+          "value": 1
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
+      "variant_id": "owner_root_then_removed_effect_command"
     },
     "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/recovery_owner_root_closes_effect/G1/1.0": {
       "allowed_write_set": [
