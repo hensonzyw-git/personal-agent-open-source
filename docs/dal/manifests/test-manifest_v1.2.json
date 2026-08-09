@@ -1,9 +1,9 @@
 {
   "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
   "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
-  "manifest_sha256": "4a6f4666687494908054adb8d207e3edbd5b0afadbf2a7eb6ab5093aee2fe0a8",
+  "manifest_sha256": "8011188b4d36a80d9cb4c4296505de6c4fae648ec45eb01ad7d28f8dc56e56f6",
   "manifest_version": "1.2",
-  "operation_registry_sha256": "a396b9d57bf5e7a214f8ce33f26b5c36bc853e2f220c3464911e634b2404bb72",
+  "operation_registry_sha256": "52f97aeca9e5445bbc0e8b60127f04c682c2b2b60e4ad0fc66bcc105321df33d",
   "schema_version": "dal.test-manifest/1.2",
   "test_variants": [
     {
@@ -5146,7 +5146,7 @@
       "expected_receipt_schema": "dal.transition-receipt/1.0",
       "fixture_ref": "dal.fixture/DAL-T-NET-001/finance/G2/1.0",
       "fixture_schema_version": "dal.test-fixture/1.0",
-      "fixture_sha256": "568f603c5fe3d8e55b9626a6e31c378a588a98df0c599c093372ab6ec963068e",
+      "fixture_sha256": "8dc5fc477584569e7642c8213e79f31364fc0a0f63095d46ded5b80981bf757a",
       "injection_point": "dal.inject/DAL-T-NET-001/finance/G2/1.0",
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-NET-001/finance/G2/1.0",
@@ -5192,7 +5192,7 @@
       "expected_receipt_schema": "dal.transition-receipt/1.0",
       "fixture_ref": "dal.fixture/DAL-T-NET-001/lan/G2/1.0",
       "fixture_schema_version": "dal.test-fixture/1.0",
-      "fixture_sha256": "246f303980c6f84bfa239826a475ecc35d6ef6b7a19ea60fc8ad6680cd42f70b",
+      "fixture_sha256": "b2930164b327d60b2c4f7dc5e82dd0d505beae7a2601a8889f6fc3283a8f86f1",
       "injection_point": "dal.inject/DAL-T-NET-001/lan/G2/1.0",
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-NET-001/lan/G2/1.0",
@@ -5215,7 +5215,7 @@
       "expected_receipt_schema": "dal.transition-receipt/1.0",
       "fixture_ref": "dal.fixture/DAL-T-NET-001/personal_agent_prod/G2/1.0",
       "fixture_schema_version": "dal.test-fixture/1.0",
-      "fixture_sha256": "d02bb154b49727d679e18c53c7a5032b0bd2f8a5c6c8f0b4c262a34d649b0f67",
+      "fixture_sha256": "903b3164f98bb5bb5657a945308b5ac6f4b0b089b2adb2d0228ad524188f4ee0",
       "injection_point": "dal.inject/DAL-T-NET-001/personal_agent_prod/G2/1.0",
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-NET-001/personal_agent_prod/G2/1.0",

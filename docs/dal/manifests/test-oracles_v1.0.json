@@ -1,8 +1,8 @@
 {
-  "catalog_sha256": "faf900f3b823f1eeb1fc09ae86a9430bc2118d2eb867f6f1cb9fee1212f66748",
+  "catalog_sha256": "2cabc3159c1ac94ce26ea383a130a4ce35a7aa5b9a96aad2508ba23f5dcccfbf",
   "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
   "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
-  "operation_registry_sha256": "a396b9d57bf5e7a214f8ce33f26b5c36bc853e2f220c3464911e634b2404bb72",
+  "operation_registry_sha256": "52f97aeca9e5445bbc0e8b60127f04c682c2b2b60e4ad0fc66bcc105321df33d",
   "oracles": {
     "dal.oracle/DAL-T-APP-001/concurrent_consume/G1/1.0": {
       "allowed_write_set": [

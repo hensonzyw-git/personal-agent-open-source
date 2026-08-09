@@ -7228,14 +7228,14 @@
           {
             "actor_type": "service",
             "evidence_source_type": "network-policy",
-            "idempotency_key": "idem-a302369a579faeeebd5d8152",
+            "idempotency_key": "idem-b7164800f5220597234a0c9c",
             "input": {
               "action_sequence": [
                 {
                   "command": "authorize_network_request",
                   "request": {
                     "direction": "outbound",
-                    "host": "finance.internal",
+                    "host": "finance.invalid",
                     "port": 443
                   }
                 }
@@ -7260,7 +7260,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-f4cb4d3ba674f4b9c33ad49b",
+            "operation_id": "op-c8c4ecc14179cfe1b99cb6b8",
             "operation_spec_id": "OP-NET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -7310,14 +7310,14 @@
           {
             "actor_type": "service",
             "evidence_source_type": "network-policy",
-            "idempotency_key": "idem-88a2e7816d894d652e2410bc",
+            "idempotency_key": "idem-87174f0f5444e9eeaa3cc5c8",
             "input": {
               "action_sequence": [
                 {
                   "command": "authorize_network_request",
                   "request": {
                     "direction": "outbound",
-                    "host": "192.168.1.10",
+                    "host": "192.0.2.10",
                     "port": 22
                   }
                 }
@@ -7342,7 +7342,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-81bdfe4654cc20edc9b930f2",
+            "operation_id": "op-75cbffcf907816a08d07168d",
             "operation_spec_id": "OP-NET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -7351,14 +7351,14 @@
           {
             "actor_type": "service",
             "evidence_source_type": "network-policy",
-            "idempotency_key": "idem-3deab0907ec13d33e128543f",
+            "idempotency_key": "idem-998a5df4b1bb627ce067a2ef",
             "input": {
               "action_sequence": [
                 {
                   "command": "authorize_network_request",
                   "request": {
                     "direction": "outbound",
-                    "host": "agent.example.invalid",
+                    "host": "personal-agent.invalid",
                     "port": 443
                   }
                 }
@@ -7383,7 +7383,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-d347d9fe2f586b8885ace009",
+            "operation_id": "op-09bffb71bd1bde8a1b53d771",
             "operation_spec_id": "OP-NET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -11890,7 +11890,7 @@
       }
     }
   ],
-  "registry_sha256": "a396b9d57bf5e7a214f8ce33f26b5c36bc853e2f220c3464911e634b2404bb72",
+  "registry_sha256": "52f97aeca9e5445bbc0e8b60127f04c682c2b2b60e4ad0fc66bcc105321df33d",
   "resolver_input_contract": {
     "allowed_expected_comparison_fields": [
       "expected_head_sha",

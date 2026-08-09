@@ -1,5 +1,5 @@
 {
-  "catalog_sha256": "e8f1b536395fb4ae320c9c0e294a8f085a06ec3aa02ae41d74bca4eabc0bc2e8",
+  "catalog_sha256": "245c15902e439f9b33e798eb828c618f03151a2acbef83404486575b7c1f49ff",
   "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
   "fixtures": {
     "dal.fixture/DAL-T-APP-001/concurrent_consume/G1/1.0": {
@@ -25314,14 +25314,14 @@
         {
           "actor_type": "service",
           "evidence_source_type": "network-policy",
-          "idempotency_key": "idem-a302369a579faeeebd5d8152",
+          "idempotency_key": "idem-b7164800f5220597234a0c9c",
           "input": {
             "action_sequence": [
               {
                 "command": "authorize_network_request",
                 "request": {
                   "direction": "outbound",
-                  "host": "finance.internal",
+                  "host": "finance.invalid",
                   "port": 443
                 }
               }
@@ -25346,7 +25346,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-f4cb4d3ba674f4b9c33ad49b",
+          "operation_id": "op-c8c4ecc14179cfe1b99cb6b8",
           "operation_spec_id": "OP-NET-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -25442,14 +25442,14 @@
         {
           "actor_type": "service",
           "evidence_source_type": "network-policy",
-          "idempotency_key": "idem-88a2e7816d894d652e2410bc",
+          "idempotency_key": "idem-87174f0f5444e9eeaa3cc5c8",
           "input": {
             "action_sequence": [
               {
                 "command": "authorize_network_request",
                 "request": {
                   "direction": "outbound",
-                  "host": "192.168.1.10",
+                  "host": "192.0.2.10",
                   "port": 22
                 }
               }
@@ -25474,7 +25474,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-81bdfe4654cc20edc9b930f2",
+          "operation_id": "op-75cbffcf907816a08d07168d",
           "operation_spec_id": "OP-NET-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -25506,14 +25506,14 @@
         {
           "actor_type": "service",
           "evidence_source_type": "network-policy",
-          "idempotency_key": "idem-3deab0907ec13d33e128543f",
+          "idempotency_key": "idem-998a5df4b1bb627ce067a2ef",
           "input": {
             "action_sequence": [
               {
                 "command": "authorize_network_request",
                 "request": {
                   "direction": "outbound",
-                  "host": "agent.example.invalid",
+                  "host": "personal-agent.invalid",
                   "port": 443
                 }
               }
@@ -25538,7 +25538,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-d347d9fe2f586b8885ace009",
+          "operation_id": "op-09bffb71bd1bde8a1b53d771",
           "operation_spec_id": "OP-NET-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -114310,7 +114310,7 @@
     }
   },
   "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
-  "operation_registry_sha256": "a396b9d57bf5e7a214f8ce33f26b5c36bc853e2f220c3464911e634b2404bb72",
+  "operation_registry_sha256": "52f97aeca9e5445bbc0e8b60127f04c682c2b2b60e4ad0fc66bcc105321df33d",
   "schema_version": "dal.test-fixture-catalog/1.0",
   "transition_registry_sha256": "c9ddb46cde67a9cdbc04294ee2e7b1299dea9b00384779471d4b62d2044ec0a8"
 }

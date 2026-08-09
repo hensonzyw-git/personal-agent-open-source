@@ -16,6 +16,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from dal_jcs import canonical_bytes
+
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_GENERATED_DIR = ROOT / "manifests"
@@ -53,10 +55,6 @@ ORACLE_RESULT_FIELDS = {
 
 class AuthorityVerificationError(ValueError):
     """The generated family is not semantically identical to the authority."""
-
-
-def canonical_bytes(value: object) -> bytes:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
 
 
 def digest(value: object) -> str:

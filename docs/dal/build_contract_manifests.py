@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from dal_jcs import canonical_bytes
+
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "manifests"
@@ -153,12 +155,6 @@ def default_applied_write_set(entity_type: str, event_trace: list[str]) -> list[
     if "decision.created" in events:
         return ["decision", "decision_projection", "operation_receipt", "audit"]
     return list(BASE_WRITES)
-
-
-def canonical_bytes(value: object) -> bytes:
-    # All contract objects intentionally use only strings, integers, booleans,
-    # null, arrays and objects, for which this is RFC 8785 JCS-compatible.
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
 
 
 def digest(value: object) -> str:
@@ -481,9 +477,9 @@ def semantic_operation_input(
         results = [{"source": "eval_sandbox", "status": "policy_violation"}]
     elif test_id == "DAL-T-NET-001":
         request = {
-            "finance": {"direction": "outbound", "host": "finance.internal", "port": 443},
-            "personal_agent_prod": {"direction": "outbound", "host": "agent.example.invalid", "port": 443},
-            "lan": {"direction": "outbound", "host": "192.168.1.10", "port": 22},
+            "finance": {"direction": "outbound", "host": "finance.invalid", "port": 443},
+            "personal_agent_prod": {"direction": "outbound", "host": "personal-agent.invalid", "port": 443},
+            "lan": {"direction": "outbound", "host": "192.0.2.10", "port": 22},
             "inbound_listener": {"direction": "inbound", "bind": "0.0.0.0", "port": 8080},
         }[variant]
         actions, facts, results = ([{"command": "authorize_network_request", "request": request}], {"profile": "dal-worker-isolated", "allowed_destinations": [], "inbound_listeners_allowed": False}, [{"source": "network_policy", "status": "denied", "credential_bytes_sent": 0}])
@@ -631,17 +627,82 @@ def evidence_claim_fields(schema_version: str) -> dict[str, str]:
     }
     if name in exact:
         return exact[name]
+
+    # Every supported evidence version is deliberately named here.  Profiles
+    # remove repetition but do not infer authority from substrings: adding a
+    # schema without an explicit entry is a hard error.
+    schema_profiles = {
+        "approval": ("approval",),
+        "auth-probe": (),
+        "budget-approval": ("approval", "provider"),
+        "budget": ("provider",),
+        "cancellation-impact": (),
+        "checkpoint": (),
+        "completion": (),
+        "decision": ("approval",),
+        "deploy-approval": ("approval",),
+        "deployment-intent": (),
+        "drift-probe": (),
+        "effect-claim": ("effect",),
+        "effect-dispatch": ("effect", "git"),
+        "effect-inventory": ("effect",),
+        "effect-rearm": ("effect",),
+        "effect-unknown": ("effect",),
+        "executor-termination": (),
+        "feature": (),
+        "git-readback": ("git",),
+        "github-merge-intent": ("git",),
+        "lease": (),
+        "merge-approval": ("approval", "git"),
+        "patch": ("git",),
+        "plan-approval": ("approval", "git"),
+        "plan-start": ("git",),
+        "plan": ("git",),
+        "policy-failure": (),
+        "policy-replan": ("git",),
+        "post-effect-failure": ("effect", "recovery"),
+        "post-effect-readback": ("effect", "recovery"),
+        "pr-snapshot": ("git",),
+        "prerequisite": (),
+        "production-verification": (),
+        "provider-contract-replan": ("provider", "git"),
+        "provider-failure": ("provider",),
+        "provider-start": ("provider",),
+        "reconciliation-claim": ("effect",),
+        "recovery-approval": ("approval", "recovery"),
+        "recovery-cancellation": ("recovery",),
+        "recovery-capability": ("recovery",),
+        "recovery-effect-inventory": ("effect", "recovery"),
+        "recovery-execution": ("recovery",),
+        "recovery-investigation": ("recovery",),
+        "recovery-policy": ("recovery",),
+        "recovery-reinvestigation": ("recovery",),
+        "recovery-verification": ("recovery",),
+        "requirement-answer": (),
+        "requirement-gap": (),
+        "review-loop-decision": ("approval", "provider"),
+        "review-loop": ("provider",),
+        "review": (),
+        "revision": (),
+        "state-drift": (),
+        "test-decision": ("approval",),
+        "test-receipt": ("effect",),
+    }
+    # Special schemas above are also explicit members of the closed set.
+    supported_names = set(schema_profiles) | set(exact)
+    if name not in supported_names:
+        raise ValueError(f"unknown evidence schema requires explicit field freeze: {schema_version}")
+
+    profile_fields = {
+        "approval": {"decision_id": "string", "decision_action": "string", "expires_at": "date-time"},
+        "effect": {"effect_scope_key": "string", "remote_idempotency_key": "string", "effect_state": "effect-state"},
+        "provider": {"run_id": "string", "observed_count": "integer", "configured_limit": "integer"},
+        "git": {"repository_id": "string", "base_sha": "sha1", "artifact_digest": "sha256"},
+        "recovery": {"source_effect_ids": "string-array", "authoritative_readback_sha256": "sha256"},
+    }
     fields: dict[str, str] = {"artifact_sha256": "sha256", "fact_version": "integer"}
-    if any(token in name for token in ("approval", "decision")):
-        fields.update({"decision_id": "string", "decision_action": "string", "expires_at": "date-time"})
-    if any(token in name for token in ("effect", "reconciliation", "dispatch", "claim", "receipt", "rearm")):
-        fields.update({"effect_scope_key": "string", "remote_idempotency_key": "string", "effect_state": "effect-state"})
-    if any(token in name for token in ("provider", "budget", "review-loop")):
-        fields.update({"run_id": "string", "observed_count": "integer", "configured_limit": "integer"})
-    if any(token in name for token in ("git", "merge", "pr-", "patch", "plan")):
-        fields.update({"repository_id": "string", "base_sha": "sha1", "artifact_digest": "sha256"})
-    if any(token in name for token in ("recovery", "post-effect")):
-        fields.update({"source_effect_ids": "string-array", "authoritative_readback_sha256": "sha256"})
+    for profile in schema_profiles[name]:
+        fields.update(profile_fields[profile])
     return fields
 
 
@@ -3116,6 +3177,18 @@ def main() -> None:
             str(OUT),
             "--authority",
             str(ROOT / "manifests" / "transition-oracle-authority_v1.0.json"),
+            "--mutation-self-test",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "verify_operation_oracle_authority.py"),
+            "--generated-dir",
+            str(OUT),
+            "--authority",
+            str(ROOT / "manifests" / "operation-oracle-authority_v1.0.json"),
             "--mutation-self-test",
         ],
         check=True,

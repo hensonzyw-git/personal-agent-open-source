@@ -39,6 +39,7 @@ def main() -> None:
                 source.replace(SOURCE_ROW, replacement),
                 encoding="utf-8",
             )
+            shutil.copy2(ROOT / "dal_jcs.py", case_root)
             shutil.copy2(ROOT / "verify_transition_oracle_authority.py", case_root)
             shutil.copy2(ROOT / "manifests" / "transition-oracle-authority_v1.0.json", manifests)
             result = subprocess.run(
