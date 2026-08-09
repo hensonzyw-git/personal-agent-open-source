@@ -41,6 +41,7 @@ OPERATION_COMMAND_TYPES = {
     "DAL-T-NOTIFY-001": "deliver_notification",
     "DAL-T-PROVIDER-ROUTE-001": "route_provider_attempt",
     "DAL-T-RESTART-001": "resume_persisted_run",
+    "DAL-T-EFFECT-OWNERSHIP-001": "dispatch_effect_outcome_sequence",
 }
 OPERATION_BINDINGS = {
     "DAL-T-CMD-IDEMPOTENCY-001": ("service", "planner"),
@@ -53,6 +54,7 @@ OPERATION_BINDINGS = {
     "DAL-T-NOTIFY-001": ("service", "notification-delivery"),
     "DAL-T-PROVIDER-ROUTE-001": ("service", "provider-adapter"),
     "DAL-T-RESTART-001": ("service", "workflow-service"),
+    "DAL-T-EFFECT-OWNERSHIP-001": ("service", "workflow-service"),
 }
 WRITE_SETS = {
     "A": BASE_WRITES,
@@ -237,8 +239,13 @@ def guard_clauses(guard_id: str, to_state: str) -> list[dict]:
         "CANCEL_CONFIRMED_EFFECTS_AND_NO_UNKNOWN_EFFECTS": [{"field": "effect_inventory.confirmed_count", "operator": "greater_than", "value": 0}, {"field": "effect_inventory.unknown_or_reconciling_count", "operator": "equals", "value": 0}],
         "NO_EXTERNAL_INTENT": [{"field": "effect_inventory.intent_count", "operator": "equals", "value": 0}],
         "UNKNOWN_EXTERNAL_EFFECT": [{"field": "effect_inventory.unknown_or_reconciling_count", "operator": "greater_than", "value": 0}],
-        "EFFECT_IS_MERGE": [{"field": "external_effect.kind", "operator": "equals", "value": "merge"}, {"field": "external_effect.state", "operator": "equals", "value": "reconciling"}],
-        "EFFECT_IS_DEPLOY": [{"field": "external_effect.kind", "operator": "equals", "value": "deploy"}, {"field": "external_effect.state", "operator": "equals", "value": "reconciling"}],
+        "EFFECT_IS_MERGE": [{"field": "external_effect.kind", "operator": "equals", "value": "merge"}, {"field": "external_effect.state", "operator": "equals", "value": "reconciling"}, {"field": "external_effect.owner_aggregate_type", "operator": "equals", "value": "feature"}, {"field": "external_effect.owner_aggregate_id_matches_root", "operator": "equals", "value": True}],
+        "EFFECT_IS_DEPLOY": [{"field": "external_effect.kind", "operator": "equals", "value": "deploy"}, {"field": "external_effect.state", "operator": "equals", "value": "reconciling"}, {"field": "external_effect.owner_aggregate_type", "operator": "equals", "value": "feature"}, {"field": "external_effect.owner_aggregate_id_matches_root", "operator": "equals", "value": True}],
+        "MATCHING_MANAGED_MERGE_EFFECT": [{"field": "external_effect.kind", "operator": "equals", "value": "merge"}, {"field": "external_effect.state", "operator": "equals", "value": "dispatch_started"}, {"field": "external_effect.owner_aggregate_type", "operator": "equals", "value": "feature"}, {"field": "external_effect.owner_aggregate_id_matches_root", "operator": "equals", "value": True}],
+        "MATCHING_MANAGED_DEPLOY_EFFECT": [{"field": "external_effect.kind", "operator": "equals", "value": "deploy"}, {"field": "external_effect.state", "operator": "equals", "value": "dispatch_started"}, {"field": "external_effect.owner_aggregate_type", "operator": "equals", "value": "feature"}, {"field": "external_effect.owner_aggregate_id_matches_root", "operator": "equals", "value": True}],
+        "RECOVERY_EFFECT_DISPATCHED_AND_RECEIPT": [{"field": "external_effect.state", "operator": "equals", "value": "dispatch_started"}, {"field": "external_effect.owner_aggregate_type", "operator": "equals", "value": "recovery_case"}, {"field": "external_effect.owner_aggregate_id_matches_root", "operator": "equals", "value": True}, {"field": "evidence.authoritative_receipt_valid", "operator": "equals", "value": True}],
+        "RECOVERY_EFFECT_MATCHING_SCOPE_KEY_TARGET_AND_RECEIPT": [{"field": "external_effect.owner_aggregate_type", "operator": "equals", "value": "recovery_case"}, {"field": "recovery_case.state", "operator": "equals", "value": "blocked"}, {"field": "evidence.scope_key_matches", "operator": "equals", "value": True}, {"field": "evidence.target_matches", "operator": "equals", "value": True}, {"field": "evidence.authoritative_receipt_valid", "operator": "equals", "value": True}],
+        "RECOVERY_EFFECT_MATCHING_SCOPE_KEY_TARGET_AND_NOT_EXECUTED_PROOF": [{"field": "external_effect.owner_aggregate_type", "operator": "equals", "value": "recovery_case"}, {"field": "recovery_case.state", "operator": "equals", "value": "blocked"}, {"field": "evidence.scope_key_matches", "operator": "equals", "value": True}, {"field": "evidence.target_matches", "operator": "equals", "value": True}, {"field": "evidence.not_executed_readback_valid", "operator": "equals", "value": True}],
         "MATCHING_SCOPE_KEY_TARGET_AND_RECEIPT": [{"field": "evidence.scope_key_matches", "operator": "equals", "value": True}, {"field": "evidence.target_matches", "operator": "equals", "value": True}, {"field": "evidence.authoritative_receipt_valid", "operator": "equals", "value": True}],
         "MATCHING_SCOPE_KEY_TARGET_AND_NOT_EXECUTED_PROOF": [{"field": "evidence.scope_key_matches", "operator": "equals", "value": True}, {"field": "evidence.target_matches", "operator": "equals", "value": True}, {"field": "evidence.not_executed_readback_valid", "operator": "equals", "value": True}],
         "CAPABILITY_AND_LEASE_EPOCH_CURRENT": [{"field": "capability.epoch_current", "operator": "equals", "value": True}, {"field": "lease.epoch_current", "operator": "equals", "value": True}],
@@ -254,8 +261,8 @@ def guard_clauses(guard_id: str, to_state: str) -> list[dict]:
         "CAPABILITY_EPOCH_REVOKED_AND_NEW_PLAN": [{"field": "capability.previous_epoch_revoked", "operator": "equals", "value": True}, {"field": "plan.new_approval_valid", "operator": "equals", "value": True}],
         "CURRENT_FACT_AND_NEW_ARTIFACT_APPROVAL_VALID": [{"field": "evidence.current_fact_readback_valid", "operator": "equals", "value": True}, {"field": "artifact.new_approval_valid", "operator": "equals", "value": True}],
         "DRIFT_PROBE_VALID_AND_NEW_LEASE": [{"field": "drift_probe.matches_checkpoint", "operator": "equals", "value": True}, {"field": "lease.new_epoch_current", "operator": "equals", "value": True}],
-        "EFFECT_CONFIRMED_COMPLETED_NONSTATE": [{"field": "external_effect.state", "operator": "equals", "value": "confirmed_completed"}, {"field": "external_effect.changes_feature_state", "operator": "equals", "value": False}],
-        "EFFECT_CONFIRMED_NOT_EXECUTED": [{"field": "external_effect.state", "operator": "equals", "value": "confirmed_not_executed"}],
+        "EFFECT_RECONCILING_COMPLETED_NONSTATE": [{"field": "external_effect.state", "operator": "equals", "value": "reconciling"}, {"field": "external_effect.owner_aggregate_type", "operator": "equals", "value": "feature"}, {"field": "external_effect.owner_aggregate_id_matches_root", "operator": "equals", "value": True}, {"field": "external_effect.changes_feature_state", "operator": "equals", "value": False}, {"field": "evidence.effect_state", "operator": "equals", "value": "confirmed_completed"}],
+        "EFFECT_RECONCILING_NOT_EXECUTED": [{"field": "external_effect.state", "operator": "equals", "value": "reconciling"}, {"field": "external_effect.owner_aggregate_type", "operator": "equals", "value": "feature"}, {"field": "external_effect.owner_aggregate_id_matches_root", "operator": "equals", "value": True}, {"field": "evidence.effect_state", "operator": "equals", "value": "confirmed_not_executed"}],
         "EXECUTOR_TERMINATED_AND_NEVER_DISPATCHED": [{"field": "executor.terminated", "operator": "equals", "value": True}, {"field": "external_effect.dispatch_marker_exists", "operator": "equals", "value": False}],
         "EXECUTOR_TERMINATION_OR_DISPATCH_NOT_PROVABLE": [{"field": "executor.failure_shape", "operator": "in", "value": ["executor_terminated", "dispatch_not_provable"]}],
         "GIT_READBACK_AND_NEW_BASE_APPROVAL_VALID": [{"field": "git.authoritative_readback_valid", "operator": "equals", "value": True}, {"field": "git.new_base_approval_valid", "operator": "equals", "value": True}],
@@ -276,6 +283,8 @@ def guard_clauses(guard_id: str, to_state: str) -> list[dict]:
         "G5_REQUIRED_AND_NO_OPEN_SAFETY_OR_POLICY_INCIDENT": ["G5_REQUIRED", "NO_OPEN_SAFETY_OR_POLICY_INCIDENT"],
         "G5_REQUIRED_AND_NO_OPEN_SAFETY_OR_POLICY_INCIDENT_AND_APPROVAL_ACTION_RECEIPT": ["G5_REQUIRED", "NO_OPEN_SAFETY_OR_POLICY_INCIDENT", "APPROVAL_ACTION_RECEIPT"],
         "G5_REQUIRED_AND_NO_OPEN_SAFETY_OR_POLICY_INCIDENT_AND_OBSERVED_DEPLOY_ACTION_RECEIPT_VALID_AT_DEPLOYED_AT": ["G5_REQUIRED", "NO_OPEN_SAFETY_OR_POLICY_INCIDENT", "OBSERVED_DEPLOY_ACTION_RECEIPT_VALID_AT_DEPLOYED_AT"],
+        "G5_REQUIRED_AND_MATCHING_MANAGED_MERGE_EFFECT": ["G5_REQUIRED", "MATCHING_MANAGED_MERGE_EFFECT"],
+        "G5_REQUIRED_AND_NO_OPEN_SAFETY_OR_POLICY_INCIDENT_AND_MATCHING_MANAGED_DEPLOY_EFFECT": ["G5_REQUIRED", "NO_OPEN_SAFETY_OR_POLICY_INCIDENT", "MATCHING_MANAGED_DEPLOY_EFFECT"],
     }
     if base in composite_parts:
         for part in composite_parts[base]:
@@ -456,7 +465,8 @@ def build_transition_registry() -> tuple[list[dict], str]:
         "SM-DEPLOYED-OBSERVED": "G5_REQUIRED_AND_NO_OPEN_SAFETY_OR_POLICY_INCIDENT_AND_OBSERVED_DEPLOY_ACTION_RECEIPT_VALID_AT_DEPLOYED_AT",
         "SM-DEPLOYED-OBSERVED-UNAPPROVED": "OBSERVED_DEPLOY_WITHOUT_VALID_ACTION_RECEIPT",
         "SM-DEPLOY-INTENT": "G5_REQUIRED_AND_NO_OPEN_SAFETY_OR_POLICY_INCIDENT",
-        "SM-DEPLOYED": "G5_REQUIRED_AND_NO_OPEN_SAFETY_OR_POLICY_INCIDENT",
+        "SM-MERGED-DISPATCHED": "G5_REQUIRED_AND_MATCHING_MANAGED_MERGE_EFFECT",
+        "SM-DEPLOYED": "G5_REQUIRED_AND_NO_OPEN_SAFETY_OR_POLICY_INCIDENT_AND_MATCHING_MANAGED_DEPLOY_EFFECT",
         "SM-COMPLETE-MERGED": "NO_OPEN_SAFETY_OR_POLICY_INCIDENT",
         "SM-COMPLETE-DEPLOYED": "NO_OPEN_SAFETY_OR_POLICY_INCIDENT",
     }
@@ -552,7 +562,7 @@ def build_transition_registry() -> tuple[list[dict], str]:
         ))
 
     for target in unknown_sources:
-        for suffix, guard in (("NOT-EXECUTED", "EFFECT_CONFIRMED_NOT_EXECUTED"), ("COMPLETED-NONSTATE", "EFFECT_CONFIRMED_COMPLETED_NONSTATE")):
+        for suffix, guard in (("NOT-EXECUTED", "EFFECT_RECONCILING_NOT_EXECUTED"), ("COMPLETED-NONSTATE", "EFFECT_RECONCILING_COMPLETED_NONSTATE")):
             add(spec(f"RECONCILE-{suffix}--{target}", "reconciliation_required", target, "resume_checkpoint", "feature.resumed", ["human"], ["registered-device", "external-effect-controller"], ["EXTERNAL_RESULT_UNKNOWN"], "dal.evidence.reconciliation/1.0", "resume_checkpoint", "R", f"{guard}_AND_CHECKPOINT_{target.upper()}"))
     add(spec("RECONCILE-MERGE", "reconciliation_required", "merged", "accept_merge_result", "merge.completed", ["human"], ["registered-device", "github-control"], ["EXTERNAL_RESULT_UNKNOWN"], "dal.evidence.github-observed-merge/1.0", "accept_merge_result", "R", "EFFECT_IS_MERGE"))
     add(spec("RECONCILE-DEPLOY", "reconciliation_required", "deployed", "accept_deploy_result", "deployment.completed", ["human"], ["registered-device", "delivery-control"], ["EXTERNAL_RESULT_UNKNOWN"], "dal.evidence.observed-deployment/1.0", "accept_deploy_result", "R", "EFFECT_IS_DEPLOY"))
@@ -623,14 +633,13 @@ def build_transition_registry() -> tuple[list[dict], str]:
     effect_specs = [
         ("EE-CLAIM", "intent_recorded", "claimed", "claim_external_effect", "external_effect.claimed", ["service"], ["external-effect-controller"], "dal.evidence.effect-claim/1.0", None, [*EFFECT_BASE_WRITES, "executor_claim"], "CAPABILITY_AND_LEASE_EPOCH_CURRENT"),
         ("EE-DISPATCH", "claimed", "dispatch_started", "record_effect_dispatch", "external_effect.dispatch_started", ["service"], ["effect-executor"], "dal.evidence.effect-dispatch/1.0", None, [*EFFECT_BASE_WRITES, "dispatch_marker"], "MATCHING_EXECUTOR_CLAIM"),
-        ("EE-CONFIRM-COMPLETED", "dispatch_started", "confirmed_completed", "record_effect_completed", "external_effect.outcome_recorded", ["service"], ["counterparty-adapter"], "dal.evidence.counterparty-receipt/1.0", None, [*EFFECT_BASE_WRITES, "authoritative_receipt", "notification_outbox"], "MATCHING_SCOPE_KEY_TARGET_AND_RECEIPT"),
         ("EE-CONFIRM-NOT-EXECUTED", "dispatch_started", "confirmed_not_executed", "record_effect_not_executed", "external_effect.outcome_recorded", ["service"], ["counterparty-adapter"], "dal.evidence.authoritative-post-read/1.0", None, [*EFFECT_BASE_WRITES, "authoritative_post_read", "notification_outbox"], "MATCHING_SCOPE_KEY_TARGET_AND_NOT_EXECUTED_PROOF"),
         ("EE-CLAIM-RELEASE", "claimed", "intent_recorded", "release_expired_effect_claim", "external_effect.claim_released", ["service"], ["external-effect-controller"], "dal.evidence.executor-termination/1.0", None, [*EFFECT_BASE_WRITES, "executor_claim_release"], "EXECUTOR_TERMINATED_AND_NEVER_DISPATCHED"),
         ("EE-CLAIM-UNKNOWN", "claimed", "unknown", "record_effect_unknown", "external_effect.unknown", ["service"], ["external-effect-controller"], "dal.evidence.effect-unknown/1.0", None, [*EFFECT_BASE_WRITES, "decision_create", "decision_projection", "notification_outbox"], "EXECUTOR_TERMINATION_OR_DISPATCH_NOT_PROVABLE"),
         ("EE-DISPATCH-UNKNOWN", "dispatch_started", "unknown", "record_effect_unknown", "external_effect.unknown", ["service"], ["external-effect-controller"], "dal.evidence.effect-unknown/1.0", None, [*EFFECT_BASE_WRITES, "decision_create", "decision_projection", "notification_outbox"], "RESPONSE_LOST_OR_EXECUTOR_TERMINATED"),
         ("EE-RECONCILE-START", "unknown", "reconciling", "start_effect_reconciliation", "external_effect.reconciling", ["service"], ["external-effect-controller"], "dal.evidence.reconciliation-claim/1.0", None, [*EFFECT_BASE_WRITES, "reconciler_claim"], "SINGLE_RECONCILER_CLAIM"),
-        ("EE-RECONCILE-COMPLETED", "reconciling", "confirmed_completed", "record_reconciled_completed", "external_effect.reconciled", ["service"], ["counterparty-adapter"], "dal.evidence.counterparty-receipt/1.0", None, [*EFFECT_BASE_WRITES, "authoritative_receipt", "notification_outbox"], "MATCHING_SCOPE_KEY_TARGET_AND_RECEIPT"),
-        ("EE-RECONCILE-NOT-EXECUTED", "reconciling", "confirmed_not_executed", "record_reconciled_not_executed", "external_effect.reconciled", ["service"], ["counterparty-adapter"], "dal.evidence.authoritative-post-read/1.0", None, [*EFFECT_BASE_WRITES, "authoritative_post_read", "notification_outbox"], "MATCHING_SCOPE_KEY_TARGET_AND_NOT_EXECUTED_PROOF"),
+        ("EE-RECONCILE-COMPLETED", "reconciling", "confirmed_completed", "record_reconciled_completed", "external_effect.reconciled", ["service"], ["counterparty-adapter"], "dal.evidence.counterparty-receipt/1.0", None, [*EFFECT_BASE_WRITES, "authoritative_receipt", "notification_outbox"], "RECOVERY_EFFECT_MATCHING_SCOPE_KEY_TARGET_AND_RECEIPT"),
+        ("EE-RECONCILE-NOT-EXECUTED", "reconciling", "confirmed_not_executed", "record_reconciled_not_executed", "external_effect.reconciled", ["service"], ["counterparty-adapter"], "dal.evidence.authoritative-post-read/1.0", None, [*EFFECT_BASE_WRITES, "authoritative_post_read", "notification_outbox"], "RECOVERY_EFFECT_MATCHING_SCOPE_KEY_TARGET_AND_NOT_EXECUTED_PROOF"),
         ("EE-RECONCILE-STILL-UNKNOWN", "reconciling", "unknown", "record_reconciliation_unknown", "external_effect.unknown", ["service"], ["counterparty-adapter"], "dal.evidence.effect-unknown/1.0", None, [*EFFECT_BASE_WRITES, "decision_create", "decision_projection", "notification_outbox"], "AUTHORITATIVE_RESULT_STILL_UNKNOWN"),
         ("EE-REARM", "confirmed_not_executed", "intent_recorded", "rearm_external_effect", "external_effect.rearmed", ["human"], ["registered-device", "external-effect-controller"], "dal.evidence.effect-rearm/1.0", "rearm_external_effect", ["decision_resolve", "approval_consume", "capability_issue", *EFFECT_BASE_WRITES, "notification_outbox"], "SAME_SCOPE_KEY_NEW_APPROVAL_CAPABILITY_EPOCH_AND_ATTEMPT_INCREMENT"),
     ]
@@ -642,6 +651,10 @@ def build_transition_registry() -> tuple[list[dict], str]:
         ))
 
     by_id = {row["spec_id"]: row for row in rows}
+    by_id["EE-RECONCILE-COMPLETED"]["command_parameters"]["effect_outcome"] = "confirmed_completed"
+    by_id["EE-RECONCILE-COMPLETED"]["command_parameters"]["owner_aggregate_type"] = "recovery_case"
+    by_id["EE-RECONCILE-NOT-EXECUTED"]["command_parameters"]["owner_aggregate_type"] = "recovery_case"
+    by_id["RC-EXECUTED"]["guard_id"] = "RECOVERY_EFFECT_DISPATCHED_AND_RECEIPT"
     observed_effect_writes = [*EFFECT_BASE_WRITES, "authoritative_post_read", "approval_action_receipt_ref", "notification_outbox"]
     unapproved_effect_writes = [*EFFECT_BASE_WRITES, "authoritative_post_read", "incident_decision", "decision_projection", "notification_outbox"]
     companion_map = {
@@ -656,8 +669,15 @@ def build_transition_registry() -> tuple[list[dict], str]:
         "RECOVERY-OPEN--POST-EFFECT": [companion("RC-CREATE-POST-EFFECT", "recovery_case", None, "investigating", "recovery_case.created", ["dal.evidence.recovery-proposal/1.0", "dal.evidence.post-effect-readback/1.0"], RECOVERY_BASE_WRITES, "recovery_case")],
         "RECONCILE-OPEN-RECOVERY": [companion("RC-CREATE-RECONCILIATION", "recovery_case", None, "investigating", "recovery_case.created", ["dal.evidence.recovery-proposal/1.0", "dal.evidence.effect-inventory/1.0"], RECOVERY_BASE_WRITES, "recovery_case")],
         "RC-START": [companion("EE-CREATE-RECOVERY-INTENT", "external_effect", None, "intent_recorded", "external_effect.intent_recorded", ["dal.evidence.recovery-capability/1.0"], EFFECT_BASE_WRITES, "external_effect")],
+        "RC-EXECUTED": [companion("EE-CLOSE-RECOVERY-EXECUTED", "external_effect", "dispatch_started", "confirmed_completed", "external_effect.outcome_recorded", ["dal.evidence.recovery-execution/1.0"], [*EFFECT_BASE_WRITES, "authoritative_receipt"], "external_effect")],
     }
     for spec_id, companions in companion_map.items():
+        for related in companions:
+            if related["aggregate_type"] == "external_effect":
+                related["owner_aggregate_type"] = by_id[spec_id]["aggregate_type"]
+                related["owner_aggregate_id_source"] = "root.aggregate_id"
+                if related["companion_id"].startswith("EE-CLOSE-"):
+                    by_id[spec_id]["command_parameters"]["effect_outcome"] = related["to_state"]
         by_id[spec_id]["atomic_companion_transitions"] = companions
         by_id[spec_id]["atomic_write_set"] = list(dict.fromkeys(
             by_id[spec_id]["atomic_write_set"] + [write for item in companions for write in item["atomic_write_set"]]
@@ -668,6 +688,12 @@ def build_transition_registry() -> tuple[list[dict], str]:
         elif row["spec_id"].startswith("RECONCILE-COMPLETED-NONSTATE--") or row["spec_id"] in {"RECONCILE-MERGE", "RECONCILE-DEPLOY"}:
             row["atomic_companion_transitions"] = [companion(f"EE-CLOSE-{row['spec_id']}", "external_effect", "reconciling", "confirmed_completed", "external_effect.reconciled", [row["evidence_schema_version"]], [*EFFECT_BASE_WRITES, "authoritative_receipt"], "external_effect")]
         if row["atomic_companion_transitions"]:
+            for related in row["atomic_companion_transitions"]:
+                if related["aggregate_type"] == "external_effect":
+                    related["owner_aggregate_type"] = row["aggregate_type"]
+                    related["owner_aggregate_id_source"] = "root.aggregate_id"
+                    if related["companion_id"].startswith("EE-CLOSE-"):
+                        row["command_parameters"]["effect_outcome"] = related["to_state"]
             row["atomic_write_set"] = list(dict.fromkeys(
                 row["atomic_write_set"] + [write for item in row["atomic_companion_transitions"] for write in item["atomic_write_set"]]
             ))
@@ -696,8 +722,15 @@ def build_transition_registry() -> tuple[list[dict], str]:
             raise ValueError(f"duplicate member in atomic write set: {row['spec_id']}")
         for related in row["atomic_companion_transitions"]:
             required_related = {"companion_id", "aggregate_type", "from_state", "to_state", "event_type", "required_evidence_schema_versions", "atomic_write_set", "success_receipt_schema", "success_receipt_code", "snapshot_key"}
+            if related["aggregate_type"] == "external_effect":
+                required_related |= {"owner_aggregate_type", "owner_aggregate_id_source"}
             if set(related) != required_related or related["aggregate_type"] == row["aggregate_type"]:
                 raise ValueError(f"invalid atomic companion transition: {row['spec_id']}")
+            if related["aggregate_type"] == "external_effect" and (
+                related["owner_aggregate_type"] != row["aggregate_type"]
+                or related["owner_aggregate_id_source"] != "root.aggregate_id"
+            ):
+                raise ValueError(f"external-effect companion owner drift: {row['spec_id']}")
         if row["evidence_schema_version"] not in row["required_evidence_schema_versions"]:
             raise ValueError(f"primary evidence schema absent from required set: {row['spec_id']}")
         if row["minimum_run_gate"] not in {"G1", "G2", "G3", "G4", "G5"}:
@@ -725,6 +758,22 @@ def build_transition_registry() -> tuple[list[dict], str]:
         }[row["aggregate_type"]]
         if row["success_receipt_schema"] != expected_receipt:
             raise ValueError(f"aggregate receipt mismatch: {row['spec_id']}")
+
+    if "EE-CONFIRM-COMPLETED" in by_id:
+        raise ValueError("completed external effect must be closed by its owner root command")
+    expected_owner_roots = {
+        "SM-MERGED-DISPATCHED": "EE-CLOSE-MANAGED-MERGE",
+        "SM-DEPLOYED": "EE-CLOSE-MANAGED-DEPLOY",
+        "RC-EXECUTED": "EE-CLOSE-RECOVERY-EXECUTED",
+    }
+    for root_spec_id, companion_id in expected_owner_roots.items():
+        companions = by_id[root_spec_id]["atomic_companion_transitions"]
+        if [item["companion_id"] for item in companions] != [companion_id] or by_id[root_spec_id]["command_parameters"]["effect_outcome"] != "confirmed_completed":
+            raise ValueError(f"effect outcome owner drift: {root_spec_id}")
+    for effect_spec_id in ("EE-RECONCILE-COMPLETED", "EE-RECONCILE-NOT-EXECUTED"):
+        row = by_id[effect_spec_id]
+        if row["command_parameters"].get("owner_aggregate_type") != "recovery_case" or not row["guard_id"].startswith("RECOVERY_EFFECT_"):
+            raise ValueError(f"top-level reconciliation owner drift: {effect_spec_id}")
     dispatch_keys = [
         (
             row["aggregate_type"], row["from_state"], row["command_type"],
@@ -752,6 +801,7 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
     oracles: dict[str, dict] = {}
     rows: list[dict] = []
     operation_specs: dict[str, dict] = {}
+    spec_by_id = {row["spec_id"]: row for row in specs}
     guard_rows = {
         row["guard_id"]: row
         for row in specs
@@ -992,6 +1042,184 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
         add(test_id, f"actor_deny--{suffix}", gate, owners, item["from_state"], item["from_state"], None, None, "POLICY_DENIED", None, [], entity_type=item["aggregate_type"], coverage_ref=item["spec_id"], transition_spec=item, transition_case="actor_deny")
         if item["guard_id"] is not None:
             add(test_id, f"guard_deny--{suffix}", gate, owners, item["from_state"], item["from_state"], None, None, "POLICY_DENIED", None, [], entity_type=item["aggregate_type"], coverage_ref=item["spec_id"], transition_spec=item, transition_case="guard_deny")
+
+    def outcome_call(
+        aggregate_type: str,
+        aggregate_id: str,
+        expected_version: int,
+        command_type: str,
+        command_parameters: dict,
+        evidence_schema_versions: list[str],
+        idempotency_suffix: str,
+        actor_type: str,
+        evidence_source_types: list[str],
+        concurrency_group: str | None = None,
+    ) -> dict:
+        value = {
+            "aggregate_type": aggregate_type,
+            "aggregate_id": aggregate_id,
+            "expected_version": expected_version,
+            "command_type": command_type,
+            "command_parameters": command_parameters,
+            "actor_type": actor_type,
+            "evidence_source_types": evidence_source_types,
+            "evidence_schema_versions": evidence_schema_versions,
+            "idempotency_key": f"fixture-idempotency:effect-ownership:{idempotency_suffix}",
+        }
+        if concurrency_group is not None:
+            value["concurrency_group"] = concurrency_group
+        return value
+
+    def outcome_sequence(
+        root_type: str,
+        root_state: str,
+        effect_state: str,
+        effect_owner_type: str,
+        commands: list[dict],
+        sequence_key: str,
+        fault_member: str | None = None,
+    ) -> list[dict]:
+        return [{
+            "schema_version": "dal.test-operation-command/1.0",
+            "operation_spec_id": "OP-EFFECT-OWNERSHIP-001",
+            "operation_id": "fixture-operation:dispatch-effect-outcome-sequence",
+            "idempotency_key": f"fixture-idempotency:dispatch-effect-outcome-sequence:{sequence_key}",
+            "actor_type": "service",
+            "evidence_source_type": "workflow-service",
+            "input": {
+                "root_snapshot": {"aggregate_type": root_type, "aggregate_id": "fixture-root", "version": 7, "state": root_state},
+                "external_effect_snapshot": {
+                    "aggregate_type": "external_effect", "aggregate_id": "fixture-effect", "version": 11,
+                    "state": effect_state, "owner_aggregate_type": effect_owner_type,
+                    "owner_aggregate_id": "fixture-root",
+                },
+                "commands": commands,
+                "fault_injection": None if fault_member is None else {"atomic_write_member": fault_member, "occurrence": 1},
+            },
+        }]
+
+    direct_completed = outcome_call(
+        "external_effect", "fixture-effect", 11, "record_effect_completed",
+        {"target_state": "confirmed_completed", "effect_outcome": None},
+        ["dal.evidence.counterparty-receipt/1.0"], "direct-completed", "service", ["counterparty-adapter"],
+    )
+    add(
+        "DAL-T-EFFECT-OWNERSHIP-001", "feature_direct_completed_command_removed", "G1", ["DAL-009", "DAL-010", "DAL-011"],
+        "awaiting_merge", "awaiting_merge", None, None, "ILLEGAL_TRANSITION", "dispatch_started", [],
+        operation_sequence=outcome_sequence("feature", "awaiting_merge", "dispatch_started", "feature", [direct_completed], "direct-completed"),
+        expected_receipts_override=[{"schema_version": "dal.external-effect-transition-receipt/1.0", "code": "ILLEGAL_TRANSITION", "count": 1}],
+        external_effect_trace=["dispatch_started", "dispatch_started"], allowed_writes=[],
+        scenario_assertions=[{"field": "root_version_increment", "operator": "equals", "value": 0}, {"field": "effect_version_increment", "operator": "equals", "value": 0}],
+        receipt_schema_override="dal.operation-receipt/1.0",
+    )
+    direct_reconcile = outcome_call(
+        "external_effect", "fixture-effect", 11, "record_reconciled_completed",
+        {"target_state": "confirmed_completed", "effect_outcome": None, "owner_aggregate_type": "recovery_case"},
+        ["dal.evidence.counterparty-receipt/1.0"], "direct-reconcile", "service", ["counterparty-adapter"],
+    )
+    add(
+        "DAL-T-EFFECT-OWNERSHIP-001", "feature_direct_reconciliation_owner_denied", "G1", ["DAL-009", "DAL-010", "DAL-011"],
+        "reconciliation_required", "reconciliation_required", "feature", "EXTERNAL_RESULT_UNKNOWN", "POLICY_DENIED", "reconciling", [],
+        operation_sequence=outcome_sequence("feature", "reconciliation_required", "reconciling", "feature", [direct_reconcile], "direct-reconcile"),
+        expected_receipts_override=[{"schema_version": "dal.external-effect-transition-receipt/1.0", "code": "POLICY_DENIED", "count": 1}],
+        external_effect_trace=["reconciling", "reconciling"], allowed_writes=[],
+        scenario_assertions=[{"field": "root_version_increment", "operator": "equals", "value": 0}, {"field": "effect_version_increment", "operator": "equals", "value": 0}],
+        receipt_schema_override="dal.operation-receipt/1.0",
+    )
+    merge_root = outcome_call(
+        "feature", "fixture-root", 7, "record_managed_merge",
+        spec_by_id["SM-MERGED-DISPATCHED"]["command_parameters"],
+        spec_by_id["SM-MERGED-DISPATCHED"]["required_evidence_schema_versions"], "merge-root", "service", ["github-control"],
+    )
+    add(
+        "DAL-T-EFFECT-OWNERSHIP-001", "rejected_effect_first_then_owner_root", "G5", ["DAL-009", "DAL-010", "DAL-011"],
+        "awaiting_merge", "merged", None, None, "APPLIED", "confirmed_completed", ["merge.completed", "external_effect.outcome_recorded"],
+        operation_sequence=outcome_sequence("feature", "awaiting_merge", "dispatch_started", "feature", [direct_completed, merge_root], "effect-first-then-root"),
+        expected_receipts_override=[
+            {"schema_version": "dal.external-effect-transition-receipt/1.0", "code": "ILLEGAL_TRANSITION", "count": 1},
+            {"schema_version": "dal.transition-receipt/1.0", "code": "APPLIED", "count": 1},
+            {"schema_version": "dal.external-effect-transition-receipt/1.0", "code": "APPLIED", "count": 1},
+        ],
+        expected_state_trace_override=["awaiting_merge", "awaiting_merge", "merged"],
+        external_effect_trace=["dispatch_started", "dispatch_started", "confirmed_completed"],
+        related_snapshots=[{"entity_type": "external_effect", "snapshot_key": "external_effect", "state": "confirmed_completed"}],
+        allowed_writes=spec_by_id["SM-MERGED-DISPATCHED"]["atomic_write_set"],
+        scenario_assertions=[{"field": "root_version_increment", "operator": "equals", "value": 1}, {"field": "effect_version_increment", "operator": "equals", "value": 1}],
+        receipt_schema_override="dal.operation-receipt/1.0",
+    )
+    merge_root_a = outcome_call(
+        "feature", "fixture-root", 7, "record_managed_merge",
+        spec_by_id["SM-MERGED-DISPATCHED"]["command_parameters"],
+        spec_by_id["SM-MERGED-DISPATCHED"]["required_evidence_schema_versions"], "merge-concurrent-a", "service", ["github-control"], "effect-owner-cas",
+    )
+    merge_root_b = outcome_call(
+        "feature", "fixture-root", 7, "record_managed_merge",
+        spec_by_id["SM-MERGED-DISPATCHED"]["command_parameters"],
+        spec_by_id["SM-MERGED-DISPATCHED"]["required_evidence_schema_versions"], "merge-concurrent-b", "service", ["github-control"], "effect-owner-cas",
+    )
+    add(
+        "DAL-T-EFFECT-OWNERSHIP-001", "concurrent_owner_roots_single_winner", "G5", ["DAL-009", "DAL-010", "DAL-011"],
+        "awaiting_merge", "merged", None, None, "APPLIED", "confirmed_completed", ["merge.completed", "external_effect.outcome_recorded"],
+        operation_sequence=outcome_sequence("feature", "awaiting_merge", "dispatch_started", "feature", [merge_root_a, merge_root_b], "concurrent-roots"),
+        expected_receipts_override=[
+            {"schema_version": "dal.transition-receipt/1.0", "code": "APPLIED", "count": 1},
+            {"schema_version": "dal.external-effect-transition-receipt/1.0", "code": "APPLIED", "count": 1},
+            {"schema_version": "dal.transition-receipt/1.0", "code": "VERSION_CONFLICT", "count": 1},
+        ],
+        external_effect_trace=["dispatch_started", "confirmed_completed"],
+        related_snapshots=[{"entity_type": "external_effect", "snapshot_key": "external_effect", "state": "confirmed_completed"}],
+        allowed_writes=spec_by_id["SM-MERGED-DISPATCHED"]["atomic_write_set"],
+        scenario_assertions=[{"field": "root_version_increment", "operator": "equals", "value": 1}, {"field": "effect_version_increment", "operator": "equals", "value": 1}, {"field": "successful_root_command_count", "operator": "equals", "value": 1}],
+        receipt_schema_override="dal.operation-receipt/1.0",
+    )
+    add(
+        "DAL-T-EFFECT-OWNERSHIP-001", "companion_write_failure_rolls_back_root", "G5", ["DAL-009", "DAL-010", "DAL-011"],
+        "awaiting_merge", "awaiting_merge", None, None, None, "dispatch_started", [],
+        operation_sequence=outcome_sequence("feature", "awaiting_merge", "dispatch_started", "feature", [merge_root], "companion-failure", "external_effect_transition_receipt"),
+        expected_receipts_override=[], external_effect_trace=["dispatch_started", "dispatch_started"], allowed_writes=[],
+        scenario_assertions=[{"field": "root_version_increment", "operator": "equals", "value": 0}, {"field": "effect_version_increment", "operator": "equals", "value": 0}, {"field": "business_event_count", "operator": "equals", "value": 0}],
+        receipt_schema_override="dal.operation-receipt/1.0",
+    )
+    recovery_root = outcome_call(
+        "recovery_case", "fixture-root", 7, "record_recovery_execution",
+        spec_by_id["RC-EXECUTED"]["command_parameters"],
+        spec_by_id["RC-EXECUTED"]["required_evidence_schema_versions"], "recovery-root", "service", ["recovery-executor"],
+    )
+    add(
+        "DAL-T-EFFECT-OWNERSHIP-001", "recovery_owner_root_closes_effect", "G1", ["DAL-009", "DAL-010", "DAL-011"],
+        "executing", "verifying", None, None, "APPLIED", "confirmed_completed", ["recovery_case.verifying", "external_effect.outcome_recorded"],
+        entity_type="recovery_case",
+        operation_sequence=outcome_sequence("recovery_case", "executing", "dispatch_started", "recovery_case", [recovery_root], "recovery-root"),
+        expected_receipts_override=[
+            {"schema_version": "dal.recovery-transition-receipt/1.0", "code": "APPLIED", "count": 1},
+            {"schema_version": "dal.external-effect-transition-receipt/1.0", "code": "APPLIED", "count": 1},
+        ],
+        external_effect_trace=["dispatch_started", "confirmed_completed"],
+        related_snapshots=[{"entity_type": "external_effect", "snapshot_key": "external_effect", "state": "confirmed_completed"}],
+        allowed_writes=spec_by_id["RC-EXECUTED"]["atomic_write_set"],
+        scenario_assertions=[{"field": "root_version_increment", "operator": "equals", "value": 1}, {"field": "effect_version_increment", "operator": "equals", "value": 1}],
+        receipt_schema_override="dal.operation-receipt/1.0",
+    )
+    reconcile_root_spec = spec_by_id["RECONCILE-NOT-EXECUTED--coding"]
+    reconcile_root = outcome_call(
+        "feature", "fixture-root", 7, "resume_checkpoint",
+        reconcile_root_spec["command_parameters"], reconcile_root_spec["required_evidence_schema_versions"], "feature-reconcile-root",
+        reconcile_root_spec["actor_evidence_bindings"][0]["actor_type"], reconcile_root_spec["actor_evidence_bindings"][0]["required_evidence_source_types"],
+    )
+    add(
+        "DAL-T-EFFECT-OWNERSHIP-001", "feature_reconciliation_root_closes_effect", "G1", ["DAL-009", "DAL-010", "DAL-011"],
+        "reconciliation_required", "coding", None, None, "APPLIED", "confirmed_not_executed", ["feature.resumed", "external_effect.reconciled"],
+        operation_sequence=outcome_sequence("feature", "reconciliation_required", "reconciling", "feature", [reconcile_root], "feature-reconcile-root"),
+        expected_receipts_override=[
+            {"schema_version": "dal.transition-receipt/1.0", "code": "APPLIED", "count": 1},
+            {"schema_version": "dal.external-effect-transition-receipt/1.0", "code": "APPLIED", "count": 1},
+        ],
+        external_effect_trace=["reconciling", "confirmed_not_executed"],
+        related_snapshots=[{"entity_type": "external_effect", "snapshot_key": "external_effect", "state": "confirmed_not_executed"}],
+        allowed_writes=reconcile_root_spec["atomic_write_set"],
+        scenario_assertions=[{"field": "root_version_increment", "operator": "equals", "value": 1}, {"field": "effect_version_increment", "operator": "equals", "value": 1}],
+        receipt_schema_override="dal.operation-receipt/1.0",
+    )
 
     def many(test: str, variants: list[str], gate: str, owners: list[str], pre: str | None, final: str | None, reason_owner: str | None, reason: str | None, code: str | None, effect: str | None, events: list[str], entity: str = "feature", allowed_writes: list[str] | None = None, receipt_schema_override: str | None = None) -> None:
         for variant in variants:

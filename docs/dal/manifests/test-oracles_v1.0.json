@@ -1,8 +1,8 @@
 {
-  "catalog_sha256": "e71289e6c6fc4552a4abf5f5bfa77b0bb119246f7ddee7ab5c0c7f804373112a",
+  "catalog_sha256": "678adf5ac4e43c02e7305dc1583dc747f0b7940eaa54511f57ffd80e60cdefcf",
   "evidence_registry_sha256": "72e98bbdfaded240249e5c969c6a950ccefe3d878ffc3756e548c5d98b03c041",
-  "guard_registry_sha256": "840a7256dc1fb68e43faf0f42c644841ffa2dfbe042994ae99784ee66f708518",
-  "operation_registry_sha256": "14d89d5a3fb543cff913b8cf9c582b4afd755acb795094d0dc7d3576d6a237ab",
+  "guard_registry_sha256": "091396081be0b2a55b584d446d5ea67ecf2fe4ea75991acbf709eabff1b50bbf",
+  "operation_registry_sha256": "1e4548870420d5efaba0dc08cb6a5e68099a5dcccc85d2162a1c1ba4579d93bb",
   "oracles": {
     "dal.oracle/DAL-T-APP-001/concurrent_consume/G1/1.0": {
       "allowed_write_set": [
@@ -3356,6 +3356,550 @@
       "test_id": "DAL-T-DOCK-001",
       "variant_id": "tie"
     },
+    "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/companion_write_failure_rolls_back_root/G5/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "dispatch_started"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "awaiting_merge"
+      },
+      "expected_receipts": [],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "awaiting_merge",
+        "awaiting_merge"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EFFECT-OWNERSHIP-001/companion_write_failure_rolls_back_root/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "companion_write_failure_rolls_back_root",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "awaiting_merge",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "business_event_count",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
+      "variant_id": "companion_write_failure_rolls_back_root"
+    },
+    "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/concurrent_owner_roots_single_winner/G5/1.0": {
+      "allowed_write_set": [
+        "external_effect_outcome",
+        "authoritative_post_read",
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "external_effect",
+        "external_effect_transition_receipt",
+        "authoritative_receipt"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "merge.completed",
+        "external_effect.outcome_recorded"
+      ],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "confirmed_completed"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "merged"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        },
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.external-effect-transition-receipt/1.0"
+        },
+        {
+          "code": "VERSION_CONFLICT",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [
+        {
+          "entity_type": "external_effect",
+          "snapshot_key": "external_effect",
+          "state": "confirmed_completed"
+        }
+      ],
+      "expected_state_trace": [
+        "awaiting_merge",
+        "merged"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EFFECT-OWNERSHIP-001/concurrent_owner_roots_single_winner/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "concurrent_owner_roots_single_winner",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "awaiting_merge",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "successful_root_command_count",
+          "operator": "equals",
+          "value": 1
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
+      "variant_id": "concurrent_owner_roots_single_winner"
+    },
+    "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/feature_direct_completed_command_removed/G1/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "dispatch_started"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "awaiting_merge"
+      },
+      "expected_receipts": [
+        {
+          "code": "ILLEGAL_TRANSITION",
+          "count": 1,
+          "schema_version": "dal.external-effect-transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "awaiting_merge",
+        "awaiting_merge"
+      ],
+      "forbidden_side_effects": [
+        "provider_call",
+        "github_write",
+        "worker_start",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EFFECT-OWNERSHIP-001/feature_direct_completed_command_removed/G1/1.0",
+        "occurrence": 1,
+        "operation_id": "feature_direct_completed_command_removed",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "awaiting_merge",
+        "version": 7
+      },
+      "run_gate": "G1",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
+      "variant_id": "feature_direct_completed_command_removed"
+    },
+    "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/feature_direct_reconciliation_owner_denied/G1/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "reconciling",
+        "reconciling"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "EXTERNAL_RESULT_UNKNOWN",
+        "reason_owner": "feature",
+        "state": "reconciliation_required"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.external-effect-transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reconciliation_required",
+        "reconciliation_required"
+      ],
+      "forbidden_side_effects": [
+        "provider_call",
+        "github_write",
+        "worker_start",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EFFECT-OWNERSHIP-001/feature_direct_reconciliation_owner_denied/G1/1.0",
+        "occurrence": 1,
+        "operation_id": "feature_direct_reconciliation_owner_denied",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reconciliation_required",
+        "version": 7
+      },
+      "run_gate": "G1",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
+      "variant_id": "feature_direct_reconciliation_owner_denied"
+    },
+    "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/feature_reconciliation_root_closes_effect/G1/1.0": {
+      "allowed_write_set": [
+        "external_effect_outcome",
+        "authoritative_post_read",
+        "decision_resolve",
+        "approval_consume",
+        "approval_action_receipt",
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_projection",
+        "notification_outbox",
+        "external_effect",
+        "external_effect_transition_receipt"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.resumed",
+        "external_effect.reconciled"
+      ],
+      "expected_external_effect_trace": [
+        "reconciling",
+        "confirmed_not_executed"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        },
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.external-effect-transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [
+        {
+          "entity_type": "external_effect",
+          "snapshot_key": "external_effect",
+          "state": "confirmed_not_executed"
+        }
+      ],
+      "expected_state_trace": [
+        "reconciliation_required",
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "provider_call",
+        "github_write",
+        "worker_start",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EFFECT-OWNERSHIP-001/feature_reconciliation_root_closes_effect/G1/1.0",
+        "occurrence": 1,
+        "operation_id": "feature_reconciliation_root_closes_effect",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reconciliation_required",
+        "version": 7
+      },
+      "run_gate": "G1",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 1
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
+      "variant_id": "feature_reconciliation_root_closes_effect"
+    },
+    "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/recovery_owner_root_closes_effect/G1/1.0": {
+      "allowed_write_set": [
+        "recovery_case",
+        "business_event",
+        "recovery_transition_receipt",
+        "audit",
+        "evidence",
+        "notification_outbox",
+        "external_effect",
+        "external_effect_transition_receipt",
+        "authoritative_receipt"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "recovery_case.verifying",
+        "external_effect.outcome_recorded"
+      ],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "confirmed_completed"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "recovery_case",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "verifying"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.recovery-transition-receipt/1.0"
+        },
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.external-effect-transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [
+        {
+          "entity_type": "external_effect",
+          "snapshot_key": "external_effect",
+          "state": "confirmed_completed"
+        }
+      ],
+      "expected_state_trace": [
+        "executing",
+        "verifying"
+      ],
+      "forbidden_side_effects": [
+        "provider_call",
+        "github_write",
+        "worker_start",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EFFECT-OWNERSHIP-001/recovery_owner_root_closes_effect/G1/1.0",
+        "occurrence": 1,
+        "operation_id": "recovery_owner_root_closes_effect",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "recovery_case",
+        "state": "executing",
+        "version": 7
+      },
+      "run_gate": "G1",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 1
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
+      "variant_id": "recovery_owner_root_closes_effect"
+    },
+    "dal.oracle/DAL-T-EFFECT-OWNERSHIP-001/rejected_effect_first_then_owner_root/G5/1.0": {
+      "allowed_write_set": [
+        "external_effect_outcome",
+        "authoritative_post_read",
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "external_effect",
+        "external_effect_transition_receipt",
+        "authoritative_receipt"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "merge.completed",
+        "external_effect.outcome_recorded"
+      ],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "dispatch_started",
+        "confirmed_completed"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "merged"
+      },
+      "expected_receipts": [
+        {
+          "code": "ILLEGAL_TRANSITION",
+          "count": 1,
+          "schema_version": "dal.external-effect-transition-receipt/1.0"
+        },
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        },
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.external-effect-transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [
+        {
+          "entity_type": "external_effect",
+          "snapshot_key": "external_effect",
+          "state": "confirmed_completed"
+        }
+      ],
+      "expected_state_trace": [
+        "awaiting_merge",
+        "awaiting_merge",
+        "merged"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EFFECT-OWNERSHIP-001/rejected_effect_first_then_owner_root/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "rejected_effect_first_then_owner_root",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "awaiting_merge",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 1
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
+      "variant_id": "rejected_effect_first_then_owner_root"
+    },
     "dal.oracle/DAL-T-ENDPOINT-001/host/G4/1.0": {
       "allowed_write_set": [
         "aggregate",
@@ -4313,57 +4857,6 @@
       "test_id": "DAL-T-EXTERNAL-EFFECT-001",
       "variant_id": "actor_deny--ee-claim"
     },
-    "dal.oracle/DAL-T-EXTERNAL-EFFECT-001/actor_deny--ee-confirm-completed/G1/1.0": {
-      "allowed_write_set": [],
-      "coverage_ref": "EE-CONFIRM-COMPLETED",
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [],
-      "expected_external_effect_trace": [
-        "dispatch_started",
-        "dispatch_started"
-      ],
-      "expected_final_snapshot": {
-        "entity_type": "external_effect",
-        "reason_code": null,
-        "reason_owner": null,
-        "state": "dispatch_started"
-      },
-      "expected_receipts": [
-        {
-          "code": "POLICY_DENIED",
-          "count": 1,
-          "schema_version": "dal.external-effect-transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "dispatch_started",
-        "dispatch_started"
-      ],
-      "forbidden_side_effects": [
-        "provider_call",
-        "github_write",
-        "worker_start",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-EXTERNAL-EFFECT-001/actor_deny--ee-confirm-completed/G1/1.0",
-        "occurrence": 1,
-        "operation_id": "actor_deny--ee-confirm-completed",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "external_effect",
-        "state": "dispatch_started",
-        "version": 7
-      },
-      "run_gate": "G1",
-      "scenario_assertions": [],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-EXTERNAL-EFFECT-001",
-      "variant_id": "actor_deny--ee-confirm-completed"
-    },
     "dal.oracle/DAL-T-EXTERNAL-EFFECT-001/actor_deny--ee-confirm-not-executed/G1/1.0": {
       "allowed_write_set": [],
       "coverage_ref": "EE-CONFIRM-NOT-EXECUTED",
@@ -4924,57 +5417,6 @@
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-EXTERNAL-EFFECT-001",
       "variant_id": "evidence_source_deny--ee-claim"
-    },
-    "dal.oracle/DAL-T-EXTERNAL-EFFECT-001/evidence_source_deny--ee-confirm-completed/G1/1.0": {
-      "allowed_write_set": [],
-      "coverage_ref": "EE-CONFIRM-COMPLETED",
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [],
-      "expected_external_effect_trace": [
-        "dispatch_started",
-        "dispatch_started"
-      ],
-      "expected_final_snapshot": {
-        "entity_type": "external_effect",
-        "reason_code": null,
-        "reason_owner": null,
-        "state": "dispatch_started"
-      },
-      "expected_receipts": [
-        {
-          "code": "POLICY_DENIED",
-          "count": 1,
-          "schema_version": "dal.external-effect-transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "dispatch_started",
-        "dispatch_started"
-      ],
-      "forbidden_side_effects": [
-        "provider_call",
-        "github_write",
-        "worker_start",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-EXTERNAL-EFFECT-001/evidence_source_deny--ee-confirm-completed/G1/1.0",
-        "occurrence": 1,
-        "operation_id": "evidence_source_deny--ee-confirm-completed",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "external_effect",
-        "state": "dispatch_started",
-        "version": 7
-      },
-      "run_gate": "G1",
-      "scenario_assertions": [],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-EXTERNAL-EFFECT-001",
-      "variant_id": "evidence_source_deny--ee-confirm-completed"
     },
     "dal.oracle/DAL-T-EXTERNAL-EFFECT-001/evidence_source_deny--ee-confirm-not-executed/G1/1.0": {
       "allowed_write_set": [],
@@ -5562,66 +6004,6 @@
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-EXTERNAL-EFFECT-001",
       "variant_id": "expanded_spec_allow--ee-claim"
-    },
-    "dal.oracle/DAL-T-EXTERNAL-EFFECT-001/expanded_spec_allow--ee-confirm-completed/G1/1.0": {
-      "allowed_write_set": [
-        "external_effect",
-        "business_event",
-        "external_effect_transition_receipt",
-        "audit",
-        "authoritative_receipt",
-        "notification_outbox"
-      ],
-      "coverage_ref": "EE-CONFIRM-COMPLETED",
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "external_effect.outcome_recorded"
-      ],
-      "expected_external_effect_trace": [
-        "dispatch_started",
-        "confirmed_completed"
-      ],
-      "expected_final_snapshot": {
-        "entity_type": "external_effect",
-        "reason_code": null,
-        "reason_owner": null,
-        "state": "confirmed_completed"
-      },
-      "expected_receipts": [
-        {
-          "code": "APPLIED",
-          "count": 1,
-          "schema_version": "dal.external-effect-transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "dispatch_started",
-        "confirmed_completed"
-      ],
-      "forbidden_side_effects": [
-        "provider_call",
-        "github_write",
-        "worker_start",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-EXTERNAL-EFFECT-001/expanded_spec_allow--ee-confirm-completed/G1/1.0",
-        "occurrence": 1,
-        "operation_id": "expanded_spec_allow--ee-confirm-completed",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "external_effect",
-        "state": "dispatch_started",
-        "version": 7
-      },
-      "run_gate": "G1",
-      "scenario_assertions": [],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-EXTERNAL-EFFECT-001",
-      "variant_id": "expanded_spec_allow--ee-confirm-completed"
     },
     "dal.oracle/DAL-T-EXTERNAL-EFFECT-001/expanded_spec_allow--ee-confirm-not-executed/G1/1.0": {
       "allowed_write_set": [
@@ -6257,57 +6639,6 @@
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-EXTERNAL-EFFECT-001",
       "variant_id": "guard_deny--ee-claim"
-    },
-    "dal.oracle/DAL-T-EXTERNAL-EFFECT-001/guard_deny--ee-confirm-completed/G1/1.0": {
-      "allowed_write_set": [],
-      "coverage_ref": "EE-CONFIRM-COMPLETED",
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [],
-      "expected_external_effect_trace": [
-        "dispatch_started",
-        "dispatch_started"
-      ],
-      "expected_final_snapshot": {
-        "entity_type": "external_effect",
-        "reason_code": null,
-        "reason_owner": null,
-        "state": "dispatch_started"
-      },
-      "expected_receipts": [
-        {
-          "code": "POLICY_DENIED",
-          "count": 1,
-          "schema_version": "dal.external-effect-transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "dispatch_started",
-        "dispatch_started"
-      ],
-      "forbidden_side_effects": [
-        "provider_call",
-        "github_write",
-        "worker_start",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-EXTERNAL-EFFECT-001/guard_deny--ee-confirm-completed/G1/1.0",
-        "occurrence": 1,
-        "operation_id": "guard_deny--ee-confirm-completed",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "external_effect",
-        "state": "dispatch_started",
-        "version": 7
-      },
-      "run_gate": "G1",
-      "scenario_assertions": [],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-EXTERNAL-EFFECT-001",
-      "variant_id": "guard_deny--ee-confirm-completed"
     },
     "dal.oracle/DAL-T-EXTERNAL-EFFECT-001/guard_deny--ee-confirm-not-executed/G1/1.0": {
       "allowed_write_set": [],
@@ -13693,14 +14024,43 @@
         "recovery_transition_receipt",
         "audit",
         "evidence",
-        "notification_outbox"
+        "notification_outbox",
+        "external_effect",
+        "external_effect_transition_receipt",
+        "authoritative_receipt"
       ],
       "coverage_ref": "RC-EXECUTED",
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "recovery_case.verifying"
+      "expected_atomic_companion_transitions": [
+        {
+          "aggregate_type": "external_effect",
+          "atomic_write_set": [
+            "external_effect",
+            "business_event",
+            "external_effect_transition_receipt",
+            "audit",
+            "authoritative_receipt"
+          ],
+          "companion_id": "EE-CLOSE-RECOVERY-EXECUTED",
+          "event_type": "external_effect.outcome_recorded",
+          "from_state": "dispatch_started",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "recovery_case",
+          "required_evidence_schema_versions": [
+            "dal.evidence.recovery-execution/1.0"
+          ],
+          "snapshot_key": "external_effect",
+          "success_receipt_code": "APPLIED",
+          "success_receipt_schema": "dal.external-effect-transition-receipt/1.0",
+          "to_state": "confirmed_completed"
+        }
       ],
-      "expected_external_effect_trace": [],
+      "expected_event_trace": [
+        "recovery_case.verifying",
+        "external_effect.outcome_recorded"
+      ],
+      "expected_external_effect_trace": [
+        "confirmed_completed"
+      ],
       "expected_final_snapshot": {
         "entity_type": "recovery_case",
         "reason_code": null,
@@ -13712,9 +14072,20 @@
           "code": "APPLIED",
           "count": 1,
           "schema_version": "dal.recovery-transition-receipt/1.0"
+        },
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.external-effect-transition-receipt/1.0"
         }
       ],
-      "expected_related_snapshots": [],
+      "expected_related_snapshots": [
+        {
+          "entity_type": "external_effect",
+          "snapshot_key": "external_effect",
+          "state": "confirmed_completed"
+        }
+      ],
       "expected_state_trace": [
         "executing",
         "verifying"
@@ -14414,6 +14785,8 @@
           "companion_id": "EE-CREATE-RECOVERY-INTENT",
           "event_type": "external_effect.intent_recorded",
           "from_state": null,
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "recovery_case",
           "required_evidence_schema_versions": [
             "dal.evidence.recovery-capability/1.0"
           ],
@@ -14657,6 +15030,54 @@
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-RECOVERY-001",
       "variant_id": "expanded_spec_allow--rc-verified"
+    },
+    "dal.oracle/DAL-T-RECOVERY-001/guard_deny--rc-executed/G1/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "RC-EXECUTED",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "recovery_case",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "executing"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.recovery-transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "executing",
+        "executing"
+      ],
+      "forbidden_side_effects": [
+        "provider_call",
+        "github_write",
+        "worker_start",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-RECOVERY-001/guard_deny--rc-executed/G1/1.0",
+        "occurrence": 1,
+        "operation_id": "guard_deny--rc-executed",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "recovery_case",
+        "state": "executing",
+        "version": 7
+      },
+      "run_gate": "G1",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-RECOVERY-001",
+      "variant_id": "guard_deny--rc-executed"
     },
     "dal.oracle/DAL-T-RECOVERY-001/investigation_fail/G1/1.0": {
       "allowed_write_set": [
@@ -43909,6 +44330,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--approved",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -44009,6 +44432,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--awaiting_merge",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -44109,6 +44534,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--awaiting_plan_review",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -44209,6 +44636,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--coding",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -44309,6 +44738,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--deployed",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -44409,6 +44840,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--fixing",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -44509,6 +44942,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--intake",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -44609,6 +45044,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--merged",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -44709,6 +45146,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--planning",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -44809,6 +45248,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--reviewing",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -44909,6 +45350,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--verified",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -45009,6 +45452,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--verifying",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -45109,6 +45554,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-DEPLOY",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.observed-deployment/1.0"
           ],
@@ -45209,6 +45656,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-MERGE",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.github-observed-merge/1.0"
           ],
@@ -45308,6 +45757,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--approved",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -45407,6 +45858,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--awaiting_merge",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -45506,6 +45959,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--awaiting_plan_review",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -45605,6 +46060,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--coding",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -45704,6 +46161,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--deployed",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -45803,6 +46262,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--fixing",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -45902,6 +46363,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--intake",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -46001,6 +46464,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--merged",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -46100,6 +46565,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--planning",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -46199,6 +46666,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--reviewing",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -46298,6 +46767,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--verified",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -46397,6 +46868,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--verifying",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -52851,6 +53324,8 @@
           "companion_id": "EE-CREATE-DEPLOY-INTENT",
           "event_type": "external_effect.intent_recorded",
           "from_state": null,
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.deployment-intent/1.0"
           ],
@@ -52949,6 +53424,8 @@
           "companion_id": "EE-CREATE-OBSERVED-DEPLOY-UNAPPROVED",
           "event_type": "external_effect.observed_completed",
           "from_state": null,
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.observed-deployment/1.0"
           ],
@@ -53053,6 +53530,8 @@
           "companion_id": "EE-CREATE-OBSERVED-DEPLOY-APPROVED",
           "event_type": "external_effect.observed_completed",
           "from_state": null,
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.observed-deployment/1.0"
           ],
@@ -53146,6 +53625,8 @@
           "companion_id": "EE-CLOSE-MANAGED-DEPLOY",
           "event_type": "external_effect.outcome_recorded",
           "from_state": "dispatch_started",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.deployment-receipt/1.0"
           ],
@@ -53359,6 +53840,8 @@
           "companion_id": "EE-CREATE-MERGE-INTENT",
           "event_type": "external_effect.intent_recorded",
           "from_state": null,
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.github-merge-intent/1.0"
           ],
@@ -53510,6 +53993,8 @@
           "companion_id": "EE-CLOSE-MANAGED-MERGE",
           "event_type": "external_effect.outcome_recorded",
           "from_state": "dispatch_started",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.github-receipt/1.0"
           ],
@@ -53608,6 +54093,8 @@
           "companion_id": "EE-CREATE-OBSERVED-MERGE-UNAPPROVED",
           "event_type": "external_effect.observed_completed",
           "from_state": null,
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.github-observed-merge/1.0"
           ],
@@ -53712,6 +54199,8 @@
           "companion_id": "EE-CREATE-OBSERVED-MERGE-APPROVED",
           "event_type": "external_effect.observed_completed",
           "from_state": null,
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.github-observed-merge/1.0"
           ],
@@ -63913,5 +64402,5 @@
     }
   },
   "schema_version": "dal.test-oracle-catalog/1.0",
-  "transition_registry_sha256": "8203accff1317458b1f2f107de2831a89e723112cbbe12d46770af6cfc6bae7a"
+  "transition_registry_sha256": "dc239aa4b72e68c010189844055f582607e1fbaa16ccd5f918a1af261c2ef8d6"
 }

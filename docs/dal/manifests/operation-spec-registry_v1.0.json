@@ -1644,6 +1644,451 @@
         "service"
       ],
       "allowed_evidence_source_types": [
+        "workflow-service"
+      ],
+      "allowed_receipt_codes": [
+        "APPLIED",
+        "ILLEGAL_TRANSITION",
+        "POLICY_DENIED",
+        "VERSION_CONFLICT"
+      ],
+      "atomic_write_sets_by_variant": {
+        "companion_write_failure_rolls_back_root": [],
+        "concurrent_owner_roots_single_winner": [
+          "external_effect_outcome",
+          "authoritative_post_read",
+          "aggregate",
+          "business_event",
+          "transition_receipt",
+          "audit",
+          "external_effect",
+          "external_effect_transition_receipt",
+          "authoritative_receipt"
+        ],
+        "feature_direct_completed_command_removed": [],
+        "feature_direct_reconciliation_owner_denied": [],
+        "feature_reconciliation_root_closes_effect": [
+          "external_effect_outcome",
+          "authoritative_post_read",
+          "decision_resolve",
+          "approval_consume",
+          "approval_action_receipt",
+          "aggregate",
+          "business_event",
+          "transition_receipt",
+          "audit",
+          "decision_projection",
+          "notification_outbox",
+          "external_effect",
+          "external_effect_transition_receipt"
+        ],
+        "recovery_owner_root_closes_effect": [
+          "recovery_case",
+          "business_event",
+          "recovery_transition_receipt",
+          "audit",
+          "evidence",
+          "notification_outbox",
+          "external_effect",
+          "external_effect_transition_receipt",
+          "authoritative_receipt"
+        ],
+        "rejected_effect_first_then_owner_root": [
+          "external_effect_outcome",
+          "authoritative_post_read",
+          "aggregate",
+          "business_event",
+          "transition_receipt",
+          "audit",
+          "external_effect",
+          "external_effect_transition_receipt",
+          "authoritative_receipt"
+        ]
+      },
+      "command_type": "dispatch_effect_outcome_sequence",
+      "operation_spec_id": "OP-EFFECT-OWNERSHIP-001",
+      "schema_version": "dal.operation-spec/1.0",
+      "success_receipt_schema": "dal.operation-receipt/1.0",
+      "variant_input_contracts": {
+        "companion_write_failure_rolls_back_root": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "workflow-service",
+            "idempotency_key": "fixture-idempotency:dispatch-effect-outcome-sequence:companion-failure",
+            "input": {
+              "commands": [
+                {
+                  "actor_type": "service",
+                  "aggregate_id": "fixture-root",
+                  "aggregate_type": "feature",
+                  "command_parameters": {
+                    "effect_outcome": "confirmed_completed",
+                    "target_state": "merged"
+                  },
+                  "command_type": "record_managed_merge",
+                  "evidence_schema_versions": [
+                    "dal.evidence.github-receipt/1.0"
+                  ],
+                  "evidence_source_types": [
+                    "github-control"
+                  ],
+                  "expected_version": 7,
+                  "idempotency_key": "fixture-idempotency:effect-ownership:merge-root"
+                }
+              ],
+              "external_effect_snapshot": {
+                "aggregate_id": "fixture-effect",
+                "aggregate_type": "external_effect",
+                "owner_aggregate_id": "fixture-root",
+                "owner_aggregate_type": "feature",
+                "state": "dispatch_started",
+                "version": 11
+              },
+              "fault_injection": {
+                "atomic_write_member": "external_effect_transition_receipt",
+                "occurrence": 1
+              },
+              "root_snapshot": {
+                "aggregate_id": "fixture-root",
+                "aggregate_type": "feature",
+                "state": "awaiting_merge",
+                "version": 7
+              }
+            },
+            "operation_id": "fixture-operation:dispatch-effect-outcome-sequence",
+            "operation_spec_id": "OP-EFFECT-OWNERSHIP-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ],
+        "concurrent_owner_roots_single_winner": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "workflow-service",
+            "idempotency_key": "fixture-idempotency:dispatch-effect-outcome-sequence:concurrent-roots",
+            "input": {
+              "commands": [
+                {
+                  "actor_type": "service",
+                  "aggregate_id": "fixture-root",
+                  "aggregate_type": "feature",
+                  "command_parameters": {
+                    "effect_outcome": "confirmed_completed",
+                    "target_state": "merged"
+                  },
+                  "command_type": "record_managed_merge",
+                  "concurrency_group": "effect-owner-cas",
+                  "evidence_schema_versions": [
+                    "dal.evidence.github-receipt/1.0"
+                  ],
+                  "evidence_source_types": [
+                    "github-control"
+                  ],
+                  "expected_version": 7,
+                  "idempotency_key": "fixture-idempotency:effect-ownership:merge-concurrent-a"
+                },
+                {
+                  "actor_type": "service",
+                  "aggregate_id": "fixture-root",
+                  "aggregate_type": "feature",
+                  "command_parameters": {
+                    "effect_outcome": "confirmed_completed",
+                    "target_state": "merged"
+                  },
+                  "command_type": "record_managed_merge",
+                  "concurrency_group": "effect-owner-cas",
+                  "evidence_schema_versions": [
+                    "dal.evidence.github-receipt/1.0"
+                  ],
+                  "evidence_source_types": [
+                    "github-control"
+                  ],
+                  "expected_version": 7,
+                  "idempotency_key": "fixture-idempotency:effect-ownership:merge-concurrent-b"
+                }
+              ],
+              "external_effect_snapshot": {
+                "aggregate_id": "fixture-effect",
+                "aggregate_type": "external_effect",
+                "owner_aggregate_id": "fixture-root",
+                "owner_aggregate_type": "feature",
+                "state": "dispatch_started",
+                "version": 11
+              },
+              "fault_injection": null,
+              "root_snapshot": {
+                "aggregate_id": "fixture-root",
+                "aggregate_type": "feature",
+                "state": "awaiting_merge",
+                "version": 7
+              }
+            },
+            "operation_id": "fixture-operation:dispatch-effect-outcome-sequence",
+            "operation_spec_id": "OP-EFFECT-OWNERSHIP-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ],
+        "feature_direct_completed_command_removed": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "workflow-service",
+            "idempotency_key": "fixture-idempotency:dispatch-effect-outcome-sequence:direct-completed",
+            "input": {
+              "commands": [
+                {
+                  "actor_type": "service",
+                  "aggregate_id": "fixture-effect",
+                  "aggregate_type": "external_effect",
+                  "command_parameters": {
+                    "effect_outcome": null,
+                    "target_state": "confirmed_completed"
+                  },
+                  "command_type": "record_effect_completed",
+                  "evidence_schema_versions": [
+                    "dal.evidence.counterparty-receipt/1.0"
+                  ],
+                  "evidence_source_types": [
+                    "counterparty-adapter"
+                  ],
+                  "expected_version": 11,
+                  "idempotency_key": "fixture-idempotency:effect-ownership:direct-completed"
+                }
+              ],
+              "external_effect_snapshot": {
+                "aggregate_id": "fixture-effect",
+                "aggregate_type": "external_effect",
+                "owner_aggregate_id": "fixture-root",
+                "owner_aggregate_type": "feature",
+                "state": "dispatch_started",
+                "version": 11
+              },
+              "fault_injection": null,
+              "root_snapshot": {
+                "aggregate_id": "fixture-root",
+                "aggregate_type": "feature",
+                "state": "awaiting_merge",
+                "version": 7
+              }
+            },
+            "operation_id": "fixture-operation:dispatch-effect-outcome-sequence",
+            "operation_spec_id": "OP-EFFECT-OWNERSHIP-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ],
+        "feature_direct_reconciliation_owner_denied": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "workflow-service",
+            "idempotency_key": "fixture-idempotency:dispatch-effect-outcome-sequence:direct-reconcile",
+            "input": {
+              "commands": [
+                {
+                  "actor_type": "service",
+                  "aggregate_id": "fixture-effect",
+                  "aggregate_type": "external_effect",
+                  "command_parameters": {
+                    "effect_outcome": null,
+                    "owner_aggregate_type": "recovery_case",
+                    "target_state": "confirmed_completed"
+                  },
+                  "command_type": "record_reconciled_completed",
+                  "evidence_schema_versions": [
+                    "dal.evidence.counterparty-receipt/1.0"
+                  ],
+                  "evidence_source_types": [
+                    "counterparty-adapter"
+                  ],
+                  "expected_version": 11,
+                  "idempotency_key": "fixture-idempotency:effect-ownership:direct-reconcile"
+                }
+              ],
+              "external_effect_snapshot": {
+                "aggregate_id": "fixture-effect",
+                "aggregate_type": "external_effect",
+                "owner_aggregate_id": "fixture-root",
+                "owner_aggregate_type": "feature",
+                "state": "reconciling",
+                "version": 11
+              },
+              "fault_injection": null,
+              "root_snapshot": {
+                "aggregate_id": "fixture-root",
+                "aggregate_type": "feature",
+                "state": "reconciliation_required",
+                "version": 7
+              }
+            },
+            "operation_id": "fixture-operation:dispatch-effect-outcome-sequence",
+            "operation_spec_id": "OP-EFFECT-OWNERSHIP-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ],
+        "feature_reconciliation_root_closes_effect": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "workflow-service",
+            "idempotency_key": "fixture-idempotency:dispatch-effect-outcome-sequence:feature-reconcile-root",
+            "input": {
+              "commands": [
+                {
+                  "actor_type": "human",
+                  "aggregate_id": "fixture-root",
+                  "aggregate_type": "feature",
+                  "command_parameters": {
+                    "effect_outcome": "confirmed_not_executed",
+                    "target_state": "coding"
+                  },
+                  "command_type": "resume_checkpoint",
+                  "evidence_schema_versions": [
+                    "dal.evidence.reconciliation/1.0"
+                  ],
+                  "evidence_source_types": [
+                    "registered-device",
+                    "external-effect-controller"
+                  ],
+                  "expected_version": 7,
+                  "idempotency_key": "fixture-idempotency:effect-ownership:feature-reconcile-root"
+                }
+              ],
+              "external_effect_snapshot": {
+                "aggregate_id": "fixture-effect",
+                "aggregate_type": "external_effect",
+                "owner_aggregate_id": "fixture-root",
+                "owner_aggregate_type": "feature",
+                "state": "reconciling",
+                "version": 11
+              },
+              "fault_injection": null,
+              "root_snapshot": {
+                "aggregate_id": "fixture-root",
+                "aggregate_type": "feature",
+                "state": "reconciliation_required",
+                "version": 7
+              }
+            },
+            "operation_id": "fixture-operation:dispatch-effect-outcome-sequence",
+            "operation_spec_id": "OP-EFFECT-OWNERSHIP-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ],
+        "recovery_owner_root_closes_effect": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "workflow-service",
+            "idempotency_key": "fixture-idempotency:dispatch-effect-outcome-sequence:recovery-root",
+            "input": {
+              "commands": [
+                {
+                  "actor_type": "service",
+                  "aggregate_id": "fixture-root",
+                  "aggregate_type": "recovery_case",
+                  "command_parameters": {
+                    "effect_outcome": "confirmed_completed",
+                    "target_state": "verifying"
+                  },
+                  "command_type": "record_recovery_execution",
+                  "evidence_schema_versions": [
+                    "dal.evidence.recovery-execution/1.0"
+                  ],
+                  "evidence_source_types": [
+                    "recovery-executor"
+                  ],
+                  "expected_version": 7,
+                  "idempotency_key": "fixture-idempotency:effect-ownership:recovery-root"
+                }
+              ],
+              "external_effect_snapshot": {
+                "aggregate_id": "fixture-effect",
+                "aggregate_type": "external_effect",
+                "owner_aggregate_id": "fixture-root",
+                "owner_aggregate_type": "recovery_case",
+                "state": "dispatch_started",
+                "version": 11
+              },
+              "fault_injection": null,
+              "root_snapshot": {
+                "aggregate_id": "fixture-root",
+                "aggregate_type": "recovery_case",
+                "state": "executing",
+                "version": 7
+              }
+            },
+            "operation_id": "fixture-operation:dispatch-effect-outcome-sequence",
+            "operation_spec_id": "OP-EFFECT-OWNERSHIP-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ],
+        "rejected_effect_first_then_owner_root": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "workflow-service",
+            "idempotency_key": "fixture-idempotency:dispatch-effect-outcome-sequence:effect-first-then-root",
+            "input": {
+              "commands": [
+                {
+                  "actor_type": "service",
+                  "aggregate_id": "fixture-effect",
+                  "aggregate_type": "external_effect",
+                  "command_parameters": {
+                    "effect_outcome": null,
+                    "target_state": "confirmed_completed"
+                  },
+                  "command_type": "record_effect_completed",
+                  "evidence_schema_versions": [
+                    "dal.evidence.counterparty-receipt/1.0"
+                  ],
+                  "evidence_source_types": [
+                    "counterparty-adapter"
+                  ],
+                  "expected_version": 11,
+                  "idempotency_key": "fixture-idempotency:effect-ownership:direct-completed"
+                },
+                {
+                  "actor_type": "service",
+                  "aggregate_id": "fixture-root",
+                  "aggregate_type": "feature",
+                  "command_parameters": {
+                    "effect_outcome": "confirmed_completed",
+                    "target_state": "merged"
+                  },
+                  "command_type": "record_managed_merge",
+                  "evidence_schema_versions": [
+                    "dal.evidence.github-receipt/1.0"
+                  ],
+                  "evidence_source_types": [
+                    "github-control"
+                  ],
+                  "expected_version": 7,
+                  "idempotency_key": "fixture-idempotency:effect-ownership:merge-root"
+                }
+              ],
+              "external_effect_snapshot": {
+                "aggregate_id": "fixture-effect",
+                "aggregate_type": "external_effect",
+                "owner_aggregate_id": "fixture-root",
+                "owner_aggregate_type": "feature",
+                "state": "dispatch_started",
+                "version": 11
+              },
+              "fault_injection": null,
+              "root_snapshot": {
+                "aggregate_id": "fixture-root",
+                "aggregate_type": "feature",
+                "state": "awaiting_merge",
+                "version": 7
+              }
+            },
+            "operation_id": "fixture-operation:dispatch-effect-outcome-sequence",
+            "operation_spec_id": "OP-EFFECT-OWNERSHIP-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ]
+      }
+    },
+    {
+      "allowed_actor_types": [
+        "service"
+      ],
+      "allowed_evidence_source_types": [
         "immutable-fixture-catalog"
       ],
       "allowed_receipt_codes": [
@@ -5186,6 +5631,6 @@
       }
     }
   ],
-  "registry_sha256": "14d89d5a3fb543cff913b8cf9c582b4afd755acb795094d0dc7d3576d6a237ab",
+  "registry_sha256": "1e4548870420d5efaba0dc08cb6a5e68099a5dcccc85d2162a1c1ba4579d93bb",
   "schema_version": "dal.operation-spec-registry/1.0"
 }

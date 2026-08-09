@@ -1,5 +1,5 @@
 {
-  "registry_sha256": "8203accff1317458b1f2f107de2831a89e723112cbbe12d46770af6cfc6bae7a",
+  "registry_sha256": "dc239aa4b72e68c010189844055f582607e1fbaa16ccd5f918a1af261c2ef8d6",
   "schema_version": "dal.transition-spec-registry/1.0",
   "specs": [
     {
@@ -3668,55 +3668,6 @@
         "business_event",
         "external_effect_transition_receipt",
         "audit",
-        "authoritative_receipt",
-        "notification_outbox"
-      ],
-      "command_parameters": {
-        "effect_outcome": null,
-        "target_state": "confirmed_completed"
-      },
-      "command_type": "record_effect_completed",
-      "event_type": "external_effect.outcome_recorded",
-      "evidence_schema_version": "dal.evidence.counterparty-receipt/1.0",
-      "from_state": "dispatch_started",
-      "guard_id": "MATCHING_SCOPE_KEY_TARGET_AND_RECEIPT",
-      "minimum_run_gate": "G1",
-      "required_evidence_schema_versions": [
-        "dal.evidence.counterparty-receipt/1.0"
-      ],
-      "requires_decision_action": null,
-      "result_reason_code": null,
-      "result_reason_owner": null,
-      "schema_version": "dal.transition-spec/1.0",
-      "spec_id": "EE-CONFIRM-COMPLETED",
-      "success_receipt_code": "APPLIED",
-      "success_receipt_schema": "dal.external-effect-transition-receipt/1.0",
-      "to_state": "confirmed_completed"
-    },
-    {
-      "actor_evidence_bindings": [
-        {
-          "actor_type": "service",
-          "required_evidence_source_types": [
-            "counterparty-adapter"
-          ]
-        }
-      ],
-      "aggregate_type": "external_effect",
-      "allowed_actor_types": [
-        "service"
-      ],
-      "allowed_decision_reason_codes": [],
-      "allowed_evidence_source_types": [
-        "counterparty-adapter"
-      ],
-      "allowed_reason_codes": [],
-      "atomic_companion_transitions": [],
-      "atomic_write_set": [
-        "external_effect",
-        "business_event",
-        "external_effect_transition_receipt",
-        "audit",
         "authoritative_post_read",
         "notification_outbox"
       ],
@@ -3921,14 +3872,15 @@
         "notification_outbox"
       ],
       "command_parameters": {
-        "effect_outcome": null,
+        "effect_outcome": "confirmed_completed",
+        "owner_aggregate_type": "recovery_case",
         "target_state": "confirmed_completed"
       },
       "command_type": "record_reconciled_completed",
       "event_type": "external_effect.reconciled",
       "evidence_schema_version": "dal.evidence.counterparty-receipt/1.0",
       "from_state": "reconciling",
-      "guard_id": "MATCHING_SCOPE_KEY_TARGET_AND_RECEIPT",
+      "guard_id": "RECOVERY_EFFECT_MATCHING_SCOPE_KEY_TARGET_AND_RECEIPT",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.counterparty-receipt/1.0"
@@ -3971,13 +3923,14 @@
       ],
       "command_parameters": {
         "effect_outcome": "confirmed_not_executed",
+        "owner_aggregate_type": "recovery_case",
         "target_state": "confirmed_not_executed"
       },
       "command_type": "record_reconciled_not_executed",
       "event_type": "external_effect.reconciled",
       "evidence_schema_version": "dal.evidence.authoritative-post-read/1.0",
       "from_state": "reconciling",
-      "guard_id": "MATCHING_SCOPE_KEY_TARGET_AND_NOT_EXECUTED_PROOF",
+      "guard_id": "RECOVERY_EFFECT_MATCHING_SCOPE_KEY_TARGET_AND_NOT_EXECUTED_PROOF",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.authoritative-post-read/1.0"
@@ -4461,24 +4414,50 @@
         "recovery-executor"
       ],
       "allowed_reason_codes": [],
-      "atomic_companion_transitions": [],
+      "atomic_companion_transitions": [
+        {
+          "aggregate_type": "external_effect",
+          "atomic_write_set": [
+            "external_effect",
+            "business_event",
+            "external_effect_transition_receipt",
+            "audit",
+            "authoritative_receipt"
+          ],
+          "companion_id": "EE-CLOSE-RECOVERY-EXECUTED",
+          "event_type": "external_effect.outcome_recorded",
+          "from_state": "dispatch_started",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "recovery_case",
+          "required_evidence_schema_versions": [
+            "dal.evidence.recovery-execution/1.0"
+          ],
+          "snapshot_key": "external_effect",
+          "success_receipt_code": "APPLIED",
+          "success_receipt_schema": "dal.external-effect-transition-receipt/1.0",
+          "to_state": "confirmed_completed"
+        }
+      ],
       "atomic_write_set": [
         "recovery_case",
         "business_event",
         "recovery_transition_receipt",
         "audit",
         "evidence",
-        "notification_outbox"
+        "notification_outbox",
+        "external_effect",
+        "external_effect_transition_receipt",
+        "authoritative_receipt"
       ],
       "command_parameters": {
-        "effect_outcome": null,
+        "effect_outcome": "confirmed_completed",
         "target_state": "verifying"
       },
       "command_type": "record_recovery_execution",
       "event_type": "recovery_case.verifying",
       "evidence_schema_version": "dal.evidence.recovery-execution/1.0",
       "from_state": "executing",
-      "guard_id": null,
+      "guard_id": "RECOVERY_EFFECT_DISPATCHED_AND_RECEIPT",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.recovery-execution/1.0"
@@ -5000,6 +4979,8 @@
           "companion_id": "EE-CREATE-RECOVERY-INTENT",
           "event_type": "external_effect.intent_recorded",
           "from_state": null,
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "recovery_case",
           "required_evidence_schema_versions": [
             "dal.evidence.recovery-capability/1.0"
           ],
@@ -5929,6 +5910,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--approved",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -5962,7 +5945,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_APPROVED",
+      "guard_id": "EFFECT_RECONCILING_COMPLETED_NONSTATE_AND_CHECKPOINT_APPROVED",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -6011,6 +5994,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--awaiting_merge",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -6044,7 +6029,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_AWAITING_MERGE",
+      "guard_id": "EFFECT_RECONCILING_COMPLETED_NONSTATE_AND_CHECKPOINT_AWAITING_MERGE",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -6093,6 +6078,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--awaiting_plan_review",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -6126,7 +6113,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_AWAITING_PLAN_REVIEW",
+      "guard_id": "EFFECT_RECONCILING_COMPLETED_NONSTATE_AND_CHECKPOINT_AWAITING_PLAN_REVIEW",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -6175,6 +6162,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--coding",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -6208,7 +6197,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_CODING",
+      "guard_id": "EFFECT_RECONCILING_COMPLETED_NONSTATE_AND_CHECKPOINT_CODING",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -6257,6 +6246,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--deployed",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -6290,7 +6281,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_DEPLOYED",
+      "guard_id": "EFFECT_RECONCILING_COMPLETED_NONSTATE_AND_CHECKPOINT_DEPLOYED",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -6339,6 +6330,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--fixing",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -6372,7 +6365,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_FIXING",
+      "guard_id": "EFFECT_RECONCILING_COMPLETED_NONSTATE_AND_CHECKPOINT_FIXING",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -6421,6 +6414,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--intake",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -6454,7 +6449,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_INTAKE",
+      "guard_id": "EFFECT_RECONCILING_COMPLETED_NONSTATE_AND_CHECKPOINT_INTAKE",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -6503,6 +6498,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--merged",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -6536,7 +6533,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_MERGED",
+      "guard_id": "EFFECT_RECONCILING_COMPLETED_NONSTATE_AND_CHECKPOINT_MERGED",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -6585,6 +6582,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--planning",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -6618,7 +6617,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_PLANNING",
+      "guard_id": "EFFECT_RECONCILING_COMPLETED_NONSTATE_AND_CHECKPOINT_PLANNING",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -6667,6 +6666,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--reviewing",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -6700,7 +6701,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_REVIEWING",
+      "guard_id": "EFFECT_RECONCILING_COMPLETED_NONSTATE_AND_CHECKPOINT_REVIEWING",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -6749,6 +6750,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--verified",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -6782,7 +6785,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_VERIFIED",
+      "guard_id": "EFFECT_RECONCILING_COMPLETED_NONSTATE_AND_CHECKPOINT_VERIFIED",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -6831,6 +6834,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--verifying",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -6864,7 +6869,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_VERIFYING",
+      "guard_id": "EFFECT_RECONCILING_COMPLETED_NONSTATE_AND_CHECKPOINT_VERIFYING",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -6913,6 +6918,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-DEPLOY",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.observed-deployment/1.0"
           ],
@@ -6939,7 +6946,7 @@
         "authoritative_receipt"
       ],
       "command_parameters": {
-        "effect_outcome": null,
+        "effect_outcome": "confirmed_completed",
         "target_state": "deployed"
       },
       "command_type": "accept_deploy_result",
@@ -6995,6 +7002,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-MERGE",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.github-observed-merge/1.0"
           ],
@@ -7021,7 +7030,7 @@
         "authoritative_receipt"
       ],
       "command_parameters": {
-        "effect_outcome": null,
+        "effect_outcome": "confirmed_completed",
         "target_state": "merged"
       },
       "command_type": "accept_merge_result",
@@ -7077,6 +7086,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--approved",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -7109,7 +7120,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_APPROVED",
+      "guard_id": "EFFECT_RECONCILING_NOT_EXECUTED_AND_CHECKPOINT_APPROVED",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -7158,6 +7169,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--awaiting_merge",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -7190,7 +7203,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_AWAITING_MERGE",
+      "guard_id": "EFFECT_RECONCILING_NOT_EXECUTED_AND_CHECKPOINT_AWAITING_MERGE",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -7239,6 +7252,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--awaiting_plan_review",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -7271,7 +7286,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_AWAITING_PLAN_REVIEW",
+      "guard_id": "EFFECT_RECONCILING_NOT_EXECUTED_AND_CHECKPOINT_AWAITING_PLAN_REVIEW",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -7320,6 +7335,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--coding",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -7352,7 +7369,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_CODING",
+      "guard_id": "EFFECT_RECONCILING_NOT_EXECUTED_AND_CHECKPOINT_CODING",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -7401,6 +7418,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--deployed",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -7433,7 +7452,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_DEPLOYED",
+      "guard_id": "EFFECT_RECONCILING_NOT_EXECUTED_AND_CHECKPOINT_DEPLOYED",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -7482,6 +7501,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--fixing",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -7514,7 +7535,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_FIXING",
+      "guard_id": "EFFECT_RECONCILING_NOT_EXECUTED_AND_CHECKPOINT_FIXING",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -7563,6 +7584,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--intake",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -7595,7 +7618,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_INTAKE",
+      "guard_id": "EFFECT_RECONCILING_NOT_EXECUTED_AND_CHECKPOINT_INTAKE",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -7644,6 +7667,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--merged",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -7676,7 +7701,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_MERGED",
+      "guard_id": "EFFECT_RECONCILING_NOT_EXECUTED_AND_CHECKPOINT_MERGED",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -7725,6 +7750,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--planning",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -7757,7 +7784,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_PLANNING",
+      "guard_id": "EFFECT_RECONCILING_NOT_EXECUTED_AND_CHECKPOINT_PLANNING",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -7806,6 +7833,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--reviewing",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -7838,7 +7867,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_REVIEWING",
+      "guard_id": "EFFECT_RECONCILING_NOT_EXECUTED_AND_CHECKPOINT_REVIEWING",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -7887,6 +7916,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--verified",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -7919,7 +7950,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_VERIFIED",
+      "guard_id": "EFFECT_RECONCILING_NOT_EXECUTED_AND_CHECKPOINT_VERIFIED",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -7968,6 +7999,8 @@
           "companion_id": "EE-CLOSE-RECONCILE-NOT-EXECUTED--verifying",
           "event_type": "external_effect.reconciled",
           "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.reconciliation/1.0"
           ],
@@ -8000,7 +8033,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.reconciliation/1.0",
       "from_state": "reconciliation_required",
-      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_VERIFYING",
+      "guard_id": "EFFECT_RECONCILING_NOT_EXECUTED_AND_CHECKPOINT_VERIFYING",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.reconciliation/1.0"
@@ -13788,6 +13821,8 @@
           "companion_id": "EE-CREATE-DEPLOY-INTENT",
           "event_type": "external_effect.intent_recorded",
           "from_state": null,
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.deployment-intent/1.0"
           ],
@@ -13866,6 +13901,8 @@
           "companion_id": "EE-CLOSE-MANAGED-DEPLOY",
           "event_type": "external_effect.outcome_recorded",
           "from_state": "dispatch_started",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.deployment-receipt/1.0"
           ],
@@ -13887,14 +13924,14 @@
         "authoritative_receipt"
       ],
       "command_parameters": {
-        "effect_outcome": null,
+        "effect_outcome": "confirmed_completed",
         "target_state": "deployed"
       },
       "command_type": "record_deployment",
       "event_type": "deployment.completed",
       "evidence_schema_version": "dal.evidence.deployment-receipt/1.0",
       "from_state": "merged",
-      "guard_id": "G5_REQUIRED_AND_NO_OPEN_SAFETY_OR_POLICY_INCIDENT",
+      "guard_id": "G5_REQUIRED_AND_NO_OPEN_SAFETY_OR_POLICY_INCIDENT_AND_MATCHING_MANAGED_DEPLOY_EFFECT",
       "minimum_run_gate": "G5",
       "required_evidence_schema_versions": [
         "dal.evidence.deployment-receipt/1.0"
@@ -13941,6 +13978,8 @@
           "companion_id": "EE-CREATE-OBSERVED-DEPLOY-APPROVED",
           "event_type": "external_effect.observed_completed",
           "from_state": null,
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.observed-deployment/1.0"
           ],
@@ -14020,6 +14059,8 @@
           "companion_id": "EE-CREATE-OBSERVED-DEPLOY-UNAPPROVED",
           "event_type": "external_effect.observed_completed",
           "from_state": null,
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.observed-deployment/1.0"
           ],
@@ -14194,6 +14235,8 @@
           "companion_id": "EE-CREATE-MERGE-INTENT",
           "event_type": "external_effect.intent_recorded",
           "from_state": null,
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.github-merge-intent/1.0"
           ],
@@ -14322,6 +14365,8 @@
           "companion_id": "EE-CLOSE-MANAGED-MERGE",
           "event_type": "external_effect.outcome_recorded",
           "from_state": "dispatch_started",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.github-receipt/1.0"
           ],
@@ -14343,14 +14388,14 @@
         "authoritative_receipt"
       ],
       "command_parameters": {
-        "effect_outcome": null,
+        "effect_outcome": "confirmed_completed",
         "target_state": "merged"
       },
       "command_type": "record_managed_merge",
       "event_type": "merge.completed",
       "evidence_schema_version": "dal.evidence.github-receipt/1.0",
       "from_state": "awaiting_merge",
-      "guard_id": "G5_REQUIRED",
+      "guard_id": "G5_REQUIRED_AND_MATCHING_MANAGED_MERGE_EFFECT",
       "minimum_run_gate": "G5",
       "required_evidence_schema_versions": [
         "dal.evidence.github-receipt/1.0"
@@ -14397,6 +14442,8 @@
           "companion_id": "EE-CREATE-OBSERVED-MERGE-APPROVED",
           "event_type": "external_effect.observed_completed",
           "from_state": null,
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.github-observed-merge/1.0"
           ],
@@ -14476,6 +14523,8 @@
           "companion_id": "EE-CREATE-OBSERVED-MERGE-UNAPPROVED",
           "event_type": "external_effect.observed_completed",
           "from_state": null,
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
           "required_evidence_schema_versions": [
             "dal.evidence.github-observed-merge/1.0"
           ],
