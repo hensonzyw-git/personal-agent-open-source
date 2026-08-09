@@ -1171,6 +1171,7 @@
       "schema_version": "dal.evidence.drift-probe/1.0",
       "source_type_binding": [
         "external-effect-controller",
+        "provider-adapter",
         "registered-device"
       ]
     },
@@ -1715,6 +1716,138 @@
       "schema_version": "dal.evidence.executor-termination/1.0",
       "source_type_binding": [
         "external-effect-controller"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approved_profile_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "budget_remaining": {
+            "type": "boolean"
+          },
+          "eligibility_binding_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "failure_class": {
+            "enum": [
+              "usage_limit",
+              "transient",
+              "auth",
+              "task_failure",
+              "contract_failure",
+              "policy_failure",
+              "budget_limit"
+            ]
+          },
+          "fallback_preflight_expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fallback_preflight_receipt_id": {
+            "minLength": 1,
+            "not": {
+              "pattern": "[^A-Za-z0-9._:/-]"
+            },
+            "pattern": "^[A-Za-z0-9]",
+            "type": "string"
+          },
+          "fallback_profile_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "fallback_used": {
+            "type": "boolean"
+          },
+          "handoff_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "primary_failure_receipt_id": {
+            "minLength": 1,
+            "not": {
+              "pattern": "[^A-Za-z0-9._:/-]"
+            },
+            "pattern": "^[A-Za-z0-9]",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "provider_attempt_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "dal.evidence.fallback-eligibility/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unknown_effect_count": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "approved_profile_sha256",
+          "primary_failure_receipt_id",
+          "failure_class",
+          "fallback_profile_sha256",
+          "fallback_preflight_receipt_id",
+          "fallback_preflight_expires_at",
+          "handoff_sha256",
+          "unknown_effect_count",
+          "budget_remaining",
+          "fallback_used",
+          "provider_attempt_count",
+          "eligibility_binding_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.fallback-eligibility/1.0",
+      "source_type_binding": [
+        "provider-adapter"
       ]
     },
     {
@@ -5425,9 +5558,6 @@
             "pattern": "^[0-9a-f]{64}$",
             "type": "string"
           },
-          "budget_remaining": {
-            "type": "boolean"
-          },
           "evidence_id": {
             "minLength": 1,
             "type": "string"
@@ -5443,21 +5573,8 @@
               "budget_limit"
             ]
           },
-          "fallback_eligible": {
-            "type": "boolean"
-          },
-          "fallback_preflight_receipt_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "fallback_used": {
             "type": "boolean"
-          },
-          "handoff_sha256": {
-            "pattern": "^[0-9a-f]{64}$",
-            "type": "string"
           },
           "observed_at": {
             "format": "date-time",
@@ -5469,10 +5586,34 @@
           },
           "primary_failure_receipt_id": {
             "minLength": 1,
+            "not": {
+              "pattern": "[^A-Za-z0-9._:/-]"
+            },
+            "pattern": "^[A-Za-z0-9]",
             "type": "string"
           },
           "protected_ref": {
             "minLength": 1,
+            "type": "string"
+          },
+          "route_binding_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "route_preflight_expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "route_preflight_receipt_id": {
+            "minLength": 1,
+            "not": {
+              "pattern": "[^A-Za-z0-9._:/-]"
+            },
+            "pattern": "^[A-Za-z0-9]",
+            "type": "string"
+          },
+          "route_profile_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
             "type": "string"
           },
           "schema_version": {
@@ -5493,10 +5634,6 @@
           "subject_aggregate_version": {
             "minimum": 0,
             "type": "integer"
-          },
-          "unknown_effect_count": {
-            "minimum": 0,
-            "type": "integer"
           }
         },
         "required": [
@@ -5512,11 +5649,10 @@
           "approved_profile_sha256",
           "primary_failure_receipt_id",
           "failure_class",
-          "fallback_eligible",
-          "fallback_preflight_receipt_id",
-          "handoff_sha256",
-          "unknown_effect_count",
-          "budget_remaining",
+          "route_profile_sha256",
+          "route_preflight_receipt_id",
+          "route_preflight_expires_at",
+          "route_binding_sha256",
           "fallback_used"
         ],
         "type": "object"
@@ -5772,6 +5908,6 @@
       ]
     }
   ],
-  "registry_sha256": "2a50a3b6f07cdd23143b1c488325c4a04317ed64df5d4bf5377138fc527ae2f7",
+  "registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
   "schema_version": "dal.evidence-schema-registry/1.0"
 }

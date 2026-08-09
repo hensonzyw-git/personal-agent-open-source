@@ -582,6 +582,558 @@
         {
           "field": "checkpoint.state",
           "operator": "equals",
+          "value": "coding"
+        },
+        {
+          "field": "provider.recovery_mode",
+          "operator": "equals",
+          "value": "usage_fallback_ready"
+        },
+        {
+          "field": "provider.fallback_used",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.approved_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_profile_sha256"
+        },
+        {
+          "field": "evidence.primary_failure_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.primary_failure_receipt_id"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals_field",
+          "value": "protected_evidence.failure_class"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals",
+          "value": "usage_limit"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals_field",
+          "value": "provider.fallback_used"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "evidence.fallback_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_fallback_profile_sha256"
+        },
+        {
+          "field": "evidence.fallback_preflight_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.fallback_preflight_receipt_id"
+        },
+        {
+          "field": "evidence.fallback_preflight_expires_at",
+          "operator": "equals_field",
+          "value": "protected_evidence.fallback_preflight_expires_at"
+        },
+        {
+          "field": "evidence.fallback_preflight_expires_at",
+          "operator": "timestamp_after_field",
+          "value": "runtime.now"
+        },
+        {
+          "field": "evidence.handoff_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.handoff_sha256"
+        },
+        {
+          "field": "evidence.handoff_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_handoff_sha256"
+        },
+        {
+          "field": "evidence.unknown_effect_count",
+          "operator": "equals_field",
+          "value": "effect_inventory.unknown_or_reconciling_count"
+        },
+        {
+          "field": "evidence.unknown_effect_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "evidence.budget_remaining",
+          "operator": "equals_field",
+          "value": "runtime.budget_remaining"
+        },
+        {
+          "field": "evidence.budget_remaining",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "evidence.provider_attempt_count",
+          "operator": "equals_field",
+          "value": "provider.provider_attempt_count"
+        },
+        {
+          "field": "evidence.eligibility_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.eligibility_binding_sha256"
+        },
+        {
+          "field": "evidence.eligibility_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_fallback_eligibility_binding_sha256"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "DERIVED_USAGE_FALLBACK_ELIGIBLE_AND_CHECKPOINT_CODING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "fixing"
+        },
+        {
+          "field": "provider.recovery_mode",
+          "operator": "equals",
+          "value": "usage_fallback_ready"
+        },
+        {
+          "field": "provider.fallback_used",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.approved_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_profile_sha256"
+        },
+        {
+          "field": "evidence.primary_failure_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.primary_failure_receipt_id"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals_field",
+          "value": "protected_evidence.failure_class"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals",
+          "value": "usage_limit"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals_field",
+          "value": "provider.fallback_used"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "evidence.fallback_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_fallback_profile_sha256"
+        },
+        {
+          "field": "evidence.fallback_preflight_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.fallback_preflight_receipt_id"
+        },
+        {
+          "field": "evidence.fallback_preflight_expires_at",
+          "operator": "equals_field",
+          "value": "protected_evidence.fallback_preflight_expires_at"
+        },
+        {
+          "field": "evidence.fallback_preflight_expires_at",
+          "operator": "timestamp_after_field",
+          "value": "runtime.now"
+        },
+        {
+          "field": "evidence.handoff_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.handoff_sha256"
+        },
+        {
+          "field": "evidence.handoff_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_handoff_sha256"
+        },
+        {
+          "field": "evidence.unknown_effect_count",
+          "operator": "equals_field",
+          "value": "effect_inventory.unknown_or_reconciling_count"
+        },
+        {
+          "field": "evidence.unknown_effect_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "evidence.budget_remaining",
+          "operator": "equals_field",
+          "value": "runtime.budget_remaining"
+        },
+        {
+          "field": "evidence.budget_remaining",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "evidence.provider_attempt_count",
+          "operator": "equals_field",
+          "value": "provider.provider_attempt_count"
+        },
+        {
+          "field": "evidence.eligibility_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.eligibility_binding_sha256"
+        },
+        {
+          "field": "evidence.eligibility_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_fallback_eligibility_binding_sha256"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "DERIVED_USAGE_FALLBACK_ELIGIBLE_AND_CHECKPOINT_FIXING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "provider.recovery_mode",
+          "operator": "equals",
+          "value": "usage_fallback_ready"
+        },
+        {
+          "field": "provider.fallback_used",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.approved_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_profile_sha256"
+        },
+        {
+          "field": "evidence.primary_failure_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.primary_failure_receipt_id"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals_field",
+          "value": "protected_evidence.failure_class"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals",
+          "value": "usage_limit"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals_field",
+          "value": "provider.fallback_used"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "evidence.fallback_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_fallback_profile_sha256"
+        },
+        {
+          "field": "evidence.fallback_preflight_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.fallback_preflight_receipt_id"
+        },
+        {
+          "field": "evidence.fallback_preflight_expires_at",
+          "operator": "equals_field",
+          "value": "protected_evidence.fallback_preflight_expires_at"
+        },
+        {
+          "field": "evidence.fallback_preflight_expires_at",
+          "operator": "timestamp_after_field",
+          "value": "runtime.now"
+        },
+        {
+          "field": "evidence.handoff_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.handoff_sha256"
+        },
+        {
+          "field": "evidence.handoff_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_handoff_sha256"
+        },
+        {
+          "field": "evidence.unknown_effect_count",
+          "operator": "equals_field",
+          "value": "effect_inventory.unknown_or_reconciling_count"
+        },
+        {
+          "field": "evidence.unknown_effect_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "evidence.budget_remaining",
+          "operator": "equals_field",
+          "value": "runtime.budget_remaining"
+        },
+        {
+          "field": "evidence.budget_remaining",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "evidence.provider_attempt_count",
+          "operator": "equals_field",
+          "value": "provider.provider_attempt_count"
+        },
+        {
+          "field": "evidence.eligibility_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.eligibility_binding_sha256"
+        },
+        {
+          "field": "evidence.eligibility_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_fallback_eligibility_binding_sha256"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "DERIVED_USAGE_FALLBACK_ELIGIBLE_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "reviewing"
+        },
+        {
+          "field": "provider.recovery_mode",
+          "operator": "equals",
+          "value": "usage_fallback_ready"
+        },
+        {
+          "field": "provider.fallback_used",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.approved_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_profile_sha256"
+        },
+        {
+          "field": "evidence.primary_failure_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.primary_failure_receipt_id"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals_field",
+          "value": "protected_evidence.failure_class"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals",
+          "value": "usage_limit"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals_field",
+          "value": "provider.fallback_used"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "evidence.fallback_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_fallback_profile_sha256"
+        },
+        {
+          "field": "evidence.fallback_preflight_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.fallback_preflight_receipt_id"
+        },
+        {
+          "field": "evidence.fallback_preflight_expires_at",
+          "operator": "equals_field",
+          "value": "protected_evidence.fallback_preflight_expires_at"
+        },
+        {
+          "field": "evidence.fallback_preflight_expires_at",
+          "operator": "timestamp_after_field",
+          "value": "runtime.now"
+        },
+        {
+          "field": "evidence.handoff_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.handoff_sha256"
+        },
+        {
+          "field": "evidence.handoff_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_handoff_sha256"
+        },
+        {
+          "field": "evidence.unknown_effect_count",
+          "operator": "equals_field",
+          "value": "effect_inventory.unknown_or_reconciling_count"
+        },
+        {
+          "field": "evidence.unknown_effect_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "evidence.budget_remaining",
+          "operator": "equals_field",
+          "value": "runtime.budget_remaining"
+        },
+        {
+          "field": "evidence.budget_remaining",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "evidence.provider_attempt_count",
+          "operator": "equals_field",
+          "value": "provider.provider_attempt_count"
+        },
+        {
+          "field": "evidence.eligibility_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.eligibility_binding_sha256"
+        },
+        {
+          "field": "evidence.eligibility_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_fallback_eligibility_binding_sha256"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "DERIVED_USAGE_FALLBACK_ELIGIBLE_AND_CHECKPOINT_REVIEWING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
           "value": "approved"
         },
         {
@@ -4615,20 +5167,97 @@
         },
         {
           "field": "provider.recovery_mode",
-          "operator": "in",
-          "value": [
-            "frozen_route_resumed",
-            "fallback_eligible"
-          ]
+          "operator": "equals",
+          "value": "frozen_route_resumed"
         },
         {
           "field": "provider.fallback_used",
           "operator": "equals",
           "value": false
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.approved_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_profile_sha256"
+        },
+        {
+          "field": "evidence.primary_failure_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.primary_failure_receipt_id"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals_field",
+          "value": "protected_evidence.failure_class"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals",
+          "value": "usage_limit"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals_field",
+          "value": "provider.fallback_used"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "evidence.route_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_profile_sha256"
+        },
+        {
+          "field": "evidence.route_preflight_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.route_preflight_receipt_id"
+        },
+        {
+          "field": "evidence.route_preflight_expires_at",
+          "operator": "equals_field",
+          "value": "protected_evidence.route_preflight_expires_at"
+        },
+        {
+          "field": "evidence.route_preflight_expires_at",
+          "operator": "timestamp_after_field",
+          "value": "runtime.now"
+        },
+        {
+          "field": "evidence.route_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.route_binding_sha256"
+        },
+        {
+          "field": "evidence.route_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_route_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
-      "guard_id": "FROZEN_ROUTE_RESUME_OR_FALLBACK_ELIGIBLE_AND_CHECKPOINT_CODING",
+      "guard_id": "FROZEN_ROUTE_RESUMED_AND_CHECKPOINT_CODING",
       "missing_field_result": false,
       "predicate_schema_version": "dal.guard-predicate/1.0"
     },
@@ -4641,20 +5270,97 @@
         },
         {
           "field": "provider.recovery_mode",
-          "operator": "in",
-          "value": [
-            "frozen_route_resumed",
-            "fallback_eligible"
-          ]
+          "operator": "equals",
+          "value": "frozen_route_resumed"
         },
         {
           "field": "provider.fallback_used",
           "operator": "equals",
           "value": false
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.approved_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_profile_sha256"
+        },
+        {
+          "field": "evidence.primary_failure_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.primary_failure_receipt_id"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals_field",
+          "value": "protected_evidence.failure_class"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals",
+          "value": "usage_limit"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals_field",
+          "value": "provider.fallback_used"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "evidence.route_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_profile_sha256"
+        },
+        {
+          "field": "evidence.route_preflight_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.route_preflight_receipt_id"
+        },
+        {
+          "field": "evidence.route_preflight_expires_at",
+          "operator": "equals_field",
+          "value": "protected_evidence.route_preflight_expires_at"
+        },
+        {
+          "field": "evidence.route_preflight_expires_at",
+          "operator": "timestamp_after_field",
+          "value": "runtime.now"
+        },
+        {
+          "field": "evidence.route_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.route_binding_sha256"
+        },
+        {
+          "field": "evidence.route_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_route_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
-      "guard_id": "FROZEN_ROUTE_RESUME_OR_FALLBACK_ELIGIBLE_AND_CHECKPOINT_FIXING",
+      "guard_id": "FROZEN_ROUTE_RESUMED_AND_CHECKPOINT_FIXING",
       "missing_field_result": false,
       "predicate_schema_version": "dal.guard-predicate/1.0"
     },
@@ -4667,20 +5373,97 @@
         },
         {
           "field": "provider.recovery_mode",
-          "operator": "in",
-          "value": [
-            "frozen_route_resumed",
-            "fallback_eligible"
-          ]
+          "operator": "equals",
+          "value": "frozen_route_resumed"
         },
         {
           "field": "provider.fallback_used",
           "operator": "equals",
           "value": false
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.approved_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_profile_sha256"
+        },
+        {
+          "field": "evidence.primary_failure_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.primary_failure_receipt_id"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals_field",
+          "value": "protected_evidence.failure_class"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals",
+          "value": "usage_limit"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals_field",
+          "value": "provider.fallback_used"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "evidence.route_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_profile_sha256"
+        },
+        {
+          "field": "evidence.route_preflight_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.route_preflight_receipt_id"
+        },
+        {
+          "field": "evidence.route_preflight_expires_at",
+          "operator": "equals_field",
+          "value": "protected_evidence.route_preflight_expires_at"
+        },
+        {
+          "field": "evidence.route_preflight_expires_at",
+          "operator": "timestamp_after_field",
+          "value": "runtime.now"
+        },
+        {
+          "field": "evidence.route_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.route_binding_sha256"
+        },
+        {
+          "field": "evidence.route_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_route_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
-      "guard_id": "FROZEN_ROUTE_RESUME_OR_FALLBACK_ELIGIBLE_AND_CHECKPOINT_PLANNING",
+      "guard_id": "FROZEN_ROUTE_RESUMED_AND_CHECKPOINT_PLANNING",
       "missing_field_result": false,
       "predicate_schema_version": "dal.guard-predicate/1.0"
     },
@@ -4693,20 +5476,97 @@
         },
         {
           "field": "provider.recovery_mode",
-          "operator": "in",
-          "value": [
-            "frozen_route_resumed",
-            "fallback_eligible"
-          ]
+          "operator": "equals",
+          "value": "frozen_route_resumed"
         },
         {
           "field": "provider.fallback_used",
           "operator": "equals",
           "value": false
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.approved_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_profile_sha256"
+        },
+        {
+          "field": "evidence.primary_failure_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.primary_failure_receipt_id"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals_field",
+          "value": "protected_evidence.failure_class"
+        },
+        {
+          "field": "evidence.failure_class",
+          "operator": "equals",
+          "value": "usage_limit"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals_field",
+          "value": "provider.fallback_used"
+        },
+        {
+          "field": "evidence.fallback_used",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "evidence.route_profile_sha256",
+          "operator": "equals_field",
+          "value": "provider.approved_profile_sha256"
+        },
+        {
+          "field": "evidence.route_preflight_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.route_preflight_receipt_id"
+        },
+        {
+          "field": "evidence.route_preflight_expires_at",
+          "operator": "equals_field",
+          "value": "protected_evidence.route_preflight_expires_at"
+        },
+        {
+          "field": "evidence.route_preflight_expires_at",
+          "operator": "timestamp_after_field",
+          "value": "runtime.now"
+        },
+        {
+          "field": "evidence.route_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.route_binding_sha256"
+        },
+        {
+          "field": "evidence.route_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_route_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
-      "guard_id": "FROZEN_ROUTE_RESUME_OR_FALLBACK_ELIGIBLE_AND_CHECKPOINT_REVIEWING",
+      "guard_id": "FROZEN_ROUTE_RESUMED_AND_CHECKPOINT_REVIEWING",
       "missing_field_result": false,
       "predicate_schema_version": "dal.guard-predicate/1.0"
     },
@@ -6068,6 +6928,6 @@
       "predicate_schema_version": "dal.guard-predicate/1.0"
     }
   ],
-  "registry_sha256": "f4cecb5f4eb15ab84bc6b29363466227f869b57604e6e5a53cce61ed5fa78a18",
+  "registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
   "schema_version": "dal.guard-predicate-registry/1.0"
 }

@@ -1,5 +1,5 @@
 {
-  "registry_sha256": "dc239aa4b72e68c010189844055f582607e1fbaa16ccd5f918a1af261c2ef8d6",
+  "registry_sha256": "6956057a545bffa5d9333bceeb6992c33fd38842f84001fbd812162f50a20027",
   "schema_version": "dal.transition-spec-registry/1.0",
   "specs": [
     {
@@ -4041,6 +4041,230 @@
       "success_receipt_code": "APPLIED",
       "success_receipt_schema": "dal.external-effect-transition-receipt/1.0",
       "to_state": "unknown"
+    },
+    {
+      "actor_evidence_bindings": [
+        {
+          "actor_type": "service",
+          "required_evidence_source_types": [
+            "provider-adapter"
+          ]
+        }
+      ],
+      "aggregate_type": "feature",
+      "allowed_actor_types": [
+        "service"
+      ],
+      "allowed_decision_reason_codes": [],
+      "allowed_evidence_source_types": [
+        "provider-adapter"
+      ],
+      "allowed_reason_codes": [
+        "USAGE_LIMIT"
+      ],
+      "atomic_companion_transitions": [],
+      "atomic_write_set": [
+        "decision_resolve",
+        "decision_action_receipt",
+        "approval_record",
+        "approval_consume",
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "command_parameters": {
+        "effect_outcome": null,
+        "target_state": "coding"
+      },
+      "command_type": "start_approved_fallback",
+      "event_type": "feature.resumed",
+      "evidence_schema_version": "dal.evidence.fallback-eligibility/1.0",
+      "from_state": "blocked_usage",
+      "guard_id": "DERIVED_USAGE_FALLBACK_ELIGIBLE_AND_CHECKPOINT_CODING",
+      "minimum_run_gate": "G4",
+      "required_evidence_schema_versions": [
+        "dal.evidence.fallback-eligibility/1.0",
+        "dal.evidence.drift-probe/1.0"
+      ],
+      "requires_decision_action": null,
+      "result_reason_code": null,
+      "result_reason_owner": null,
+      "schema_version": "dal.transition-spec/1.0",
+      "spec_id": "FALLBACK--USAGE_LIMIT--coding",
+      "success_receipt_code": "APPLIED",
+      "success_receipt_schema": "dal.transition-receipt/1.0",
+      "to_state": "coding"
+    },
+    {
+      "actor_evidence_bindings": [
+        {
+          "actor_type": "service",
+          "required_evidence_source_types": [
+            "provider-adapter"
+          ]
+        }
+      ],
+      "aggregate_type": "feature",
+      "allowed_actor_types": [
+        "service"
+      ],
+      "allowed_decision_reason_codes": [],
+      "allowed_evidence_source_types": [
+        "provider-adapter"
+      ],
+      "allowed_reason_codes": [
+        "USAGE_LIMIT"
+      ],
+      "atomic_companion_transitions": [],
+      "atomic_write_set": [
+        "decision_resolve",
+        "decision_action_receipt",
+        "approval_record",
+        "approval_consume",
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "command_parameters": {
+        "effect_outcome": null,
+        "target_state": "fixing"
+      },
+      "command_type": "start_approved_fallback",
+      "event_type": "feature.resumed",
+      "evidence_schema_version": "dal.evidence.fallback-eligibility/1.0",
+      "from_state": "blocked_usage",
+      "guard_id": "DERIVED_USAGE_FALLBACK_ELIGIBLE_AND_CHECKPOINT_FIXING",
+      "minimum_run_gate": "G4",
+      "required_evidence_schema_versions": [
+        "dal.evidence.fallback-eligibility/1.0",
+        "dal.evidence.drift-probe/1.0"
+      ],
+      "requires_decision_action": null,
+      "result_reason_code": null,
+      "result_reason_owner": null,
+      "schema_version": "dal.transition-spec/1.0",
+      "spec_id": "FALLBACK--USAGE_LIMIT--fixing",
+      "success_receipt_code": "APPLIED",
+      "success_receipt_schema": "dal.transition-receipt/1.0",
+      "to_state": "fixing"
+    },
+    {
+      "actor_evidence_bindings": [
+        {
+          "actor_type": "service",
+          "required_evidence_source_types": [
+            "provider-adapter"
+          ]
+        }
+      ],
+      "aggregate_type": "feature",
+      "allowed_actor_types": [
+        "service"
+      ],
+      "allowed_decision_reason_codes": [],
+      "allowed_evidence_source_types": [
+        "provider-adapter"
+      ],
+      "allowed_reason_codes": [
+        "USAGE_LIMIT"
+      ],
+      "atomic_companion_transitions": [],
+      "atomic_write_set": [
+        "decision_resolve",
+        "decision_action_receipt",
+        "approval_record",
+        "approval_consume",
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "command_parameters": {
+        "effect_outcome": null,
+        "target_state": "planning"
+      },
+      "command_type": "start_approved_fallback",
+      "event_type": "feature.resumed",
+      "evidence_schema_version": "dal.evidence.fallback-eligibility/1.0",
+      "from_state": "blocked_usage",
+      "guard_id": "DERIVED_USAGE_FALLBACK_ELIGIBLE_AND_CHECKPOINT_PLANNING",
+      "minimum_run_gate": "G4",
+      "required_evidence_schema_versions": [
+        "dal.evidence.fallback-eligibility/1.0",
+        "dal.evidence.drift-probe/1.0"
+      ],
+      "requires_decision_action": null,
+      "result_reason_code": null,
+      "result_reason_owner": null,
+      "schema_version": "dal.transition-spec/1.0",
+      "spec_id": "FALLBACK--USAGE_LIMIT--planning",
+      "success_receipt_code": "APPLIED",
+      "success_receipt_schema": "dal.transition-receipt/1.0",
+      "to_state": "planning"
+    },
+    {
+      "actor_evidence_bindings": [
+        {
+          "actor_type": "service",
+          "required_evidence_source_types": [
+            "provider-adapter"
+          ]
+        }
+      ],
+      "aggregate_type": "feature",
+      "allowed_actor_types": [
+        "service"
+      ],
+      "allowed_decision_reason_codes": [],
+      "allowed_evidence_source_types": [
+        "provider-adapter"
+      ],
+      "allowed_reason_codes": [
+        "USAGE_LIMIT"
+      ],
+      "atomic_companion_transitions": [],
+      "atomic_write_set": [
+        "decision_resolve",
+        "decision_action_receipt",
+        "approval_record",
+        "approval_consume",
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "command_parameters": {
+        "effect_outcome": null,
+        "target_state": "reviewing"
+      },
+      "command_type": "start_approved_fallback",
+      "event_type": "feature.resumed",
+      "evidence_schema_version": "dal.evidence.fallback-eligibility/1.0",
+      "from_state": "blocked_usage",
+      "guard_id": "DERIVED_USAGE_FALLBACK_ELIGIBLE_AND_CHECKPOINT_REVIEWING",
+      "minimum_run_gate": "G4",
+      "required_evidence_schema_versions": [
+        "dal.evidence.fallback-eligibility/1.0",
+        "dal.evidence.drift-probe/1.0"
+      ],
+      "requires_decision_action": null,
+      "result_reason_code": null,
+      "result_reason_owner": null,
+      "schema_version": "dal.transition-spec/1.0",
+      "spec_id": "FALLBACK--USAGE_LIMIT--reviewing",
+      "success_receipt_code": "APPLIED",
+      "success_receipt_schema": "dal.transition-receipt/1.0",
+      "to_state": "reviewing"
     },
     {
       "actor_evidence_bindings": [
@@ -10921,7 +11145,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.route-resume/1.0",
       "from_state": "blocked_usage",
-      "guard_id": "FROZEN_ROUTE_RESUME_OR_FALLBACK_ELIGIBLE_AND_CHECKPOINT_CODING",
+      "guard_id": "FROZEN_ROUTE_RESUMED_AND_CHECKPOINT_CODING",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.route-resume/1.0",
@@ -10977,7 +11201,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.route-resume/1.0",
       "from_state": "blocked_usage",
-      "guard_id": "FROZEN_ROUTE_RESUME_OR_FALLBACK_ELIGIBLE_AND_CHECKPOINT_FIXING",
+      "guard_id": "FROZEN_ROUTE_RESUMED_AND_CHECKPOINT_FIXING",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.route-resume/1.0",
@@ -11033,7 +11257,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.route-resume/1.0",
       "from_state": "blocked_usage",
-      "guard_id": "FROZEN_ROUTE_RESUME_OR_FALLBACK_ELIGIBLE_AND_CHECKPOINT_PLANNING",
+      "guard_id": "FROZEN_ROUTE_RESUMED_AND_CHECKPOINT_PLANNING",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.route-resume/1.0",
@@ -11089,7 +11313,7 @@
       "event_type": "feature.resumed",
       "evidence_schema_version": "dal.evidence.route-resume/1.0",
       "from_state": "blocked_usage",
-      "guard_id": "FROZEN_ROUTE_RESUME_OR_FALLBACK_ELIGIBLE_AND_CHECKPOINT_REVIEWING",
+      "guard_id": "FROZEN_ROUTE_RESUMED_AND_CHECKPOINT_REVIEWING",
       "minimum_run_gate": "G1",
       "required_evidence_schema_versions": [
         "dal.evidence.route-resume/1.0",
