@@ -1,0 +1,2456 @@
+{
+  "guards": [
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "fixing"
+        },
+        {
+          "field": "decision.action",
+          "operator": "equals",
+          "value": "continue_fix"
+        },
+        {
+          "field": "decision.reason_code",
+          "operator": "equals",
+          "value": "TEST_BLOCKED"
+        },
+        {
+          "field": "decision.binding_valid",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "decision.unexpired_and_unconsumed",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "ACTION_BOUND_TEST_DECISION_VALID_AND_CHECKPOINT_FIXING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "approved"
+        },
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_inventory.not_confirmed_not_executed_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "ALL_EFFECTS_CONFIRMED_NOT_EXECUTED_AND_NEW_DECISION_AND_CHECKPOINT_APPROVED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "awaiting_merge"
+        },
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_inventory.not_confirmed_not_executed_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "ALL_EFFECTS_CONFIRMED_NOT_EXECUTED_AND_NEW_DECISION_AND_CHECKPOINT_AWAITING_MERGE",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "awaiting_plan_review"
+        },
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_inventory.not_confirmed_not_executed_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "ALL_EFFECTS_CONFIRMED_NOT_EXECUTED_AND_NEW_DECISION_AND_CHECKPOINT_AWAITING_PLAN_REVIEW",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "coding"
+        },
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_inventory.not_confirmed_not_executed_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "ALL_EFFECTS_CONFIRMED_NOT_EXECUTED_AND_NEW_DECISION_AND_CHECKPOINT_CODING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "deployed"
+        },
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_inventory.not_confirmed_not_executed_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "ALL_EFFECTS_CONFIRMED_NOT_EXECUTED_AND_NEW_DECISION_AND_CHECKPOINT_DEPLOYED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "fixing"
+        },
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_inventory.not_confirmed_not_executed_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "ALL_EFFECTS_CONFIRMED_NOT_EXECUTED_AND_NEW_DECISION_AND_CHECKPOINT_FIXING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "intake"
+        },
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_inventory.not_confirmed_not_executed_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "ALL_EFFECTS_CONFIRMED_NOT_EXECUTED_AND_NEW_DECISION_AND_CHECKPOINT_INTAKE",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "merged"
+        },
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_inventory.not_confirmed_not_executed_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "ALL_EFFECTS_CONFIRMED_NOT_EXECUTED_AND_NEW_DECISION_AND_CHECKPOINT_MERGED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_inventory.not_confirmed_not_executed_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "ALL_EFFECTS_CONFIRMED_NOT_EXECUTED_AND_NEW_DECISION_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "reviewing"
+        },
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_inventory.not_confirmed_not_executed_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "ALL_EFFECTS_CONFIRMED_NOT_EXECUTED_AND_NEW_DECISION_AND_CHECKPOINT_REVIEWING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "verified"
+        },
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_inventory.not_confirmed_not_executed_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "ALL_EFFECTS_CONFIRMED_NOT_EXECUTED_AND_NEW_DECISION_AND_CHECKPOINT_VERIFIED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "verifying"
+        },
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_inventory.not_confirmed_not_executed_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "ALL_EFFECTS_CONFIRMED_NOT_EXECUTED_AND_NEW_DECISION_AND_CHECKPOINT_VERIFYING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "drift.kind",
+          "operator": "in",
+          "value": [
+            "artifact",
+            "execution_profile"
+          ]
+        },
+        {
+          "field": "plan.new_approval_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "ARTIFACT_OR_PROFILE_DRIFT_AND_NEW_PLAN_APPROVAL",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "deployed"
+        },
+        {
+          "field": "evidence.authoritative_readback_valid",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "decision.action",
+          "operator": "equals",
+          "value": "accept_current_fact"
+        },
+        {
+          "field": "decision.binding_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "AUTHORITATIVE_FACT_ACCEPTED_AND_CHECKPOINT_DEPLOYED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "merged"
+        },
+        {
+          "field": "evidence.authoritative_readback_valid",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "decision.action",
+          "operator": "equals",
+          "value": "accept_current_fact"
+        },
+        {
+          "field": "decision.binding_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "AUTHORITATIVE_FACT_ACCEPTED_AND_CHECKPOINT_MERGED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "evidence.authoritative_post_effect_readback_valid",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "evidence.recovery_proposal_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "AUTHORITATIVE_POST_EFFECT_READBACK_AND_RECOVERY_PROPOSAL",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "evidence.authoritative_result",
+          "operator": "equals",
+          "value": "unknown"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "AUTHORITATIVE_RESULT_STILL_UNKNOWN",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "effect_inventory.confirmed_count",
+          "operator": "greater_than",
+          "value": 0
+        },
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "CANCEL_CONFIRMED_EFFECTS_AND_NO_UNKNOWN_EFFECTS",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "effect_inventory.confirmed_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "CANCEL_NO_CONFIRMED_OR_UNKNOWN_EFFECTS",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "capability.epoch_current",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "lease.epoch_current",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "CAPABILITY_AND_LEASE_EPOCH_CURRENT",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "capability.previous_epoch_revoked",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "plan.new_approval_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "CAPABILITY_EPOCH_REVOKED_AND_NEW_PLAN_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "evidence.current_fact_readback_valid",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "artifact.new_approval_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "CURRENT_FACT_AND_NEW_ARTIFACT_APPROVAL_VALID_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "approved"
+        },
+        {
+          "field": "drift_probe.matches_checkpoint",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "lease.new_epoch_current",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "DRIFT_PROBE_VALID_AND_NEW_LEASE_AND_CHECKPOINT_APPROVED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "awaiting_merge"
+        },
+        {
+          "field": "drift_probe.matches_checkpoint",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "lease.new_epoch_current",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "DRIFT_PROBE_VALID_AND_NEW_LEASE_AND_CHECKPOINT_AWAITING_MERGE",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "awaiting_plan_review"
+        },
+        {
+          "field": "drift_probe.matches_checkpoint",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "lease.new_epoch_current",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "DRIFT_PROBE_VALID_AND_NEW_LEASE_AND_CHECKPOINT_AWAITING_PLAN_REVIEW",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "coding"
+        },
+        {
+          "field": "drift_probe.matches_checkpoint",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "lease.new_epoch_current",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "DRIFT_PROBE_VALID_AND_NEW_LEASE_AND_CHECKPOINT_CODING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "fixing"
+        },
+        {
+          "field": "drift_probe.matches_checkpoint",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "lease.new_epoch_current",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "DRIFT_PROBE_VALID_AND_NEW_LEASE_AND_CHECKPOINT_FIXING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "drift_probe.matches_checkpoint",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "lease.new_epoch_current",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "DRIFT_PROBE_VALID_AND_NEW_LEASE_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "reviewing"
+        },
+        {
+          "field": "drift_probe.matches_checkpoint",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "lease.new_epoch_current",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "DRIFT_PROBE_VALID_AND_NEW_LEASE_AND_CHECKPOINT_REVIEWING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "verified"
+        },
+        {
+          "field": "drift_probe.matches_checkpoint",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "lease.new_epoch_current",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "DRIFT_PROBE_VALID_AND_NEW_LEASE_AND_CHECKPOINT_VERIFIED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "verifying"
+        },
+        {
+          "field": "drift_probe.matches_checkpoint",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "lease.new_epoch_current",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "DRIFT_PROBE_VALID_AND_NEW_LEASE_AND_CHECKPOINT_VERIFYING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "approved"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_completed"
+        },
+        {
+          "field": "external_effect.changes_feature_state",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_APPROVED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "awaiting_merge"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_completed"
+        },
+        {
+          "field": "external_effect.changes_feature_state",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_AWAITING_MERGE",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "awaiting_plan_review"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_completed"
+        },
+        {
+          "field": "external_effect.changes_feature_state",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_AWAITING_PLAN_REVIEW",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "coding"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_completed"
+        },
+        {
+          "field": "external_effect.changes_feature_state",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_CODING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "deployed"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_completed"
+        },
+        {
+          "field": "external_effect.changes_feature_state",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_DEPLOYED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "fixing"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_completed"
+        },
+        {
+          "field": "external_effect.changes_feature_state",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_FIXING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "intake"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_completed"
+        },
+        {
+          "field": "external_effect.changes_feature_state",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_INTAKE",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "merged"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_completed"
+        },
+        {
+          "field": "external_effect.changes_feature_state",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_MERGED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_completed"
+        },
+        {
+          "field": "external_effect.changes_feature_state",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "reviewing"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_completed"
+        },
+        {
+          "field": "external_effect.changes_feature_state",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_REVIEWING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "verified"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_completed"
+        },
+        {
+          "field": "external_effect.changes_feature_state",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_VERIFIED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "verifying"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_completed"
+        },
+        {
+          "field": "external_effect.changes_feature_state",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_COMPLETED_NONSTATE_AND_CHECKPOINT_VERIFYING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "approved"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_not_executed"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_APPROVED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "awaiting_merge"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_not_executed"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_AWAITING_MERGE",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "awaiting_plan_review"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_not_executed"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_AWAITING_PLAN_REVIEW",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "coding"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_not_executed"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_CODING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "deployed"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_not_executed"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_DEPLOYED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "fixing"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_not_executed"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_FIXING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "intake"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_not_executed"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_INTAKE",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "merged"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_not_executed"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_MERGED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_not_executed"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "reviewing"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_not_executed"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_REVIEWING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "verified"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_not_executed"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_VERIFIED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "verifying"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "confirmed_not_executed"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_CONFIRMED_NOT_EXECUTED_AND_CHECKPOINT_VERIFYING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "external_effect.kind",
+          "operator": "equals",
+          "value": "deploy"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "reconciling"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_IS_DEPLOY",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "external_effect.kind",
+          "operator": "equals",
+          "value": "merge"
+        },
+        {
+          "field": "external_effect.state",
+          "operator": "equals",
+          "value": "reconciling"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EFFECT_IS_MERGE",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "executor.terminated",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "external_effect.dispatch_marker_exists",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EXECUTOR_TERMINATED_AND_NEVER_DISPATCHED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "executor.failure_shape",
+          "operator": "in",
+          "value": [
+            "executor_terminated",
+            "dispatch_not_provable"
+          ]
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "EXECUTOR_TERMINATION_OR_DISPATCH_NOT_PROVABLE",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "coding"
+        },
+        {
+          "field": "provider.recovery_mode",
+          "operator": "in",
+          "value": [
+            "frozen_route_resumed",
+            "fallback_eligible"
+          ]
+        },
+        {
+          "field": "provider.fallback_used",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "FROZEN_ROUTE_RESUME_OR_FALLBACK_ELIGIBLE_AND_CHECKPOINT_CODING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "fixing"
+        },
+        {
+          "field": "provider.recovery_mode",
+          "operator": "in",
+          "value": [
+            "frozen_route_resumed",
+            "fallback_eligible"
+          ]
+        },
+        {
+          "field": "provider.fallback_used",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "FROZEN_ROUTE_RESUME_OR_FALLBACK_ELIGIBLE_AND_CHECKPOINT_FIXING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "provider.recovery_mode",
+          "operator": "in",
+          "value": [
+            "frozen_route_resumed",
+            "fallback_eligible"
+          ]
+        },
+        {
+          "field": "provider.fallback_used",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "FROZEN_ROUTE_RESUME_OR_FALLBACK_ELIGIBLE_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "reviewing"
+        },
+        {
+          "field": "provider.recovery_mode",
+          "operator": "in",
+          "value": [
+            "frozen_route_resumed",
+            "fallback_eligible"
+          ]
+        },
+        {
+          "field": "provider.fallback_used",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "FROZEN_ROUTE_RESUME_OR_FALLBACK_ELIGIBLE_AND_CHECKPOINT_REVIEWING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "policy.run_gate",
+          "operator": "at_least",
+          "value": "G5"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "G5_REQUIRED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "policy.run_gate",
+          "operator": "at_least",
+          "value": "G5"
+        },
+        {
+          "field": "incidents.open_safety_or_policy_count",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "G5_REQUIRED_AND_NO_OPEN_SAFETY_OR_POLICY_INCIDENT",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "policy.run_gate",
+          "operator": "at_least",
+          "value": "G5"
+        },
+        {
+          "field": "incidents.open_safety_or_policy_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "approval.action_receipt_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "G5_REQUIRED_AND_NO_OPEN_SAFETY_OR_POLICY_INCIDENT_AND_APPROVAL_ACTION_RECEIPT",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "policy.run_gate",
+          "operator": "at_least",
+          "value": "G5"
+        },
+        {
+          "field": "incidents.open_safety_or_policy_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "approval.receipt_valid_at_effect_time",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "external_fact.kind",
+          "operator": "equals",
+          "value": "deploy"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "G5_REQUIRED_AND_NO_OPEN_SAFETY_OR_POLICY_INCIDENT_AND_OBSERVED_DEPLOY_ACTION_RECEIPT_VALID_AT_DEPLOYED_AT",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "git.authoritative_readback_valid",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "git.new_base_approval_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "GIT_READBACK_AND_NEW_BASE_APPROVAL_VALID_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "executor.claim_matches",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "executor.claim_expired",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "MATCHING_EXECUTOR_CLAIM",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "deployed"
+        },
+        {
+          "field": "recovery_case.state",
+          "operator": "equals",
+          "value": "verified"
+        },
+        {
+          "field": "recovery_case.feature_binding_matches",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "MATCHING_RECOVERY_CASE_VERIFIED_AND_CHECKPOINT_DEPLOYED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "merged"
+        },
+        {
+          "field": "recovery_case.state",
+          "operator": "equals",
+          "value": "verified"
+        },
+        {
+          "field": "recovery_case.feature_binding_matches",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "MATCHING_RECOVERY_CASE_VERIFIED_AND_CHECKPOINT_MERGED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "evidence.scope_key_matches",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "evidence.target_matches",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "evidence.not_executed_readback_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "MATCHING_SCOPE_KEY_TARGET_AND_NOT_EXECUTED_PROOF",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "evidence.scope_key_matches",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "evidence.target_matches",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "evidence.authoritative_receipt_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "MATCHING_SCOPE_KEY_TARGET_AND_RECEIPT",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "coding"
+        },
+        {
+          "field": "budget.new_limit_greater_than_usage",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "decision.action",
+          "operator": "equals",
+          "value": "resume_with_budget"
+        },
+        {
+          "field": "decision.binding_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "NEW_BUDGET_DECISION_VALID_AND_CHECKPOINT_CODING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "fixing"
+        },
+        {
+          "field": "budget.new_limit_greater_than_usage",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "decision.action",
+          "operator": "equals",
+          "value": "resume_with_budget"
+        },
+        {
+          "field": "decision.binding_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "NEW_BUDGET_DECISION_VALID_AND_CHECKPOINT_FIXING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "budget.new_limit_greater_than_usage",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "decision.action",
+          "operator": "equals",
+          "value": "resume_with_budget"
+        },
+        {
+          "field": "decision.binding_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "NEW_BUDGET_DECISION_VALID_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "reviewing"
+        },
+        {
+          "field": "budget.new_limit_greater_than_usage",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "decision.action",
+          "operator": "equals",
+          "value": "resume_with_budget"
+        },
+        {
+          "field": "decision.binding_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "NEW_BUDGET_DECISION_VALID_AND_CHECKPOINT_REVIEWING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "effect_inventory.intent_count",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "NO_EXTERNAL_INTENT",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "incidents.open_safety_or_policy_count",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "NO_OPEN_SAFETY_OR_POLICY_INCIDENT",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "approval.receipt_valid_at_effect_time",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "external_fact.kind",
+          "operator": "equals",
+          "value": "deploy"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "OBSERVED_DEPLOY_WITHOUT_VALID_ACTION_RECEIPT",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "approval.receipt_valid_at_effect_time",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "external_fact.kind",
+          "operator": "equals",
+          "value": "merge"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "OBSERVED_MERGE_ACTION_RECEIPT_VALID_AT_MERGED_AT",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "approval.receipt_valid_at_effect_time",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "external_fact.kind",
+          "operator": "equals",
+          "value": "merge"
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "OBSERVED_MERGE_WITHOUT_VALID_ACTION_RECEIPT",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "approved"
+        },
+        {
+          "field": "prerequisite.authoritative_readback_satisfied",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "PREREQUISITE_READBACK_VALID_AND_CHECKPOINT_APPROVED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "coding"
+        },
+        {
+          "field": "prerequisite.authoritative_readback_satisfied",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "PREREQUISITE_READBACK_VALID_AND_CHECKPOINT_CODING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "fixing"
+        },
+        {
+          "field": "prerequisite.authoritative_readback_satisfied",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "PREREQUISITE_READBACK_VALID_AND_CHECKPOINT_FIXING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "prerequisite.authoritative_readback_satisfied",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "PREREQUISITE_READBACK_VALID_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "reviewing"
+        },
+        {
+          "field": "prerequisite.authoritative_readback_satisfied",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "PREREQUISITE_READBACK_VALID_AND_CHECKPOINT_REVIEWING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "verifying"
+        },
+        {
+          "field": "prerequisite.authoritative_readback_satisfied",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "PREREQUISITE_READBACK_VALID_AND_CHECKPOINT_VERIFYING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "coding"
+        },
+        {
+          "field": "provider.contract_digest_unchanged",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "decision.action",
+          "operator": "equals",
+          "value": "retry_from_checkpoint"
+        },
+        {
+          "field": "decision.binding_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "PROVIDER_CONTRACT_STABLE_AND_NEW_DECISION_AND_CHECKPOINT_CODING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "fixing"
+        },
+        {
+          "field": "provider.contract_digest_unchanged",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "decision.action",
+          "operator": "equals",
+          "value": "retry_from_checkpoint"
+        },
+        {
+          "field": "decision.binding_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "PROVIDER_CONTRACT_STABLE_AND_NEW_DECISION_AND_CHECKPOINT_FIXING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "provider.contract_digest_unchanged",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "decision.action",
+          "operator": "equals",
+          "value": "retry_from_checkpoint"
+        },
+        {
+          "field": "decision.binding_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "PROVIDER_CONTRACT_STABLE_AND_NEW_DECISION_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "reviewing"
+        },
+        {
+          "field": "provider.contract_digest_unchanged",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "decision.action",
+          "operator": "equals",
+          "value": "retry_from_checkpoint"
+        },
+        {
+          "field": "decision.binding_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "PROVIDER_CONTRACT_STABLE_AND_NEW_DECISION_AND_CHECKPOINT_REVIEWING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "approval.action",
+          "operator": "equals",
+          "value": "approve_merge"
+        },
+        {
+          "field": "approval.receipt_valid_at_effect_time",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "policy.managed_merge_enabled",
+          "operator": "equals",
+          "value": false
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "PR_ONLY_APPROVAL_ACTION_RECEIPT",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "coding"
+        },
+        {
+          "field": "auth_probe.read_only",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "auth_probe.authorized",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "auth_probe.credential_rotated_or_repaired",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "READ_ONLY_AUTH_PROBE_VALID_AND_CHECKPOINT_CODING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "fixing"
+        },
+        {
+          "field": "auth_probe.read_only",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "auth_probe.authorized",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "auth_probe.credential_rotated_or_repaired",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "READ_ONLY_AUTH_PROBE_VALID_AND_CHECKPOINT_FIXING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "auth_probe.read_only",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "auth_probe.authorized",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "auth_probe.credential_rotated_or_repaired",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "READ_ONLY_AUTH_PROBE_VALID_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "reviewing"
+        },
+        {
+          "field": "auth_probe.read_only",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "auth_probe.authorized",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "auth_probe.credential_rotated_or_repaired",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "READ_ONLY_AUTH_PROBE_VALID_AND_CHECKPOINT_REVIEWING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "requirement.answer_artifact_valid",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "requirement.binding_matches_feature",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "REQUIREMENT_ARTIFACT_VALID_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "executor.failure_shape",
+          "operator": "in",
+          "value": [
+            "response_lost",
+            "executor_terminated"
+          ]
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "RESPONSE_LOST_OR_EXECUTOR_TERMINATED",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "fixing"
+        },
+        {
+          "field": "review.fix_cycle_count",
+          "operator": "equals",
+          "value": 3
+        },
+        {
+          "field": "decision.action",
+          "operator": "equals",
+          "value": "continue_fix"
+        },
+        {
+          "field": "decision.binding_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "REVIEW_LOOP_OVERRIDE_DECISION_VALID_AND_CHECKPOINT_FIXING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "external_effect.scope_and_key_match",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "approval.new_action_bound_receipt_valid",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "capability.new_epoch_current",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "external_effect.attempt_increment",
+          "operator": "equals",
+          "value": 1
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "SAME_SCOPE_KEY_NEW_APPROVAL_CAPABILITY_EPOCH_AND_ATTEMPT_INCREMENT",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "reconciler.active_claim_count",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "reconciler.claim_matches_effect_version",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "SINGLE_RECONCILER_CLAIM",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "coding"
+        },
+        {
+          "field": "provider.transient_retry_count",
+          "operator": "equals",
+          "value": 2
+        },
+        {
+          "field": "provider.provider_attempt_count",
+          "operator": "equals",
+          "value": 3
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "TWO_ATTEMPTS_CONSUMED_AND_NEW_DECISION_AND_CHECKPOINT_CODING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "fixing"
+        },
+        {
+          "field": "provider.transient_retry_count",
+          "operator": "equals",
+          "value": 2
+        },
+        {
+          "field": "provider.provider_attempt_count",
+          "operator": "equals",
+          "value": 3
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "TWO_ATTEMPTS_CONSUMED_AND_NEW_DECISION_AND_CHECKPOINT_FIXING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "planning"
+        },
+        {
+          "field": "provider.transient_retry_count",
+          "operator": "equals",
+          "value": 2
+        },
+        {
+          "field": "provider.provider_attempt_count",
+          "operator": "equals",
+          "value": 3
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "TWO_ATTEMPTS_CONSUMED_AND_NEW_DECISION_AND_CHECKPOINT_PLANNING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "checkpoint.state",
+          "operator": "equals",
+          "value": "reviewing"
+        },
+        {
+          "field": "provider.transient_retry_count",
+          "operator": "equals",
+          "value": 2
+        },
+        {
+          "field": "provider.provider_attempt_count",
+          "operator": "equals",
+          "value": 3
+        },
+        {
+          "field": "decision.action_valid",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "TWO_ATTEMPTS_CONSUMED_AND_NEW_DECISION_AND_CHECKPOINT_REVIEWING",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    },
+    {
+      "all_of": [
+        {
+          "field": "effect_inventory.unknown_or_reconciling_count",
+          "operator": "greater_than",
+          "value": 0
+        }
+      ],
+      "evaluation_error_result": false,
+      "guard_id": "UNKNOWN_EXTERNAL_EFFECT",
+      "missing_field_result": false,
+      "predicate_schema_version": "dal.guard-predicate/1.0"
+    }
+  ],
+  "registry_sha256": "840a7256dc1fb68e43faf0f42c644841ffa2dfbe042994ae99784ee66f708518",
+  "schema_version": "dal.guard-predicate-registry/1.0"
+}
