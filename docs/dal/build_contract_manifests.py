@@ -168,7 +168,7 @@ def evidence_claim_fields(schema_version: str) -> dict[str, str]:
             "semantic_binding_sha256": "sha256",
             "external_effect_id": "string", "external_effect_version": "integer",
             "effect_attempt": "integer", "effect_action": "string", "target_fingerprint": "string",
-            "decision_action": "string", "effect_result": "effect-readback-result",
+            "decision_action": "string", "effect_result": "reconciliation-result",
             "authoritative_receipt_id": "nullable-string",
             "authoritative_readback_sha256": "sha256", "impact_sha256": "sha256",
         },
@@ -246,6 +246,8 @@ def json_type(field_type: str) -> dict:
         return {"enum": ["intent_recorded", "claimed", "dispatch_started", "unknown", "reconciling", "confirmed_completed", "confirmed_not_executed"]}
     if field_type == "effect-readback-result":
         return {"enum": ["confirmed_completed", "confirmed_not_executed", "unknown"]}
+    if field_type == "reconciliation-result":
+        return {"enum": ["confirmed_completed", "confirmed_not_executed"]}
     return {"type": "string", "minLength": 1}
 
 
@@ -405,14 +407,21 @@ def build_machine_registries(specs: list[dict]) -> tuple[str, str]:
     for schema_version in evidence_versions:
         claim_fields = evidence_claim_fields(schema_version)
         all_fields = {**COMMON_EVIDENCE_FIELDS, **claim_fields}
+        evidence_schema = {
+            "type": "object", "additionalProperties": False,
+            "required": list(all_fields),
+            "properties": {name: ({"const": schema_version} if name == "schema_version" else json_type(kind)) for name, kind in all_fields.items()},
+        }
+        if schema_version == "dal.evidence.reconciliation/1.0":
+            evidence_schema["allOf"] = [{
+                "if": {"properties": {"effect_result": {"const": "confirmed_completed"}}, "required": ["effect_result"]},
+                "then": {"properties": {"authoritative_receipt_id": {"type": "string", "minLength": 1}}},
+                "else": {"properties": {"authoritative_receipt_id": {"type": "null"}}},
+            }]
         evidence_rows.append({
             "schema_version": schema_version,
             "source_type_binding": sorted({source for row in specs if schema_version in row["required_evidence_schema_versions"] for source in row["allowed_evidence_source_types"]}),
-            "json_schema": {
-                "type": "object", "additionalProperties": False,
-                "required": list(all_fields),
-                "properties": {name: ({"const": schema_version} if name == "schema_version" else json_type(kind)) for name, kind in all_fields.items()},
-            },
+            "json_schema": evidence_schema,
         })
     evidence_catalog = {"schema_version": "dal.evidence-schema-registry/1.0", "evidence_schemas": evidence_rows, "registry_sha256": None}
     evidence_hash = write_hashed("evidence-schema-registry_v1.0.json", evidence_catalog, "registry_sha256")
@@ -1002,6 +1011,11 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
                 "protected_evidence.remote_receipt_id": "fixture-deployment-receipt",
             })
         elif "dal.evidence.reconciliation/1.0" in versions:
+            authoritative_receipt = (
+                "fixture-reconciliation-receipt"
+                if item["command_parameters"]["effect_outcome"] == "confirmed_completed"
+                else None
+            )
             values.update({
                 "evidence.effect_action": "reconcile_external_effect",
                 "external_effect.action": "reconcile_external_effect",
@@ -1009,8 +1023,8 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
                 "command.decision_action": item["command_type"],
                 "evidence.effect_result": item["command_parameters"]["effect_outcome"],
                 "command.effect_outcome": item["command_parameters"]["effect_outcome"],
-                "evidence.authoritative_receipt_id": "fixture-reconciliation-receipt",
-                "protected_evidence.authoritative_receipt_id": "fixture-reconciliation-receipt",
+                "evidence.authoritative_receipt_id": authoritative_receipt,
+                "protected_evidence.authoritative_receipt_id": authoritative_receipt,
                 "evidence_set.registered_device.semantic_binding_sha256": "6" * 64,
                 "evidence_set.external_effect_controller.semantic_binding_sha256": "6" * 64,
                 "runtime.recomputed_registered_device_semantic_binding_sha256": "6" * 64,
@@ -1307,7 +1321,7 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
             document.update({
                 "decision_action": values["evidence.decision_action"],
                 "effect_result": values["evidence.effect_result"],
-                "authoritative_receipt_id": "fixture-reconciliation-receipt",
+                "authoritative_receipt_id": values["evidence.authoritative_receipt_id"],
             })
         else:
             raise ValueError(f"unsupported external outcome evidence fixture: {schema_version}")
@@ -1387,6 +1401,15 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
         for source in reconciliation_spec["actor_evidence_bindings"][0]["required_evidence_source_types"]
     ]
     add_evidence_binding_case("valid_reconciliation_outcome", reconciliation_spec, reconciliation_evidence, allowed=True, validation_stage="applied")
+    reconciliation_not_executed_spec = spec_by_id["RECONCILE-NOT-EXECUTED--coding"]
+    reconciliation_not_executed_evidence = [
+        external_outcome_evidence(reconciliation_not_executed_spec, reconciliation_schema, source_type=source)
+        for source in reconciliation_not_executed_spec["actor_evidence_bindings"][0]["required_evidence_source_types"]
+    ]
+    add_evidence_binding_case(
+        "valid_reconciliation_not_executed", reconciliation_not_executed_spec,
+        reconciliation_not_executed_evidence, allowed=True, validation_stage="applied",
+    )
     wrong_action_documents = [dict(document, decision_action="accept_deploy_result") for document in reconciliation_evidence]
     add_evidence_binding_case(
         "wrong_action", reconciliation_spec, wrong_action_documents, allowed=False,
@@ -1455,6 +1478,44 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
             fact["value"] = "7" * 64
     inconsistent_row = next(row for row in rows if row["fixture_ref"] == inconsistent_key)
     inconsistent_row["fixture_sha256"] = digest(fixtures[inconsistent_key])
+
+    def add_completed_receipt_schema_negative(variant: str, invalid_receipt: object) -> None:
+        documents = [
+            dict(
+                document,
+                authoritative_receipt_id=invalid_receipt,
+                payload_sha256="9" * 64,
+                semantic_binding_sha256="7" * 64,
+            )
+            for document in reconciliation_evidence
+        ]
+        add_evidence_binding_case(
+            variant, reconciliation_spec, documents, allowed=False,
+            failed_field="evidence.authoritative_receipt_id", failed_value=invalid_receipt,
+            validation_stage="schema",
+        )
+        key = f"dal.fixture/DAL-T-EVIDENCE-BINDING-001/{variant}/G1/1.0"
+        fact_overrides = {
+            "evidence.authoritative_receipt_id": invalid_receipt,
+            "protected_evidence.authoritative_receipt_id": invalid_receipt,
+            "evidence.payload_sha256": "9" * 64,
+            "protected_evidence.payload_sha256": "9" * 64,
+            "evidence.semantic_binding_sha256": "7" * 64,
+            "protected_evidence.semantic_binding_sha256": "7" * 64,
+            "runtime.recomputed_evidence_semantic_binding_sha256": "7" * 64,
+            "evidence_set.registered_device.semantic_binding_sha256": "7" * 64,
+            "evidence_set.external_effect_controller.semantic_binding_sha256": "7" * 64,
+            "runtime.recomputed_registered_device_semantic_binding_sha256": "7" * 64,
+            "runtime.recomputed_external_effect_controller_semantic_binding_sha256": "7" * 64,
+        }
+        for fact in fixtures[key]["transition_command"]["guard_preconditions"]["facts"]:
+            if fact["field"] in fact_overrides:
+                fact["value"] = fact_overrides[fact["field"]]
+        row = next(row for row in rows if row["fixture_ref"] == key)
+        row["fixture_sha256"] = digest(fixtures[key])
+
+    add_completed_receipt_schema_negative("completed_null_authoritative_receipt", None)
+    add_completed_receipt_schema_negative("completed_empty_authoritative_receipt", "")
 
     def outcome_call(
         aggregate_type: str,

@@ -3843,6 +3843,35 @@
     {
       "json_schema": {
         "additionalProperties": false,
+        "allOf": [
+          {
+            "else": {
+              "properties": {
+                "authoritative_receipt_id": {
+                  "type": "null"
+                }
+              }
+            },
+            "if": {
+              "properties": {
+                "effect_result": {
+                  "const": "confirmed_completed"
+                }
+              },
+              "required": [
+                "effect_result"
+              ]
+            },
+            "then": {
+              "properties": {
+                "authoritative_receipt_id": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
         "properties": {
           "artifact_sha256": {
             "pattern": "^[0-9a-f]{64}$",
@@ -3873,8 +3902,7 @@
           "effect_result": {
             "enum": [
               "confirmed_completed",
-              "confirmed_not_executed",
-              "unknown"
+              "confirmed_not_executed"
             ]
           },
           "effect_scope_key": {
@@ -5675,6 +5703,6 @@
       ]
     }
   ],
-  "registry_sha256": "bf2da6dbbff9ae1892488b358b2cfefd1bab203ff37366e930c7a1ff2226861f",
+  "registry_sha256": "d6e877cada3463c619361258160a9e4abb4036cdf12050f90e486abeebc89574",
   "schema_version": "dal.evidence-schema-registry/1.0"
 }
