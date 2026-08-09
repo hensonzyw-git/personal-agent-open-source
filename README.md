@@ -21,8 +21,10 @@ Development Agent Loop Wave 0 gate，尚未授权 DAL 实现。
   001–006 已逐项关闭，consolidated historical regression 也已通过；fresh full review
   `3679f0b` 的 007–011 已在 `50e8c41` 独立关闭；第二次 full review `899c6e5` 又因 manifest
   authority finding 012 FAIL，012 已在 exact `1b7ca30` 独立关闭；第三次 full review `cdccf09` 又因
-  eval/root-closure/canonical-doc findings 013–015 FAIL，三项已在 exact `1bdbf1a` 独立关闭；尚无
-  provider preflight 或 DAL-007+ 自动化实现；
+  eval/root-closure/canonical-doc findings 013–015 FAIL，三项已在 exact `1bdbf1a` 独立关闭；最终从零
+  full review 已在 exact `50850de` PASS，receipt
+  `codex-readonly/DAL-G0-E-FINAL/50850de/2026-08-09`；尚无 provider preflight、实现授权或
+  DAL-007+ 自动化实现；
 - 精确测试数、live evidence、已知限制和下一步以
   [PROJECT_STATUS.md](./PROJECT_STATUS.md) 为准。
 
@@ -115,9 +117,8 @@ uv run personal-agent-online-eval --framework claude --case-id FIN-021
 
 下一步按以下顺序进行：
 
-1. 对新的 exact SHA 执行从零开始的 full adversarial DAL-G0-E 复核。
-2. 只有该 full review PASS 后，才请求 Henson 对 DAL-007–013 第一安全切片的显式实现授权。
-3. 在 DAL-G0-E PASS 与显式授权前，不运行 provider preflight，不创建 GitHub/Worker/credential
+1. 请求 Henson 对 DAL-007–013 第一安全切片的显式实现授权。
+2. 在显式授权前，不运行 provider preflight，不创建 GitHub/Worker/credential
    等外部资源，不实现 DAL-007+；精确边界始终以 `PROJECT_STATUS.md` 和 `docs/dal/` 台账为准。
 
 ## 安全约定

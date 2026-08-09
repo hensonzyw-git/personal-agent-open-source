@@ -298,8 +298,8 @@ conflict instead of silently choosing an old default.
   workflow, GitHub and Home Mac Worker architecture, provider routing, security
   and recovery design.
 - `docs/开发Agent闭环开发拆解_v0.1.md` — separate DAL-001–050 implementation
-  track and gates; Phase 1 completion blocks DAL-001, DAL-G0 is not authorised,
-  and no task has started.
+  track and gates; Phase 1 completion, DAL-G0-P and DAL-G0-E are passed, but
+  DAL-007+ implementation still requires Henson's explicit authorization.
 - `docs/Phase1技术方案设计计划_v0.1.md` — next-stage work order and the gate
   before implementation.
 - `docs/Phase1技术方案_v0.1.md` — current Phase 1 technical design;
