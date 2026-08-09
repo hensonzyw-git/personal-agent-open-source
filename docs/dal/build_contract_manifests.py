@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -3106,6 +3108,18 @@ def main() -> None:
     evidence_hash, guard_hash = build_machine_registries(specs)
     build_test_contracts(specs, registry_hash, evidence_hash, guard_hash)
     build_eval_schema()
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "verify_transition_oracle_authority.py"),
+            "--generated-dir",
+            str(OUT),
+            "--authority",
+            str(ROOT / "manifests" / "transition-oracle-authority_v1.0.json"),
+            "--mutation-self-test",
+        ],
+        check=True,
+    )
     print(json.dumps({"transition_specs": len(specs), "test_variants": len(json.loads((OUT / 'test-manifest_v1.2.json').read_text())["test_variants"]), "registry_sha256": registry_hash, "evidence_registry_sha256": evidence_hash, "guard_registry_sha256": guard_hash}, sort_keys=True))
 
 
