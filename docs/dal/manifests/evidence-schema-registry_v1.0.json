@@ -3866,7 +3866,10 @@
               "properties": {
                 "authoritative_receipt_id": {
                   "minLength": 1,
-                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                  "not": {
+                    "pattern": "[^A-Za-z0-9._:/-]"
+                  },
+                  "pattern": "^[A-Za-z0-9]",
                   "type": "string"
                 }
               }
@@ -5704,6 +5707,6 @@
       ]
     }
   ],
-  "registry_sha256": "84d8d7e6b6bf1f7a7b53b4ec2bf78fea53d2f100dabc32e4861c49fac221c956",
+  "registry_sha256": "069b08b092be88e6360bf779863c0c6e85df084e5ce5ff6848b0050b36e4d442",
   "schema_version": "dal.evidence-schema-registry/1.0"
 }

@@ -417,7 +417,8 @@ def build_machine_registries(specs: list[dict]) -> tuple[str, str]:
                 "if": {"properties": {"effect_result": {"const": "confirmed_completed"}}, "required": ["effect_result"]},
                 "then": {"properties": {"authoritative_receipt_id": {
                     "type": "string", "minLength": 1,
-                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
+                    "pattern": "^[A-Za-z0-9]",
+                    "not": {"pattern": "[^A-Za-z0-9._:/-]"},
                 }}},
                 "else": {"properties": {"authoritative_receipt_id": {"type": "null"}}},
             }]
@@ -1521,6 +1522,7 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
     add_completed_receipt_schema_negative("completed_empty_authoritative_receipt", "")
     add_completed_receipt_schema_negative("completed_ascii_whitespace_authoritative_receipt", " \t ")
     add_completed_receipt_schema_negative("completed_unicode_whitespace_authoritative_receipt", "\u2003")
+    add_completed_receipt_schema_negative("completed_trailing_newline_authoritative_receipt", "receipt\n")
 
     def outcome_call(
         aggregate_type: str,
