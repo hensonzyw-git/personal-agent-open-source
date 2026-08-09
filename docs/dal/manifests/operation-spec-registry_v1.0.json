@@ -2790,6 +2790,118 @@
         "service"
       ],
       "allowed_evidence_source_types": [
+        "workflow-service"
+      ],
+      "allowed_receipt_codes": [
+        "FALLBACK_DISPATCH_CLAIMED",
+        "POLICY_DENIED"
+      ],
+      "atomic_write_sets_by_variant": {
+        "claim_write_failure--provider-attempt": [],
+        "concurrent_restart_single_claim": [
+          "provider_attempt",
+          "business_event",
+          "operation_receipt",
+          "audit"
+        ],
+        "restart_claims_reserved_attempt": [
+          "provider_attempt",
+          "business_event",
+          "operation_receipt",
+          "audit"
+        ],
+        "restart_observes_dispatch_started": []
+      },
+      "command_type": "claim_reserved_fallback_attempt",
+      "operation_spec_id": "OP-FALLBACK-RESTART-001",
+      "schema_version": "dal.operation-spec/1.0",
+      "success_receipt_schema": "dal.operation-receipt/1.0",
+      "variant_input_contracts": {
+        "claim_write_failure--provider-attempt": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "workflow-service",
+            "idempotency_key": "fixture-idempotency:claim-reserved-fallback-attempt-2",
+            "input": {
+              "entity_id": "fixture-entity",
+              "expected_provider_attempt_version": 1,
+              "expected_version": 8,
+              "provider_attempt_id": "fixture-provider-attempt-2"
+            },
+            "operation_id": "fixture-operation:claim-reserved-fallback-attempt",
+            "operation_spec_id": "OP-FALLBACK-RESTART-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ],
+        "concurrent_restart_single_claim": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "workflow-service",
+            "idempotency_key": "fixture-idempotency:claim-reserved-fallback-attempt-2",
+            "input": {
+              "entity_id": "fixture-entity",
+              "expected_provider_attempt_version": 1,
+              "expected_version": 8,
+              "provider_attempt_id": "fixture-provider-attempt-2"
+            },
+            "operation_id": "fixture-operation:claim-reserved-fallback-attempt",
+            "operation_spec_id": "OP-FALLBACK-RESTART-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          },
+          {
+            "actor_type": "service",
+            "evidence_source_type": "workflow-service",
+            "idempotency_key": "fixture-idempotency:claim-reserved-fallback-attempt-2",
+            "input": {
+              "entity_id": "fixture-entity",
+              "expected_provider_attempt_version": 1,
+              "expected_version": 8,
+              "provider_attempt_id": "fixture-provider-attempt-2"
+            },
+            "operation_id": "fixture-operation:claim-reserved-fallback-attempt",
+            "operation_spec_id": "OP-FALLBACK-RESTART-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ],
+        "restart_claims_reserved_attempt": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "workflow-service",
+            "idempotency_key": "fixture-idempotency:claim-reserved-fallback-attempt-2",
+            "input": {
+              "entity_id": "fixture-entity",
+              "expected_provider_attempt_version": 1,
+              "expected_version": 8,
+              "provider_attempt_id": "fixture-provider-attempt-2"
+            },
+            "operation_id": "fixture-operation:claim-reserved-fallback-attempt",
+            "operation_spec_id": "OP-FALLBACK-RESTART-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ],
+        "restart_observes_dispatch_started": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "workflow-service",
+            "idempotency_key": "fixture-idempotency:claim-reserved-fallback-attempt-2",
+            "input": {
+              "entity_id": "fixture-entity",
+              "expected_provider_attempt_version": 1,
+              "expected_version": 8,
+              "provider_attempt_id": "fixture-provider-attempt-2"
+            },
+            "operation_id": "fixture-operation:claim-reserved-fallback-attempt",
+            "operation_spec_id": "OP-FALLBACK-RESTART-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ]
+      }
+    },
+    {
+      "allowed_actor_types": [
+        "service"
+      ],
+      "allowed_evidence_source_types": [
         "immutable-fixture-catalog"
       ],
       "allowed_receipt_codes": [
@@ -5688,6 +5800,6 @@
       }
     }
   ],
-  "registry_sha256": "e71e47f80f25f3888a7a32dd11a17378389f60c638b0686c0dfc6ac6571ea822",
+  "registry_sha256": "ba01b334821c2b53cd52b64a100b0399c0540a82e6825e1652bd79fc0d2e47f8",
   "schema_version": "dal.operation-spec-registry/1.0"
 }

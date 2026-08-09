@@ -1,8 +1,8 @@
 {
-  "catalog_sha256": "1113f4433bafb8936e154d530c7a8d3f7535176bb5987e890680cebdb93dfc70",
+  "catalog_sha256": "0703adc591e58ee4663e339662152f28b5dbea90394c86b8377ce28dfda97816",
   "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
   "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
-  "operation_registry_sha256": "e71e47f80f25f3888a7a32dd11a17378389f60c638b0686c0dfc6ac6571ea822",
+  "operation_registry_sha256": "ba01b334821c2b53cd52b64a100b0399c0540a82e6825e1652bd79fc0d2e47f8",
   "oracles": {
     "dal.oracle/DAL-T-APP-001/concurrent_consume/G1/1.0": {
       "allowed_write_set": [
@@ -5127,6 +5127,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "invalid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -5199,6 +5204,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "invalid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -5271,6 +5281,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "invalid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -5343,6 +5358,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "invalid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -5415,6 +5435,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "invalid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -5485,6 +5510,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -5557,6 +5587,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -5627,6 +5662,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "invalid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -5743,6 +5783,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 1
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -5859,6 +5904,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 1
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -5981,6 +6031,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 1
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -6104,6 +6159,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 1
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -6176,6 +6236,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -6246,6 +6311,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -6316,6 +6386,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -6386,6 +6461,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -6456,6 +6536,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -6526,6 +6611,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -6596,6 +6686,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -6666,6 +6761,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -6736,6 +6836,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -6806,6 +6911,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -6878,6 +6988,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -6950,6 +7065,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -7022,6 +7142,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -7092,6 +7217,11 @@
           "field": "effect_version_increment",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -9513,6 +9643,11 @@
           "field": "failed_eligibility_field",
           "operator": "equals",
           "value": "provider_state.fallback_used"
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -9590,6 +9725,11 @@
           "field": "failed_eligibility_field",
           "operator": "equals",
           "value": "evidence_document.fallback_preflight_receipt_id"
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "invalid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -9666,6 +9806,11 @@
           "field": "provider_call_count",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -9742,6 +9887,11 @@
           "field": "provider_call_count",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -9818,6 +9968,11 @@
           "field": "provider_call_count",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -9895,6 +10050,11 @@
           "field": "failed_eligibility_field",
           "operator": "equals",
           "value": "evidence_document.eligibility_binding_sha256"
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -9972,6 +10132,11 @@
           "field": "failed_eligibility_field",
           "operator": "equals",
           "value": "runtime.budget_remaining"
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -10065,6 +10230,11 @@
           "field": "provider_call_count_before_commit",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -10142,6 +10312,11 @@
           "field": "failed_eligibility_field",
           "operator": "equals",
           "value": "evidence_document.handoff_sha256"
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "invalid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -10219,6 +10394,11 @@
           "field": "failed_eligibility_field",
           "operator": "equals",
           "value": "evidence_document.fallback_preflight_receipt_id"
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "invalid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -10296,11 +10476,98 @@
           "field": "failed_eligibility_field",
           "operator": "equals",
           "value": "evidence_document.fallback_profile_sha256"
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-FALLBACK-001",
       "variant_id": "profile_mismatch"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/same_command_authoritative_profile_drift/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/same_command_authoritative_profile_drift/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "same_command_authoritative_profile_drift",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "resolver_visible_command_matches",
+          "operator": "equals",
+          "value": "derived_eligible"
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "same_command_authoritative_profile_drift"
     },
     "dal.oracle/DAL-T-FALLBACK-001/single_use/G4/1.0": {
       "allowed_write_set": [
@@ -10400,6 +10667,11 @@
           "field": "second_fallback_call_count",
           "operator": "equals",
           "value": 0
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -10477,6 +10749,11 @@
           "field": "failed_eligibility_field",
           "operator": "equals",
           "value": "evidence_document.fallback_preflight_expires_at"
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -10554,6 +10831,11 @@
           "field": "failed_eligibility_field",
           "operator": "equals",
           "value": "evidence_document.fallback_preflight_receipt_id"
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "invalid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -10631,6 +10913,11 @@
           "field": "failed_eligibility_field",
           "operator": "equals",
           "value": "evidence_document.fallback_preflight_receipt_id"
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "invalid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -10708,6 +10995,11 @@
           "field": "failed_eligibility_field",
           "operator": "equals",
           "value": "effect_inventory.unknown_or_reconciling_count"
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -10785,6 +11077,11 @@
           "field": "failed_eligibility_field",
           "operator": "equals",
           "value": "evidence_document.failure_class"
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
@@ -10862,11 +11159,338 @@
           "field": "failed_eligibility_field",
           "operator": "equals",
           "value": "evidence_document.fallback_preflight_receipt_id"
+        },
+        {
+          "field": "evidence_validation_expected",
+          "operator": "equals",
+          "value": "valid"
         }
       ],
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-FALLBACK-001",
       "variant_id": "wrong_preflight_receipt"
+    },
+    "dal.oracle/DAL-T-FALLBACK-RESTART-001/claim_write_failure--provider-attempt/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_receipts": [],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "coding",
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-RESTART-001/claim_write_failure--provider-attempt/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "claim_write_failure--provider-attempt",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "failed_atomic_write_member",
+          "operator": "equals",
+          "value": "provider_attempt"
+        },
+        {
+          "field": "provider_attempt_lifecycle",
+          "operator": "equals",
+          "value": "reserved"
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "business_event_count",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-RESTART-001",
+      "variant_id": "claim_write_failure--provider-attempt"
+    },
+    "dal.oracle/DAL-T-FALLBACK-RESTART-001/concurrent_restart_single_claim/G4/1.0": {
+      "allowed_write_set": [
+        "provider_attempt",
+        "business_event",
+        "operation_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "provider.attempt_dispatch_claimed"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_receipts": [
+        {
+          "code": "FALLBACK_DISPATCH_CLAIMED",
+          "count": 2,
+          "duplicate_flags": [
+            false,
+            true
+          ],
+          "schema_version": "dal.operation-receipt/1.0",
+          "unique_receipt_ids": 1
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "coding",
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-RESTART-001/concurrent_restart_single_claim/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "concurrent_restart_single_claim",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "provider_attempt_lifecycle_trace",
+          "operator": "equals",
+          "value": [
+            "reserved",
+            "dispatch_started"
+          ]
+        },
+        {
+          "field": "provider_call_count_before_claim_commit",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count_after_claim_commit",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "new_provider_attempt_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "dispatch_uses_reserved_attempt_id",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "provider_call_count_total",
+          "operator": "equals",
+          "value": 1
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-RESTART-001",
+      "variant_id": "concurrent_restart_single_claim"
+    },
+    "dal.oracle/DAL-T-FALLBACK-RESTART-001/restart_claims_reserved_attempt/G4/1.0": {
+      "allowed_write_set": [
+        "provider_attempt",
+        "business_event",
+        "operation_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "provider.attempt_dispatch_claimed"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_receipts": [
+        {
+          "code": "FALLBACK_DISPATCH_CLAIMED",
+          "count": 1,
+          "schema_version": "dal.operation-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "coding",
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-RESTART-001/restart_claims_reserved_attempt/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "restart_claims_reserved_attempt",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "provider_attempt_lifecycle_trace",
+          "operator": "equals",
+          "value": [
+            "reserved",
+            "dispatch_started"
+          ]
+        },
+        {
+          "field": "provider_call_count_before_claim_commit",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count_after_claim_commit",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "new_provider_attempt_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "dispatch_uses_reserved_attempt_id",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-RESTART-001",
+      "variant_id": "restart_claims_reserved_attempt"
+    },
+    "dal.oracle/DAL-T-FALLBACK-RESTART-001/restart_observes_dispatch_started/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.operation-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "coding",
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-RESTART-001/restart_observes_dispatch_started/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "restart_observes_dispatch_started",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "provider_attempt_lifecycle",
+          "operator": "equals",
+          "value": "dispatch_started"
+        },
+        {
+          "field": "provider_call_count_after_restart",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "new_provider_attempt_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "requires_unknown_outcome_resolution",
+          "operator": "equals",
+          "value": true
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-RESTART-001",
+      "variant_id": "restart_observes_dispatch_started"
     },
     "dal.oracle/DAL-T-GH-EVENT-001/edited_event/G2/1.0": {
       "allowed_write_set": [],

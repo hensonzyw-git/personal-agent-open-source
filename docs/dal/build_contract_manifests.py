@@ -39,6 +39,7 @@ OPERATION_COMMAND_TYPES = {
     "DAL-T-DOCK-001": "project_decision_dock",
     "DAL-T-BATCH-001": "evaluate_notification_batch",
     "DAL-T-NOTIFY-001": "deliver_notification",
+    "DAL-T-FALLBACK-RESTART-001": "claim_reserved_fallback_attempt",
     "DAL-T-PROVIDER-ROUTE-001": "route_provider_attempt",
     "DAL-T-RESTART-001": "resume_persisted_run",
     "DAL-T-EFFECT-OWNERSHIP-001": "dispatch_effect_outcome_sequence",
@@ -52,6 +53,7 @@ OPERATION_BINDINGS = {
     "DAL-T-DOCK-001": ("service", "decision-store"),
     "DAL-T-BATCH-001": ("service", "decision-store"),
     "DAL-T-NOTIFY-001": ("service", "notification-delivery"),
+    "DAL-T-FALLBACK-RESTART-001": ("service", "workflow-service"),
     "DAL-T-PROVIDER-ROUTE-001": ("service", "provider-adapter"),
     "DAL-T-RESTART-001": ("service", "workflow-service"),
     "DAL-T-EFFECT-OWNERSHIP-001": ("service", "workflow-service"),
@@ -1255,6 +1257,7 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
             "guard_registry_sha256": guard_hash,
             "coverage_ref": coverage_ref,
         }
+        effective_scenario_assertions = list(scenario_assertions or [])
         if transition_spec is not None:
             binding = transition_spec["actor_evidence_bindings"][transition_binding_index]
             guard_preconditions = guard_fixture(transition_spec, transition_case != "guard_deny")
@@ -1262,6 +1265,10 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
                 for fact in guard_preconditions["facts"]:
                     if fact["field"] in guard_fact_overrides:
                         fact["value"] = guard_fact_overrides[fact["field"]]
+            fixture["trusted_resolver_context"] = {
+                "schema_version": "dal.test-trusted-resolver-context/1.0",
+                "guard_preconditions": guard_preconditions,
+            }
             transition_command = {
                 "schema_version": "dal.test-transition-command/1.0",
                 "aggregate_type": transition_spec["aggregate_type"],
@@ -1274,11 +1281,14 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
                 "decision_action": transition_spec["requires_decision_action"],
                 "evidence_source_types": ["unauthorized-source"] if transition_case == "evidence_source_deny" else binding["required_evidence_source_types"],
                 "evidence_schema_versions": transition_spec["required_evidence_schema_versions"],
-                "guard_preconditions": guard_preconditions,
             }
             if evidence_documents is not None:
                 transition_command["evidence_documents"] = evidence_documents
-                transition_command["evidence_validation_expected"] = evidence_validation_expected or "valid"
+                effective_scenario_assertions.append({
+                    "field": "evidence_validation_expected",
+                    "operator": "equals",
+                    "value": evidence_validation_expected or "valid",
+                })
             if transition_sequence is None:
                 fixture["transition_command"] = transition_command
             else:
@@ -1361,7 +1371,7 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
             "allowed_write_set": allowed,
             "forbidden_side_effects": ["provider_call", "github_write", "worker_start", "production_access"] if gate == "G1" else ["unapproved_external_effect", "production_access"],
             "expected_atomic_companion_transitions": companion_transitions,
-            "scenario_assertions": scenario_assertions or [],
+            "scenario_assertions": effective_scenario_assertions,
             "coverage_ref": coverage_ref,
         }
         if transition_spec is None:
@@ -1578,7 +1588,7 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
             validation_stage="semantic_guard",
         )
         key = f"dal.fixture/DAL-T-EVIDENCE-BINDING-001/{variant}/{item['minimum_run_gate']}/1.0"
-        facts = fixtures[key]["transition_command"]["guard_preconditions"]["facts"]
+        facts = fixtures[key]["trusted_resolver_context"]["guard_preconditions"]["facts"]
         for fact in facts:
             if fact["field"] in {"evidence.semantic_binding_sha256", "runtime.recomputed_evidence_semantic_binding_sha256"}:
                 fact["value"] = "7" * 64
@@ -1621,7 +1631,7 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
         validation_stage="cross_source_consistency",
     )
     inconsistent_key = "dal.fixture/DAL-T-EVIDENCE-BINDING-001/inconsistent_dual_source_reconciliation/G1/1.0"
-    for fact in fixtures[inconsistent_key]["transition_command"]["guard_preconditions"]["facts"]:
+    for fact in fixtures[inconsistent_key]["trusted_resolver_context"]["guard_preconditions"]["facts"]:
         if fact["field"] == "runtime.recomputed_external_effect_controller_semantic_binding_sha256":
             fact["value"] = "7" * 64
     inconsistent_row = next(row for row in rows if row["fixture_ref"] == inconsistent_key)
@@ -1656,7 +1666,7 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
             "runtime.recomputed_registered_device_semantic_binding_sha256": "7" * 64,
             "runtime.recomputed_external_effect_controller_semantic_binding_sha256": "7" * 64,
         }
-        for fact in fixtures[key]["transition_command"]["guard_preconditions"]["facts"]:
+        for fact in fixtures[key]["trusted_resolver_context"]["guard_preconditions"]["facts"]:
             if fact["field"] in fact_overrides:
                 fact["value"] = fact_overrides[fact["field"]]
         row = next(row for row in rows if row["fixture_ref"] == key)
@@ -2185,6 +2195,25 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
                 {"field": "failed_eligibility_field", "operator": "equals", "value": ".".join(context_path)},
             ],
         )
+    authoritative_profile_drift_context = json.loads(json.dumps(fallback_context))
+    authoritative_profile_drift_context["provider_state"]["approved_fallback_profile_sha256"] = "f" * 64
+    add(
+        "DAL-T-FALLBACK-001", "same_command_authoritative_profile_drift", "G4",
+        ["DAL-025", "DAL-026", "DAL-027"], "blocked_usage", "blocked_usage", "feature", "USAGE_LIMIT",
+        "POLICY_DENIED", None, [], coverage_ref=fallback_spec["spec_id"], allowed_writes=[],
+        transition_spec=fallback_spec, transition_case="fallback_condition_deny",
+        evidence_documents=fallback_evidence_documents, evidence_validation_expected="valid",
+        guard_fact_overrides={"provider.approved_fallback_profile_sha256": "f" * 64},
+        authoritative_context=authoritative_profile_drift_context,
+        scenario_assertions=[
+            {"field": "root_version_increment", "operator": "equals", "value": 0},
+            {"field": "fallback_attempt_count", "operator": "equals", "value": 0},
+            {"field": "provider_attempt_count_increment", "operator": "equals", "value": 0},
+            {"field": "fallback_handoff_create_count", "operator": "equals", "value": 0},
+            {"field": "provider_call_count", "operator": "equals", "value": 0},
+            {"field": "resolver_visible_command_matches", "operator": "equals", "value": "derived_eligible"},
+        ],
+    )
     for failed_member in ("run_counter", "provider_attempt", "fallback_handoff"):
         add(
             "DAL-T-FALLBACK-001", f"atomic_write_failure--{failed_member.replace('_', '-')}", "G4",
@@ -2203,6 +2232,86 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
                 {"field": "provider_call_count", "operator": "equals", "value": 0},
             ],
         )
+    fallback_claim_command = {
+        "schema_version": "dal.test-operation-command/1.0",
+        "operation_spec_id": "OP-FALLBACK-RESTART-001",
+        "operation_id": "fixture-operation:claim-reserved-fallback-attempt",
+        "idempotency_key": "fixture-idempotency:claim-reserved-fallback-attempt-2",
+        "actor_type": "service",
+        "evidence_source_type": "workflow-service",
+        "input": {
+            "entity_id": "fixture-entity",
+            "expected_version": 8,
+            "provider_attempt_id": "fixture-provider-attempt-2",
+            "expected_provider_attempt_version": 1,
+        },
+    }
+    reserved_fallback_context = {
+        "provider_attempt": {
+            "attempt_id": "fixture-provider-attempt-2", "version": 1, "run_id": "fixture-run",
+            "attempt_ordinal": 2, "route_kind": "approved_fallback", "lifecycle": "reserved",
+            "handoff_ref": "protected://fallback-handoff/fixture-entity/7",
+        },
+        "run_counter": {"provider_attempt_count": 2, "fallback_attempt_count": 1, "fallback_used": True},
+        "runtime": {"restart_count": 1},
+    }
+    dispatch_started_context = json.loads(json.dumps(reserved_fallback_context))
+    dispatch_started_context["provider_attempt"]["lifecycle"] = "dispatch_started"
+    fallback_claim_writes = ["provider_attempt", "business_event", "operation_receipt", "audit"]
+    claim_assertions = [
+        {"field": "provider_attempt_lifecycle_trace", "operator": "equals", "value": ["reserved", "dispatch_started"]},
+        {"field": "provider_call_count_before_claim_commit", "operator": "equals", "value": 0},
+        {"field": "provider_call_count_after_claim_commit", "operator": "equals", "value": 1},
+        {"field": "new_provider_attempt_create_count", "operator": "equals", "value": 0},
+        {"field": "provider_attempt_count_increment", "operator": "equals", "value": 0},
+        {"field": "fallback_attempt_count_increment", "operator": "equals", "value": 0},
+        {"field": "dispatch_uses_reserved_attempt_id", "operator": "equals", "value": True},
+    ]
+    add(
+        "DAL-T-FALLBACK-RESTART-001", "restart_claims_reserved_attempt", "G4",
+        ["DAL-025", "DAL-026", "DAL-027"], "coding", "coding", None, None,
+        "FALLBACK_DISPATCH_CLAIMED", None, ["provider.attempt_dispatch_claimed"],
+        allowed_writes=fallback_claim_writes, receipt_schema_override="dal.operation-receipt/1.0",
+        operation_sequence=[fallback_claim_command], authoritative_context=reserved_fallback_context,
+        scenario_assertions=claim_assertions,
+    )
+    add(
+        "DAL-T-FALLBACK-RESTART-001", "concurrent_restart_single_claim", "G4",
+        ["DAL-025", "DAL-026", "DAL-027"], "coding", "coding", None, None,
+        "FALLBACK_DISPATCH_CLAIMED", None, ["provider.attempt_dispatch_claimed"],
+        allowed_writes=fallback_claim_writes, receipt_schema_override="dal.operation-receipt/1.0",
+        operation_sequence=[fallback_claim_command, json.loads(json.dumps(fallback_claim_command))],
+        authoritative_context=reserved_fallback_context,
+        expected_receipts_override=[{
+            "schema_version": "dal.operation-receipt/1.0", "code": "FALLBACK_DISPATCH_CLAIMED",
+            "count": 2, "unique_receipt_ids": 1, "duplicate_flags": [False, True],
+        }],
+        scenario_assertions=[*claim_assertions, {"field": "provider_call_count_total", "operator": "equals", "value": 1}],
+    )
+    add(
+        "DAL-T-FALLBACK-RESTART-001", "restart_observes_dispatch_started", "G4",
+        ["DAL-025", "DAL-026", "DAL-027"], "coding", "coding", None, None,
+        "POLICY_DENIED", None, [], allowed_writes=[], receipt_schema_override="dal.operation-receipt/1.0",
+        operation_sequence=[fallback_claim_command], authoritative_context=dispatch_started_context,
+        scenario_assertions=[
+            {"field": "provider_attempt_lifecycle", "operator": "equals", "value": "dispatch_started"},
+            {"field": "provider_call_count_after_restart", "operator": "equals", "value": 0},
+            {"field": "new_provider_attempt_create_count", "operator": "equals", "value": 0},
+            {"field": "requires_unknown_outcome_resolution", "operator": "equals", "value": True},
+        ],
+    )
+    add(
+        "DAL-T-FALLBACK-RESTART-001", "claim_write_failure--provider-attempt", "G4",
+        ["DAL-025", "DAL-026", "DAL-027"], "coding", "coding", None, None,
+        None, None, [], allowed_writes=[], receipt_schema_override="dal.operation-receipt/1.0",
+        operation_sequence=[fallback_claim_command], authoritative_context=reserved_fallback_context,
+        scenario_assertions=[
+            {"field": "failed_atomic_write_member", "operator": "equals", "value": "provider_attempt"},
+            {"field": "provider_attempt_lifecycle", "operator": "equals", "value": "reserved"},
+            {"field": "provider_call_count", "operator": "equals", "value": 0},
+            {"field": "business_event_count", "operator": "equals", "value": 0},
+        ],
+    )
     many("DAL-T-PROVIDER-CONTRACT-001", ["empty", "multi_tool", "prose_tool", "malformed_args", "half_stream", "multi_final", "multi_turn", "context_drift"], "G4", ["DAL-022", "DAL-023", "DAL-025", "DAL-026", "DAL-027"], "coding", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
     add("DAL-T-CRED-001", "dependency_hook", "G2", ["DAL-017"], "coding", "needs_human", "feature", "POLICY_FAILURE", "APPLIED", None, ["feature.blocked"])
     for gate in ("G2", "G4"):
@@ -2282,6 +2391,7 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
         "ascii_whitespace_preflight", "unicode_whitespace_preflight", "trailing_newline_preflight",
         "wrong_preflight_receipt", "stale_preflight", "missing_handoff", "unknown_effect",
         "budget_exhausted", "already_used", "binding_mismatch",
+        "same_command_authoritative_profile_drift",
         "atomic_write_failure--run-counter", "atomic_write_failure--provider-attempt",
         "atomic_write_failure--fallback-handoff",
     }
@@ -2302,8 +2412,18 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
         if any(command.get("schema_version") != "dal.test-transition-command/1.0" for command in commands):
             raise ValueError(f"fallback must execute only transition commands: {variant}")
         command_blob = canonical_bytes(commands)
-        if b'"operation_id"' in command_blob or b'"idempotency_key"' in command_blob or b'"variant_id"' in command_blob:
+        if (
+            b'"operation_id"' in command_blob or b'"idempotency_key"' in command_blob
+            or b'"variant_id"' in command_blob or b'"guard_preconditions"' in command_blob
+            or b'"evidence_validation_expected"' in command_blob
+        ):
             raise ValueError(f"fallback resolver-visible case oracle leakage: {variant}")
+        if "trusted_resolver_context" not in fixture:
+            raise ValueError(f"fallback trusted resolver context missing: {variant}")
+    if canonical_bytes(fallback_fixtures["derived_eligible"]["transition_command"]) != canonical_bytes(
+        fallback_fixtures["same_command_authoritative_profile_drift"]["transition_command"]
+    ):
+        raise ValueError("fallback command-only resolver collision regression missing")
     provider_route_spec = operation_specs["OP-PROVIDER-ROUTE-001"]
     if set(provider_route_spec["variant_input_contracts"]) != {
         "usage", "account_429", "transient_429", "timeout", "5xx", "auth", "policy", "budget",
@@ -2315,6 +2435,32 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
         oracle = oracles[f"dal.oracle/DAL-T-FALLBACK-001/{variant}/G4/1.0"]
         if oracle["allowed_write_set"] or oracle["expected_final_snapshot"]["state"] != "blocked_usage":
             raise ValueError(f"fallback deny/atomic rollback oracle drift: {variant}")
+    restart_variants = {
+        fixture["variant_id"]: fixture
+        for fixture in fixtures.values()
+        if fixture["test_id"] == "DAL-T-FALLBACK-RESTART-001"
+    }
+    if set(restart_variants) != {
+        "restart_claims_reserved_attempt", "concurrent_restart_single_claim",
+        "restart_observes_dispatch_started", "claim_write_failure--provider-attempt",
+    }:
+        raise ValueError("fallback restart variant coverage drift")
+    restart_command_blobs = []
+    for fixture in restart_variants.values():
+        commands = fixture["operation_sequence"]
+        restart_command_blobs.extend(canonical_bytes(command) for command in commands)
+        if any(b'"variant_id"' in canonical_bytes(command) for command in commands):
+            raise ValueError("fallback restart command leaks case identity")
+    if len(set(restart_command_blobs)) != 1:
+        raise ValueError("fallback restart outcomes must share one exact resolver-visible command")
+    restart_claim_oracle = oracles[
+        "dal.oracle/DAL-T-FALLBACK-RESTART-001/restart_claims_reserved_attempt/G4/1.0"
+    ]
+    restart_unknown_oracle = oracles[
+        "dal.oracle/DAL-T-FALLBACK-RESTART-001/restart_observes_dispatch_started/G4/1.0"
+    ]
+    if restart_claim_oracle["allowed_write_set"] != fallback_claim_writes or restart_unknown_oracle["allowed_write_set"]:
+        raise ValueError("fallback restart claim/no-repeat write-set drift")
     operation_rows = sorted(operation_specs.values(), key=lambda item: item["operation_spec_id"])
     operation_catalog = {"schema_version": "dal.operation-spec-registry/1.0", "operation_specs": operation_rows, "registry_sha256": None}
     operation_hash = write_hashed("operation-spec-registry_v1.0.json", operation_catalog, "registry_sha256")
