@@ -1,6 +1,6 @@
 {
-  "catalog_sha256": "e75562d1811fe13714d28f798c361638ea64b82231f97fea3010cfdabeb9b042",
-  "evidence_registry_sha256": "069b08b092be88e6360bf779863c0c6e85df084e5ce5ff6848b0050b36e4d442",
+  "catalog_sha256": "c24b26b4b326d3b89d41dac85cd5f6fbaa38c3114ac0127e158cce0fd8f249f9",
+  "evidence_registry_sha256": "2a50a3b6f07cdd23143b1c488325c4a04317ed64df5d4bf5377138fc527ae2f7",
   "guard_registry_sha256": "f4cecb5f4eb15ab84bc6b29363466227f869b57604e6e5a53cce61ed5fa78a18",
   "operation_registry_sha256": "7305b6a5c8ba000852a253d29b09c6371d2701c9660aa5f494be48771d9d2245",
   "oracles": {

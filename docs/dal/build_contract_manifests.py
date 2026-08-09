@@ -408,6 +408,7 @@ def build_machine_registries(specs: list[dict]) -> tuple[str, str]:
         claim_fields = evidence_claim_fields(schema_version)
         all_fields = {**COMMON_EVIDENCE_FIELDS, **claim_fields}
         evidence_schema = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
             "type": "object", "additionalProperties": False,
             "required": list(all_fields),
             "properties": {name: ({"const": schema_version} if name == "schema_version" else json_type(kind)) for name, kind in all_fields.items()},
