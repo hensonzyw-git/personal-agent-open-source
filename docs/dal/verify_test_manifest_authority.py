@@ -37,6 +37,27 @@ HASHED_ARTIFACTS = (
     ("test-oracles_v1.0.json", "catalog_sha256"),
     ("test-manifest_v1.2.json", "manifest_sha256"),
 )
+ARTIFACT_ROOT_FIELDS = {
+    "transition-spec-registry_v1.0.json": {"schema_version", "specs", "registry_sha256"},
+    "evidence-schema-registry_v1.0.json": {"schema_version", "evidence_schemas", "registry_sha256"},
+    "guard-predicate-registry_v1.0.json": {"schema_version", "guards", "registry_sha256"},
+    "operation-spec-registry_v1.0.json": {
+        "schema_version", "resolver_input_contract", "operation_specs", "registry_sha256",
+    },
+    "test-fixtures_v1.0.json": {
+        "schema_version", "transition_registry_sha256", "evidence_registry_sha256",
+        "guard_registry_sha256", "operation_registry_sha256", "fixtures", "catalog_sha256",
+    },
+    "test-oracles_v1.0.json": {
+        "schema_version", "transition_registry_sha256", "evidence_registry_sha256",
+        "guard_registry_sha256", "operation_registry_sha256", "oracles", "catalog_sha256",
+    },
+    "test-manifest_v1.2.json": {
+        "schema_version", "manifest_version", "transition_registry_sha256",
+        "evidence_registry_sha256", "guard_registry_sha256", "operation_registry_sha256",
+        "test_variants", "manifest_sha256",
+    },
+}
 
 
 class AuthorityVerificationError(ValueError):
@@ -155,6 +176,8 @@ def _verify_loaded(authority: dict, artifacts: dict[str, dict]) -> dict[str, obj
     if digest(hashed_payload(authority, "authority_sha256")) != authority["authority_sha256"]:
         raise AuthorityVerificationError("manifest authority self-hash mismatch")
     for filename, hash_field in HASHED_ARTIFACTS:
+        if set(artifacts[filename]) != ARTIFACT_ROOT_FIELDS[filename]:
+            raise AuthorityVerificationError(f"generated artifact root fields are not closed: {filename}")
         _assert_self_hash(artifacts[filename], hash_field, filename)
 
     transition = artifacts["transition-spec-registry_v1.0.json"]
@@ -211,6 +234,11 @@ def mutation_self_test(generated_dir: Path, authority_path: Path = DEFAULT_AUTHO
         manifest["test_variants"].append(row)
         manifest["manifest_sha256"] = digest(hashed_payload(manifest, "manifest_sha256"))
 
+    def add_catalog_root(values: dict, filename: str) -> None:
+        catalog = values[filename]
+        catalog["x-unapproved"] = True
+        catalog["catalog_sha256"] = digest(hashed_payload(catalog, "catalog_sha256"))
+
     first = source["test-manifest_v1.2.json"]["test_variants"][0]
     mutations = (
         ("run_gate", lambda values: mutate_row(values, "run_gate", "G5")),
@@ -220,6 +248,8 @@ def mutation_self_test(generated_dir: Path, authority_path: Path = DEFAULT_AUTHO
         ("fixture_hash", lambda values: mutate_row(values, "fixture_sha256", "0" * 64)),
         ("oracle_hash", lambda values: mutate_row(values, "oracle_sha256", "0" * 64)),
         ("added_row", add_row),
+        ("fixture_root_extra", lambda values: add_catalog_root(values, "test-fixtures_v1.0.json")),
+        ("oracle_root_extra", lambda values: add_catalog_root(values, "test-oracles_v1.0.json")),
     )
     if first["run_gate"] == "G5" or first["owner_tasks"] == ["DAL-050"]:
         raise AuthorityVerificationError("manifest mutation anchors no longer distinguish the source row")

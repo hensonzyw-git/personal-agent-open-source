@@ -3205,6 +3205,18 @@ def main() -> None:
         ],
         check=True,
     )
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "verify_eval_schema_authority.py"),
+            "--schema",
+            str(OUT / "eval-run-manifest_schema_v1.0.json"),
+            "--authority",
+            str(ROOT / "manifests" / "eval-schema-authority_v1.0.json"),
+            "--mutation-self-test",
+        ],
+        check=True,
+    )
     print(json.dumps({"transition_specs": len(specs), "test_variants": len(json.loads((OUT / 'test-manifest_v1.2.json').read_text())["test_variants"]), "registry_sha256": registry_hash, "evidence_registry_sha256": evidence_hash, "guard_registry_sha256": guard_hash}, sort_keys=True))
 
 

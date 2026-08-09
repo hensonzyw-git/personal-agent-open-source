@@ -32,6 +32,22 @@ AUTHORITY_KEYS = {
     "entries",
     "authority_sha256",
 }
+GENERATED_ROOT_FIELDS = {
+    "transition": {"schema_version", "specs", "registry_sha256"},
+    "manifest": {
+        "schema_version", "manifest_version", "transition_registry_sha256",
+        "evidence_registry_sha256", "guard_registry_sha256", "operation_registry_sha256",
+        "test_variants", "manifest_sha256",
+    },
+    "fixtures": {
+        "schema_version", "transition_registry_sha256", "evidence_registry_sha256",
+        "guard_registry_sha256", "operation_registry_sha256", "fixtures", "catalog_sha256",
+    },
+    "oracles": {
+        "schema_version", "transition_registry_sha256", "evidence_registry_sha256",
+        "guard_registry_sha256", "operation_registry_sha256", "oracles", "catalog_sha256",
+    },
+}
 ORACLE_RESULT_FIELDS = {
     "schema_version",
     "test_id",
@@ -157,8 +173,21 @@ def _verify_loaded(
         raise AuthorityVerificationError("authority source boundary mismatch")
     if digest(hashed_payload(authority, "authority_sha256")) != authority["authority_sha256"]:
         raise AuthorityVerificationError("authority self-hash mismatch")
+    for label, value in (
+        ("transition", transition_registry), ("manifest", manifest),
+        ("fixtures", fixtures), ("oracles", oracles),
+    ):
+        if set(value) != GENERATED_ROOT_FIELDS[label]:
+            raise AuthorityVerificationError(f"generated {label} root fields are not closed")
     if digest(hashed_payload(transition_registry, "registry_sha256")) != transition_registry["registry_sha256"]:
         raise AuthorityVerificationError("generated transition registry self-hash mismatch")
+    for value, field, label in (
+        (manifest, "manifest_sha256", "manifest"),
+        (fixtures, "catalog_sha256", "fixture catalog"),
+        (oracles, "catalog_sha256", "oracle catalog"),
+    ):
+        if digest(hashed_payload(value, field)) != value[field]:
+            raise AuthorityVerificationError(f"generated {label} self-hash mismatch")
     if authority["frozen_transition_registry_sha256"] != transition_registry["registry_sha256"]:
         raise AuthorityVerificationError("transition registry hash differs from independent authority")
 
@@ -232,12 +261,19 @@ def mutation_self_test(generated_dir: Path, authority_path: Path = DEFAULT_AUTHO
             if oracle.get("coverage_ref") == target and oracle["expected_receipts"] and oracle["expected_receipts"][0]["code"] == "APPLIED":
                 oracle["allowed_write_set"] = [*oracle["allowed_write_set"], "mutated_write"]
 
+    def catalog_root_mutation(values: dict, key: str) -> None:
+        catalog = values[key]
+        catalog["x-unapproved"] = True
+        catalog["catalog_sha256"] = digest(hashed_payload(catalog, "catalog_sha256"))
+
     passed: list[str] = []
     for label, mutate in (
         ("command", command_mutation),
         ("event", event_mutation),
         ("to_state", state_mutation),
         ("write_set", write_set_mutation),
+        ("fixture_root_extra", lambda values: catalog_root_mutation(values, "fixtures")),
+        ("oracle_root_extra", lambda values: catalog_root_mutation(values, "oracles")),
     ):
         values = copy.deepcopy(source)
         mutate(values)

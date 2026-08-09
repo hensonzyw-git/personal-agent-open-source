@@ -41,6 +41,24 @@ ORACLE_RESULT_FIELDS = {
     "forbidden_side_effects", "expected_atomic_companion_transitions",
     "scenario_assertions", "coverage_ref",
 }
+GENERATED_ROOT_FIELDS = {
+    "operation": {"schema_version", "resolver_input_contract", "operation_specs", "registry_sha256"},
+    "evidence": {"schema_version", "evidence_schemas", "registry_sha256"},
+    "guard": {"schema_version", "guards", "registry_sha256"},
+    "manifest": {
+        "schema_version", "manifest_version", "transition_registry_sha256",
+        "evidence_registry_sha256", "guard_registry_sha256", "operation_registry_sha256",
+        "test_variants", "manifest_sha256",
+    },
+    "fixtures": {
+        "schema_version", "transition_registry_sha256", "evidence_registry_sha256",
+        "guard_registry_sha256", "operation_registry_sha256", "fixtures", "catalog_sha256",
+    },
+    "oracles": {
+        "schema_version", "transition_registry_sha256", "evidence_registry_sha256",
+        "guard_registry_sha256", "operation_registry_sha256", "oracles", "catalog_sha256",
+    },
+}
 
 
 class AuthorityVerificationError(ValueError):
@@ -160,6 +178,14 @@ def _verify_loaded(
     if digest(hashed_payload(authority, "authority_sha256")) != authority["authority_sha256"]:
         raise AuthorityVerificationError("operation authority self-hash mismatch")
 
+    for label, value in (
+        ("operation", operation_registry), ("evidence", evidence_registry),
+        ("guard", guard_registry), ("manifest", manifest),
+        ("fixtures", fixtures), ("oracles", oracles),
+    ):
+        if set(value) != GENERATED_ROOT_FIELDS[label]:
+            raise AuthorityVerificationError(f"generated {label} root fields are not closed")
+
     for value, field, label in (
         (operation_registry, "registry_sha256", "operation registry"),
         (evidence_registry, "registry_sha256", "evidence registry"),
@@ -250,6 +276,11 @@ def mutation_self_test(generated_dir: Path, authority_path: Path = DEFAULT_AUTHO
     def guard_mutation(values: dict) -> None:
         values["guard"]["guards"][0]["all_of"].append({"field": "mutated", "operator": "equals", "value": True})
 
+    def catalog_root_mutation(values: dict, key: str) -> None:
+        catalog = values[key]
+        catalog["x-unapproved"] = True
+        catalog["catalog_sha256"] = digest(hashed_payload(catalog, "catalog_sha256"))
+
     passed: list[str] = []
     for label, mutate in (
         ("command", command_mutation),
@@ -258,6 +289,8 @@ def mutation_self_test(generated_dir: Path, authority_path: Path = DEFAULT_AUTHO
         ("write_set", write_set_mutation),
         ("evidence", evidence_mutation),
         ("guard", guard_mutation),
+        ("fixture_root_extra", lambda values: catalog_root_mutation(values, "fixtures")),
+        ("oracle_root_extra", lambda values: catalog_root_mutation(values, "oracles")),
     ):
         values = copy.deepcopy(source)
         mutate(values)
