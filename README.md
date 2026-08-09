@@ -19,7 +19,8 @@ Development Agent Loop Wave 0 gate，尚未授权 DAL 实现。
 - Development Agent Loop 的 PRD、技术方案、PM 决策基线和 DAL-001–050 计划已落盘，
   其架构是 graph-orchestrated loop；DAL-G0-P 已通过，DAL-001–006 合同包的第七轮 findings
   001–006 已逐项关闭，consolidated historical regression 也已通过；fresh full review
-  `3679f0b` 因新增 007–011 判 FAIL，当前修订待 exact-SHA 复核后再跑 full review；尚无
+  `3679f0b` 因新增 007–011 判 FAIL，五项已在 exact `50e8c41` 独立关闭；现在只剩第二次
+  从零 full review；尚无
   provider preflight 或 DAL-007+ 自动化实现；
 - 精确测试数、live evidence、已知限制和下一步以
   [PROJECT_STATUS.md](./PROJECT_STATUS.md) 为准。
@@ -113,10 +114,9 @@ uv run personal-agent-online-eval --framework claude --case-id FIN-021
 
 下一步按以下顺序进行：
 
-1. 对 007–011 修订候选执行 fresh exact-SHA 独立只读复核。
-2. 单项复核关闭后，再对新的 exact SHA 执行从零开始的 full adversarial DAL-G0-E 复核。
-3. 只有该 full review PASS 后，才请求 Henson 对 DAL-007–013 第一安全切片的显式实现授权。
-4. 在 DAL-G0-E PASS 与显式授权前，不运行 provider preflight，不创建 GitHub/Worker/credential
+1. 对新的 exact SHA 执行第二次从零开始的 full adversarial DAL-G0-E 复核。
+2. 只有该 full review PASS 后，才请求 Henson 对 DAL-007–013 第一安全切片的显式实现授权。
+3. 在 DAL-G0-E PASS 与显式授权前，不运行 provider preflight，不创建 GitHub/Worker/credential
    等外部资源，不实现 DAL-007+；精确边界始终以 `PROJECT_STATUS.md` 和 `docs/dal/` 台账为准。
 
 ## 安全约定
