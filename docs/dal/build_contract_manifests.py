@@ -1703,6 +1703,7 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
                 fixture["transition_command"] = transition_command
             else:
                 fixture["operation_sequence"] = transition_sequence
+                fixture["resolver_sequence_kind"] = "transition_commands"
         else:
             operation_spec_id = f"OP-{test_id.removeprefix('DAL-T-')}"
             operation_actor, operation_source = OPERATION_BINDINGS.get(test_id, ("service", "immutable-fixture-catalog"))
@@ -1722,6 +1723,7 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
                 "input": semantic_input,
             }
             fixture["operation_sequence"] = sanitize_operation_sequence(operation_sequence or [operation_command])
+            fixture["resolver_sequence_kind"] = "operation_commands"
             uses_common_input = all(
                 command.get("input", {}).get("schema_version") == "dal.operation-input/1.0"
                 for command in fixture["operation_sequence"]
@@ -2889,8 +2891,18 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
     sequence_specs = [spec for spec in operation_rows if spec["input_schema_version"] == "dal.operation-sequence/1.0"]
     common_commands = [command for spec in common_specs for commands in spec["variant_input_contracts"].values() for command in commands]
     sequence_commands = [command for spec in sequence_specs for commands in spec["variant_input_contracts"].values() for command in commands]
-    if (len(common_specs), len(sequence_specs), len(common_commands), len(sequence_commands)) != (36, 2, 190, 17):
+    operation_variant_count = sum(len(spec["variant_input_contracts"]) for spec in operation_rows)
+    fixture_sequences = [fixture for fixture in fixtures.values() if "operation_sequence" in fixture]
+    operation_fixture_sequences = [fixture for fixture in fixture_sequences if fixture.get("resolver_sequence_kind") == "operation_commands"]
+    transition_fixture_sequences = [fixture for fixture in fixture_sequences if fixture.get("resolver_sequence_kind") == "transition_commands"]
+    if (len(common_specs), len(sequence_specs), len(common_commands), len(sequence_commands), operation_variant_count) != (36, 2, 190, 17, 204):
         raise ValueError("semantic operation coverage drift")
+    if (
+        len(fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in fixture_sequences),
+        len(operation_fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in operation_fixture_sequences),
+        len(transition_fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in transition_fixture_sequences),
+    ) != (205, 209, 204, 207, 1, 2):
+        raise ValueError("fixture operation/transition sequence accounting drift")
     forbidden_resolver_keys = {"test_id", "variant_id", "case_id", "injection_point", "injection_occurrence", "expected_result", "expected_receipt_code"}
 
     def object_keys(value: object) -> list[str]:
@@ -2910,6 +2922,14 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
             raise ValueError("operation id is not opaque")
         if not re.fullmatch(r"idem-[0-9a-f]{24}", command["idempotency_key"]):
             raise ValueError("idempotency key is not opaque")
+    expected_comparison_keys = [
+        key for command in [*common_commands, *sequence_commands]
+        for key in object_keys(command) if key.startswith("expected_")
+    ]
+    if set(expected_comparison_keys) != {"expected_version", "expected_head_sha", "expected_provider_attempt_version"}:
+        raise ValueError("resolver expected-field allowlist drift")
+    if len(expected_comparison_keys) != 32:
+        raise ValueError("resolver expected-field occurrence count drift")
     for command in common_commands:
         input_value = command["input"]
         if input_value.get("schema_version") != "dal.operation-input/1.0":
@@ -2961,6 +2981,21 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
             "schema_version": "dal.resolver-input-contract/1.0",
             "projection": "fixture.operation_sequence only",
             "excluded_fixture_metadata": ["test_id", "variant_id", "run_gate", "injection_operation", "coverage_ref"],
+            "forbidden_resolver_fields": ["test_id", "variant_id", "case_id", "injection_point", "injection_occurrence", "expected_result", "expected_receipt_code"],
+            "allowed_expected_comparison_fields": ["expected_head_sha", "expected_provider_attempt_version", "expected_version"],
+            "sequence_accounting": {
+                "fixture_operation_sequence_variants": 205,
+                "fixture_raw_command_objects": 209,
+                "operation_registry_variants": 204,
+                "operation_registry_command_objects": 207,
+                "common_input_specs": 36,
+                "common_input_commands": 190,
+                "multi_command_operation_specs": 2,
+                "multi_command_operation_commands": 17,
+                "transition_sequence_variants_excluded_from_operation_registry": 1,
+                "transition_commands_excluded_from_operation_registry": 2,
+                "excluded_transition_sequence_fixture_ref": "dal.fixture/DAL-T-FALLBACK-001/single_use/G4/1.0",
+            },
             "regressions": resolver_input_regressions,
         },
         "operation_specs": operation_rows,

@@ -1,5 +1,5 @@
 {
-  "catalog_sha256": "22fdf1fb1acf3e17cc4b5b8e1203fea48622a0a3f7099d8cc84172036bfa2539",
+  "catalog_sha256": "e8f1b536395fb4ae320c9c0e294a8f085a06ec3aa02ae41d74bca4eabc0bc2e8",
   "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
   "fixtures": {
     "dal.fixture/DAL-T-APP-001/concurrent_consume/G1/1.0": {
@@ -108,6 +108,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-APP-001",
@@ -173,6 +174,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-APP-001",
@@ -238,6 +240,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-APP-001",
@@ -303,6 +306,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-APP-001",
@@ -368,6 +372,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-APP-EXP-001",
@@ -433,6 +438,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-APP-EXP-001",
@@ -511,6 +517,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-ARTIFACTHASH-001",
@@ -589,6 +596,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-ARTIFACTHASH-001",
@@ -667,6 +675,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-ARTIFACTHASH-001",
@@ -746,6 +755,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-ARTIFACTHASH-001",
@@ -824,6 +834,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-ARTIFACTHASH-001",
@@ -920,6 +931,7 @@
         "state": "needs_human",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-BATCH-001",
@@ -1016,6 +1028,7 @@
         "state": "needs_human",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-BATCH-001",
@@ -1154,6 +1167,7 @@
         "state": "needs_human",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-BATCH-001",
@@ -1250,6 +1264,7 @@
         "state": "needs_human",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-BATCH-001",
@@ -1349,6 +1364,7 @@
         "state": "needs_human",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-BATCH-001",
@@ -1427,6 +1443,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CARD-001",
@@ -1505,6 +1522,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CARD-001",
@@ -1583,6 +1601,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CARD-001",
@@ -1661,6 +1680,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CARD-001",
@@ -1739,6 +1759,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CARD-001",
@@ -1817,6 +1838,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CARD-001",
@@ -1886,6 +1908,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CHECK-001",
@@ -1953,6 +1976,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CHECK-001",
@@ -2020,6 +2044,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CHECK-001",
@@ -2087,6 +2112,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CHECK-001",
@@ -2154,6 +2180,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CHECK-001",
@@ -2221,6 +2248,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CHECK-001",
@@ -2276,6 +2304,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CMD-IDEMPOTENCY-001",
@@ -2362,6 +2391,7 @@
         "state": "planning",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CMD-IDEMPOTENCY-001",
@@ -2427,6 +2457,7 @@
         "state": "not_loaded",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CONFIG-ISOLATION-001",
@@ -2491,6 +2522,7 @@
         "state": "not_loaded",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CONFIG-ISOLATION-001",
@@ -2556,6 +2588,7 @@
         "state": "not_loaded",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CONFIG-ISOLATION-001",
@@ -2621,6 +2654,7 @@
         "state": "not_loaded",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CONFIG-ISOLATION-001",
@@ -2692,6 +2726,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CRED-001",
@@ -2763,6 +2798,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CRED-001",
@@ -2834,6 +2870,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CRED-001",
@@ -2905,6 +2942,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CRED-001",
@@ -2976,6 +3014,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CRED-001",
@@ -3047,6 +3086,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CRED-001",
@@ -3118,6 +3158,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CRED-001",
@@ -3189,6 +3230,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CRED-001",
@@ -3260,6 +3302,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CRED-001",
@@ -3331,6 +3374,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CRED-001",
@@ -3402,6 +3446,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CRED-001",
@@ -3473,6 +3518,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CRED-001",
@@ -3544,6 +3590,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-CRED-001",
@@ -3600,6 +3647,7 @@
         "state": "migrated",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DB-CONTRACT-001",
@@ -3657,6 +3705,7 @@
         "state": "migrated",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DB-CONTRACT-001",
@@ -3715,6 +3764,7 @@
         "state": "empty",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DB-CONTRACT-001",
@@ -3783,6 +3833,7 @@
         "state": "migrated",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DB-CONTRACT-001",
@@ -3844,6 +3895,7 @@
         "state": "migrated",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DB-CONTRACT-001",
@@ -3897,6 +3949,7 @@
         "state": "merged",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G5",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DELIVERY-OBS-001",
@@ -3957,6 +4010,7 @@
         "state": "merged",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G5",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DELIVERY-OBS-001",
@@ -4017,6 +4071,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G5",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DELIVERY-OBS-001",
@@ -4077,6 +4132,7 @@
         "state": "merged",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G5",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DELIVERY-OBS-001",
@@ -4137,6 +4193,7 @@
         "state": "merged",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DELIVERY-OBS-001",
@@ -4196,6 +4253,7 @@
         "state": "merged",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G5",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DELIVERY-OBS-001",
@@ -4295,6 +4353,7 @@
         "state": "needs_human",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DOCK-001",
@@ -4368,6 +4427,7 @@
         "state": "needs_human",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DOCK-001",
@@ -4439,6 +4499,7 @@
         "state": "needs_human",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DOCK-001",
@@ -4510,6 +4571,7 @@
         "state": "needs_human",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DOCK-001",
@@ -4581,6 +4643,7 @@
         "state": "needs_human",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-DOCK-001",
@@ -4653,6 +4716,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G5",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
@@ -4725,6 +4789,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G5",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
@@ -4797,6 +4862,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G5",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
@@ -4869,6 +4935,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G5",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
@@ -4941,6 +5008,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G5",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
@@ -5030,6 +5098,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G5",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
@@ -5099,6 +5168,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
@@ -5169,6 +5239,7 @@
         "state": "reconciliation_required",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
@@ -5239,6 +5310,7 @@
         "state": "reconciliation_required",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
@@ -5326,6 +5398,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G5",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
@@ -5395,6 +5468,7 @@
         "state": "executing",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
@@ -5482,6 +5556,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G5",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EFFECT-OWNERSHIP-001",
@@ -5540,6 +5615,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-ENDPOINT-001",
@@ -5598,6 +5674,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-ENDPOINT-001",
@@ -5656,6 +5733,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-ENDPOINT-001",
@@ -5720,6 +5798,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-ENDPOINT-001",
@@ -5778,6 +5857,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-ENDPOINT-001",
@@ -5844,6 +5924,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EPOCH-001",
@@ -5910,6 +5991,7 @@
         "state": "approved",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EPOCH-001",
@@ -5976,6 +6058,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EPOCH-001",
@@ -6042,6 +6125,7 @@
         "state": "approved",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EPOCH-001",
@@ -6108,6 +6192,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EPOCH-001",
@@ -6174,6 +6259,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EPOCH-001",
@@ -6244,6 +6330,7 @@
         "state": "not_started",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EVAL-001",
@@ -6314,6 +6401,7 @@
         "state": "not_started",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EVAL-001",
@@ -6384,6 +6472,7 @@
         "state": "not_started",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EVAL-001",
@@ -6454,6 +6543,7 @@
         "state": "not_started",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EVAL-001",
@@ -6524,6 +6614,7 @@
         "state": "not_started",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EVAL-001",
@@ -6577,6 +6668,7 @@
         "state": "approved",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-EVENT-ORDER-001",
@@ -21142,6 +21234,7 @@
         "state": "blocked_usage",
         "version": 7
       },
+      "resolver_sequence_kind": "transition_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-FALLBACK-001",
@@ -23309,6 +23402,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-FALLBACK-RESTART-001",
@@ -23380,6 +23474,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-FALLBACK-RESTART-001",
@@ -23437,6 +23532,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-FALLBACK-RESTART-001",
@@ -23494,6 +23590,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-FALLBACK-RESTART-001",
@@ -23574,6 +23671,7 @@
         "state": "intake",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-GH-EVENT-001",
@@ -23654,6 +23752,7 @@
         "state": "intake",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-GH-EVENT-001",
@@ -23734,6 +23833,7 @@
         "state": "intake",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-GH-EVENT-001",
@@ -23814,6 +23914,7 @@
         "state": "intake",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-GH-EVENT-001",
@@ -23894,6 +23995,7 @@
         "state": "intake",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-GH-EVENT-001",
@@ -23959,6 +24061,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-GIT-ACK-001",
@@ -24018,6 +24121,7 @@
         "state": "reconciliation_required",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-GIT-ACK-001",
@@ -24083,6 +24187,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-GIT-ACK-001",
@@ -24142,6 +24247,7 @@
         "state": "reconciliation_required",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-GIT-ACK-001",
@@ -24207,6 +24313,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-GIT-BASE-001",
@@ -24272,6 +24379,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-GIT-BASE-001",
@@ -24337,6 +24445,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-GIT-BASE-001",
@@ -24402,6 +24511,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-GIT-BASE-001",
@@ -24469,6 +24579,7 @@
         "state": "intake",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-INJECTION-001",
@@ -24536,6 +24647,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-INJECTION-001",
@@ -24603,6 +24715,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-INJECTION-001",
@@ -24670,6 +24783,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-INJECTION-001",
@@ -24737,6 +24851,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-INJECTION-001",
@@ -24804,6 +24919,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-INJECTION-001",
@@ -24869,6 +24985,7 @@
         "state": "paused",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-KILL-001",
@@ -24934,6 +25051,7 @@
         "state": "paused",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-KILL-001",
@@ -24999,6 +25117,7 @@
         "state": "paused",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-KILL-001",
@@ -25057,6 +25176,7 @@
         "state": "paused",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-LEASE-001",
@@ -25115,6 +25235,7 @@
         "state": "paused",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-LEASE-001",
@@ -25172,6 +25293,7 @@
         "state": "paused",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-LEASE-001",
@@ -25235,6 +25357,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-NET-001",
@@ -25298,6 +25421,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-NET-001",
@@ -25361,6 +25485,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-NET-001",
@@ -25424,6 +25549,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-NET-001",
@@ -25505,6 +25631,7 @@
         "state": "needs_human",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-NOTIFY-001",
@@ -25586,6 +25713,7 @@
         "state": "needs_human",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-NOTIFY-001",
@@ -25694,6 +25822,7 @@
         "state": "needs_human",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-NOTIFY-001",
@@ -25775,6 +25904,7 @@
         "state": "needs_human",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-NOTIFY-001",
@@ -25836,6 +25966,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PATH-001",
@@ -25897,6 +26028,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PATH-001",
@@ -25958,6 +26090,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PATH-001",
@@ -26022,6 +26155,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PATH-001",
@@ -26076,6 +26210,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PRONLY-MERGE-001",
@@ -26130,6 +26265,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PRONLY-MERGE-001",
@@ -26192,6 +26328,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PRONLY-MERGE-001",
@@ -26246,6 +26383,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PRONLY-MERGE-001",
@@ -26308,6 +26446,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PRONLY-MERGE-001",
@@ -26368,6 +26507,7 @@
         "state": "awaiting_merge",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PRONLY-MERGE-001",
@@ -26430,6 +26570,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-CONTRACT-001",
@@ -26491,6 +26632,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-CONTRACT-001",
@@ -26556,6 +26698,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-CONTRACT-001",
@@ -26618,6 +26761,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-CONTRACT-001",
@@ -26683,6 +26827,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-CONTRACT-001",
@@ -26754,6 +26899,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-CONTRACT-001",
@@ -26824,6 +26970,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-CONTRACT-001",
@@ -26892,6 +27039,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-CONTRACT-001",
@@ -26957,6 +27105,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-ROUTE-001",
@@ -27022,6 +27171,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-ROUTE-001",
@@ -27085,6 +27235,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-ROUTE-001",
@@ -27146,6 +27297,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-ROUTE-001",
@@ -27209,6 +27361,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-ROUTE-001",
@@ -27272,6 +27425,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-ROUTE-001",
@@ -27335,6 +27489,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-ROUTE-001",
@@ -27400,6 +27555,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-ROUTE-001",
@@ -27467,6 +27623,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-ROUTE-001",
@@ -27532,6 +27689,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-PROVIDER-ROUTE-001",
@@ -27599,6 +27757,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-REC-001",
@@ -27666,6 +27825,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-REC-001",
@@ -27733,6 +27893,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-REC-001",
@@ -27791,6 +27952,7 @@
         "state": "reconciliation_required",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-REC-001",
@@ -27849,6 +28011,7 @@
         "state": "reconciliation_required",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-REC-001",
@@ -27916,6 +28079,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-REC-001",
@@ -27983,6 +28147,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-REC-001",
@@ -29125,6 +29290,7 @@
         "state": "approved",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-RECOVERY-001",
@@ -29179,6 +29345,7 @@
         "state": "investigating",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-RECOVERY-001",
@@ -30428,6 +30595,7 @@
         "state": "executing",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-RECOVERY-001",
@@ -31745,6 +31913,7 @@
         "state": "investigating",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-RECOVERY-001",
@@ -31799,6 +31968,7 @@
         "state": "blocked",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-RECOVERY-001",
@@ -31853,6 +32023,7 @@
         "state": "blocked",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-RECOVERY-001",
@@ -31907,6 +32078,7 @@
         "state": "approved",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-RECOVERY-001",
@@ -31966,6 +32138,7 @@
         "state": "verifying",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-RECOVERY-001",
@@ -32033,6 +32206,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-RESTART-001",
@@ -32100,6 +32274,7 @@
         "state": "fixing",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-RESTART-001",
@@ -32167,6 +32342,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-RESTART-001",
@@ -32234,6 +32410,7 @@
         "state": "fixing",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-RESTART-001",
@@ -32301,6 +32478,7 @@
         "state": "reviewing",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-REVIEW-INDEP-001",
@@ -32368,6 +32546,7 @@
         "state": "reviewing",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-REVIEW-INDEP-001",
@@ -32435,6 +32614,7 @@
         "state": "reviewing",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-REVIEW-INDEP-001",
@@ -32502,6 +32682,7 @@
         "state": "reviewing",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-REVIEW-INDEP-001",
@@ -32569,6 +32750,7 @@
         "state": "reviewing",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G3",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-REVIEW-INDEP-001",
@@ -32633,6 +32815,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-SECRET-OUTPUT-001",
@@ -32697,6 +32880,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-SECRET-OUTPUT-001",
@@ -32761,6 +32945,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-SECRET-OUTPUT-001",
@@ -32825,6 +33010,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G4",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-SECRET-OUTPUT-001",
@@ -32889,6 +33075,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-SECRET-OUTPUT-001",
@@ -32953,6 +33140,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-SECRET-OUTPUT-001",
@@ -33017,6 +33205,7 @@
         "state": "coding",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G2",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-SECRET-OUTPUT-001",
@@ -53818,6 +54007,7 @@
         "state": "planning",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-SM-001",
@@ -112973,6 +113163,7 @@
         "state": "intake",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-SM-001",
@@ -113030,6 +113221,7 @@
         "state": "paused",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-SM-001",
@@ -113080,6 +113272,7 @@
         "state": "cancelled",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-SM-001",
@@ -113130,6 +113323,7 @@
         "state": "completed",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-SM-001",
@@ -113208,6 +113402,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-STATEHASH-001",
@@ -113286,6 +113481,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-STATEHASH-001",
@@ -113364,6 +113560,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-STATEHASH-001",
@@ -113443,6 +113640,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-STATEHASH-001",
@@ -113521,6 +113719,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-STATEHASH-001",
@@ -113599,6 +113798,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-STATEHASH-001",
@@ -113677,6 +113877,7 @@
         "state": "awaiting_plan_review",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-STATEHASH-001",
@@ -113782,6 +113983,7 @@
         "state": "planning",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-TX-001",
@@ -113887,6 +114089,7 @@
         "state": "planning",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-TX-001",
@@ -113992,6 +114195,7 @@
         "state": "planning",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-TX-001",
@@ -114097,6 +114301,7 @@
         "state": "planning",
         "version": 7
       },
+      "resolver_sequence_kind": "operation_commands",
       "run_gate": "G1",
       "schema_version": "dal.test-fixture/1.0",
       "test_id": "DAL-T-TX-001",
@@ -114105,7 +114310,7 @@
     }
   },
   "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
-  "operation_registry_sha256": "219ac0ed5da4b8ad05fe8bb5f83ecb4d4325145a9ad23dfba44af1eecc1dc1f5",
+  "operation_registry_sha256": "a396b9d57bf5e7a214f8ce33f26b5c36bc853e2f220c3464911e634b2404bb72",
   "schema_version": "dal.test-fixture-catalog/1.0",
   "transition_registry_sha256": "c9ddb46cde67a9cdbc04294ee2e7b1299dea9b00384779471d4b62d2044ec0a8"
 }

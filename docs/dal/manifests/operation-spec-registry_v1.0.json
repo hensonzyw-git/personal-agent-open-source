@@ -11890,14 +11890,28 @@
       }
     }
   ],
-  "registry_sha256": "219ac0ed5da4b8ad05fe8bb5f83ecb4d4325145a9ad23dfba44af1eecc1dc1f5",
+  "registry_sha256": "a396b9d57bf5e7a214f8ce33f26b5c36bc853e2f220c3464911e634b2404bb72",
   "resolver_input_contract": {
+    "allowed_expected_comparison_fields": [
+      "expected_head_sha",
+      "expected_provider_attempt_version",
+      "expected_version"
+    ],
     "excluded_fixture_metadata": [
       "test_id",
       "variant_id",
       "run_gate",
       "injection_operation",
       "coverage_ref"
+    ],
+    "forbidden_resolver_fields": [
+      "test_id",
+      "variant_id",
+      "case_id",
+      "injection_point",
+      "injection_occurrence",
+      "expected_result",
+      "expected_receipt_code"
     ],
     "projection": "fixture.operation_sequence only",
     "regressions": [
@@ -11924,7 +11938,20 @@
         "source_oracle_ref": "dal.oracle/DAL-T-BATCH-001/all_invalid/G1/1.0"
       }
     ],
-    "schema_version": "dal.resolver-input-contract/1.0"
+    "schema_version": "dal.resolver-input-contract/1.0",
+    "sequence_accounting": {
+      "common_input_commands": 190,
+      "common_input_specs": 36,
+      "excluded_transition_sequence_fixture_ref": "dal.fixture/DAL-T-FALLBACK-001/single_use/G4/1.0",
+      "fixture_operation_sequence_variants": 205,
+      "fixture_raw_command_objects": 209,
+      "multi_command_operation_commands": 17,
+      "multi_command_operation_specs": 2,
+      "operation_registry_command_objects": 207,
+      "operation_registry_variants": 204,
+      "transition_commands_excluded_from_operation_registry": 2,
+      "transition_sequence_variants_excluded_from_operation_registry": 1
+    }
   },
   "schema_version": "dal.operation-spec-registry/1.0"
 }
