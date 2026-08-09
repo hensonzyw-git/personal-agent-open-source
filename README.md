@@ -2,27 +2,24 @@
 
 Henson 的个人 Agent 项目：iOS App + 自托管 Agent Backend + Personal Data MCP。
 
-PRD v1.0.1、Phase 1 技术方案 v0.1 和开发拆解 v0.1 均已通过评审；Henson 已于
-2026-07-23 授权 Phase 1 开发。G0–G3 已通过，DEV-001–029 已实现至
-`PROJECT_STATUS.md` 记录的当前证据边界，下一实现项是 CAP-001 Session Lifecycle
-& Context Compaction，之后才进入 DEV-030 / G4。一期仍只做 Finance 单用户闭环；
-iOS 是薄客户端，服务端负责 Agent Runtime、MCP Client、Policy、审计和定时任务。
-Phase 1 Agent 框架为 Google ADK，业务模型通过可替换 adapter 接入。
+PRD v1.0.1、Phase 1 技术方案 v0.1 和开发拆解 v0.1 均已通过评审；Phase 1 已于
+2026-08-07 满足完整开发完成定义，G1–G6 全部通过。当前实现仍是 Finance 单用户闭环：
+iOS 是薄客户端，服务端负责 Agent Runtime、MCP Client、Policy、审计和定时任务；
+Phase 1 Agent 框架为 Google ADK，业务模型通过可替换 adapter 接入。项目当前进入独立的
+Development Agent Loop Wave 0 gate，尚未授权 DAL 实现。
 
 ## 当前进度
 
 - Finance MCP、Governed MCP Client、Agent API/ADK composition、daily review、
-  device identity、operator CLI 和 iOS SwiftPM 基础均已实现；
-- 合成测试 Base 已完成真实 GLM → policy → MCP → Feishu 的端到端写入与重复拦截；
-- iOS Simulator 已完成 Secure Enclave 注册、短期 token、capabilities 和撤销实测；
-- APNs：2026-08-01 起已有付费 Apple Developer Program（落在原 team `4KKHF67AF3`，profile 有效期 7 天 → 1 年）；但 target 上的 Push Notifications capability 和服务端 `.p8` 尚未就绪，push sender 在此之前保持 fail-closed；
-- CAP-001 的 Timeline/Session、长话题自动压缩和有界 Context 技术基线已冻结，
-  但代码、迁移和 eval 尚未开始；
+  device identity、operator CLI 和 iOS App 均已实现并达到各自证据边界；
+- G4 真实 iPhone rollout、G5 生产单笔写、G6 APNs/daily review 与人工核对恢复路径均已关闭；
+- CAP-001 的 Timeline/Session、长话题自动压缩和有界 Context 已完成实现、迁移、测试与 live 证据；
 - CAP-002–008 记录后续 streaming、voice、memory、routing 和 multimodal 路线，
   不扩大当前 Finance Phase；
-- Development Agent Loop 的 PRD、技术方案和 DAL-001–050 计划已落盘，
-  其架构是 graph-orchestrated loop；但 Phase 1 Completion 前置尚未满足、
-  DAL-G0 未授权，尚无任何 preflight 或自动化实现；
+- Development Agent Loop 的 PRD、技术方案、PM 决策基线和 DAL-001–050 计划已落盘，
+  其架构是 graph-orchestrated loop；DAL-G0-P 已通过，DAL-001–006 合同包的第七轮 findings
+  001–006 已逐项关闭，consolidated historical regression 也已通过；最后一次 fresh full
+  adversarial DAL-G0-E review 仍待执行，尚无 provider preflight 或 DAL-007+ 自动化实现；
 - 精确测试数、live evidence、已知限制和下一步以
   [PROJECT_STATUS.md](./PROJECT_STATUS.md) 为准。
 
@@ -115,13 +112,10 @@ uv run personal-agent-online-eval --framework claude --case-id FIN-021
 
 下一步按以下顺序进行：
 
-1. 完成 DEV-038 的 ECS 在线重启/网络矩阵及技术方案 §13.2 在线闭合。
-2. 进入 DEV-039：write kill switch 已建成（离线证据齐全，线上演练待做），
-   余下 restore 与服务/Nginx 回滚演练。
-3. 继续遵守 G5：在单独授权前不接入生产 Finance 凭据或个人年度账本。
-4. Development Agent Loop 保持独立、非阻塞；Phase 1 满足全部开发完成定义后，
-   才可开始 DAL-001–006，随后由 Henson 单独通过 DAL-G0，再实现 DAL-007 起的
-   Workflow Service 和只读 planning 切片。
+1. 对当前 exact SHA 执行一次从零开始的 fresh full adversarial DAL-G0-E 工程/安全复核。
+2. 只有该 full review PASS 后，才请求 Henson 对 DAL-007–013 第一安全切片的显式实现授权。
+3. 在 DAL-G0-E PASS 与显式授权前，不运行 provider preflight，不创建 GitHub/Worker/credential
+   等外部资源，不实现 DAL-007+；精确边界始终以 `PROJECT_STATUS.md` 和 `docs/dal/` 台账为准。
 
 ## 安全约定
 
