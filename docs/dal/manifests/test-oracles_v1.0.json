@@ -1,8 +1,8 @@
 {
-  "catalog_sha256": "1ad5c8dc55cc5d552cfb7ba33b57230f80176ca7c2230ae6618e430b21348724",
+  "catalog_sha256": "1113f4433bafb8936e154d530c7a8d3f7535176bb5987e890680cebdb93dfc70",
   "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
   "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
-  "operation_registry_sha256": "6a96288b890bce7a6597f79349a3f6399e2fbda0e23a74fba0f737c30c0e1d07",
+  "operation_registry_sha256": "e71e47f80f25f3888a7a32dd11a17378389f60c638b0686c0dfc6ac6571ea822",
   "oracles": {
     "dal.oracle/DAL-T-APP-001/concurrent_consume/G1/1.0": {
       "allowed_write_set": [
@@ -9442,6 +9442,1432 @@
       "test_id": "DAL-T-EXTERNAL-EFFECT-001",
       "variant_id": "guard_deny--ee-reconcile-still-unknown"
     },
+    "dal.oracle/DAL-T-FALLBACK-001/already_used/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/already_used/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "already_used",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_eligibility_field",
+          "operator": "equals",
+          "value": "provider_state.fallback_used"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "already_used"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/ascii_whitespace_preflight/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/ascii_whitespace_preflight/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "ascii_whitespace_preflight",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_eligibility_field",
+          "operator": "equals",
+          "value": "evidence_document.fallback_preflight_receipt_id"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "ascii_whitespace_preflight"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/atomic_write_failure--fallback-handoff/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/atomic_write_failure--fallback-handoff/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "atomic_write_failure--fallback-handoff",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "failed_atomic_write_member",
+          "operator": "equals",
+          "value": "fallback_handoff"
+        },
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "business_event_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "atomic_write_failure--fallback-handoff"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/atomic_write_failure--provider-attempt/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/atomic_write_failure--provider-attempt/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "atomic_write_failure--provider-attempt",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "failed_atomic_write_member",
+          "operator": "equals",
+          "value": "provider_attempt"
+        },
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "business_event_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "atomic_write_failure--provider-attempt"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/atomic_write_failure--run-counter/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/atomic_write_failure--run-counter/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "atomic_write_failure--run-counter",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "failed_atomic_write_member",
+          "operator": "equals",
+          "value": "run_counter"
+        },
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "business_event_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "atomic_write_failure--run-counter"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/binding_mismatch/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/binding_mismatch/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "binding_mismatch",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_eligibility_field",
+          "operator": "equals",
+          "value": "evidence_document.eligibility_binding_sha256"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "binding_mismatch"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/budget_exhausted/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/budget_exhausted/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "budget_exhausted",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_eligibility_field",
+          "operator": "equals",
+          "value": "runtime.budget_remaining"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "budget_exhausted"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/derived_eligible/G4/1.0": {
+      "allowed_write_set": [
+        "decision_resolve",
+        "decision_action_receipt",
+        "approval_record",
+        "approval_consume",
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_projection",
+        "notification_outbox",
+        "run_counter",
+        "provider_attempt",
+        "fallback_handoff"
+      ],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.resumed"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/derived_eligible/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "derived_eligible",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "fallback_used",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "provider_attempt_count",
+          "operator": "equals",
+          "value": 2
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "provider_call_count_before_commit",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "derived_eligible"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/missing_handoff/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/missing_handoff/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "missing_handoff",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_eligibility_field",
+          "operator": "equals",
+          "value": "evidence_document.handoff_sha256"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "missing_handoff"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/null_preflight/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/null_preflight/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "null_preflight",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_eligibility_field",
+          "operator": "equals",
+          "value": "evidence_document.fallback_preflight_receipt_id"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "null_preflight"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/profile_mismatch/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/profile_mismatch/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "profile_mismatch",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_eligibility_field",
+          "operator": "equals",
+          "value": "evidence_document.fallback_profile_sha256"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "profile_mismatch"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/single_use/G4/1.0": {
+      "allowed_write_set": [
+        "decision_resolve",
+        "decision_action_receipt",
+        "approval_record",
+        "approval_consume",
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_projection",
+        "notification_outbox",
+        "run_counter",
+        "provider_attempt",
+        "fallback_handoff"
+      ],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.resumed"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        },
+        {
+          "code": "ILLEGAL_TRANSITION",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "coding",
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/single_use/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "single_use",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "fallback_used",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "provider_attempt_count",
+          "operator": "equals",
+          "value": 2
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "provider_call_count_before_commit",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "second_fallback_call_count",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "single_use"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/stale_preflight/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/stale_preflight/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "stale_preflight",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_eligibility_field",
+          "operator": "equals",
+          "value": "evidence_document.fallback_preflight_expires_at"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "stale_preflight"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/trailing_newline_preflight/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/trailing_newline_preflight/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "trailing_newline_preflight",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_eligibility_field",
+          "operator": "equals",
+          "value": "evidence_document.fallback_preflight_receipt_id"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "trailing_newline_preflight"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/unicode_whitespace_preflight/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/unicode_whitespace_preflight/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "unicode_whitespace_preflight",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_eligibility_field",
+          "operator": "equals",
+          "value": "evidence_document.fallback_preflight_receipt_id"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "unicode_whitespace_preflight"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/unknown_effect/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/unknown_effect/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "unknown_effect",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_eligibility_field",
+          "operator": "equals",
+          "value": "effect_inventory.unknown_or_reconciling_count"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "unknown_effect"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/wrong_failure_class/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/wrong_failure_class/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "wrong_failure_class",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_eligibility_field",
+          "operator": "equals",
+          "value": "evidence_document.failure_class"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "wrong_failure_class"
+    },
+    "dal.oracle/DAL-T-FALLBACK-001/wrong_preflight_receipt/G4/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "USAGE_LIMIT",
+        "reason_owner": "feature",
+        "state": "blocked_usage"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "blocked_usage",
+        "blocked_usage"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FALLBACK-001/wrong_preflight_receipt/G4/1.0",
+        "occurrence": 1,
+        "operation_id": "wrong_preflight_receipt",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "blocked_usage",
+        "version": 7
+      },
+      "run_gate": "G4",
+      "scenario_assertions": [
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_attempt_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_attempt_count_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "fallback_handoff_create_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "provider_call_count",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "failed_eligibility_field",
+          "operator": "equals",
+          "value": "evidence_document.fallback_preflight_receipt_id"
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FALLBACK-001",
+      "variant_id": "wrong_preflight_receipt"
+    },
     "dal.oracle/DAL-T-GH-EVENT-001/edited_event/G2/1.0": {
       "allowed_write_set": [],
       "coverage_ref": null,
@@ -12821,1027 +14247,6 @@
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-PROVIDER-ROUTE-001",
       "variant_id": "usage"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_already_used/G4/1.0": {
-      "allowed_write_set": [
-        "aggregate",
-        "business_event",
-        "transition_receipt",
-        "audit",
-        "decision_create",
-        "decision_projection",
-        "notification_outbox"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "feature.blocked"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": "USAGE_LIMIT",
-        "reason_owner": "feature",
-        "state": "blocked_usage"
-      },
-      "expected_receipts": [
-        {
-          "code": "APPLIED",
-          "count": 1,
-          "schema_version": "dal.transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "blocked_usage"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_already_used/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_already_used",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 0
-        },
-        {
-          "field": "failed_eligibility_field",
-          "operator": "equals",
-          "value": "provider_state.fallback_used"
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_already_used"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_ascii_whitespace_preflight/G4/1.0": {
-      "allowed_write_set": [
-        "aggregate",
-        "business_event",
-        "transition_receipt",
-        "audit",
-        "decision_create",
-        "decision_projection",
-        "notification_outbox"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "feature.blocked"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": "USAGE_LIMIT",
-        "reason_owner": "feature",
-        "state": "blocked_usage"
-      },
-      "expected_receipts": [
-        {
-          "code": "APPLIED",
-          "count": 1,
-          "schema_version": "dal.transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "blocked_usage"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_ascii_whitespace_preflight/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_ascii_whitespace_preflight",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 0
-        },
-        {
-          "field": "failed_eligibility_field",
-          "operator": "equals",
-          "value": "evidence_document.fallback_preflight_receipt_id"
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_ascii_whitespace_preflight"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_binding_mismatch/G4/1.0": {
-      "allowed_write_set": [
-        "aggregate",
-        "business_event",
-        "transition_receipt",
-        "audit",
-        "decision_create",
-        "decision_projection",
-        "notification_outbox"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "feature.blocked"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": "USAGE_LIMIT",
-        "reason_owner": "feature",
-        "state": "blocked_usage"
-      },
-      "expected_receipts": [
-        {
-          "code": "APPLIED",
-          "count": 1,
-          "schema_version": "dal.transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "blocked_usage"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_binding_mismatch/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_binding_mismatch",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 0
-        },
-        {
-          "field": "failed_eligibility_field",
-          "operator": "equals",
-          "value": "evidence_document.eligibility_binding_sha256"
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_binding_mismatch"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_budget_exhausted/G4/1.0": {
-      "allowed_write_set": [
-        "aggregate",
-        "business_event",
-        "transition_receipt",
-        "audit",
-        "decision_create",
-        "decision_projection",
-        "notification_outbox"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "feature.blocked"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": "USAGE_LIMIT",
-        "reason_owner": "feature",
-        "state": "blocked_usage"
-      },
-      "expected_receipts": [
-        {
-          "code": "APPLIED",
-          "count": 1,
-          "schema_version": "dal.transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "blocked_usage"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_budget_exhausted/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_budget_exhausted",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 0
-        },
-        {
-          "field": "failed_eligibility_field",
-          "operator": "equals",
-          "value": "runtime.budget_remaining"
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_budget_exhausted"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_eligible/G4/1.0": {
-      "allowed_write_set": [
-        "run_counter",
-        "provider_attempt",
-        "fallback_handoff",
-        "operation_receipt",
-        "audit"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "provider.fallback_started"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": null,
-        "reason_owner": null,
-        "state": "coding"
-      },
-      "expected_receipts": [
-        {
-          "code": "FALLBACK_STARTED",
-          "count": 1,
-          "schema_version": "dal.operation-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "coding"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_eligible/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_eligible",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 1
-        },
-        {
-          "field": "fallback_used",
-          "operator": "equals",
-          "value": true
-        },
-        {
-          "field": "provider_attempt_count",
-          "operator": "equals",
-          "value": 2
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_eligible"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_missing_handoff/G4/1.0": {
-      "allowed_write_set": [
-        "aggregate",
-        "business_event",
-        "transition_receipt",
-        "audit",
-        "decision_create",
-        "decision_projection",
-        "notification_outbox"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "feature.blocked"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": "USAGE_LIMIT",
-        "reason_owner": "feature",
-        "state": "blocked_usage"
-      },
-      "expected_receipts": [
-        {
-          "code": "APPLIED",
-          "count": 1,
-          "schema_version": "dal.transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "blocked_usage"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_missing_handoff/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_missing_handoff",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 0
-        },
-        {
-          "field": "failed_eligibility_field",
-          "operator": "equals",
-          "value": "evidence_document.handoff_sha256"
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_missing_handoff"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_null_preflight/G4/1.0": {
-      "allowed_write_set": [
-        "aggregate",
-        "business_event",
-        "transition_receipt",
-        "audit",
-        "decision_create",
-        "decision_projection",
-        "notification_outbox"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "feature.blocked"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": "USAGE_LIMIT",
-        "reason_owner": "feature",
-        "state": "blocked_usage"
-      },
-      "expected_receipts": [
-        {
-          "code": "APPLIED",
-          "count": 1,
-          "schema_version": "dal.transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "blocked_usage"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_null_preflight/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_null_preflight",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 0
-        },
-        {
-          "field": "failed_eligibility_field",
-          "operator": "equals",
-          "value": "evidence_document.fallback_preflight_receipt_id"
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_null_preflight"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_profile_mismatch/G4/1.0": {
-      "allowed_write_set": [
-        "aggregate",
-        "business_event",
-        "transition_receipt",
-        "audit",
-        "decision_create",
-        "decision_projection",
-        "notification_outbox"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "feature.blocked"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": "USAGE_LIMIT",
-        "reason_owner": "feature",
-        "state": "blocked_usage"
-      },
-      "expected_receipts": [
-        {
-          "code": "APPLIED",
-          "count": 1,
-          "schema_version": "dal.transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "blocked_usage"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_profile_mismatch/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_profile_mismatch",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 0
-        },
-        {
-          "field": "failed_eligibility_field",
-          "operator": "equals",
-          "value": "evidence_document.fallback_profile_sha256"
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_profile_mismatch"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_single_use/G4/1.0": {
-      "allowed_write_set": [
-        "run_counter",
-        "provider_attempt",
-        "fallback_handoff",
-        "operation_receipt",
-        "audit"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "provider.fallback_started"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": null,
-        "reason_owner": null,
-        "state": "coding"
-      },
-      "expected_receipts": [
-        {
-          "code": "FALLBACK_STARTED",
-          "count": 1,
-          "schema_version": "dal.operation-receipt/1.0"
-        },
-        {
-          "code": "POLICY_DENIED",
-          "count": 1,
-          "schema_version": "dal.operation-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "coding"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_single_use/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_single_use",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 1
-        },
-        {
-          "field": "fallback_used",
-          "operator": "equals",
-          "value": true
-        },
-        {
-          "field": "provider_attempt_count",
-          "operator": "equals",
-          "value": 2
-        },
-        {
-          "field": "second_fallback_call_count",
-          "operator": "equals",
-          "value": 0
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_single_use"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_stale_preflight/G4/1.0": {
-      "allowed_write_set": [
-        "aggregate",
-        "business_event",
-        "transition_receipt",
-        "audit",
-        "decision_create",
-        "decision_projection",
-        "notification_outbox"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "feature.blocked"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": "USAGE_LIMIT",
-        "reason_owner": "feature",
-        "state": "blocked_usage"
-      },
-      "expected_receipts": [
-        {
-          "code": "APPLIED",
-          "count": 1,
-          "schema_version": "dal.transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "blocked_usage"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_stale_preflight/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_stale_preflight",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 0
-        },
-        {
-          "field": "failed_eligibility_field",
-          "operator": "equals",
-          "value": "evidence_document.fallback_preflight_expires_at"
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_stale_preflight"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_trailing_newline_preflight/G4/1.0": {
-      "allowed_write_set": [
-        "aggregate",
-        "business_event",
-        "transition_receipt",
-        "audit",
-        "decision_create",
-        "decision_projection",
-        "notification_outbox"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "feature.blocked"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": "USAGE_LIMIT",
-        "reason_owner": "feature",
-        "state": "blocked_usage"
-      },
-      "expected_receipts": [
-        {
-          "code": "APPLIED",
-          "count": 1,
-          "schema_version": "dal.transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "blocked_usage"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_trailing_newline_preflight/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_trailing_newline_preflight",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 0
-        },
-        {
-          "field": "failed_eligibility_field",
-          "operator": "equals",
-          "value": "evidence_document.fallback_preflight_receipt_id"
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_trailing_newline_preflight"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_unicode_whitespace_preflight/G4/1.0": {
-      "allowed_write_set": [
-        "aggregate",
-        "business_event",
-        "transition_receipt",
-        "audit",
-        "decision_create",
-        "decision_projection",
-        "notification_outbox"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "feature.blocked"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": "USAGE_LIMIT",
-        "reason_owner": "feature",
-        "state": "blocked_usage"
-      },
-      "expected_receipts": [
-        {
-          "code": "APPLIED",
-          "count": 1,
-          "schema_version": "dal.transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "blocked_usage"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_unicode_whitespace_preflight/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_unicode_whitespace_preflight",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 0
-        },
-        {
-          "field": "failed_eligibility_field",
-          "operator": "equals",
-          "value": "evidence_document.fallback_preflight_receipt_id"
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_unicode_whitespace_preflight"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_unknown_effect/G4/1.0": {
-      "allowed_write_set": [
-        "aggregate",
-        "business_event",
-        "transition_receipt",
-        "audit",
-        "decision_create",
-        "decision_projection",
-        "notification_outbox"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "feature.blocked"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": "USAGE_LIMIT",
-        "reason_owner": "feature",
-        "state": "blocked_usage"
-      },
-      "expected_receipts": [
-        {
-          "code": "APPLIED",
-          "count": 1,
-          "schema_version": "dal.transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "blocked_usage"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_unknown_effect/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_unknown_effect",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 0
-        },
-        {
-          "field": "failed_eligibility_field",
-          "operator": "equals",
-          "value": "effect_inventory.unknown_or_reconciling_count"
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_unknown_effect"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_wrong_failure_class/G4/1.0": {
-      "allowed_write_set": [
-        "aggregate",
-        "business_event",
-        "transition_receipt",
-        "audit",
-        "decision_create",
-        "decision_projection",
-        "notification_outbox"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "feature.blocked"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": "USAGE_LIMIT",
-        "reason_owner": "feature",
-        "state": "blocked_usage"
-      },
-      "expected_receipts": [
-        {
-          "code": "APPLIED",
-          "count": 1,
-          "schema_version": "dal.transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "blocked_usage"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_wrong_failure_class/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_wrong_failure_class",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 0
-        },
-        {
-          "field": "failed_eligibility_field",
-          "operator": "equals",
-          "value": "evidence_document.failure_class"
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_wrong_failure_class"
-    },
-    "dal.oracle/DAL-T-PROVIDER-ROUTE-001/usage_fallback_wrong_preflight_receipt/G4/1.0": {
-      "allowed_write_set": [
-        "aggregate",
-        "business_event",
-        "transition_receipt",
-        "audit",
-        "decision_create",
-        "decision_projection",
-        "notification_outbox"
-      ],
-      "coverage_ref": null,
-      "expected_atomic_companion_transitions": [],
-      "expected_event_trace": [
-        "feature.blocked"
-      ],
-      "expected_external_effect_trace": [],
-      "expected_final_snapshot": {
-        "entity_type": "feature",
-        "reason_code": "USAGE_LIMIT",
-        "reason_owner": "feature",
-        "state": "blocked_usage"
-      },
-      "expected_receipts": [
-        {
-          "code": "APPLIED",
-          "count": 1,
-          "schema_version": "dal.transition-receipt/1.0"
-        }
-      ],
-      "expected_related_snapshots": [],
-      "expected_state_trace": [
-        "coding",
-        "blocked_usage"
-      ],
-      "forbidden_side_effects": [
-        "unapproved_external_effect",
-        "production_access"
-      ],
-      "injection_operation": {
-        "injection_point": "dal.inject/DAL-T-PROVIDER-ROUTE-001/usage_fallback_wrong_preflight_receipt/G4/1.0",
-        "occurrence": 1,
-        "operation_id": "usage_fallback_wrong_preflight_receipt",
-        "schema_version": "dal.test-injection/1.0"
-      },
-      "pre_state": {
-        "entity_id": "fixture-entity",
-        "entity_type": "feature",
-        "state": "coding",
-        "version": 7
-      },
-      "run_gate": "G4",
-      "scenario_assertions": [
-        {
-          "field": "fallback_attempt_count",
-          "operator": "equals",
-          "value": 0
-        },
-        {
-          "field": "failed_eligibility_field",
-          "operator": "equals",
-          "value": "evidence_document.fallback_preflight_receipt_id"
-        }
-      ],
-      "schema_version": "dal.test-oracle/1.0",
-      "test_id": "DAL-T-PROVIDER-ROUTE-001",
-      "variant_id": "usage_fallback_wrong_preflight_receipt"
     },
     "dal.oracle/DAL-T-REC-001/synthetic_ack_loss/G1/1.0": {
       "allowed_write_set": [
@@ -46854,7 +47259,10 @@
         "transition_receipt",
         "audit",
         "decision_projection",
-        "notification_outbox"
+        "notification_outbox",
+        "run_counter",
+        "provider_attempt",
+        "fallback_handoff"
       ],
       "coverage_ref": "FALLBACK--USAGE_LIMIT--coding",
       "expected_atomic_companion_transitions": [],
@@ -46913,7 +47321,10 @@
         "transition_receipt",
         "audit",
         "decision_projection",
-        "notification_outbox"
+        "notification_outbox",
+        "run_counter",
+        "provider_attempt",
+        "fallback_handoff"
       ],
       "coverage_ref": "FALLBACK--USAGE_LIMIT--fixing",
       "expected_atomic_companion_transitions": [],
@@ -46972,7 +47383,10 @@
         "transition_receipt",
         "audit",
         "decision_projection",
-        "notification_outbox"
+        "notification_outbox",
+        "run_counter",
+        "provider_attempt",
+        "fallback_handoff"
       ],
       "coverage_ref": "FALLBACK--USAGE_LIMIT--planning",
       "expected_atomic_companion_transitions": [],
@@ -47031,7 +47445,10 @@
         "transition_receipt",
         "audit",
         "decision_projection",
-        "notification_outbox"
+        "notification_outbox",
+        "run_counter",
+        "provider_attempt",
+        "fallback_handoff"
       ],
       "coverage_ref": "FALLBACK--USAGE_LIMIT--reviewing",
       "expected_atomic_companion_transitions": [],
@@ -68133,5 +68550,5 @@
     }
   },
   "schema_version": "dal.test-oracle-catalog/1.0",
-  "transition_registry_sha256": "6956057a545bffa5d9333bceeb6992c33fd38842f84001fbd812162f50a20027"
+  "transition_registry_sha256": "c9ddb46cde67a9cdbc04294ee2e7b1299dea9b00384779471d4b62d2044ec0a8"
 }

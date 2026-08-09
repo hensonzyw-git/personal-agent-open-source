@@ -1,5 +1,5 @@
 {
-  "registry_sha256": "6956057a545bffa5d9333bceeb6992c33fd38842f84001fbd812162f50a20027",
+  "registry_sha256": "c9ddb46cde67a9cdbc04294ee2e7b1299dea9b00384779471d4b62d2044ec0a8",
   "schema_version": "dal.transition-spec-registry/1.0",
   "specs": [
     {
@@ -4073,7 +4073,10 @@
         "transition_receipt",
         "audit",
         "decision_projection",
-        "notification_outbox"
+        "notification_outbox",
+        "run_counter",
+        "provider_attempt",
+        "fallback_handoff"
       ],
       "command_parameters": {
         "effect_outcome": null,
@@ -4129,7 +4132,10 @@
         "transition_receipt",
         "audit",
         "decision_projection",
-        "notification_outbox"
+        "notification_outbox",
+        "run_counter",
+        "provider_attempt",
+        "fallback_handoff"
       ],
       "command_parameters": {
         "effect_outcome": null,
@@ -4185,7 +4191,10 @@
         "transition_receipt",
         "audit",
         "decision_projection",
-        "notification_outbox"
+        "notification_outbox",
+        "run_counter",
+        "provider_attempt",
+        "fallback_handoff"
       ],
       "command_parameters": {
         "effect_outcome": null,
@@ -4241,7 +4250,10 @@
         "transition_receipt",
         "audit",
         "decision_projection",
-        "notification_outbox"
+        "notification_outbox",
+        "run_counter",
+        "provider_attempt",
+        "fallback_handoff"
       ],
       "command_parameters": {
         "effect_outcome": null,
