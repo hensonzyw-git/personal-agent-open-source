@@ -1,0 +1,270 @@
+{
+  "$id": "dal.eval-run-manifest/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "case_ids_and_order": {
+      "items": {
+        "pattern": "^DAL-EVAL-[0-9]{3}$",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "case_inputs": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "base_commit_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "base_tree_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "case_id": {
+            "pattern": "^DAL-EVAL-[0-9]{3}$",
+            "type": "string"
+          },
+          "output_schema_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "prompt_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "task_brief_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "tool_policy_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "trusted_test_bundle_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "case_id",
+          "base_commit_sha",
+          "base_tree_sha256",
+          "trusted_test_bundle_sha256",
+          "task_brief_sha256",
+          "prompt_sha256",
+          "output_schema_sha256",
+          "tool_policy_sha256"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "limits": {
+      "additionalProperties": false,
+      "properties": {
+        "max_changed_files": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_fix_review_cycles": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_patch_bytes": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_provider_attempts_per_run": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_subscription_runs_per_day": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_turns_per_run": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_usd_per_day": {
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_usd_per_run": {
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_wall_seconds_per_run": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "max_turns_per_run",
+        "max_wall_seconds_per_run",
+        "max_provider_attempts_per_run",
+        "max_fix_review_cycles",
+        "max_usd_per_run",
+        "max_usd_per_day",
+        "max_subscription_runs_per_day",
+        "max_patch_bytes",
+        "max_changed_files"
+      ],
+      "type": "object"
+    },
+    "manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "repeat_n": {
+      "const": 3
+    },
+    "route": {
+      "additionalProperties": false,
+      "properties": {
+        "binary_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "classifier_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "config_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harness_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "harness_version": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "model_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "provider_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider_id",
+        "model_id",
+        "harness_id",
+        "harness_version",
+        "binary_sha256",
+        "config_sha256",
+        "classifier_sha256"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "dal.eval-run-manifest/1.0"
+    },
+    "seed": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "series_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "series_status": {
+      "enum": [
+        "not_ready",
+        "ready",
+        "running",
+        "closed"
+      ]
+    },
+    "stop_rule_ids": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema_version",
+    "series_id",
+    "series_status",
+    "case_ids_and_order",
+    "repeat_n",
+    "seed",
+    "case_inputs",
+    "route",
+    "limits",
+    "stop_rule_ids",
+    "created_at",
+    "manifest_sha256"
+  ],
+  "type": "object",
+  "x-canonicalization": {
+    "algorithm": "RFC8785-JCS",
+    "array_order": "preserved",
+    "excluded_hash_fields": [
+      "manifest_sha256"
+    ],
+    "hash": "SHA-256"
+  },
+  "x-cross-field-constraints": [
+    "case_ids_and_order equals case_inputs.case_id in the same order",
+    "P4 case order is DAL-EVAL-001,003,010",
+    "P5 case order is DAL-EVAL-001..012",
+    "all route and case digest placeholders must resolve before series_status=ready"
+  ]
+}
