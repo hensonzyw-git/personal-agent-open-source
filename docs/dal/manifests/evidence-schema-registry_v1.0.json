@@ -1027,6 +1027,10 @@
           "schema_version": {
             "const": "dal.evidence.deployment-receipt/1.0"
           },
+          "semantic_binding_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
           "source_type": {
             "minLength": 1,
             "type": "string"
@@ -1067,6 +1071,7 @@
           "effect_scope_key",
           "remote_idempotency_key",
           "effect_state",
+          "semantic_binding_sha256",
           "external_effect_id",
           "external_effect_version",
           "effect_attempt",
@@ -2130,6 +2135,10 @@
           "schema_version": {
             "const": "dal.evidence.github-receipt/1.0"
           },
+          "semantic_binding_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
           "source_type": {
             "minLength": 1,
             "type": "string"
@@ -2166,6 +2175,7 @@
           "effect_scope_key",
           "remote_idempotency_key",
           "effect_state",
+          "semantic_binding_sha256",
           "external_effect_id",
           "external_effect_version",
           "effect_attempt",
@@ -3921,6 +3931,10 @@
           "schema_version": {
             "const": "dal.evidence.reconciliation/1.0"
           },
+          "semantic_binding_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
           "source_type": {
             "minLength": 1,
             "type": "string"
@@ -3957,6 +3971,7 @@
           "effect_scope_key",
           "remote_idempotency_key",
           "effect_state",
+          "semantic_binding_sha256",
           "external_effect_id",
           "external_effect_version",
           "effect_attempt",
@@ -5660,6 +5675,6 @@
       ]
     }
   ],
-  "registry_sha256": "7ea4ace3cd1090f4e0e2f79b8cd26dd170dfae8eaf4ceab942b817db06aee0b7",
+  "registry_sha256": "bf2da6dbbff9ae1892488b358b2cfefd1bab203ff37366e930c7a1ff2226861f",
   "schema_version": "dal.evidence-schema-registry/1.0"
 }

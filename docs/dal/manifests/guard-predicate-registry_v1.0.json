@@ -928,6 +928,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -936,6 +966,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -1031,6 +1086,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -1039,6 +1124,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -1134,6 +1244,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -1142,6 +1282,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -1237,6 +1402,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -1245,6 +1440,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -1340,6 +1560,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -1348,6 +1598,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -1443,6 +1718,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -1451,6 +1756,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -1546,6 +1876,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -1554,6 +1914,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -1649,6 +2034,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -1657,6 +2072,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -1752,6 +2192,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -1760,6 +2230,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -1855,6 +2350,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -1863,6 +2388,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -1958,6 +2508,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -1966,6 +2546,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -2061,6 +2666,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -2069,6 +2704,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -2159,6 +2819,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -2167,6 +2857,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -2257,6 +2972,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -2265,6 +3010,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -2355,6 +3125,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -2363,6 +3163,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -2453,6 +3278,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -2461,6 +3316,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -2551,6 +3431,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -2559,6 +3469,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -2649,6 +3584,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -2657,6 +3622,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -2747,6 +3737,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -2755,6 +3775,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -2845,6 +3890,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -2853,6 +3928,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -2943,6 +4043,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -2951,6 +4081,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -3041,6 +4196,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -3049,6 +4234,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -3139,6 +4349,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -3147,6 +4387,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -3237,6 +4502,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.decision_action",
           "operator": "equals_field",
           "value": "command.decision_action"
@@ -3245,6 +4540,31 @@
           "field": "evidence.effect_result",
           "operator": "equals_field",
           "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.authoritative_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_receipt_id"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_registered_device_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.external_effect_controller.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_external_effect_controller_semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "evidence_set.external_effect_controller.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence_set.registered_device.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
         }
       ],
       "evaluation_error_result": false,
@@ -3486,6 +4806,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.repository_id",
           "operator": "equals_field",
           "value": "external_effect.repository_id"
@@ -3499,6 +4849,16 @@
           "field": "evidence.head_sha",
           "operator": "equals_field",
           "value": "external_effect.head_sha"
+        },
+        {
+          "field": "evidence.merge_sha",
+          "operator": "equals_field",
+          "value": "protected_evidence.merge_sha"
+        },
+        {
+          "field": "evidence.remote_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.remote_receipt_id"
         }
       ],
       "evaluation_error_result": false,
@@ -3635,6 +4995,36 @@
           "value": "external_effect.target_fingerprint"
         },
         {
+          "field": "evidence.payload_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.payload_sha256"
+        },
+        {
+          "field": "evidence.protected_ref",
+          "operator": "equals_field",
+          "value": "protected_evidence.ref"
+        },
+        {
+          "field": "evidence.authoritative_readback_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.authoritative_readback_sha256"
+        },
+        {
+          "field": "evidence.impact_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.impact_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "protected_evidence.semantic_binding_sha256"
+        },
+        {
+          "field": "evidence.semantic_binding_sha256",
+          "operator": "equals_field",
+          "value": "runtime.recomputed_evidence_semantic_binding_sha256"
+        },
+        {
           "field": "evidence.environment_id",
           "operator": "equals_field",
           "value": "external_effect.environment_id"
@@ -3648,6 +5038,11 @@
           "field": "evidence.version_digest",
           "operator": "equals_field",
           "value": "external_effect.version_digest"
+        },
+        {
+          "field": "evidence.remote_receipt_id",
+          "operator": "equals_field",
+          "value": "protected_evidence.remote_receipt_id"
         }
       ],
       "evaluation_error_result": false,
@@ -4673,6 +6068,6 @@
       "predicate_schema_version": "dal.guard-predicate/1.0"
     }
   ],
-  "registry_sha256": "4e6f610528797cd5910dc48c31401c8f1c559ab0ab593ca40cc7dcbf8a71514f",
+  "registry_sha256": "f4cecb5f4eb15ab84bc6b29363466227f869b57604e6e5a53cce61ed5fa78a18",
   "schema_version": "dal.guard-predicate-registry/1.0"
 }
