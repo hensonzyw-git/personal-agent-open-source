@@ -871,6 +871,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_completed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -909,6 +974,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_completed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -947,6 +1077,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_completed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -985,6 +1180,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_completed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1023,6 +1283,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_completed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1061,6 +1386,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_completed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1099,6 +1489,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_completed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1137,6 +1592,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_completed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1175,6 +1695,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_completed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1213,6 +1798,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_completed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1251,6 +1901,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_completed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1289,6 +2004,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_completed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1322,6 +2102,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_not_executed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1355,6 +2200,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_not_executed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1388,6 +2298,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_not_executed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1421,6 +2396,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_not_executed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1454,6 +2494,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_not_executed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1487,6 +2592,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_not_executed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1520,6 +2690,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_not_executed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1553,6 +2788,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_not_executed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1586,6 +2886,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_not_executed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1619,6 +2984,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_not_executed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1652,6 +3082,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_not_executed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1685,6 +3180,71 @@
           "field": "evidence.effect_state",
           "operator": "equals",
           "value": "confirmed_not_executed"
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.decision_action",
+          "operator": "equals_field",
+          "value": "command.decision_action"
+        },
+        {
+          "field": "evidence.effect_result",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
         }
       ],
       "evaluation_error_result": false,
@@ -1869,6 +3429,76 @@
           "field": "external_effect.owner_aggregate_id_matches_root",
           "operator": "equals",
           "value": true
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.repository_id",
+          "operator": "equals_field",
+          "value": "external_effect.repository_id"
+        },
+        {
+          "field": "evidence.pull_request_id",
+          "operator": "equals_field",
+          "value": "external_effect.pull_request_id"
+        },
+        {
+          "field": "evidence.head_sha",
+          "operator": "equals_field",
+          "value": "external_effect.head_sha"
         }
       ],
       "evaluation_error_result": false,
@@ -1948,6 +3578,76 @@
           "field": "external_effect.owner_aggregate_id_matches_root",
           "operator": "equals",
           "value": true
+        },
+        {
+          "field": "evidence.subject_aggregate_type",
+          "operator": "equals_field",
+          "value": "root.aggregate_type"
+        },
+        {
+          "field": "evidence.subject_aggregate_id",
+          "operator": "equals_field",
+          "value": "root.aggregate_id"
+        },
+        {
+          "field": "evidence.subject_aggregate_version",
+          "operator": "equals_field",
+          "value": "root.version"
+        },
+        {
+          "field": "evidence.external_effect_id",
+          "operator": "equals_field",
+          "value": "external_effect.effect_id"
+        },
+        {
+          "field": "evidence.external_effect_version",
+          "operator": "equals_field",
+          "value": "external_effect.version"
+        },
+        {
+          "field": "evidence.effect_attempt",
+          "operator": "equals_field",
+          "value": "external_effect.attempt"
+        },
+        {
+          "field": "evidence.effect_action",
+          "operator": "equals_field",
+          "value": "external_effect.action"
+        },
+        {
+          "field": "evidence.effect_scope_key",
+          "operator": "equals_field",
+          "value": "external_effect.effect_scope_key"
+        },
+        {
+          "field": "evidence.remote_idempotency_key",
+          "operator": "equals_field",
+          "value": "external_effect.remote_idempotency_key"
+        },
+        {
+          "field": "evidence.effect_state",
+          "operator": "equals_field",
+          "value": "command.effect_outcome"
+        },
+        {
+          "field": "evidence.target_fingerprint",
+          "operator": "equals_field",
+          "value": "external_effect.target_fingerprint"
+        },
+        {
+          "field": "evidence.environment_id",
+          "operator": "equals_field",
+          "value": "external_effect.environment_id"
+        },
+        {
+          "field": "evidence.deployment_target_id",
+          "operator": "equals_field",
+          "value": "external_effect.deployment_target_id"
+        },
+        {
+          "field": "evidence.version_digest",
+          "operator": "equals_field",
+          "value": "external_effect.version_digest"
         }
       ],
       "evaluation_error_result": false,
@@ -2973,6 +4673,6 @@
       "predicate_schema_version": "dal.guard-predicate/1.0"
     }
   ],
-  "registry_sha256": "091396081be0b2a55b584d446d5ea67ecf2fe4ea75991acbf709eabff1b50bbf",
+  "registry_sha256": "4e6f610528797cd5910dc48c31401c8f1c559ab0ab593ca40cc7dcbf8a71514f",
   "schema_version": "dal.guard-predicate-registry/1.0"
 }

@@ -1,7 +1,7 @@
 {
-  "catalog_sha256": "ca06ce723a0963e7c05a8630edeb9049aa54da749ef889d84af3f67de63385fc",
-  "evidence_registry_sha256": "72e98bbdfaded240249e5c969c6a950ccefe3d878ffc3756e548c5d98b03c041",
-  "guard_registry_sha256": "091396081be0b2a55b584d446d5ea67ecf2fe4ea75991acbf709eabff1b50bbf",
+  "catalog_sha256": "efe388f8cc842ee5db09b827e199c9f6a0b3b17d0692e74f3dd2d1bf26cc582b",
+  "evidence_registry_sha256": "7ea4ace3cd1090f4e0e2f79b8cd26dd170dfae8eaf4ceab942b817db06aee0b7",
+  "guard_registry_sha256": "4e6f610528797cd5910dc48c31401c8f1c559ab0ab593ca40cc7dcbf8a71514f",
   "operation_registry_sha256": "7305b6a5c8ba000852a253d29b09c6371d2701c9660aa5f494be48771d9d2245",
   "oracles": {
     "dal.oracle/DAL-T-APP-001/concurrent_consume/G1/1.0": {
@@ -5060,6 +5060,783 @@
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-EVENT-ORDER-001",
       "variant_id": "out_of_order_event"
+    },
+    "dal.oracle/DAL-T-EVIDENCE-BINDING-001/correct_shape_wrong_effect/G5/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "SM-MERGED-DISPATCHED",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "dispatch_started"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "awaiting_merge"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "awaiting_merge",
+        "awaiting_merge"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EVIDENCE-BINDING-001/correct_shape_wrong_effect/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "correct_shape_wrong_effect",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "awaiting_merge",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "evidence_validation_stage",
+          "operator": "equals",
+          "value": "semantic_guard"
+        },
+        {
+          "field": "evidence_binding_valid",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EVIDENCE-BINDING-001",
+      "variant_id": "correct_shape_wrong_effect"
+    },
+    "dal.oracle/DAL-T-EVIDENCE-BINDING-001/missing_authoritative_readback/G5/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "SM-DEPLOYED",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "dispatch_started"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "merged"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "merged",
+        "merged"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EVIDENCE-BINDING-001/missing_authoritative_readback/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "missing_authoritative_readback",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "merged",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "evidence_validation_stage",
+          "operator": "equals",
+          "value": "schema"
+        },
+        {
+          "field": "evidence_binding_valid",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EVIDENCE-BINDING-001",
+      "variant_id": "missing_authoritative_readback"
+    },
+    "dal.oracle/DAL-T-EVIDENCE-BINDING-001/valid_deployment_outcome/G5/1.0": {
+      "allowed_write_set": [
+        "external_effect_outcome",
+        "authoritative_post_read",
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "external_effect",
+        "external_effect_transition_receipt",
+        "authoritative_receipt"
+      ],
+      "coverage_ref": "SM-DEPLOYED",
+      "expected_atomic_companion_transitions": [
+        {
+          "aggregate_type": "external_effect",
+          "atomic_write_set": [
+            "external_effect",
+            "business_event",
+            "external_effect_transition_receipt",
+            "audit",
+            "authoritative_receipt"
+          ],
+          "companion_id": "EE-CLOSE-MANAGED-DEPLOY",
+          "event_type": "external_effect.outcome_recorded",
+          "from_state": "dispatch_started",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
+          "required_evidence_schema_versions": [
+            "dal.evidence.deployment-receipt/1.0"
+          ],
+          "snapshot_key": "external_effect",
+          "success_receipt_code": "APPLIED",
+          "success_receipt_schema": "dal.external-effect-transition-receipt/1.0",
+          "to_state": "confirmed_completed"
+        }
+      ],
+      "expected_event_trace": [
+        "deployment.completed",
+        "external_effect.outcome_recorded"
+      ],
+      "expected_external_effect_trace": [
+        "confirmed_completed"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "deployed"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        },
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.external-effect-transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [
+        {
+          "entity_type": "external_effect",
+          "snapshot_key": "external_effect",
+          "state": "confirmed_completed"
+        }
+      ],
+      "expected_state_trace": [
+        "merged",
+        "deployed"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EVIDENCE-BINDING-001/valid_deployment_outcome/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "valid_deployment_outcome",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "merged",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "evidence_validation_stage",
+          "operator": "equals",
+          "value": "applied"
+        },
+        {
+          "field": "evidence_binding_valid",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 1
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EVIDENCE-BINDING-001",
+      "variant_id": "valid_deployment_outcome"
+    },
+    "dal.oracle/DAL-T-EVIDENCE-BINDING-001/valid_github_outcome/G5/1.0": {
+      "allowed_write_set": [
+        "external_effect_outcome",
+        "authoritative_post_read",
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "external_effect",
+        "external_effect_transition_receipt",
+        "authoritative_receipt"
+      ],
+      "coverage_ref": "SM-MERGED-DISPATCHED",
+      "expected_atomic_companion_transitions": [
+        {
+          "aggregate_type": "external_effect",
+          "atomic_write_set": [
+            "external_effect",
+            "business_event",
+            "external_effect_transition_receipt",
+            "audit",
+            "authoritative_receipt"
+          ],
+          "companion_id": "EE-CLOSE-MANAGED-MERGE",
+          "event_type": "external_effect.outcome_recorded",
+          "from_state": "dispatch_started",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
+          "required_evidence_schema_versions": [
+            "dal.evidence.github-receipt/1.0"
+          ],
+          "snapshot_key": "external_effect",
+          "success_receipt_code": "APPLIED",
+          "success_receipt_schema": "dal.external-effect-transition-receipt/1.0",
+          "to_state": "confirmed_completed"
+        }
+      ],
+      "expected_event_trace": [
+        "merge.completed",
+        "external_effect.outcome_recorded"
+      ],
+      "expected_external_effect_trace": [
+        "confirmed_completed"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "merged"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        },
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.external-effect-transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [
+        {
+          "entity_type": "external_effect",
+          "snapshot_key": "external_effect",
+          "state": "confirmed_completed"
+        }
+      ],
+      "expected_state_trace": [
+        "awaiting_merge",
+        "merged"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EVIDENCE-BINDING-001/valid_github_outcome/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "valid_github_outcome",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "awaiting_merge",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "evidence_validation_stage",
+          "operator": "equals",
+          "value": "applied"
+        },
+        {
+          "field": "evidence_binding_valid",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 1
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EVIDENCE-BINDING-001",
+      "variant_id": "valid_github_outcome"
+    },
+    "dal.oracle/DAL-T-EVIDENCE-BINDING-001/valid_reconciliation_outcome/G1/1.0": {
+      "allowed_write_set": [
+        "external_effect_outcome",
+        "authoritative_post_read",
+        "decision_resolve",
+        "approval_consume",
+        "approval_action_receipt",
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_projection",
+        "notification_outbox",
+        "external_effect",
+        "external_effect_transition_receipt",
+        "authoritative_receipt"
+      ],
+      "coverage_ref": "RECONCILE-COMPLETED-NONSTATE--coding",
+      "expected_atomic_companion_transitions": [
+        {
+          "aggregate_type": "external_effect",
+          "atomic_write_set": [
+            "external_effect",
+            "business_event",
+            "external_effect_transition_receipt",
+            "audit",
+            "authoritative_receipt"
+          ],
+          "companion_id": "EE-CLOSE-RECONCILE-COMPLETED-NONSTATE--coding",
+          "event_type": "external_effect.reconciled",
+          "from_state": "reconciling",
+          "owner_aggregate_id_source": "root.aggregate_id",
+          "owner_aggregate_type": "feature",
+          "required_evidence_schema_versions": [
+            "dal.evidence.reconciliation/1.0"
+          ],
+          "snapshot_key": "external_effect",
+          "success_receipt_code": "APPLIED",
+          "success_receipt_schema": "dal.external-effect-transition-receipt/1.0",
+          "to_state": "confirmed_completed"
+        }
+      ],
+      "expected_event_trace": [
+        "feature.resumed",
+        "external_effect.reconciled"
+      ],
+      "expected_external_effect_trace": [
+        "confirmed_completed"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        },
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.external-effect-transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [
+        {
+          "entity_type": "external_effect",
+          "snapshot_key": "external_effect",
+          "state": "confirmed_completed"
+        }
+      ],
+      "expected_state_trace": [
+        "reconciliation_required",
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "provider_call",
+        "github_write",
+        "worker_start",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EVIDENCE-BINDING-001/valid_reconciliation_outcome/G1/1.0",
+        "occurrence": 1,
+        "operation_id": "valid_reconciliation_outcome",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reconciliation_required",
+        "version": 7
+      },
+      "run_gate": "G1",
+      "scenario_assertions": [
+        {
+          "field": "evidence_validation_stage",
+          "operator": "equals",
+          "value": "applied"
+        },
+        {
+          "field": "evidence_binding_valid",
+          "operator": "equals",
+          "value": true
+        },
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 1
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 1
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EVIDENCE-BINDING-001",
+      "variant_id": "valid_reconciliation_outcome"
+    },
+    "dal.oracle/DAL-T-EVIDENCE-BINDING-001/wrong_action/G1/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "RECONCILE-COMPLETED-NONSTATE--coding",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "reconciling",
+        "reconciling"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "reconciliation_required"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reconciliation_required",
+        "reconciliation_required"
+      ],
+      "forbidden_side_effects": [
+        "provider_call",
+        "github_write",
+        "worker_start",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EVIDENCE-BINDING-001/wrong_action/G1/1.0",
+        "occurrence": 1,
+        "operation_id": "wrong_action",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reconciliation_required",
+        "version": 7
+      },
+      "run_gate": "G1",
+      "scenario_assertions": [
+        {
+          "field": "evidence_validation_stage",
+          "operator": "equals",
+          "value": "semantic_guard"
+        },
+        {
+          "field": "evidence_binding_valid",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EVIDENCE-BINDING-001",
+      "variant_id": "wrong_action"
+    },
+    "dal.oracle/DAL-T-EVIDENCE-BINDING-001/wrong_attempt/G5/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "SM-MERGED-DISPATCHED",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "dispatch_started"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "awaiting_merge"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "awaiting_merge",
+        "awaiting_merge"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EVIDENCE-BINDING-001/wrong_attempt/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "wrong_attempt",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "awaiting_merge",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "evidence_validation_stage",
+          "operator": "equals",
+          "value": "semantic_guard"
+        },
+        {
+          "field": "evidence_binding_valid",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EVIDENCE-BINDING-001",
+      "variant_id": "wrong_attempt"
+    },
+    "dal.oracle/DAL-T-EVIDENCE-BINDING-001/wrong_env/G5/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "SM-DEPLOYED",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "dispatch_started"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "merged"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "merged",
+        "merged"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EVIDENCE-BINDING-001/wrong_env/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "wrong_env",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "merged",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "evidence_validation_stage",
+          "operator": "equals",
+          "value": "semantic_guard"
+        },
+        {
+          "field": "evidence_binding_valid",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EVIDENCE-BINDING-001",
+      "variant_id": "wrong_env"
+    },
+    "dal.oracle/DAL-T-EVIDENCE-BINDING-001/wrong_repo/G5/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "SM-MERGED-DISPATCHED",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [
+        "dispatch_started",
+        "dispatch_started"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "awaiting_merge"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "awaiting_merge",
+        "awaiting_merge"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-EVIDENCE-BINDING-001/wrong_repo/G5/1.0",
+        "occurrence": 1,
+        "operation_id": "wrong_repo",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "awaiting_merge",
+        "version": 7
+      },
+      "run_gate": "G5",
+      "scenario_assertions": [
+        {
+          "field": "evidence_validation_stage",
+          "operator": "equals",
+          "value": "semantic_guard"
+        },
+        {
+          "field": "evidence_binding_valid",
+          "operator": "equals",
+          "value": false
+        },
+        {
+          "field": "root_version_increment",
+          "operator": "equals",
+          "value": 0
+        },
+        {
+          "field": "effect_version_increment",
+          "operator": "equals",
+          "value": 0
+        }
+      ],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-EVIDENCE-BINDING-001",
+      "variant_id": "wrong_repo"
     },
     "dal.oracle/DAL-T-EXTERNAL-EFFECT-001/actor_deny--ee-claim-release/G1/1.0": {
       "allowed_write_set": [],

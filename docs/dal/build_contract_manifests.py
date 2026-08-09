@@ -141,6 +141,34 @@ def evidence_claim_fields(schema_version: str) -> dict[str, str]:
     """Return the closed, semantic claim vocabulary for one evidence version."""
     name = schema_version.removeprefix("dal.evidence.").removesuffix("/1.0")
     exact = {
+        "github-receipt": {
+            "artifact_sha256": "sha256", "fact_version": "integer",
+            "effect_scope_key": "string", "remote_idempotency_key": "string", "effect_state": "effect-state",
+            "external_effect_id": "string", "external_effect_version": "integer",
+            "effect_attempt": "integer", "effect_action": "string", "target_fingerprint": "string",
+            "repository_id": "string", "base_sha": "sha1", "artifact_digest": "sha256",
+            "pull_request_id": "string", "head_sha": "sha1",
+            "merge_sha": "sha1", "remote_receipt_id": "string",
+            "authoritative_readback_sha256": "sha256", "impact_sha256": "sha256",
+        },
+        "deployment-receipt": {
+            "artifact_sha256": "sha256", "fact_version": "integer",
+            "effect_scope_key": "string", "remote_idempotency_key": "string", "effect_state": "effect-state",
+            "external_effect_id": "string", "external_effect_version": "integer",
+            "effect_attempt": "integer", "effect_action": "string", "target_fingerprint": "string",
+            "environment_id": "string", "deployment_target_id": "string", "version_digest": "sha256",
+            "remote_receipt_id": "string", "authoritative_readback_sha256": "sha256",
+            "impact_sha256": "sha256",
+        },
+        "reconciliation": {
+            "artifact_sha256": "sha256", "fact_version": "integer",
+            "effect_scope_key": "string", "remote_idempotency_key": "string", "effect_state": "effect-state",
+            "external_effect_id": "string", "external_effect_version": "integer",
+            "effect_attempt": "integer", "effect_action": "string", "target_fingerprint": "string",
+            "decision_action": "string", "effect_result": "effect-readback-result",
+            "authoritative_receipt_id": "nullable-string",
+            "authoritative_readback_sha256": "sha256", "impact_sha256": "sha256",
+        },
         "github-observed-merge": {
             "repository_id": "string", "pull_request_id": "string", "head_sha": "sha1",
             "merge_sha": "sha1", "actor_id": "string", "merged_at": "date-time",
@@ -298,6 +326,62 @@ def guard_clauses(guard_id: str, to_state: str) -> list[dict]:
     return clauses
 
 
+def outcome_evidence_binding_clauses(schema_versions: list[str]) -> list[dict]:
+    """Bind external-outcome evidence to the exact root, effect, action and target."""
+    relevant = set(schema_versions) & {
+        "dal.evidence.github-receipt/1.0",
+        "dal.evidence.deployment-receipt/1.0",
+        "dal.evidence.reconciliation/1.0",
+    }
+    if not relevant:
+        return []
+    if len(relevant) != 1:
+        raise ValueError(f"ambiguous external-outcome evidence set: {sorted(relevant)}")
+    clauses = [
+        {"field": "evidence.subject_aggregate_type", "operator": "equals_field", "value": "root.aggregate_type"},
+        {"field": "evidence.subject_aggregate_id", "operator": "equals_field", "value": "root.aggregate_id"},
+        {"field": "evidence.subject_aggregate_version", "operator": "equals_field", "value": "root.version"},
+        {"field": "evidence.external_effect_id", "operator": "equals_field", "value": "external_effect.effect_id"},
+        {"field": "evidence.external_effect_version", "operator": "equals_field", "value": "external_effect.version"},
+        {"field": "evidence.effect_attempt", "operator": "equals_field", "value": "external_effect.attempt"},
+        {"field": "evidence.effect_action", "operator": "equals_field", "value": "external_effect.action"},
+        {"field": "evidence.effect_scope_key", "operator": "equals_field", "value": "external_effect.effect_scope_key"},
+        {"field": "evidence.remote_idempotency_key", "operator": "equals_field", "value": "external_effect.remote_idempotency_key"},
+        {"field": "evidence.effect_state", "operator": "equals_field", "value": "command.effect_outcome"},
+        {"field": "evidence.target_fingerprint", "operator": "equals_field", "value": "external_effect.target_fingerprint"},
+    ]
+    schema_version = next(iter(relevant))
+    if schema_version == "dal.evidence.github-receipt/1.0":
+        clauses.extend([
+            {"field": "evidence.repository_id", "operator": "equals_field", "value": "external_effect.repository_id"},
+            {"field": "evidence.pull_request_id", "operator": "equals_field", "value": "external_effect.pull_request_id"},
+            {"field": "evidence.head_sha", "operator": "equals_field", "value": "external_effect.head_sha"},
+        ])
+    elif schema_version == "dal.evidence.deployment-receipt/1.0":
+        clauses.extend([
+            {"field": "evidence.environment_id", "operator": "equals_field", "value": "external_effect.environment_id"},
+            {"field": "evidence.deployment_target_id", "operator": "equals_field", "value": "external_effect.deployment_target_id"},
+            {"field": "evidence.version_digest", "operator": "equals_field", "value": "external_effect.version_digest"},
+        ])
+    else:
+        clauses.extend([
+            {"field": "evidence.decision_action", "operator": "equals_field", "value": "command.decision_action"},
+            {"field": "evidence.effect_result", "operator": "equals_field", "value": "command.effect_outcome"},
+        ])
+    return clauses
+
+
+def transition_guard_clauses(item: dict) -> list[dict]:
+    if item["guard_id"] is None:
+        if outcome_evidence_binding_clauses(item["required_evidence_schema_versions"]):
+            raise ValueError(f"external-outcome transition lacks semantic guard: {item['spec_id']}")
+        return []
+    return [
+        *guard_clauses(item["guard_id"], item["to_state"]),
+        *outcome_evidence_binding_clauses(item["required_evidence_schema_versions"]),
+    ]
+
+
 def build_machine_registries(specs: list[dict]) -> tuple[str, str]:
     evidence_versions = sorted({version for row in specs for version in row["required_evidence_schema_versions"]} | {version for row in specs for related in row["atomic_companion_transitions"] for version in related["required_evidence_schema_versions"]})
     evidence_rows = []
@@ -317,13 +401,17 @@ def build_machine_registries(specs: list[dict]) -> tuple[str, str]:
     evidence_hash = write_hashed("evidence-schema-registry_v1.0.json", evidence_catalog, "registry_sha256")
 
     guard_rows = []
-    seen: set[str] = set()
+    seen: dict[str, list[dict]] = {}
     for row in specs:
         guard_id = row["guard_id"]
-        if guard_id is None or guard_id in seen:
+        if guard_id is None:
             continue
-        seen.add(guard_id)
-        clauses = guard_clauses(guard_id, row["to_state"])
+        clauses = transition_guard_clauses(row)
+        if guard_id in seen:
+            if seen[guard_id] != clauses:
+                raise ValueError(f"guard id has divergent predicates: {guard_id}")
+            continue
+        seen[guard_id] = clauses
         guard_rows.append({
             "guard_id": guard_id,
             "predicate_schema_version": "dal.guard-predicate/1.0",
@@ -833,6 +921,63 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
             return clause["value"] + 1
         return clause["value"]
 
+    def outcome_fixture_values(item: dict) -> dict[str, object]:
+        values: dict[str, object] = {
+            "evidence.subject_aggregate_type": item["aggregate_type"],
+            "root.aggregate_type": item["aggregate_type"],
+            "evidence.subject_aggregate_id": "fixture-entity",
+            "root.aggregate_id": "fixture-entity",
+            "evidence.subject_aggregate_version": 7,
+            "root.version": 7,
+            "evidence.external_effect_id": "fixture-effect",
+            "external_effect.effect_id": "fixture-effect",
+            "evidence.external_effect_version": 11,
+            "external_effect.version": 11,
+            "evidence.effect_attempt": 2,
+            "external_effect.attempt": 2,
+            "evidence.effect_scope_key": "fixture-effect-scope",
+            "external_effect.effect_scope_key": "fixture-effect-scope",
+            "evidence.remote_idempotency_key": "fixture-remote-idempotency",
+            "external_effect.remote_idempotency_key": "fixture-remote-idempotency",
+            "evidence.effect_state": item["command_parameters"]["effect_outcome"],
+            "command.effect_outcome": item["command_parameters"]["effect_outcome"],
+            "evidence.target_fingerprint": "fixture-target",
+            "external_effect.target_fingerprint": "fixture-target",
+        }
+        versions = set(item["required_evidence_schema_versions"])
+        if "dal.evidence.github-receipt/1.0" in versions:
+            values.update({
+                "evidence.effect_action": "merge_pull_request",
+                "external_effect.action": "merge_pull_request",
+                "evidence.repository_id": "fixture-repository",
+                "external_effect.repository_id": "fixture-repository",
+                "evidence.pull_request_id": "fixture-pr-42",
+                "external_effect.pull_request_id": "fixture-pr-42",
+                "evidence.head_sha": "a" * 40,
+                "external_effect.head_sha": "a" * 40,
+            })
+        elif "dal.evidence.deployment-receipt/1.0" in versions:
+            values.update({
+                "evidence.effect_action": "deploy_release",
+                "external_effect.action": "deploy_release",
+                "evidence.environment_id": "fixture-production",
+                "external_effect.environment_id": "fixture-production",
+                "evidence.deployment_target_id": "fixture-service",
+                "external_effect.deployment_target_id": "fixture-service",
+                "evidence.version_digest": "b" * 64,
+                "external_effect.version_digest": "b" * 64,
+            })
+        elif "dal.evidence.reconciliation/1.0" in versions:
+            values.update({
+                "evidence.effect_action": "reconcile_external_effect",
+                "external_effect.action": "reconcile_external_effect",
+                "evidence.decision_action": item["command_type"],
+                "command.decision_action": item["command_type"],
+                "evidence.effect_result": item["command_parameters"]["effect_outcome"],
+                "command.effect_outcome": item["command_parameters"]["effect_outcome"],
+            })
+        return values
+
     def guard_fixture(item: dict, satisfied: bool) -> dict:
         guard_id = item["guard_id"]
         material: dict = {
@@ -843,11 +988,25 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
         }
         if guard_id is None:
             return material
-        clauses = guard_clauses(guard_id, item["to_state"])
-        material["facts"] = [
-            {"field": clause["field"], "value": satisfied_clause_value(clause) if satisfied or index > 0 else denied_clause_value(clause)}
-            for index, clause in enumerate(clauses)
-        ]
+        clauses = transition_guard_clauses(item)
+        binding_values = outcome_fixture_values(item)
+        facts: list[dict] = []
+        for index, clause in enumerate(clauses):
+            if clause["operator"] == "equals_field":
+                if clause["field"] not in binding_values or clause["value"] not in binding_values:
+                    raise ValueError(f"missing fixture binding value: {item['spec_id']}/{clause}")
+                expected = binding_values[clause["value"]]
+                actual = expected if satisfied or index > 0 else denied_value(expected)
+                facts.extend([
+                    {"field": clause["field"], "value": actual},
+                    {"field": clause["value"], "value": expected},
+                ])
+            else:
+                facts.append({
+                    "field": clause["field"],
+                    "value": satisfied_clause_value(clause) if satisfied or index > 0 else denied_clause_value(clause),
+                })
+        material["facts"] = facts
         return material
 
     def add(
@@ -875,6 +1034,9 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
         expected_receipts_override: list[dict] | None = None,
         expected_state_trace_override: list[str | None] | None = None,
         scenario_assertions: list[dict] | None = None,
+        evidence_documents: list[dict] | None = None,
+        evidence_validation_expected: str | None = None,
+        guard_fact_overrides: dict[str, object] | None = None,
     ) -> None:
         key = f"{test_id}/{variant}/{gate}"
         injection = f"dal.inject/{key}/1.0"
@@ -899,6 +1061,11 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
         }
         if transition_spec is not None:
             binding = transition_spec["actor_evidence_bindings"][transition_binding_index]
+            guard_preconditions = guard_fixture(transition_spec, transition_case != "guard_deny")
+            if guard_fact_overrides:
+                for fact in guard_preconditions["facts"]:
+                    if fact["field"] in guard_fact_overrides:
+                        fact["value"] = guard_fact_overrides[fact["field"]]
             fixture["transition_command"] = {
                 "schema_version": "dal.test-transition-command/1.0",
                 "aggregate_type": transition_spec["aggregate_type"],
@@ -911,8 +1078,11 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
                 "decision_action": transition_spec["requires_decision_action"],
                 "evidence_source_types": ["unauthorized-source"] if transition_case == "evidence_source_deny" else binding["required_evidence_source_types"],
                 "evidence_schema_versions": transition_spec["required_evidence_schema_versions"],
-                "guard_preconditions": guard_fixture(transition_spec, transition_case != "guard_deny"),
+                "guard_preconditions": guard_preconditions,
             }
+            if evidence_documents is not None:
+                fixture["transition_command"]["evidence_documents"] = evidence_documents
+                fixture["transition_command"]["evidence_validation_expected"] = evidence_validation_expected or "valid"
         else:
             operation_spec_id = f"OP-{test_id.removeprefix('DAL-T-')}"
             operation_actor, operation_source = OPERATION_BINDINGS.get(test_id, ("service", "immutable-fixture-catalog"))
@@ -1042,6 +1212,145 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
         add(test_id, f"actor_deny--{suffix}", gate, owners, item["from_state"], item["from_state"], None, None, "POLICY_DENIED", None, [], entity_type=item["aggregate_type"], coverage_ref=item["spec_id"], transition_spec=item, transition_case="actor_deny")
         if item["guard_id"] is not None:
             add(test_id, f"guard_deny--{suffix}", gate, owners, item["from_state"], item["from_state"], None, None, "POLICY_DENIED", None, [], entity_type=item["aggregate_type"], coverage_ref=item["spec_id"], transition_spec=item, transition_case="guard_deny")
+
+    def external_outcome_evidence(
+        item: dict,
+        schema_version: str,
+        *,
+        source_type: str | None = None,
+        overrides: dict[str, object] | None = None,
+        omit: set[str] | None = None,
+    ) -> dict:
+        values = outcome_fixture_values(item)
+        document: dict[str, object] = {
+            "evidence_id": f"fixture-evidence:{schema_version}:{source_type or item['allowed_evidence_source_types'][0]}",
+            "schema_version": schema_version,
+            "source_type": source_type or item["allowed_evidence_source_types"][0],
+            "subject_aggregate_type": values["evidence.subject_aggregate_type"],
+            "subject_aggregate_id": values["evidence.subject_aggregate_id"],
+            "subject_aggregate_version": values["evidence.subject_aggregate_version"],
+            "observed_at": "2026-08-09T12:00:00Z",
+            "payload_sha256": "1" * 64,
+            "protected_ref": "fixture-protected-ref",
+            "artifact_sha256": "4" * 64,
+            "fact_version": 1,
+            "effect_scope_key": "fixture-effect-scope",
+            "remote_idempotency_key": "fixture-remote-idempotency",
+            "effect_state": item["command_parameters"]["effect_outcome"],
+            "external_effect_id": values["evidence.external_effect_id"],
+            "external_effect_version": values["evidence.external_effect_version"],
+            "effect_attempt": values["evidence.effect_attempt"],
+            "effect_action": values["evidence.effect_action"],
+            "target_fingerprint": values["evidence.target_fingerprint"],
+            "authoritative_readback_sha256": "2" * 64,
+            "impact_sha256": "3" * 64,
+        }
+        if schema_version == "dal.evidence.github-receipt/1.0":
+            document.update({
+                "repository_id": values["evidence.repository_id"],
+                "base_sha": "d" * 40,
+                "artifact_digest": "5" * 64,
+                "pull_request_id": values["evidence.pull_request_id"],
+                "head_sha": values["evidence.head_sha"],
+                "merge_sha": "c" * 40,
+                "remote_receipt_id": "fixture-github-receipt",
+            })
+        elif schema_version == "dal.evidence.deployment-receipt/1.0":
+            document.update({
+                "environment_id": values["evidence.environment_id"],
+                "deployment_target_id": values["evidence.deployment_target_id"],
+                "version_digest": values["evidence.version_digest"],
+                "remote_receipt_id": "fixture-deployment-receipt",
+            })
+        elif schema_version == "dal.evidence.reconciliation/1.0":
+            document.update({
+                "decision_action": values["evidence.decision_action"],
+                "effect_result": values["evidence.effect_result"],
+                "authoritative_receipt_id": "fixture-reconciliation-receipt",
+            })
+        else:
+            raise ValueError(f"unsupported external outcome evidence fixture: {schema_version}")
+        document.update(overrides or {})
+        for field in omit or set():
+            document.pop(field, None)
+        expected_fields = set(COMMON_EVIDENCE_FIELDS) | set(evidence_claim_fields(schema_version))
+        if not omit and set(document) != expected_fields:
+            raise ValueError(f"external outcome fixture field drift: {schema_version}")
+        return document
+
+    def add_evidence_binding_case(
+        variant: str,
+        item: dict,
+        evidence_documents: list[dict],
+        *,
+        allowed: bool,
+        failed_field: str | None = None,
+        failed_value: object | None = None,
+        validation_stage: str = "semantic_guard",
+    ) -> None:
+        pre_effect = "dispatch_started" if item["spec_id"] in {"SM-MERGED-DISPATCHED", "SM-DEPLOYED"} else "reconciling"
+        post_effect = item["command_parameters"]["effect_outcome"] if allowed else pre_effect
+        add(
+            "DAL-T-EVIDENCE-BINDING-001", variant, item["minimum_run_gate"],
+            ["DAL-009", "DAL-010", "DAL-011"], item["from_state"], item["to_state"] if allowed else item["from_state"],
+            item["result_reason_owner"] if allowed else None, item["result_reason_code"] if allowed else None,
+            "APPLIED" if allowed else "POLICY_DENIED", post_effect,
+            [item["event_type"]] if allowed else [], coverage_ref=item["spec_id"],
+            allowed_writes=item["atomic_write_set"] if allowed else [], transition_spec=item,
+            transition_case="allow" if allowed else "evidence_semantic_deny",
+            external_effect_trace=[pre_effect, post_effect], evidence_documents=evidence_documents,
+            evidence_validation_expected="valid" if validation_stage != "schema" else "invalid",
+            guard_fact_overrides={} if failed_field is None else {failed_field: failed_value},
+            scenario_assertions=[
+                {"field": "evidence_validation_stage", "operator": "equals", "value": validation_stage},
+                {"field": "evidence_binding_valid", "operator": "equals", "value": allowed},
+                {"field": "root_version_increment", "operator": "equals", "value": 1 if allowed else 0},
+                {"field": "effect_version_increment", "operator": "equals", "value": 1 if allowed else 0},
+            ],
+        )
+
+    merge_evidence_spec = spec_by_id["SM-MERGED-DISPATCHED"]
+    merge_schema = "dal.evidence.github-receipt/1.0"
+    merge_evidence = external_outcome_evidence(merge_evidence_spec, merge_schema)
+    add_evidence_binding_case("valid_github_outcome", merge_evidence_spec, [merge_evidence], allowed=True, validation_stage="applied")
+    for variant, evidence_field, wrong_value in (
+        ("correct_shape_wrong_effect", "external_effect_id", "other-effect"),
+        ("wrong_attempt", "effect_attempt", 3),
+        ("wrong_repo", "repository_id", "other-repository"),
+    ):
+        document = external_outcome_evidence(merge_evidence_spec, merge_schema, overrides={evidence_field: wrong_value})
+        add_evidence_binding_case(
+            variant, merge_evidence_spec, [document], allowed=False,
+            failed_field=f"evidence.{evidence_field}", failed_value=wrong_value,
+        )
+
+    deploy_evidence_spec = spec_by_id["SM-DEPLOYED"]
+    deploy_schema = "dal.evidence.deployment-receipt/1.0"
+    deploy_evidence = external_outcome_evidence(deploy_evidence_spec, deploy_schema)
+    add_evidence_binding_case("valid_deployment_outcome", deploy_evidence_spec, [deploy_evidence], allowed=True, validation_stage="applied")
+    wrong_env = external_outcome_evidence(deploy_evidence_spec, deploy_schema, overrides={"environment_id": "fixture-staging"})
+    add_evidence_binding_case(
+        "wrong_env", deploy_evidence_spec, [wrong_env], allowed=False,
+        failed_field="evidence.environment_id", failed_value="fixture-staging",
+    )
+    missing_readback = external_outcome_evidence(deploy_evidence_spec, deploy_schema, omit={"authoritative_readback_sha256"})
+    add_evidence_binding_case(
+        "missing_authoritative_readback", deploy_evidence_spec, [missing_readback], allowed=False,
+        validation_stage="schema",
+    )
+
+    reconciliation_spec = spec_by_id["RECONCILE-COMPLETED-NONSTATE--coding"]
+    reconciliation_schema = "dal.evidence.reconciliation/1.0"
+    reconciliation_evidence = [
+        external_outcome_evidence(reconciliation_spec, reconciliation_schema, source_type=source)
+        for source in reconciliation_spec["actor_evidence_bindings"][0]["required_evidence_source_types"]
+    ]
+    add_evidence_binding_case("valid_reconciliation_outcome", reconciliation_spec, reconciliation_evidence, allowed=True, validation_stage="applied")
+    wrong_action_documents = [dict(document, decision_action="accept_deploy_result") for document in reconciliation_evidence]
+    add_evidence_binding_case(
+        "wrong_action", reconciliation_spec, wrong_action_documents, allowed=False,
+        failed_field="evidence.decision_action", failed_value="accept_deploy_result",
+    )
 
     def outcome_call(
         aggregate_type: str,
