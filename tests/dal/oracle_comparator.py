@@ -62,10 +62,16 @@ def compare(trace: ExecutionTrace, oracle_body: dict[str, Any]) -> ComparisonRes
     if actual_receipts != normalised_expected:
         result.add("receipts", normalised_expected, actual_receipts)
 
-    # Write set: an empty allowed_write_set means the operation wrote nothing.
+    # Write set. An empty allowed_write_set means the operation wrote nothing.
+    # A non-empty one is asserted as *set equality*, not as a subset: the
+    # oracle names the write classes the operation must perform, so both an
+    # extra write and a missing one are failures. Checking only emptiness
+    # would let every non-empty oracle pass while writing nothing at all.
     allowed_write_set = oracle_body.get("allowed_write_set", [])
-    if not allowed_write_set and trace.write_set:
-        result.add("write_set (must be empty)", [], trace.write_set)
+    if set(trace.write_set) != set(allowed_write_set):
+        result.add(
+            "write_set", sorted(set(allowed_write_set)), sorted(set(trace.write_set))
+        )
 
     # Event and external-effect traces.
     expected_events = oracle_body.get("expected_event_trace", [])

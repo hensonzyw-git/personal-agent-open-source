@@ -29,11 +29,25 @@ class ReceiptCode(StrEnum):
     `APPLIED` is the only success. `POLICY_DENIED` is a clean refusal with no
     side effect. `UNKNOWN` marks an outcome the service cannot prove either
     way; it is never a silent success.
+
+    `VERSION_CONFLICT` and `IDEMPOTENCY_CONFLICT` are DAL-008's two refusals.
+    They are separate codes because they answer different questions: the first
+    says another writer moved the aggregate first, so the caller must re-read
+    and retry; the second says this exact idempotency key was already used for
+    *different* content, which retrying can never fix. Collapsing them into one
+    code would make a retry loop chase a conflict that will never clear.
+
+    Both are returned to the caller and **not persisted**: the frozen oracles
+    for `cas_conflict` and `idempotency_unique` allow an empty write set, so a
+    refused operation leaves no row behind — not even an audit row. See
+    docs/dal/DAL008_数据库Schema设计草案_v0.1.md §3 and D6.
     """
 
     APPLIED = "APPLIED"
     POLICY_DENIED = "POLICY_DENIED"
     UNKNOWN = "UNKNOWN"
+    VERSION_CONFLICT = "VERSION_CONFLICT"
+    IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
 
 
 @dataclass(frozen=True)
