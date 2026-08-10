@@ -1,5 +1,5 @@
 {
-  "catalog_sha256": "2cabc3159c1ac94ce26ea383a130a4ce35a7aa5b9a96aad2508ba23f5dcccfbf",
+  "catalog_sha256": "bf085431561aa66dacffcd82b591a6baf3231616acbd7e5140bf0dabb085c6f1",
   "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
   "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
   "operation_registry_sha256": "52f97aeca9e5445bbc0e8b60127f04c682c2b2b60e4ad0fc66bcc105321df33d",
@@ -21022,6 +21022,54 @@
       "test_id": "DAL-T-SM-001",
       "variant_id": "actor_deny--blk-drift--fixing"
     },
+    "dal.oracle/DAL-T-SM-001/actor_deny--blk-drift--paused/G1/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "BLK-DRIFT--paused",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "paused"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "paused",
+        "paused"
+      ],
+      "forbidden_side_effects": [
+        "provider_call",
+        "github_write",
+        "worker_start",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-SM-001/actor_deny--blk-drift--paused/G1/1.0",
+        "occurrence": 1,
+        "operation_id": "actor_deny--blk-drift--paused",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "paused",
+        "version": 7
+      },
+      "run_gate": "G1",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-SM-001",
+      "variant_id": "actor_deny--blk-drift--paused"
+    },
     "dal.oracle/DAL-T-SM-001/actor_deny--blk-drift--reviewing/G1/1.0": {
       "allowed_write_set": [],
       "coverage_ref": "BLK-DRIFT--reviewing",
@@ -32713,6 +32761,54 @@
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-SM-001",
       "variant_id": "evidence_source_deny--blk-drift--fixing"
+    },
+    "dal.oracle/DAL-T-SM-001/evidence_source_deny--blk-drift--paused/G1/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "BLK-DRIFT--paused",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "paused"
+      },
+      "expected_receipts": [
+        {
+          "code": "POLICY_DENIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "paused",
+        "paused"
+      ],
+      "forbidden_side_effects": [
+        "provider_call",
+        "github_write",
+        "worker_start",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-SM-001/evidence_source_deny--blk-drift--paused/G1/1.0",
+        "occurrence": 1,
+        "operation_id": "evidence_source_deny--blk-drift--paused",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "paused",
+        "version": 7
+      },
+      "run_gate": "G1",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-SM-001",
+      "variant_id": "evidence_source_deny--blk-drift--paused"
     },
     "dal.oracle/DAL-T-SM-001/evidence_source_deny--blk-drift--reviewing/G1/1.0": {
       "allowed_write_set": [],
@@ -44959,6 +45055,64 @@
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-SM-001",
       "variant_id": "expanded_spec_allow--blk-drift--fixing"
+    },
+    "dal.oracle/DAL-T-SM-001/expanded_spec_allow--blk-drift--paused/G1/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": "BLK-DRIFT--paused",
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "STATE_DRIFT",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "paused",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "provider_call",
+        "github_write",
+        "worker_start",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-SM-001/expanded_spec_allow--blk-drift--paused/G1/1.0",
+        "occurrence": 1,
+        "operation_id": "expanded_spec_allow--blk-drift--paused",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "paused",
+        "version": 7
+      },
+      "run_gate": "G1",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-SM-001",
+      "variant_id": "expanded_spec_allow--blk-drift--paused"
     },
     "dal.oracle/DAL-T-SM-001/expanded_spec_allow--blk-drift--reviewing/G1/1.0": {
       "allowed_write_set": [
@@ -69174,5 +69328,5 @@
     }
   },
   "schema_version": "dal.test-oracle-catalog/1.0",
-  "transition_registry_sha256": "c9ddb46cde67a9cdbc04294ee2e7b1299dea9b00384779471d4b62d2044ec0a8"
+  "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06"
 }
