@@ -34,6 +34,7 @@ from personal_agent.runtime.model_gateway import (
     ProposedFailure,
     ProposedToolCall,
 )
+from personal_agent_core.errors import ModelFailureReason
 
 
 class ModelInterpreter:
@@ -52,7 +53,9 @@ class ModelInterpreter:
         except ModelGatewayError as exc:
             # Translate the gateway's failure into the seam's neutral error, so
             # the orchestrator stays decoupled from any model SDK.
-            raise InterpreterError(str(exc)) from exc
+            raise InterpreterError(
+                str(exc), failure_reason=exc.reason.value
+            ) from exc
         if isinstance(proposal, ProposedToolCall):
             # Passed through unchanged; policy decides whether it may run.
             return ToolCall(tool=proposal.tool, model_args=dict(proposal.arguments))

@@ -32,7 +32,7 @@ from personal_agent.runtime.model_gateway import (
     ProposedFailure,
     ProposedToolCall,
 )
-from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.errors import AppError, ErrorCode, ModelFailureReason
 
 
 _PINNED = "https://open.bigmodel.cn/api/paas/v4/"
@@ -545,6 +545,59 @@ def test_transport_failure_is_a_gateway_error(envelope) -> None:
         _propose(gateway, envelope)
 
 
+class ProviderFailure(RuntimeError):
+    def __init__(self, *, status_code: int, code: str, request_id: str) -> None:
+        super().__init__("provider body that must not enter the diagnostic log")
+        self.status_code = status_code
+        self.code = code
+        self.request_id = request_id
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [
+        (401, ModelFailureReason.PROVIDER_AUTH_FAILED),
+        (408, ModelFailureReason.PROVIDER_TIMEOUT),
+        (429, ModelFailureReason.PROVIDER_RATE_LIMITED),
+        (400, ModelFailureReason.PROVIDER_REJECTED),
+        (503, ModelFailureReason.PROVIDER_UNAVAILABLE),
+    ],
+)
+def test_provider_status_failures_are_classified_and_redacted(
+    envelope, caplog, status_code, expected
+) -> None:
+    gateway, _ = _gateway(
+        raises=ProviderFailure(
+            status_code=status_code,
+            code="provider_code_1",
+            request_id="request-123",
+        )
+    )
+
+    with pytest.raises(ModelGatewayError) as raised:
+        _propose(gateway, envelope)
+
+    assert raised.value.reason == expected
+    assert raised.value.provider_status == status_code
+    assert raised.value.provider_code == "provider_code_1"
+    assert raised.value.provider_request_id == "request-123"
+    assert "phase=provider_call" in caplog.text
+    assert f"reason={expected.value}" in caplog.text
+    assert "provider body" not in caplog.text
+
+
+def test_malformed_model_response_is_separate_from_provider_failures(
+    envelope, caplog
+) -> None:
+    gateway, _ = _gateway(_response(_text("   ")))
+
+    with pytest.raises(ModelGatewayError) as raised:
+        _propose(gateway, envelope)
+
+    assert raised.value.reason == ModelFailureReason.RESPONSE_INVALID
+    assert "phase=response_validation" in caplog.text
+
+
 def test_from_env_requires_a_key_and_rejects_a_credential_exfiltration_host(
     monkeypatch,
 ) -> None:
@@ -570,10 +623,17 @@ def test_model_timeout_cannot_exceed_the_design_budget(envelope) -> None:
 
 
 def test_the_interpreter_translates_a_gateway_error(envelope) -> None:
-    gateway, _ = _gateway(raises=RuntimeError("down"))
+    gateway, _ = _gateway(
+        raises=ProviderFailure(
+            status_code=429,
+            code="provider_code_1",
+            request_id="request-123",
+        )
+    )
     interp = ModelInterpreter(gateway)
-    with pytest.raises(InterpreterError):
+    with pytest.raises(InterpreterError) as raised:
         interp.interpret(envelope=envelope)
+    assert raised.value.failure_reason == ModelFailureReason.PROVIDER_RATE_LIMITED.value
 
 
 def test_production_generator_uses_the_adk_model_contract(monkeypatch) -> None:

@@ -48,7 +48,7 @@ from personal_agent.storage.engine import (
 from envelope_factory import envelope_factory
 from personal_agent.storage.models import Conversation, Device, Operation
 from personal_agent_core.crypto import KeyRing, generate_key
-from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.errors import AppError, ErrorCode, ModelFailureReason
 
 
 NOW = datetime(2026, 7, 24, 7, 0, tzinfo=timezone.utc)
@@ -459,7 +459,10 @@ def test_explicit_retry_binds_the_latest_zero_write_finance_failure(
         def __init__(self):
             self.calls = []
             self.results = [
-                InterpreterError("model down"),
+                InterpreterError(
+                    "provider timed out",
+                    failure_reason=ModelFailureReason.PROVIDER_TIMEOUT.value,
+                ),
                 DirectAnswer("Session 说明"),
                 ToolCall("finance.log_expense", {"name": "午饭"}),
                 DirectAnswer("不能再次重放"),
@@ -489,7 +492,7 @@ def test_explicit_retry_binds_the_latest_zero_write_finance_failure(
         headers=_auth(token_ring, key=REQUEST_ID_1),
     )
     assert failed.json()["state"] == "failed_safe"
-    assert failed.json()["failure_reason"] == "model_unavailable"
+    assert failed.json()["failure_reason"] == ModelFailureReason.PROVIDER_TIMEOUT.value
 
     # Unrelated conversation may intervene; retry resolution is based on the
     # latest eligible operation, not adjacency in the raw transcript.

@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import re
+import time
 from collections.abc import Callable
 from typing import Any, Final
 from urllib.parse import urlsplit
@@ -32,7 +35,7 @@ from personal_agent.runtime.model_gateway import (
     ProposedFailure,
     ProposedToolCall,
 )
-from personal_agent_core.errors import ErrorCode
+from personal_agent_core.errors import ErrorCode, ModelFailureReason
 
 
 ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4/"
@@ -44,6 +47,9 @@ _MODEL_FAILURE_REASONS: Final[tuple[str, ...]] = (
     ErrorCode.TOOL_NOT_ALLOWLISTED.value,
     ErrorCode.UNSUPPORTED_OPERATION.value,
 )
+_SAFE_PROVIDER_TOKEN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+logger = logging.getLogger(__name__)
 
 # Injected only by offline tests. Production always uses `generate_with_adk`.
 Generate = Callable[..., Any]
@@ -85,6 +91,7 @@ class GlmGateway:
     ) -> ModelProposal:
         messages = _messages(envelope)
         declarations = _declarations(envelope) + _internal_declarations()
+        started = time.monotonic()
         try:
             response = self._generate(
                 model=self._model,
@@ -97,13 +104,33 @@ class GlmGateway:
                 max_tokens=self._max_tokens,
                 timeout=self._timeout,
             )
-        except ModelGatewayError:
+        except ModelGatewayError as exc:
+            _log_model_failure(
+                phase="provider_call",
+                model=self._model,
+                error=exc,
+                elapsed_ms=_elapsed_ms(started),
+            )
             raise
         except Exception as exc:  # noqa: BLE001 - all provider failures fail closed
-            raise ModelGatewayError(
-                f"model call failed: {type(exc).__name__}"
-            ) from exc
-        return _parse_adk_proposal(response)
+            failure = _provider_failure(exc)
+            _log_model_failure(
+                phase="provider_call",
+                model=self._model,
+                error=failure,
+                elapsed_ms=_elapsed_ms(started),
+            )
+            raise failure from exc
+        try:
+            return _parse_adk_proposal(response)
+        except ModelGatewayError as exc:
+            _log_model_failure(
+                phase="response_validation",
+                model=self._model,
+                error=exc,
+                elapsed_ms=_elapsed_ms(started),
+            )
+            raise
 
 
 def glm_gateway_from_env(*, generate: Generate | None = None) -> GlmGateway:
@@ -283,30 +310,144 @@ def _internal_declarations() -> list[dict[str, Any]]:
     ]
 
 
+def _invalid_model_response(
+    message: str, *, provider_code: str | None = None
+) -> ModelGatewayError:
+    """Build a closed response-contract failure without provider prose."""
+
+    return ModelGatewayError(
+        message,
+        reason=ModelFailureReason.RESPONSE_INVALID,
+        provider_code=provider_code,
+    )
+
+
+def _provider_failure(exc: Exception) -> ModelGatewayError:
+    """Classify only explicit provider/transport signals.
+
+    Exception messages and provider bodies can contain user data or credentials,
+    so neither participates in the classification or reaches the log. Unknown
+    shapes retain the legacy umbrella reason instead of being guessed at.
+    """
+
+    status = _provider_status(exc)
+    exception_type = type(exc).__name__
+    normalized_type = exception_type.lower()
+    if status in {401, 403}:
+        reason = ModelFailureReason.PROVIDER_AUTH_FAILED
+    elif status in {408, 504} or isinstance(exc, TimeoutError) or "timeout" in normalized_type:
+        reason = ModelFailureReason.PROVIDER_TIMEOUT
+    elif status == 429 or "ratelimit" in normalized_type or "rate_limit" in normalized_type:
+        reason = ModelFailureReason.PROVIDER_RATE_LIMITED
+    elif status is not None and 400 <= status < 500:
+        reason = ModelFailureReason.PROVIDER_REJECTED
+    elif status is not None and 500 <= status < 600:
+        reason = ModelFailureReason.PROVIDER_UNAVAILABLE
+    elif any(
+        marker in normalized_type
+        for marker in ("connection", "connect", "network", "transport")
+    ):
+        reason = ModelFailureReason.PROVIDER_UNAVAILABLE
+    else:
+        reason = ModelFailureReason.UNAVAILABLE
+    return ModelGatewayError(
+        f"model call failed: {exception_type}",
+        reason=reason,
+        provider_status=status,
+        provider_code=_safe_provider_token(
+            getattr(exc, "code", None) or getattr(exc, "error_code", None)
+        ),
+        provider_request_id=_provider_request_id(exc),
+        exception_type=exception_type,
+    )
+
+
+def _provider_status(exc: Exception) -> int | None:
+    candidates = (getattr(exc, "status_code", None),)
+    response = getattr(exc, "response", None)
+    if response is not None:
+        candidates += (getattr(response, "status_code", None),)
+    for candidate in candidates:
+        if isinstance(candidate, int) and not isinstance(candidate, bool):
+            return candidate
+    return None
+
+
+def _provider_request_id(exc: Exception) -> str | None:
+    direct = _safe_provider_token(getattr(exc, "request_id", None))
+    if direct is not None:
+        return direct
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    try:
+        value = headers.get("x-request-id") or headers.get("request-id")
+    except (AttributeError, TypeError):
+        return None
+    return _safe_provider_token(value)
+
+
+def _safe_provider_token(value: object) -> str | None:
+    if not isinstance(value, str) or not _SAFE_PROVIDER_TOKEN.fullmatch(value):
+        return None
+    return value
+
+
+def _elapsed_ms(started: float) -> int:
+    return max(0, round((time.monotonic() - started) * 1000))
+
+
+def _log_model_failure(
+    *,
+    phase: str,
+    model: str,
+    error: ModelGatewayError,
+    elapsed_ms: int,
+) -> None:
+    """Emit a correlation-ready but deliberately content-free diagnostic."""
+
+    logger.warning(
+        "model turn failed phase=%s model=%s reason=%s exception_type=%s "
+        "provider_status=%s provider_code=%s provider_request_id=%s elapsed_ms=%s",
+        phase,
+        model,
+        error.reason.value,
+        error.exception_type,
+        error.provider_status,
+        error.provider_code,
+        error.provider_request_id,
+        elapsed_ms,
+    )
+
+
 def _parse_adk_proposal(response: Any) -> ModelProposal:
     error_code = getattr(response, "error_code", None)
     if error_code:
-        raise ModelGatewayError("ADK model response reported an error")
+        raise _invalid_model_response(
+            "ADK model response reported an error",
+            provider_code=_safe_provider_token(error_code),
+        )
     if getattr(response, "partial", False):
-        raise ModelGatewayError("ADK model response was partial")
+        raise _invalid_model_response("ADK model response was partial")
     if getattr(response, "interrupted", False):
-        raise ModelGatewayError("ADK model response was interrupted")
+        raise _invalid_model_response("ADK model response was interrupted")
     content = getattr(response, "content", None)
     parts = getattr(content, "parts", None)
     if not isinstance(parts, list) or not parts:
-        raise ModelGatewayError("ADK model response had no content")
+        raise _invalid_model_response("ADK model response had no content")
 
     calls: list[Any] = []
     text_parts: list[str] = []
     for part in parts:
         if getattr(part, "thought", False):
-            raise ModelGatewayError(
+            raise _invalid_model_response(
                 "ADK model response contained unsupported thought content"
             )
         unsupported = _unsupported_part_fields(part)
         if unsupported:
             names = ", ".join(sorted(unsupported))
-            raise ModelGatewayError(
+            raise _invalid_model_response(
                 f"ADK model response contained unsupported content: {names}"
             )
         call = getattr(part, "function_call", None)
@@ -318,43 +459,51 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
 
     if calls:
         if len(calls) != 1:
-            raise ModelGatewayError("model proposed multiple tool calls")
+            raise _invalid_model_response("model proposed multiple tool calls")
         if text_parts:
-            raise ModelGatewayError("model mixed a tool call with a direct answer")
+            raise _invalid_model_response(
+                "model mixed a tool call with a direct answer"
+            )
         call = calls[0]
         name = getattr(call, "name", None)
         if not isinstance(name, str) or not name:
-            raise ModelGatewayError("tool call had no name")
+            raise _invalid_model_response("tool call had no name")
         arguments = _parse_arguments(getattr(call, "args", None))
         if name == _ASK_CLARIFICATION:
             if set(arguments) != {"question"}:
-                raise ModelGatewayError(
+                raise _invalid_model_response(
                     "clarification had unexpected arguments"
                 )
             question = arguments.get("question")
             if not isinstance(question, str) or not question.strip():
-                raise ModelGatewayError("clarification had no question")
+                raise _invalid_model_response("clarification had no question")
             if len(question) > MAX_CLARIFICATION_QUESTION_CHARS:
-                raise ModelGatewayError(
+                raise _invalid_model_response(
                     "clarification question exceeded its schema limit"
                 )
             return ProposedClarification(question=question.strip())
         if name == _FAIL_BATCH:
             if arguments:
-                raise ModelGatewayError("batch failure tool had unexpected arguments")
+                raise _invalid_model_response(
+                    "batch failure tool had unexpected arguments"
+                )
             return ProposedFailure(reason=ErrorCode.BATCH_ATOMICITY_UNAVAILABLE.value)
         if name == _FAIL_SAFELY:
             if set(arguments) != {"reason"}:
-                raise ModelGatewayError("fail-safe tool had unexpected arguments")
+                raise _invalid_model_response(
+                    "fail-safe tool had unexpected arguments"
+                )
             reason = arguments.get("reason")
             if reason not in _MODEL_FAILURE_REASONS:
-                raise ModelGatewayError("fail-safe tool had an unsupported reason")
+                raise _invalid_model_response(
+                    "fail-safe tool had an unsupported reason"
+                )
             return ProposedFailure(reason=reason)
         return ProposedToolCall(tool=name, arguments=arguments)
 
     answer = "".join(text_parts).strip()
     if not answer:
-        raise ModelGatewayError("model response was blank")
+        raise _invalid_model_response("model response was blank")
     return ProposedAnswer(text=answer)
 
 
@@ -369,7 +518,9 @@ def _unsupported_part_fields(part: Any) -> set[str]:
     try:
         fields = vars(part)
     except TypeError as exc:
-        raise ModelGatewayError("ADK model response part was not inspectable") from exc
+        raise _invalid_model_response(
+            "ADK model response part was not inspectable"
+        ) from exc
     return {
         name
         for name, value in fields.items()
@@ -381,13 +532,15 @@ def _parse_arguments(raw: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
     if not isinstance(raw, str):
-        raise ModelGatewayError("tool call arguments were not JSON")
+        raise _invalid_model_response("tool call arguments were not JSON")
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ModelGatewayError("tool call arguments were not valid JSON") from exc
+        raise _invalid_model_response(
+            "tool call arguments were not valid JSON"
+        ) from exc
     if not isinstance(parsed, dict):
-        raise ModelGatewayError("tool call arguments were not a JSON object")
+        raise _invalid_model_response("tool call arguments were not a JSON object")
     return parsed
 
 
@@ -499,7 +652,7 @@ def generate_with_adk(
             async for response in llm.generate_content_async(request, stream=False)
         ]
         if len(responses) != 1:
-            raise ModelGatewayError(
+            raise _invalid_model_response(
                 f"ADK returned {len(responses)} non-streaming responses"
             )
         return responses[0]
