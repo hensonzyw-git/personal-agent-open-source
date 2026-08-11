@@ -548,6 +548,13 @@ class Operation(Base):
         Text, nullable=False, unique=True
     )
     tool: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Immediate prior operation this one is allowed to retry. The source must
+    #: be a terminal, proven-zero-write failure; application code enforces that
+    #: semantic rule, while the unique constraint makes consumption one-shot.
+    retry_of_operation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("operations.operation_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
     api_request: Mapped["ApiRequest"] = relationship()
 
@@ -582,6 +589,15 @@ class Operation(Base):
     __table_args__ = (
         CheckConstraint(_in_set("state", OPERATION_STATES), name="state"),
         CheckConstraint("state_version >= 1", name="state_version_positive"),
+        CheckConstraint(
+            "retry_of_operation_id IS NULL OR "
+            "retry_of_operation_id <> operation_id",
+            name="retry_source_is_not_self",
+        ),
+        UniqueConstraint(
+            "retry_of_operation_id",
+            name="retry_source_consumed_once",
+        ),
         CheckConstraint(
             _in_set("manual_resolution", MANUAL_RESOLUTIONS)
             + " OR manual_resolution IS NULL",

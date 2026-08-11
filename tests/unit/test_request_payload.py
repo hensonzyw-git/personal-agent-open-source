@@ -6,6 +6,10 @@ from personal_agent.api.request_payload import (
     open_chat_request,
     seal_chat_request,
 )
+from personal_agent.context.continuation import (
+    ClarificationExchange,
+    FinanceRetryContext,
+)
 from personal_agent_core.crypto import KeyRing, generate_key
 from personal_agent_core.manifest import canonical_json
 
@@ -124,3 +128,48 @@ def test_legacy_sealed_clarification_remains_replayable() -> None:
         for item in continued.completed_exchanges
     ] == [("个人还是家庭？", "个人")]
     assert continued.question == "现金还是刷卡？"
+
+
+def test_sealed_payload_round_trips_a_finance_retry_context() -> None:
+    ring = KeyRing(
+        [generate_key("request-payload", state="active")],
+        service="personal-agent-api",
+    )
+    retry = FinanceRetryContext(
+        original_user_text="午饭 38",
+        completed_exchanges=(
+            ClarificationExchange(question="个人还是家庭？", answer="个人"),
+        ),
+        source_operation_id=_operation(9),
+        source_failure_reason="model_unavailable",
+    )
+    payload = ChatRequestPayload(
+        conversation_id="tl_1",
+        text="重新记",
+        finance_retry_context=retry,
+    )
+
+    sealed = seal_chat_request(ring, request_id="req_retry", payload=payload)
+
+    assert open_chat_request(
+        ring, request_id="req_retry", envelope=sealed
+    ) == payload
+
+
+def test_retry_clarification_preserves_the_original_finance_facts() -> None:
+    payload = ChatRequestPayload(
+        conversation_id="tl_1",
+        text="重新记",
+        clarification_question="个人还是家庭？",
+        finance_retry_context=FinanceRetryContext(
+            original_user_text="午饭 38",
+            source_operation_id=_operation(9),
+            source_failure_reason="BOOKKEEPING_TOOL_REQUIRED",
+        ),
+    )
+
+    continued = continuation_context(payload, source_operation_id=_operation(10))
+
+    assert continued.original_user_text == "午饭 38"
+    assert continued.question == "个人还是家庭？"
+    assert continued.source_operation_ids == ()

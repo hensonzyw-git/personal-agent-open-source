@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -255,6 +256,7 @@ def run_write_transaction(
     work: Callable[[], T],
     *,
     attempts: int = 3,
+    retry_delay_seconds: float = 0.01,
 ) -> T:
     """Run one unit of database work, retrying a lost read snapshot.
 
@@ -269,6 +271,8 @@ def run_write_transaction(
     """
     if attempts < 1:
         raise ValueError("attempts must be positive")
+    if retry_delay_seconds < 0:
+        raise ValueError("retry_delay_seconds must be non-negative")
     for remaining in range(attempts - 1, -1, -1):
         try:
             result = work()
@@ -278,7 +282,16 @@ def run_write_transaction(
             session.rollback()
             if remaining and is_snapshot_conflict(error):
                 # The session is clean again; the next attempt begins a new
-                # transaction and therefore reads a fresh snapshot.
+                # transaction and therefore reads a fresh snapshot. A different
+                # writer may still be active, so immediate tight-loop retries
+                # can exhaust before it commits; use a short bounded backoff.
+                completed_attempts = attempts - remaining
+                time.sleep(
+                    min(
+                        retry_delay_seconds * (2 ** (completed_attempts - 1)),
+                        0.1,
+                    )
+                )
                 continue
             raise
     raise AssertionError("unreachable")  # pragma: no cover

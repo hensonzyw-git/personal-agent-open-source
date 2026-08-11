@@ -9,7 +9,10 @@ duplicate decision are tested as the wire sees them.
 from __future__ import annotations
 
 import json
+import threading
 import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,10 +21,12 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 
 from cap001_fixtures import CURSOR_KEY, IDENTIFIER_KEY
+from personal_agent.api import app as agent_app
 from personal_agent.api.app import AgentApiDeps, build_app
 from personal_agent.api.orchestrator import (
     Clarification,
     DirectAnswer,
+    InterpreterError,
     PossibleDuplicate,
     Resolved,
     ToolCall,
@@ -50,6 +55,7 @@ NOW = datetime(2026, 7, 24, 7, 0, tzinfo=timezone.utc)
 REQUEST_ID_1 = "11111111-1111-4111-8111-111111111111"
 REQUEST_ID_2 = "22222222-2222-4222-8222-222222222222"
 REQUEST_ID_3 = "33333333-3333-4333-8333-333333333333"
+REQUEST_ID_4 = "44444444-4444-4444-8444-444444444444"
 
 
 class FakeInterpreter:
@@ -444,6 +450,282 @@ def test_repeated_clarification_is_exact_budgeted_and_not_duplicated(
     )
     assert old.json()["state"] == "cancelled_pre_submit"
     assert old.json()["record_id"] is None
+
+
+def test_explicit_retry_binds_the_latest_zero_write_finance_failure(
+    engine, token_ring, keyring
+) -> None:
+    class SequencedInterpreter:
+        def __init__(self):
+            self.calls = []
+            self.results = [
+                InterpreterError("model down"),
+                DirectAnswer("Session 说明"),
+                ToolCall("finance.log_expense", {"name": "午饭"}),
+                DirectAnswer("不能再次重放"),
+            ]
+
+        def interpret(self, *, envelope):
+            self.calls.append(envelope)
+            result = self.results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    interpreter = SequencedInterpreter()
+    intent = WriteIntent("finance.log_expense", {"name": "午饭"})
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=interpreter,
+        dispatcher=FakeDispatcher(
+            resolve=Resolved(intent), commit=Written("recRETRY")
+        ),
+    )
+    failed = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "示例午餐 20 元"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    assert failed.json()["state"] == "failed_safe"
+    assert failed.json()["failure_reason"] == "model_unavailable"
+
+    # Unrelated conversation may intervene; retry resolution is based on the
+    # latest eligible operation, not adjacency in the raw transcript.
+    meta = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "为什么没有新 session"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert meta.json()["state"] == "succeeded"
+
+    retried = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "重新记"},
+        headers=_auth(token_ring, key=REQUEST_ID_3),
+    )
+    assert retried.json()["record_id"] == "recRETRY"
+    retry_envelope = interpreter.calls[2]
+    exact = "\n".join(
+        retry_envelope.texts_of(ComponentKind.CLARIFICATION_CONTEXT)
+    )
+    assert retry_envelope.finance_intent_required is True
+    assert "finance_retry_context" in exact
+    assert "示例午餐 20 元" in exact
+
+    with session_factory(engine)() as session:
+        source = session.get(Operation, failed.json()["operation_id"])
+        retry = session.get(Operation, retried.json()["operation_id"])
+        assert source is not None and retry is not None
+        assert source.tool is None
+        assert retry.retry_of_operation_id == source.operation_id
+
+    # The same source is consumed once. A second vague retry has no sealed
+    # accounting facts to replay and therefore fails closed as a Finance turn.
+    second = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "重新记"},
+        headers=_auth(token_ring, key=REQUEST_ID_4),
+    )
+    assert second.json()["state"] == "failed_safe"
+    assert second.json()["failure_reason"] == "BOOKKEEPING_TOOL_REQUIRED"
+    with session_factory(engine)() as session:
+        second_op = session.get(Operation, second.json()["operation_id"])
+        assert second_op is not None
+        assert second_op.retry_of_operation_id is None
+
+
+def test_more_than_twenty_five_ordinary_turns_do_not_hide_a_safe_retry(
+    engine, token_ring, keyring
+) -> None:
+    class Interpreter:
+        def __init__(self):
+            self.first = True
+
+        def interpret(self, *, envelope):
+            if self.first:
+                self.first = False
+                raise InterpreterError("model down")
+            if envelope.user_text == "重新记":
+                return ToolCall("finance.log_expense", {"name": "午饭"})
+            return DirectAnswer("普通聊天")
+
+    intent = WriteIntent("finance.log_expense", {"name": "午饭"})
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=Interpreter(),
+        dispatcher=FakeDispatcher(
+            resolve=Resolved(intent), commit=Written("rec-after-chat")
+        ),
+    )
+    failed = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "示例午餐 20 元"},
+        headers=_auth(token_ring, key=str(uuid.uuid4())),
+    )
+    assert failed.json()["failure_reason"] == "model_unavailable"
+
+    for index in range(30):
+        ordinary = client.post(
+            "/v1/chat/messages",
+            json={"conversation_id": "c1", "text": f"普通聊天第 {index} 条"},
+            headers=_auth(token_ring, key=str(uuid.uuid4())),
+        )
+        assert ordinary.json()["state"] == "succeeded"
+
+    retried = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "重新记"},
+        headers=_auth(token_ring, key=str(uuid.uuid4())),
+    )
+    assert retried.json()["record_id"] == "rec-after-chat"
+    with session_factory(engine)() as session:
+        operation = session.get(Operation, retried.json()["operation_id"])
+        assert operation is not None
+        assert operation.retry_of_operation_id == failed.json()["operation_id"]
+
+
+def test_two_concurrent_retries_fail_closed_without_a_server_error(
+    engine, token_ring, keyring, monkeypatch
+) -> None:
+    source_client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=type(
+            "Unavailable",
+            (),
+            {
+                "interpret": lambda self, **_kwargs: (_ for _ in ()).throw(
+                    InterpreterError("model down")
+                )
+            },
+        )(),
+        dispatcher=FakeDispatcher(),
+    )
+    failed = source_client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "示例午餐 20 元"},
+        headers=_auth(token_ring, key=str(uuid.uuid4())),
+    )
+    assert failed.json()["failure_reason"] == "model_unavailable"
+
+    original = agent_app._eligible_finance_retry
+    lock = threading.Lock()
+    calls = 0
+
+    def race_once(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        with lock:
+            calls += 1
+            is_first = calls == 1
+        # Keep the first anchor transaction open briefly so the other request
+        # actually contends for SQLite's writer slot. The second must then
+        # restart from fresh state and observe that the source was consumed.
+        if is_first:
+            time.sleep(0.2)
+        return result
+
+    monkeypatch.setattr(agent_app, "_eligible_finance_retry", race_once)
+    intent = WriteIntent("finance.log_expense", {"name": "午饭"})
+    dispatcher = FakeDispatcher(
+        resolve=Resolved(intent), commit=Written("rec-concurrent")
+    )
+    retry_client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=FakeInterpreter(
+            ToolCall("finance.log_expense", {"name": "午饭"})
+        ),
+        dispatcher=dispatcher,
+    )
+
+    start = threading.Barrier(2)
+
+    def retry():
+        start.wait(timeout=5)
+        return retry_client.post(
+            "/v1/chat/messages",
+            json={"conversation_id": "c1", "text": "重新记"},
+            headers=_auth(token_ring, key=str(uuid.uuid4())),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _index: retry(), range(2)))
+
+    assert all(response.status_code < 500 for response in responses)
+    bodies = [response.json() for response in responses]
+    assert sum(body.get("record_id") == "rec-concurrent" for body in bodies) == 1
+    assert sum(
+        body.get("failure_reason") == "BOOKKEEPING_TOOL_REQUIRED"
+        for body in bodies
+    ) == 1
+    with session_factory(engine)() as session:
+        consumers = (
+            session.query(Operation)
+            .filter(
+                Operation.retry_of_operation_id == failed.json()["operation_id"]
+            )
+            .all()
+        )
+        assert len(consumers) == 1
+
+
+def test_a_later_finance_success_blocks_retrying_an_older_failure(
+    engine, token_ring, keyring
+) -> None:
+    class SequencedInterpreter:
+        def __init__(self):
+            self.results = [
+                InterpreterError("model down"),
+                ToolCall("finance.log_expense", {"name": "午饭"}),
+                DirectAnswer("不能重放旧失败"),
+            ]
+
+        def interpret(self, *, envelope):
+            result = self.results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    intent = WriteIntent("finance.log_expense", {"name": "午饭"})
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=SequencedInterpreter(),
+        dispatcher=FakeDispatcher(
+            resolve=Resolved(intent), commit=Written("recMANUALRETRY")
+        ),
+    )
+    failed = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "示例午餐 20 元"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    succeeded = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "示例午餐 20 元"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert failed.json()["state"] == "failed_safe"
+    assert succeeded.json()["record_id"] == "recMANUALRETRY"
+
+    blocked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "重新记"},
+        headers=_auth(token_ring, key=REQUEST_ID_3),
+    )
+    assert blocked.json()["state"] == "failed_safe"
+    with session_factory(engine)() as session:
+        operation = session.get(Operation, blocked.json()["operation_id"])
+        assert operation is not None
+        assert operation.retry_of_operation_id is None
 
 
 def test_two_answers_to_one_clarification_return_a_stable_client_error(

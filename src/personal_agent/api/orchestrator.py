@@ -35,7 +35,6 @@ from personal_agent.api.duplicate_flow import record_possible_duplicate
 from personal_agent.api.intent import WriteIntent, open_intent
 from personal_agent.api.operation_store import transition_operation
 from personal_agent.context.builder import ContextEnvelope
-from personal_agent.runtime.bookkeeping_intent import is_bookkeeping_write_request
 from personal_agent.storage.models import Operation
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
@@ -288,6 +287,22 @@ def run_operation(
         )
         return RunResult(state="failed_safe", failure_reason=refused.code.value)
 
+    if envelope.finance_retry_unbound:
+        # An explicit replay phrase is not an independent write instruction.
+        # Without a server-sealed, zero-write source it must stop before the
+        # provider sees it; otherwise a model can reinterpret "重新记" as a new
+        # write and defeat the one-shot retry contract.
+        _step(session, operation, "interpreting", now)
+        reason = ErrorCode.BOOKKEEPING_TOOL_REQUIRED.value
+        _step(
+            session,
+            operation,
+            "failed_safe",
+            now,
+            failure_reason=reason,
+        )
+        return RunResult(state="failed_safe", failure_reason=reason)
+
     try:
         interpretation = interpreter.interpret(envelope=envelope)
     except InterpreterError:
@@ -317,6 +332,26 @@ def run_operation(
         )
 
     if isinstance(interpretation, FailSafeInterpretation):
+        if (
+            envelope.finance_required_tool is not None
+            and interpretation.reason == ErrorCode.TOOL_NOT_ALLOWLISTED.value
+            and envelope.finance_required_tool in envelope.tool_aliases
+        ):
+            # The provider cannot overrule the governed catalog it was shown.
+            # If Finance is visible for this turn, "not supported" is a routing
+            # failure, not a truthful capability result.
+            required_reason = _finance_required_reason(envelope)
+            _step(
+                session,
+                operation,
+                "failed_safe",
+                now,
+                failure_reason=required_reason,
+            )
+            return RunResult(
+                state="failed_safe",
+                failure_reason=required_reason,
+            )
         _step(
             session,
             operation,
@@ -329,25 +364,51 @@ def run_operation(
         )
 
     if isinstance(interpretation, DirectAnswer):
-        if is_bookkeeping_write_request(envelope.user_text):
+        if envelope.finance_intent_required:
             # `DEV-040`: a bookkeeping request answered with prose is not a
             # write. A `DirectAnswer` carries no side effect, so accepting it
             # here would record a fake success with zero writes -- exactly what
             # §5.1 forbids. Refuse; the model may still call the tool on a
             # retry, and the refusal itself does not become a success projection.
+            required_reason = _finance_required_reason(envelope)
             _step(
                 session,
                 operation,
                 "failed_safe",
                 now,
-                failure_reason=ErrorCode.BOOKKEEPING_TOOL_REQUIRED.value,
+                failure_reason=required_reason,
             )
             return RunResult(
                 state="failed_safe",
-                failure_reason=ErrorCode.BOOKKEEPING_TOOL_REQUIRED.value,
+                failure_reason=required_reason,
             )
         _step(session, operation, "succeeded", now, safe_result=interpretation.text)
         return RunResult(state="succeeded", answer=interpretation.text)
+
+    wrong_required_tool = (
+        envelope.finance_required_tool is not None
+        and interpretation.tool != envelope.finance_required_tool
+    )
+    wrong_finance_domain = (
+        envelope.finance_intent_required
+        and not interpretation.tool.startswith("finance.")
+    )
+    if wrong_required_tool or wrong_finance_domain:
+        # Internal clarification/fail-safe calls have already been converted to
+        # their structured interpretation types. Any remaining non-Finance tool
+        # is a routing error, not an acceptable completion of a Finance turn.
+        required_reason = _finance_required_reason(envelope)
+        _step(
+            session,
+            operation,
+            "failed_safe",
+            now,
+            failure_reason=required_reason,
+        )
+        return RunResult(
+            state="failed_safe",
+            failure_reason=required_reason,
+        )
 
     try:
         cleaned = authorize(
@@ -361,6 +422,12 @@ def run_operation(
     _step(session, operation, "dispatching", now, tool=interpretation.tool)
     outcome = dispatcher.resolve(tool=interpretation.tool, model_args=cleaned)
     return _apply_resolve(session, operation, outcome, dispatcher, keyring, now)
+
+
+def _finance_required_reason(envelope: ContextEnvelope) -> str:
+    if envelope.finance_required_tool == "finance.query_expenses":
+        return ErrorCode.FINANCE_TOOL_REQUIRED.value
+    return ErrorCode.BOOKKEEPING_TOOL_REQUIRED.value
 
 
 def _apply_resolve(

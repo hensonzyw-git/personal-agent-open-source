@@ -65,8 +65,8 @@ python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).de
 openssl ecparam -name prime256v1 -genkey -noout -out "$API_KEYS/agent-token.pem" 2>/dev/null
 openssl ecparam -name prime256v1 -genkey -noout -out "$API_KEYS/agent-service.pem" 2>/dev/null
 
-# Finance MCP: the public half it verifies with, and its own AES-256-GCM
-# payload key (sealed duplicate candidates, reconciler payload, fund result).
+# Finance MCP: the public half it verifies with, its own AES-256-GCM payload
+# key, and an independent HMAC key for opaque expense-query cursors.
 openssl ec -in "$API_KEYS/agent-service.pem" -pubout \
   -out "$MCP_KEYS/agent-service.pub.pem" 2>/dev/null
 python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())" \
@@ -96,12 +96,15 @@ EOF
 cat > "$MCP_ENV" <<EOF
 # DEV-032 environment for personal-data-mcp. root:$MCP_USER 0640.
 # The FEISHU_FINANCE_* lines are appended by the operator from the existing
-# local .env.finance.local (deploy/README.md), never typed by hand.
+# local .env.finance.local (deploy/README.md), never typed by hand. The query
+# cursor secret is minted on this server and never printed.
 PERSONAL_DATA_MCP_DATA_ACTIVE_KID=finance-data-ecs-1
 PERSONAL_DATA_MCP_DATA_ACTIVE_KEY_PATH=$MCP_KEYS/finance-data.key
 PERSONAL_DATA_MCP_SERVICE_ACTIVE_KID=agent-service-ecs-1
 PERSONAL_DATA_MCP_SERVICE_ACTIVE_PUBLIC_KEY_PATH=$MCP_KEYS/agent-service.pub.pem
 EOF
+# Keep this independent key out of shell variables and xtrace output.
+python3 -c 'import base64, os, sys; p=sys.argv[1]; f=open(p, "ab"); f.write(b"PERSONAL_DATA_MCP_QUERY_CURSOR_SECRET=" + base64.urlsafe_b64encode(os.urandom(32)) + b"\n"); f.flush(); os.fsync(f.fileno()); f.close()' "$MCP_ENV"
 
 chown root:"$API_USER" "$API_ENV"
 chmod 0640 "$API_ENV"

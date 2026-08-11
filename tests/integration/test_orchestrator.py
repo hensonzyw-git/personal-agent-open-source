@@ -30,6 +30,7 @@ from personal_agent.api.orchestrator import (
     CommitFailedSafe,
     CommitUnknown,
     DirectAnswer,
+    FailSafeInterpretation,
     NeedsClarification,
     PossibleDuplicate,
     ReadCompleted,
@@ -39,6 +40,8 @@ from personal_agent.api.orchestrator import (
     Written,
     run_operation,
 )
+from personal_agent.context.continuation import ClarificationContext
+from personal_agent.policy.bridge import VisibleTool
 from personal_agent.storage.engine import (
     create_all,
     create_database_engine,
@@ -208,6 +211,183 @@ def test_a_bookkeeping_direct_answer_fails_safe(session, keyring) -> None:
     session.refresh(op)
     assert op.state == "failed_safe"
     assert op.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
+
+
+def test_natural_bookkeeping_shorthand_cannot_succeed_as_prose(
+    session, keyring
+) -> None:
+    op = _fresh_operation(session)
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(DirectAnswer("已经帮你记好了")),
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        text="午饭 38",
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
+
+
+def test_a_finance_turn_cannot_be_routed_to_a_non_finance_tool(
+    session, keyring
+) -> None:
+    op = _fresh_operation(session)
+    dispatcher = FakeDispatcher(resolve=ReadCompleted("unused"))
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(ToolCall("meta.capabilities", {})),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="午饭 38",
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
+    assert dispatcher.resolve_calls == []
+
+
+def test_a_finance_query_cannot_succeed_from_model_memory(session, keyring) -> None:
+    op = _fresh_operation(session)
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(DirectAnswer("今年网球共 100 元")),
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        text="查一下我今年打网球花了多少钱",
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "FINANCE_TOOL_REQUIRED"
+
+
+def test_a_finance_query_cannot_be_routed_to_a_finance_write(
+    session, keyring
+) -> None:
+    op = _fresh_operation(session)
+    dispatcher = FakeDispatcher(resolve=ReadCompleted("unused"))
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            ToolCall("finance.log_expense", {"name": "网球", "amount": "100"})
+        ),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="查一下我今年打网球花了多少钱",
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "FINANCE_TOOL_REQUIRED"
+    assert dispatcher.resolve_calls == []
+
+
+def test_a_finance_query_clarification_keeps_the_exact_tool_requirement(
+    session, keyring, tmp_path
+) -> None:
+    envelope = envelope_for(
+        tmp_path,
+        user_text="今年",
+        clarification=ClarificationContext(
+            original_user_text="查一下网球花了多少钱",
+            question="查哪一年？",
+            completed_exchanges=(),
+            source_operation_ids=("placeholder",),
+        ),
+    )
+    op = _fresh_operation(session)
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(DirectAnswer("今年共 100 元")),
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        build_context=lambda: envelope,
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "FINANCE_TOOL_REQUIRED"
+
+
+def test_an_unbound_finance_retry_stops_before_the_model(
+    session, keyring, tmp_path
+) -> None:
+    op = _fresh_operation(session)
+    interpreter = FakeInterpreter(
+        ToolCall("finance.log_expense", {"name": "午饭", "amount": "38"})
+    )
+    envelope = envelope_for(tmp_path, user_text="重新记")
+    result = _run(
+        session,
+        op,
+        interpreter=interpreter,
+        dispatcher=FakeDispatcher(resolve=ReadCompleted("unused")),
+        keyring=keyring,
+        build_context=lambda: envelope,
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
+    assert not hasattr(interpreter, "envelope")
+
+
+def test_a_visible_finance_query_cannot_be_called_unsupported_by_the_model(
+    session, keyring, tmp_path
+) -> None:
+    op = _fresh_operation(session)
+    envelope = envelope_for(
+        tmp_path,
+        user_text="查一下我今年打网球花了多少钱",
+        tools=(
+            VisibleTool(
+                alias="finance.query_expenses",
+                description="查询支出",
+                input_schema={"type": "object", "properties": {}},
+                risk_level="R1",
+                required_scopes=("finance.expense.read",),
+            ),
+        ),
+    )
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            FailSafeInterpretation("TOOL_NOT_ALLOWLISTED")
+        ),
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        build_context=lambda: envelope,
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "FINANCE_TOOL_REQUIRED"
+
+
+def test_other_visible_finance_tools_do_not_make_query_look_available(
+    session, keyring, tmp_path
+) -> None:
+    op = _fresh_operation(session)
+    envelope = envelope_for(
+        tmp_path,
+        user_text="查一下我今年打网球花了多少钱",
+        tools=(
+            VisibleTool(
+                alias="finance.log_expense",
+                description="记录支出",
+                input_schema={"type": "object", "properties": {}},
+                risk_level="R2",
+                required_scopes=("finance.expense.write",),
+            ),
+        ),
+    )
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            FailSafeInterpretation("TOOL_NOT_ALLOWLISTED")
+        ),
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        build_context=lambda: envelope,
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "TOOL_NOT_ALLOWLISTED"
 
 
 class RaisingInterpreter:

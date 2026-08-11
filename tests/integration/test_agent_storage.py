@@ -146,6 +146,89 @@ def test_downgrade_returns_to_an_empty_database(tmp_path: Path) -> None:
     engine.dispose()
 
 
+def test_finance_retry_migration_round_trips_a_populated_database(
+    tmp_path: Path,
+) -> None:
+    """SQLite batch-copy keeps existing rows and the self-reference usable."""
+    path = tmp_path / "retry-migration.sqlite"
+    engine = create_database_engine(path)
+    db.upgrade(engine, "0004_manual_review_resolution")
+    timestamp = "2026-08-11T00:00:00Z"
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO devices (device_id, display_name, public_key, "
+                "device_key_thumbprint, status, scopes, allowed_tools_version, "
+                "created_at) VALUES ('dev', 'phone', 'key', 'thumb', 'active', "
+                "'[]', 'v1', :timestamp)"
+            ),
+            {"timestamp": timestamp},
+        )
+        for suffix in ("source", "retry"):
+            connection.execute(
+                text(
+                    "INSERT INTO api_requests (request_id, device_id, "
+                    "client_request_id, request_fingerprint, received_at) "
+                    "VALUES (:request_id, 'dev', :client_id, :fingerprint, "
+                    ":timestamp)"
+                ),
+                {
+                    "request_id": f"req-{suffix}",
+                    "client_id": f"client-{suffix}",
+                    "fingerprint": f"fp-{suffix}",
+                    "timestamp": timestamp,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO operations (operation_id, request_id, trace_id, "
+                    "idempotency_key, state, state_version, cancel_requested, "
+                    "client_detached, created_at, updated_at) VALUES "
+                    "(:operation_id, :request_id, :trace_id, :key, :state, 1, "
+                    "0, 0, :timestamp, :timestamp)"
+                ),
+                {
+                    "operation_id": f"op-{suffix}",
+                    "request_id": f"req-{suffix}",
+                    "trace_id": f"trace-{suffix}",
+                    "key": f"key-{suffix}",
+                    "state": "failed_safe" if suffix == "source" else "accepted",
+                    "timestamp": timestamp,
+                },
+            )
+
+    db.upgrade(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE operations SET retry_of_operation_id='op-source' "
+                "WHERE operation_id='op-retry'"
+            )
+        )
+        assert connection.execute(
+            text("PRAGMA foreign_key_check")
+        ).all() == []
+
+    db.downgrade(engine, "0004_manual_review_resolution")
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT operation_id FROM operations ORDER BY operation_id")
+        ).scalars().all() == ["op-retry", "op-source"]
+        assert "retry_of_operation_id" not in {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(operations)"))
+        }
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+
+    db.upgrade(engine)
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT retry_of_operation_id FROM operations")
+        ).scalars().all() == [None, None]
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    engine.dispose()
+
+
 # --- invariants ------------------------------------------------------------
 
 
@@ -185,6 +268,50 @@ def test_idempotency_key_is_globally_unique(session) -> None:
                 request_id=f"req-{suffix}",
                 trace_id="tr",
                 idempotency_key="shared-key",
+                state="accepted",
+                created_at=NOW,
+                updated_at=NOW,
+            )
+        )
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_one_failed_operation_can_be_the_source_of_only_one_retry(session) -> None:
+    session.add(make_device())
+    session.flush()
+    for suffix in ("source", "retry-1", "retry-2"):
+        session.add(
+            ApiRequest(
+                request_id=f"req-{suffix}",
+                device_id="dev-1",
+                client_request_id=f"client-{suffix}",
+                request_fingerprint=f"fp-{suffix}",
+                received_at=NOW,
+            )
+        )
+    session.flush()
+    session.add(
+        Operation(
+            operation_id="op-source",
+            request_id="req-source",
+            trace_id="tr-source",
+            idempotency_key="key-source",
+            state="failed_safe",
+            failure_reason="model_unavailable",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    session.flush()
+    for suffix in ("1", "2"):
+        session.add(
+            Operation(
+                operation_id=f"op-retry-{suffix}",
+                request_id=f"req-retry-{suffix}",
+                trace_id=f"tr-retry-{suffix}",
+                idempotency_key=f"key-retry-{suffix}",
+                retry_of_operation_id="op-source",
                 state="accepted",
                 created_at=NOW,
                 updated_at=NOW,

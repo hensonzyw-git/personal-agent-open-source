@@ -11,7 +11,7 @@ system/policy instruction
 -> recent raw events after the checkpoint
 -> exact pending state
 -> retrieved memories
--> exact clarification continuation, when present
+-> exact clarification or safe Finance-retry continuation, when present
 -> current user input
 -> candidate tool declarations
 ```
@@ -63,10 +63,16 @@ from personal_agent.context.config import ContextConfig
 from personal_agent.context.continuation import (
     MAX_CLARIFICATION_QUESTION_CHARS,
     ClarificationContext,
+    FinanceRetryContext,
 )
 from personal_agent.context.untrusted import frame_untrusted_data as _frame
 from personal_agent.keys import HmacKey, HmacKeyRing
 from personal_agent.policy.bridge import VisibleTool
+from personal_agent.runtime.bookkeeping_intent import (
+    is_finance_intent_candidate,
+    is_finance_query_request,
+    is_finance_retry_request,
+)
 from personal_agent.storage.models import (
     TERMINAL_OPERATION_STATES,
     ContextSession,
@@ -217,6 +223,15 @@ class ContextEnvelope:
     estimator_version: str
     source_fingerprint: str
     compaction_requested: bool
+    #: A direct answer is forbidden for this turn. This is derived by the
+    #: trusted builder, never by the provider, and includes sealed safe retries.
+    finance_intent_required: bool = False
+    #: The exact Finance tool required where the intent is unambiguous. Query
+    #: turns use this to prevent a model from turning a read into a write.
+    finance_required_tool: str | None = None
+    #: An explicit retry phrase for which the server found no eligible sealed
+    #: zero-write source. The orchestrator rejects it before calling the model.
+    finance_retry_unbound: bool = False
     trimmed: tuple[str, ...] = ()
     dropped_counts: Mapping[str, int] = field(default_factory=dict)
     #: Estimated tokens per component kind, before the safety margin. §16.1
@@ -272,7 +287,7 @@ class ContextEnvelope:
             raise AppError(
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail=(
-                    "a context envelope may carry at most one clarification context"
+                    "a context envelope may carry at most one exact continuation"
                 ),
             )
         if self.lineage_stop_reason is not None and (
@@ -281,6 +296,19 @@ class ContextEnvelope:
             raise AppError(
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail="unknown lineage stop reason",
+            )
+        if self.finance_required_tool is not None and (
+            not self.finance_intent_required
+            or not self.finance_required_tool.startswith("finance.")
+        ):
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="a required Finance tool needs a Finance turn",
+            )
+        if self.finance_retry_unbound and not self.finance_intent_required:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="an unbound Finance retry needs a Finance turn",
             )
         # "Immutable" has to be true of the containers too, or a caller holding
         # the envelope could still edit what a model was told it may send.
@@ -339,6 +367,9 @@ class ContextEnvelope:
             "config_version": self.config_version,
             "estimator_version": self.estimator_version,
             "compaction_requested": self.compaction_requested,
+            "finance_intent_required": self.finance_intent_required,
+            "finance_required_tool": self.finance_required_tool,
+            "finance_retry_unbound": self.finance_retry_unbound,
             "trimmed": list(self.trimmed),
             "dropped_counts": dict(self.dropped_counts),
         }
@@ -393,6 +424,7 @@ class ContextBuilder:
         user_text: str,
         effective_tools: Sequence[VisibleTool],
         clarification_context: ClarificationContext | None = None,
+        finance_retry_context: FinanceRetryContext | None = None,
         candidate_tools: Iterable[str] | None = None,
         essential_tools: Iterable[str] = (),
         preferences: Sequence[str] = (),
@@ -438,12 +470,22 @@ class ContextBuilder:
         components.extend(self._preferences(preferences))
         components.extend(self._checkpoint_components(lineage, checkpoint))
 
+        if clarification_context is not None and finance_retry_context is not None:
+            raise AppError(
+                ErrorCode.CONTEXT_UNAVAILABLE,
+                internal_detail="a turn cannot carry two continuation contexts",
+            )
         source_operation_ids = (
             clarification_context.source_operation_ids
             if clarification_context is not None
-            else ()
+            else (
+                (finance_retry_context.source_operation_id,)
+                if finance_retry_context is not None
+                else ()
+            )
         )
         clarification = self._clarification_components(clarification_context)
+        finance_retry = self._finance_retry_components(finance_retry_context)
         raw, capped = self._raw_events(
             db,
             keyring,
@@ -465,6 +507,7 @@ class ContextBuilder:
 
         components.extend(self._memories(memories))
         components.extend(clarification)
+        components.extend(finance_retry)
         components.append(
             self._budgeter.component(
                 ComponentKind.USER_INPUT, user_text, label="user_input"
@@ -500,6 +543,31 @@ class ContextBuilder:
             if _checkpoint_label(row.checkpoint_id) in surviving_labels
         )
 
+        finance_source_text = (
+            finance_retry_context.original_user_text
+            if finance_retry_context is not None
+            else (
+                clarification_context.original_user_text
+                if clarification_context is not None
+                else user_text
+            )
+        )
+        finance_intent_required = (
+            finance_retry_context is not None
+            or is_finance_intent_candidate(finance_source_text)
+            or is_finance_retry_request(user_text)
+        )
+        finance_required_tool = (
+            "finance.query_expenses"
+            if is_finance_query_request(finance_source_text)
+            else None
+        )
+        finance_retry_unbound = (
+            clarification_context is None
+            and finance_retry_context is None
+            and is_finance_retry_request(user_text)
+        )
+
         return ContextEnvelope(
             schema_version=SCHEMA_VERSION,
             timeline_id=conversation_id,
@@ -524,6 +592,9 @@ class ContextBuilder:
                     "clarification_source_operation_ids": list(
                         source_operation_ids
                     ),
+                    "finance_intent_required": finance_intent_required,
+                    "finance_required_tool": finance_required_tool,
+                    "finance_retry_unbound": finance_retry_unbound,
                     "checkpoint_id": checkpoint_id,
                     "lineage": list(surviving_lineage),
                     "components": [
@@ -534,6 +605,9 @@ class ContextBuilder:
                 },
             ),
             compaction_requested=outcome.compaction_requested,
+            finance_intent_required=finance_intent_required,
+            finance_required_tool=finance_required_tool,
+            finance_retry_unbound=finance_retry_unbound,
             trimmed=trimmed,
             dropped_counts=dict(outcome.dropped_counts),
             component_tokens=self._tokens_by_kind(outcome.components),
@@ -826,6 +900,57 @@ class ContextBuilder:
                     body,
                 ),
                 label="clarification_context",
+            )
+        ]
+
+    def _finance_retry_components(
+        self, context: FinanceRetryContext | None
+    ) -> list[ContextComponent]:
+        if context is None:
+            return []
+        if (
+            not isinstance(context.original_user_text, str)
+            or not context.original_user_text.strip()
+            or not isinstance(context.source_operation_id, str)
+            or not context.source_operation_id.strip()
+            or context.source_failure_reason
+            not in {"model_unavailable", ErrorCode.BOOKKEEPING_TOOL_REQUIRED.value}
+        ):
+            raise AppError(
+                ErrorCode.CONTEXT_UNAVAILABLE,
+                internal_detail="sealed finance retry context is malformed",
+            )
+        exchanges: list[dict[str, str]] = []
+        for exchange in context.completed_exchanges:
+            if (
+                not isinstance(exchange.question, str)
+                or not exchange.question.strip()
+                or len(exchange.question) > MAX_CLARIFICATION_QUESTION_CHARS
+                or not isinstance(exchange.answer, str)
+                or not exchange.answer.strip()
+            ):
+                raise AppError(
+                    ErrorCode.CONTEXT_UNAVAILABLE,
+                    internal_detail="sealed finance retry exchange is malformed",
+                )
+            exchanges.append(
+                {"question": exchange.question, "answer": exchange.answer}
+            )
+        body = canonical_json(
+            {
+                "original_user_text": context.original_user_text,
+                "answered_clarifications": exchanges,
+            }
+        )
+        return [
+            self._budgeter.component(
+                ComponentKind.CLARIFICATION_CONTEXT,
+                _frame(
+                    "finance_retry_context",
+                    context.source_operation_id,
+                    body,
+                ),
+                label="finance_retry_context",
             )
         ]
 
