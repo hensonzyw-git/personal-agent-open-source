@@ -594,8 +594,50 @@ def test_malformed_model_response_is_separate_from_provider_failures(
     with pytest.raises(ModelGatewayError) as raised:
         _propose(gateway, envelope)
 
-    assert raised.value.reason == ModelFailureReason.RESPONSE_INVALID
+    assert raised.value.reason == ModelFailureReason.RESPONSE_EMPTY
     assert "phase=response_validation" in caplog.text
+    assert "response_shape=blank_text" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_reason", "expected_shape"),
+    [
+        (
+            _response(),
+            ModelFailureReason.RESPONSE_EMPTY,
+            "no_content",
+        ),
+        (
+            _response(_call("finance.log_expense", [])),
+            ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+            "tool_arguments",
+        ),
+        (
+            _response(
+                _call("finance.log_expense", {}),
+                _call("finance.log_income", {}),
+            ),
+            ModelFailureReason.RESPONSE_AMBIGUOUS,
+            "multiple_tool_calls",
+        ),
+        (
+            _response(_text("ok"), error_code="MODEL_ERROR"),
+            ModelFailureReason.RESPONSE_PROVIDER_ERROR,
+            "provider_error",
+        ),
+    ],
+)
+def test_response_failures_keep_a_safe_shape_marker(
+    envelope, caplog, response, expected_reason, expected_shape
+) -> None:
+    gateway, _ = _gateway(response)
+
+    with pytest.raises(ModelGatewayError) as raised:
+        _propose(gateway, envelope)
+
+    assert raised.value.reason == expected_reason
+    assert raised.value.response_shape == expected_shape
+    assert f"response_shape={expected_shape}" in caplog.text
 
 
 def test_from_env_requires_a_key_and_rejects_a_credential_exfiltration_host(

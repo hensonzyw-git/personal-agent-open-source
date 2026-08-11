@@ -311,14 +311,19 @@ def _internal_declarations() -> list[dict[str, Any]]:
 
 
 def _invalid_model_response(
-    message: str, *, provider_code: str | None = None
+    message: str,
+    *,
+    reason: ModelFailureReason = ModelFailureReason.RESPONSE_INVALID,
+    provider_code: str | None = None,
+    response_shape: str,
 ) -> ModelGatewayError:
     """Build a closed response-contract failure without provider prose."""
 
     return ModelGatewayError(
         message,
-        reason=ModelFailureReason.RESPONSE_INVALID,
+        reason=reason,
         provider_code=provider_code,
+        response_shape=response_shape,
     )
 
 
@@ -409,7 +414,8 @@ def _log_model_failure(
 
     logger.warning(
         "model turn failed phase=%s model=%s reason=%s exception_type=%s "
-        "provider_status=%s provider_code=%s provider_request_id=%s elapsed_ms=%s",
+        "provider_status=%s provider_code=%s provider_request_id=%s "
+        "response_shape=%s elapsed_ms=%s",
         phase,
         model,
         error.reason.value,
@@ -417,6 +423,7 @@ def _log_model_failure(
         error.provider_status,
         error.provider_code,
         error.provider_request_id,
+        error.response_shape,
         elapsed_ms,
     )
 
@@ -426,29 +433,47 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
     if error_code:
         raise _invalid_model_response(
             "ADK model response reported an error",
+            reason=ModelFailureReason.RESPONSE_PROVIDER_ERROR,
             provider_code=_safe_provider_token(error_code),
+            response_shape="provider_error",
         )
     if getattr(response, "partial", False):
-        raise _invalid_model_response("ADK model response was partial")
+        raise _invalid_model_response(
+            "ADK model response was partial",
+            reason=ModelFailureReason.RESPONSE_PARTIAL,
+            response_shape="partial",
+        )
     if getattr(response, "interrupted", False):
-        raise _invalid_model_response("ADK model response was interrupted")
+        raise _invalid_model_response(
+            "ADK model response was interrupted",
+            reason=ModelFailureReason.RESPONSE_PARTIAL,
+            response_shape="interrupted",
+        )
     content = getattr(response, "content", None)
     parts = getattr(content, "parts", None)
     if not isinstance(parts, list) or not parts:
-        raise _invalid_model_response("ADK model response had no content")
+        raise _invalid_model_response(
+            "ADK model response had no content",
+            reason=ModelFailureReason.RESPONSE_EMPTY,
+            response_shape="no_content",
+        )
 
     calls: list[Any] = []
     text_parts: list[str] = []
     for part in parts:
         if getattr(part, "thought", False):
             raise _invalid_model_response(
-                "ADK model response contained unsupported thought content"
+                "ADK model response contained unsupported thought content",
+                reason=ModelFailureReason.RESPONSE_UNSUPPORTED_CONTENT,
+                response_shape="thought",
             )
         unsupported = _unsupported_part_fields(part)
         if unsupported:
             names = ", ".join(sorted(unsupported))
             raise _invalid_model_response(
-                f"ADK model response contained unsupported content: {names}"
+                f"ADK model response contained unsupported content: {names}",
+                reason=ModelFailureReason.RESPONSE_UNSUPPORTED_CONTENT,
+                response_shape="unsupported_part",
             )
         call = getattr(part, "function_call", None)
         if call is not None:
@@ -459,51 +484,79 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
 
     if calls:
         if len(calls) != 1:
-            raise _invalid_model_response("model proposed multiple tool calls")
+            raise _invalid_model_response(
+                "model proposed multiple tool calls",
+                reason=ModelFailureReason.RESPONSE_AMBIGUOUS,
+                response_shape="multiple_tool_calls",
+            )
         if text_parts:
             raise _invalid_model_response(
-                "model mixed a tool call with a direct answer"
+                "model mixed a tool call with a direct answer",
+                reason=ModelFailureReason.RESPONSE_AMBIGUOUS,
+                response_shape="tool_and_text",
             )
         call = calls[0]
         name = getattr(call, "name", None)
         if not isinstance(name, str) or not name:
-            raise _invalid_model_response("tool call had no name")
+            raise _invalid_model_response(
+                "tool call had no name",
+                reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                response_shape="missing_tool_name",
+            )
         arguments = _parse_arguments(getattr(call, "args", None))
         if name == _ASK_CLARIFICATION:
             if set(arguments) != {"question"}:
                 raise _invalid_model_response(
-                    "clarification had unexpected arguments"
+                    "clarification had unexpected arguments",
+                    reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                    response_shape="clarification_arguments",
                 )
             question = arguments.get("question")
             if not isinstance(question, str) or not question.strip():
-                raise _invalid_model_response("clarification had no question")
+                raise _invalid_model_response(
+                    "clarification had no question",
+                    reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                    response_shape="clarification_question",
+                )
             if len(question) > MAX_CLARIFICATION_QUESTION_CHARS:
                 raise _invalid_model_response(
-                    "clarification question exceeded its schema limit"
+                    "clarification question exceeded its schema limit",
+                    reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                    response_shape="clarification_question",
                 )
             return ProposedClarification(question=question.strip())
         if name == _FAIL_BATCH:
             if arguments:
                 raise _invalid_model_response(
-                    "batch failure tool had unexpected arguments"
+                    "batch failure tool had unexpected arguments",
+                    reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                    response_shape="batch_failure_arguments",
                 )
             return ProposedFailure(reason=ErrorCode.BATCH_ATOMICITY_UNAVAILABLE.value)
         if name == _FAIL_SAFELY:
             if set(arguments) != {"reason"}:
                 raise _invalid_model_response(
-                    "fail-safe tool had unexpected arguments"
+                    "fail-safe tool had unexpected arguments",
+                    reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                    response_shape="fail_safe_arguments",
                 )
             reason = arguments.get("reason")
             if reason not in _MODEL_FAILURE_REASONS:
                 raise _invalid_model_response(
-                    "fail-safe tool had an unsupported reason"
+                    "fail-safe tool had an unsupported reason",
+                    reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                    response_shape="fail_safe_reason",
                 )
             return ProposedFailure(reason=reason)
         return ProposedToolCall(tool=name, arguments=arguments)
 
     answer = "".join(text_parts).strip()
     if not answer:
-        raise _invalid_model_response("model response was blank")
+        raise _invalid_model_response(
+            "model response was blank",
+            reason=ModelFailureReason.RESPONSE_EMPTY,
+            response_shape="blank_text",
+        )
     return ProposedAnswer(text=answer)
 
 
@@ -519,7 +572,9 @@ def _unsupported_part_fields(part: Any) -> set[str]:
         fields = vars(part)
     except TypeError as exc:
         raise _invalid_model_response(
-            "ADK model response part was not inspectable"
+            "ADK model response part was not inspectable",
+            reason=ModelFailureReason.RESPONSE_UNSUPPORTED_CONTENT,
+            response_shape="uninspectable_part",
         ) from exc
     return {
         name
@@ -532,15 +587,25 @@ def _parse_arguments(raw: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
     if not isinstance(raw, str):
-        raise _invalid_model_response("tool call arguments were not JSON")
+        raise _invalid_model_response(
+            "tool call arguments were not JSON",
+            reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+            response_shape="tool_arguments",
+        )
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise _invalid_model_response(
-            "tool call arguments were not valid JSON"
+            "tool call arguments were not valid JSON",
+            reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+            response_shape="tool_arguments",
         ) from exc
     if not isinstance(parsed, dict):
-        raise _invalid_model_response("tool call arguments were not a JSON object")
+        raise _invalid_model_response(
+            "tool call arguments were not a JSON object",
+            reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+            response_shape="tool_arguments",
+        )
     return parsed
 
 
@@ -653,7 +718,15 @@ def generate_with_adk(
         ]
         if len(responses) != 1:
             raise _invalid_model_response(
-                f"ADK returned {len(responses)} non-streaming responses"
+                f"ADK returned {len(responses)} non-streaming responses",
+                reason=(
+                    ModelFailureReason.RESPONSE_EMPTY
+                    if not responses
+                    else ModelFailureReason.RESPONSE_AMBIGUOUS
+                ),
+                response_shape=(
+                    "zero_responses" if not responses else "multiple_responses"
+                ),
             )
         return responses[0]
 

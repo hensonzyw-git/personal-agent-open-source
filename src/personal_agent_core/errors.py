@@ -85,6 +85,12 @@ class ModelFailureReason(StrEnum):
     PROVIDER_REJECTED = "model_provider_rejected"
     PROVIDER_UNAVAILABLE = "model_provider_unavailable"
     RESPONSE_INVALID = "model_response_invalid"
+    RESPONSE_PROVIDER_ERROR = "model_response_provider_error"
+    RESPONSE_PARTIAL = "model_response_partial"
+    RESPONSE_EMPTY = "model_response_empty"
+    RESPONSE_AMBIGUOUS = "model_response_ambiguous"
+    RESPONSE_SCHEMA_INVALID = "model_response_schema_invalid"
+    RESPONSE_UNSUPPORTED_CONTENT = "model_response_unsupported_content"
 
 
 # A failed model turn has not reached a governed business tool.  These reasons
