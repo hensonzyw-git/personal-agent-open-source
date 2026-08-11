@@ -38,6 +38,10 @@ from personal_agent.context.builder import ContextEnvelope
 from personal_agent.storage.models import Operation
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.finance_tools import (
+    FINANCE_QUERY_TOOL,
+    FINANCE_WRITE_TOOLS,
+)
 
 
 # --- interpreter results -----------------------------------------------------
@@ -333,9 +337,8 @@ def run_operation(
 
     if isinstance(interpretation, FailSafeInterpretation):
         if (
-            envelope.finance_required_tool is not None
-            and interpretation.reason == ErrorCode.TOOL_NOT_ALLOWLISTED.value
-            and envelope.finance_required_tool in envelope.tool_aliases
+            interpretation.reason == ErrorCode.TOOL_NOT_ALLOWLISTED.value
+            and _required_finance_tool_is_visible(envelope)
         ):
             # The provider cannot overrule the governed catalog it was shown.
             # If Finance is visible for this turn, "not supported" is a routing
@@ -385,18 +388,15 @@ def run_operation(
         _step(session, operation, "succeeded", now, safe_result=interpretation.text)
         return RunResult(state="succeeded", answer=interpretation.text)
 
-    wrong_required_tool = (
-        envelope.finance_required_tool is not None
-        and interpretation.tool != envelope.finance_required_tool
-    )
-    wrong_finance_domain = (
-        envelope.finance_intent_required
-        and not interpretation.tool.startswith("finance.")
-    )
-    if wrong_required_tool or wrong_finance_domain:
+    required_finance_tools = _required_finance_tools(envelope)
+    if (
+        required_finance_tools
+        and interpretation.tool not in required_finance_tools
+    ):
         # Internal clarification/fail-safe calls have already been converted to
-        # their structured interpretation types. Any remaining non-Finance tool
-        # is a routing error, not an acceptable completion of a Finance turn.
+        # their structured interpretation types. Any remaining tool outside the
+        # required Finance effect class is a routing error, not an acceptable
+        # completion of this Finance turn.
         required_reason = _finance_required_reason(envelope)
         _step(
             session,
@@ -425,9 +425,24 @@ def run_operation(
 
 
 def _finance_required_reason(envelope: ContextEnvelope) -> str:
-    if envelope.finance_required_tool == "finance.query_expenses":
+    if envelope.finance_required_tool == FINANCE_QUERY_TOOL:
         return ErrorCode.FINANCE_TOOL_REQUIRED.value
     return ErrorCode.BOOKKEEPING_TOOL_REQUIRED.value
+
+
+def _required_finance_tools(envelope: ContextEnvelope) -> frozenset[str]:
+    """Return the only governed Finance tool class valid for this turn."""
+    if not envelope.finance_intent_required:
+        return frozenset()
+    if envelope.finance_required_tool is not None:
+        return frozenset({envelope.finance_required_tool})
+    return FINANCE_WRITE_TOOLS
+
+
+def _required_finance_tool_is_visible(envelope: ContextEnvelope) -> bool:
+    """Whether the governed catalog disproves a model's unsupported claim."""
+    required = _required_finance_tools(envelope)
+    return bool(required.intersection(envelope.tool_aliases))
 
 
 def _apply_resolve(

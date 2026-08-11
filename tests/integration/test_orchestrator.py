@@ -281,6 +281,27 @@ def test_a_finance_query_cannot_be_routed_to_a_finance_write(
     assert dispatcher.resolve_calls == []
 
 
+def test_a_finance_write_cannot_be_routed_to_a_finance_read(
+    session, keyring
+) -> None:
+    op = _fresh_operation(session)
+    dispatcher = FakeDispatcher(resolve=ReadCompleted("query-result"))
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            ToolCall("finance.query_expenses", {"view": "total"})
+        ),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="午饭 38",
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
+    assert result.record_id is None
+    assert dispatcher.resolve_calls == []
+
+
 def test_a_finance_query_clarification_keeps_the_exact_tool_requirement(
     session, keyring, tmp_path
 ) -> None:
@@ -359,6 +380,37 @@ def test_a_visible_finance_query_cannot_be_called_unsupported_by_the_model(
     assert result.failure_reason == "FINANCE_TOOL_REQUIRED"
 
 
+def test_a_visible_finance_write_cannot_be_called_unsupported_by_the_model(
+    session, keyring, tmp_path
+) -> None:
+    op = _fresh_operation(session)
+    envelope = envelope_for(
+        tmp_path,
+        user_text="午饭 38",
+        tools=(
+            VisibleTool(
+                alias="finance.log_expense",
+                description="记录支出",
+                input_schema={"type": "object", "properties": {}},
+                risk_level="R2",
+                required_scopes=("finance.expense.write",),
+            ),
+        ),
+    )
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            FailSafeInterpretation("TOOL_NOT_ALLOWLISTED")
+        ),
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        build_context=lambda: envelope,
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
+
+
 def test_other_visible_finance_tools_do_not_make_query_look_available(
     session, keyring, tmp_path
 ) -> None:
@@ -416,6 +468,7 @@ def test_a_read_completes_without_touching_the_write_states(session, keyring) ->
         interpreter=FakeInterpreter(ToolCall("finance.query_expenses", {"view": "total"})),
         dispatcher=FakeDispatcher(resolve=ReadCompleted("本月 ¥2093")),
         keyring=keyring,
+        text="查一下这个月花了多少钱",
     )
     assert result.state == "succeeded"
     assert result.answer == "本月 ¥2093"

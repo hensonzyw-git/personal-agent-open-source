@@ -15,6 +15,11 @@ import pytest
 
 from personal_agent_core import manifest as manifest_module
 from personal_agent_core.errors import ErrorCode
+from personal_agent_core.finance_tools import (
+    FINANCE_READ_TOOLS,
+    FINANCE_TOOLS,
+    FINANCE_WRITE_TOOLS,
+)
 from personal_agent_core.manifest import (
     MANIFEST_PATH,
     build_manifest,
@@ -131,6 +136,17 @@ def test_five_finance_tools_with_only_batch_disabled() -> None:
         "finance.query_expenses",
         "meta.capabilities",
     }
+
+
+def test_finance_tool_effect_partition_matches_the_manifest() -> None:
+    finance = [entry for entry in tools() if entry["domain"] == "finance"]
+    assert {entry["name"] for entry in finance} == FINANCE_TOOLS
+    assert {
+        entry["name"] for entry in finance if entry["effect"] == "read"
+    } == FINANCE_READ_TOOLS
+    assert {
+        entry["name"] for entry in finance if entry["effect"] != "read"
+    } == FINANCE_WRITE_TOOLS
 
 
 def test_disabled_batch_states_why_it_is_off() -> None:

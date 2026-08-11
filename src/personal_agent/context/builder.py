@@ -81,6 +81,7 @@ from personal_agent.storage.models import (
 )
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.finance_tools import FINANCE_QUERY_TOOL
 from personal_agent_core.manifest import canonical_json
 
 
@@ -558,7 +559,7 @@ class ContextBuilder:
             or is_finance_retry_request(user_text)
         )
         finance_required_tool = (
-            "finance.query_expenses"
+            FINANCE_QUERY_TOOL
             if is_finance_query_request(finance_source_text)
             else None
         )
