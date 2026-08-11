@@ -63,10 +63,30 @@ final class ReviewModel {
         }
     }
 
+    /// Which card is being opened, and since when.
+    ///
+    /// Opening a card re-reads every record's *current* Feishu values, so it is a
+    /// genuine multi-round-trip wait — several seconds is normal, not a fault. What
+    /// was a fault is that the tap produced no visible response at all, which is
+    /// §3.5's named failure: slow and stuck looked identical.
+    ///
+    /// The start time is carried rather than a plain flag because §3.5 rejects a
+    /// looping spinner as the liveness signal — it animates just as happily when the
+    /// app has hung. Elapsed time cannot: it stops when the work stops.
+    struct Opening: Equatable {
+        let reviewID: String
+        let since: Date
+    }
+    private(set) var opening: Opening?
+
     func open(reviewID: String) async {
         guard !busy else { return }
         busy = true
-        defer { busy = false }
+        opening = Opening(reviewID: reviewID, since: Date())
+        defer {
+            busy = false
+            opening = nil
+        }
         do {
             let detail = try await center.open(reviewID: reviewID)
             openedDetail = OpenedReview(detail: detail)

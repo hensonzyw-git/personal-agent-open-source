@@ -4,6 +4,8 @@ import UIKit
 
 struct RootView: View {
     @Bindable var model: AppModel
+    /// The review list, reached from the ambient bar rather than from a tab.
+    @State private var showingReview = false
 
     var body: some View {
         switch model.phase {
@@ -12,24 +14,72 @@ struct RootView: View {
         case .needsEnrollment:
             NavigationStack { EnrollmentView(model: model) }
         case .ready, .revoked:
-            TabView {
-                // `DEV-030`: chat is the primary surface. It appears only once the
-                // service has named a Timeline; a revoked device gets the status
-                // screen and an honest explanation instead.
+            // §1a: one Timeline, no tab bar. The review is no longer a peer surface
+            // -- §1j and §1q make every long-running item reachable the same way,
+            // through the ambient bar rather than through its own tab.
+            //
+            // A revoked device has no Timeline to show, so the status screen becomes
+            // the root. `DEV-030`'s rule is unchanged: chat appears only once the
+            // service has named a Timeline.
+            NavigationStack {
                 if let chat = model.chat, model.phase == .ready {
-                    NavigationStack { ChatView(model: chat) }
-                        .tabItem { Label("对话", systemImage: "bubble.left.and.text.bubble.right") }
+                    timelineSurface(chat: chat)
+                } else {
+                    ServiceStatusView(model: model)
                 }
-                // `DEV-031`: the daily review. It reads only what the service
-                // proves, so it follows the same visibility rule as the chat.
-                if let review = model.review, model.phase == .ready {
-                    NavigationStack { ReviewListView(model: review) }
-                        .tabItem { Label("复核", systemImage: "checkmark.seal") }
-                }
-                NavigationStack { ServiceStatusView(model: model) }
-                    .tabItem { Label("状态", systemImage: "shield.lefthalf.filled") }
             }
         }
+    }
+
+    /// The Timeline plus the ambient bar, with the status entry in the navigation
+    /// bar (§1q's answer to 「状态页入口位置」: it is low-frequency, and with no
+    /// sidebar the trailing slot is the only sensible place left).
+    @ViewBuilder
+    private func timelineSurface(chat: ChatModel) -> some View {
+        VStack(spacing: 0) {
+            if let review = model.review {
+                AmbientOperationBar(
+                    pendingCount: pendingReviewCount(review.summaries)
+                ) {
+                    showingReview = true
+                }
+            }
+            ChatView(model: chat)
+        }
+        .background(Color.screenBackground)
+        .navigationTitle("Personal Agent")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    ServiceStatusView(model: model)
+                } label: {
+                    // §1q#4: the dot doubles as a health indicator, so an unhealthy
+                    // service is visible without opening the page. It reports only
+                    // what this client actually knows -- a failed read or a revoked
+                    // device -- and never guesses at the服务端's own health.
+                    Circle()
+                        .fill(healthColor)
+                        .frame(width: 11, height: 11)
+                        .accessibilityLabel(healthLabel)
+                }
+            }
+        }
+        .sheet(isPresented: $showingReview) {
+            if let review = model.review {
+                NavigationStack { ReviewListView(model: review) }
+            }
+        }
+    }
+
+    private var healthColor: Color {
+        if model.phase == .revoked { return .danger }
+        return model.lastError == nil ? .accentBrand : .pending
+    }
+
+    private var healthLabel: String {
+        if model.phase == .revoked { return "状态：本设备已被撤销" }
+        return model.lastError == nil ? "状态：正常" : "状态：最近一次读取失败"
     }
 }
 
@@ -131,6 +181,25 @@ struct ServiceStatusView: View {
             }
             .listRowBackground(Color.cardSurface)
 
+            // **Temporary bridge, and it must not outlive the gap that requires it.**
+            //
+            // §1a removes the review tab because §1j puts the card in the Timeline
+            // and §1q's ambient bar indexes it. The bar is built; the Timeline card
+            // is not, because `TimelineEvent` has no case for a review and the
+            // service emits no such event. So once nothing is pending the bar
+            // disappears -- correctly, by its own zero rule -- and reviewed history
+            // would have no entry point at all.
+            //
+            // Losing reachability of a surface that passed real-device acceptance is
+            // not an acceptable cost of a visual refactor. Delete this section when
+            // the review card reaches the Timeline.
+            if model.review != nil {
+                Section("复核") {
+                    NavigationLink("每日复核") { reviewDestination }
+                }
+                .listRowBackground(Color.cardSurface)
+            }
+
             Section("本设备可用的工具") {
                 if model.phase == .revoked {
                     // Not "no tools": unreadable. The distinction is the same one
@@ -215,6 +284,13 @@ struct ServiceStatusView: View {
     /// truncated in the middle instead, where a hash's distinguishing characters sit
     /// at both ends, and the whole value stays reachable through long-press copy so
     /// nothing is actually lost.
+    @ViewBuilder
+    private var reviewDestination: some View {
+        if let review = model.review {
+            ReviewListView(model: review)
+        }
+    }
+
     private func row(_ label: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(label).foregroundStyle(.secondary)

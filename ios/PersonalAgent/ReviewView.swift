@@ -28,9 +28,26 @@ struct ReviewListView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(summary.reviewDate).font(.headline)
-                            Text("\(summary.itemCount) 笔写入")
+                            if let opening = model.opening,
+                               opening.reviewID == summary.reviewID {
+                                // Says what is actually happening -- the values are
+                                // being re-read from Feishu -- next to a counter that
+                                // only advances while the app is alive.
+                                HStack(spacing: 5) {
+                                    Text("正在回读飞书当前值")
+                                    Text(
+                                        timerInterval: opening.since...Date.distantFuture,
+                                        countsDown: false
+                                    )
+                                    .tabularNumbers()
+                                }
                                 .font(.footnote)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.pending)
+                            } else {
+                                Text("\(summary.itemCount) 笔写入")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         Spacer()
                         statusBadge(summary.status)
@@ -38,6 +55,10 @@ struct ReviewListView: View {
                 }
                 .foregroundStyle(.primary)
                 .listRowBackground(Color.cardSurface)
+                // A second tap cannot start a second read -- `open` refuses while
+                // busy -- but leaving the rows live made that refusal look like the
+                // tap being ignored.
+                .disabled(model.busy)
             }
             if let error = model.lastError {
                 Text(error)

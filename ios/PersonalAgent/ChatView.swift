@@ -31,8 +31,9 @@ struct ChatView: View {
             composer
         }
         .background(Color.screenBackground)
-        .navigationTitle("对话")
-        .navigationBarTitleDisplayMode(.inline)
+        // No title of its own: §1a makes the Timeline the whole surface, so the
+        // navigation bar belongs to the app rather than to this view. `RootView`
+        // sets it, together with the status entry.
         .confirmationDialog(
             "服务端已提示这笔与现有记录疑似重复。仍然写入一条新记录？",
             isPresented: Binding(
