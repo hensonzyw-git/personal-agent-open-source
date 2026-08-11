@@ -35,12 +35,17 @@ from datetime import datetime
 from typing import Any, Callable, Final
 
 from sqlalchemy import Engine, delete, inspect, select, text, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.ids import new_id
 from personal_agent_core.manifest import canonical_json
-from personal_agent_core.sqlite import check_integrity
+from personal_agent_core.sqlite import (
+    check_integrity,
+    is_snapshot_conflict,
+    run_write_transaction,
+)
 from personal_agent_core.timeutil import parse_rfc3339, utc_now
 
 from personal_agent_dal.errors import DalError, DalErrorCode
@@ -178,7 +183,13 @@ def _handle_update_aggregate(
 def _handle_insert_operation_receipt(
     session: Session, action: dict[str, Any], context: ActionContext
 ) -> ActionResult:
-    """Claim an idempotency key, or refuse if it is spent on other content."""
+    """Verify an idempotency key is unspent, or refuse.
+
+    The row itself is written once by the command layer with the command's own
+    identity (design draft §5.2: "未命中 → 与业务写在同一事务插入"). If this
+    handler also inserted a row, one command would leave two receipts and the
+    first would be an orphan no command can be traced through.
+    """
     key = action["idempotency_key"]
     submitted = context.facts.get(
         "submitted_payload_sha256", context.request_payload_sha256
@@ -189,29 +200,10 @@ def _handle_insert_operation_receipt(
             DalErrorCode.IDEMPOTENCY_CONFLICT,
             internal_detail="idempotency key reused with different content",
         )
-    if existing is not None:
-        # A true replay: the key and the content both match, so the original
-        # receipt already represents this request. Nothing more to write.
-        return ActionResult()
-    session.add(
-        OperationReceiptRow(
-            operation_id=new_id(),
-            idempotency_key=key,
-            operation_spec_id=OPERATION_SPEC_ID,
-            command_type=COMMAND_TYPE,
-            actor_type=context.actor_type,
-            evidence_source_type=context.evidence_source_type,
-            receipt_code=ReceiptCode.APPLIED.value,
-            receipt_schema_version=OperationReceipt(ReceiptCode.APPLIED).schema_version,
-            request_payload_sha256=submitted,
-            response_payload_sha256=None,
-            recorded_at=context.now,
-        )
-    )
-    session.flush()
-    return ActionResult(
-        writes=("operation_receipt",), audit_summary="idempotency key claimed"
-    )
+    # Same content: the original receipt already represents this request, so
+    # nothing more to verify; the command layer's own replay check handles the
+    # no-rewrite case.
+    return ActionResult(audit_summary="idempotency key verified unspent")
 
 
 def _handle_apply_retention(
@@ -496,7 +488,16 @@ def apply_database_contract(
                 DalErrorCode.INVALID_ARGUMENT,
                 internal_detail="a migration action cannot share its command",
             )
-        return _run_migration_command(engine, command, now=now)
+        try:
+            return _run_migration_command(engine, command, now=now)
+        except DalError as error:
+            # Same receipt contract as a data command: a refusal is an
+            # `OperationOutcome`, never a bare exception escaping the entry
+            # point. Anything that is not a `DalError` is a defect and fails
+            # closed upward rather than being dressed up as a refusal.
+            return _refusal(
+                _REFUSAL_CODES.get(error.code, ReceiptCode.UNKNOWN), "migrated"
+            )
 
     return _run_data_command(engine, command, keyring=keyring, now=now)
 
@@ -604,96 +605,117 @@ def _run_data_command(
         request_payload_sha256=_payload_digest(payload),
     )
 
-    sessions = session_factory(engine)
-    try:
-        with sessions() as session, session.begin():
-            # The command's own key first: a replay of the whole command must
-            # not re-run its handlers, and a key spent on other content must
-            # not be re-used, whatever the actions say.
-            replay = _existing_receipt_digest(session, context.idempotency_key)
-            if replay is not None:
-                if replay != context.request_payload_sha256:
-                    raise DalError(
-                        DalErrorCode.IDEMPOTENCY_CONFLICT,
-                        internal_detail="command key reused with different content",
-                    )
-                return OperationOutcome(
-                    receipt=OperationReceipt(ReceiptCode.APPLIED),
-                    writes=(),
-                    events=(),
-                    entity_state=entity_state,
-                )
-
-            writes: list[str] = []
-            events: list[str] = []
-            summaries: list[str] = []
-            for step in payload["action_sequence"]:
-                handler = _ACTION_HANDLERS.get(step["command"])
-                if handler is None:
-                    raise DalError(
-                        DalErrorCode.INVALID_ARGUMENT,
-                        internal_detail=f"no handler for action {step['command']!r}",
-                    )
-                result = handler(session, step, context)
-                writes.extend(result.writes)
-                events.extend(result.events)
-                if result.audit_summary:
-                    summaries.append(result.audit_summary)
-
-            session.add(
-                OperationReceiptRow(
-                    operation_id=context.operation_id,
-                    idempotency_key=context.idempotency_key,
-                    operation_spec_id=command["operation_spec_id"],
-                    command_type=COMMAND_TYPE,
-                    actor_type=context.actor_type,
-                    evidence_source_type=context.evidence_source_type,
-                    receipt_code=ReceiptCode.APPLIED.value,
-                    receipt_schema_version=OperationReceipt(
-                        ReceiptCode.APPLIED
-                    ).schema_version,
-                    request_payload_sha256=context.request_payload_sha256,
-                    response_payload_sha256=None,
-                    recorded_at=now,
-                )
+    # Validation happens *before* the transaction opens: a malformed command
+    # must never touch the database, and a parse error must never come out of
+    # a write path looking like it might have written.
+    handlers: list[tuple[dict[str, Any], Callable[..., ActionResult]]] = []
+    for step in payload["action_sequence"]:
+        handler = _ACTION_HANDLERS.get(step["command"])
+        if handler is None:
+            raise DalError(
+                DalErrorCode.INVALID_ARGUMENT,
+                internal_detail=f"no handler for action {step['command']!r}",
             )
-            writes.append("operation_receipt")
+        handlers.append((step, handler))
 
-            for event_type in events:
-                _emit_operation_event(
-                    session,
-                    event_type=event_type,
-                    operation_id=context.operation_id,
-                    now=now,
-                    detail={"deleted_count": context.scratch.get("deleted_count")}
-                    if event_type == "database.retention_applied"
-                    else {},
+    def work(session: Session) -> OperationOutcome:
+        # The command's own key first: a replay of the whole command must
+        # not re-run its handlers, and a key spent on other content must
+        # not be re-used, whatever the actions say.
+        replay = _existing_receipt_digest(session, context.idempotency_key)
+        if replay is not None:
+            if replay != context.request_payload_sha256:
+                raise DalError(
+                    DalErrorCode.IDEMPOTENCY_CONFLICT,
+                    internal_detail="command key reused with different content",
                 )
+            return OperationOutcome(
+                receipt=OperationReceipt(ReceiptCode.APPLIED),
+                writes=(),
+                events=(),
+                entity_state=entity_state,
+            )
 
-            append_audit_event(
+        writes: list[str] = []
+        events: list[str] = []
+        summaries: list[str] = []
+        for step, handler in handlers:
+            result = handler(session, step, context)
+            writes.extend(result.writes)
+            events.extend(result.events)
+            if result.audit_summary:
+                summaries.append(result.audit_summary)
+
+        session.add(
+            OperationReceiptRow(
+                operation_id=context.operation_id,
+                idempotency_key=context.idempotency_key,
+                operation_spec_id=command["operation_spec_id"],
+                command_type=COMMAND_TYPE,
+                actor_type=context.actor_type,
+                evidence_source_type=context.evidence_source_type,
+                receipt_code=ReceiptCode.APPLIED.value,
+                receipt_schema_version=OperationReceipt(
+                    ReceiptCode.APPLIED
+                ).schema_version,
+                request_payload_sha256=context.request_payload_sha256,
+                response_payload_sha256=None,
+                recorded_at=now,
+            )
+        )
+        writes.append("operation_receipt")
+
+        for event_type in events:
+            _emit_operation_event(
                 session,
-                event_id=new_id(),
-                trace_id=context.operation_id,
-                event_type=COMMAND_TYPE,
-                redacted_summary="; ".join(summaries) or COMMAND_TYPE,
+                event_type=event_type,
+                operation_id=context.operation_id,
                 now=now,
+                detail={"deleted_count": context.scratch.get("deleted_count")}
+                if event_type == "database.retention_applied"
+                else {},
             )
-            writes.append("audit")
 
-    except DalError as error:
-        # The transaction is already rolled back: `create_database_engine`
-        # emits a real `BEGIN`, so nothing survives and no compensating write
-        # is needed. The receipt is the caller's answer and is not persisted.
-        return _refusal(
-            _REFUSAL_CODES.get(error.code, ReceiptCode.UNKNOWN), entity_state
+        append_audit_event(
+            session,
+            event_id=new_id(),
+            trace_id=context.operation_id,
+            event_type=COMMAND_TYPE,
+            redacted_summary="; ".join(summaries) or COMMAND_TYPE,
+            now=now,
+        )
+        writes.append("audit")
+
+        return OperationOutcome(
+            receipt=OperationReceipt(ReceiptCode.APPLIED),
+            writes=_dedupe(writes),
+            events=tuple(events),
+            entity_state=entity_state,
         )
 
-    return OperationOutcome(
-        receipt=OperationReceipt(ReceiptCode.APPLIED),
-        writes=_dedupe(writes),
-        events=tuple(events),
-        entity_state=entity_state,
-    )
+    # Snapshot conflicts are retried against fresh state; a business refusal
+    # (`DalError`) is mapped to its receipt code and not persisted; anything
+    # else rolls the whole unit back and escapes -- a defect fails closed
+    # upward rather than being dressed up as a refusal.
+    sessions = session_factory(engine)
+    for _attempt in range(3):
+        try:
+            with sessions() as session:
+                return run_write_transaction(session, lambda: work(session))
+        except OperationalError as error:
+            if not is_snapshot_conflict(error):
+                raise
+        except DalError as error:
+            # The transaction is already rolled back: `create_database_engine`
+            # emits a real `BEGIN`, so nothing survives and no compensating
+            # write is needed. The receipt is the caller's answer and is not
+            # persisted.
+            return _refusal(
+                _REFUSAL_CODES.get(error.code, ReceiptCode.UNKNOWN), entity_state
+            )
+    # A snapshot conflict that outlives its retries is not a business refusal:
+    # the service could not establish what happened, so the answer is UNKNOWN.
+    return _refusal(ReceiptCode.UNKNOWN, entity_state)
 
 
 def update_feature_state(
@@ -704,7 +726,12 @@ def update_feature_state(
     new_state: str,
     now: datetime | None = None,
 ) -> OperationOutcome:
-    """Advance one feature by compare-and-swap, or refuse with a conflict."""
+    """Advance one feature by compare-and-swap, or refuse with a conflict.
+
+    `entity_state` is the feature's own state: the state just applied on
+    success, or the state observed in the database on a refusal. Reporting a
+    hardcoded value would tell the caller the entity is somewhere it is not.
+    """
     now = now or utc_now()
     sessions = session_factory(engine)
     try:
@@ -729,14 +756,24 @@ def update_feature_state(
                 now=now,
             )
     except DalError as error:
+        observed: str | None = None
+        with sessions() as session:
+            # A Core select, not `Session.get()`: the answer must be the
+            # database's current row, not this caller's cached memory of it.
+            observed = session.execute(
+                select(Feature.__table__.c.state).where(
+                    Feature.__table__.c.feature_id == feature_id
+                )
+            ).scalar_one_or_none()
         return _refusal(
-            _REFUSAL_CODES.get(error.code, ReceiptCode.UNKNOWN), "migrated"
+            _REFUSAL_CODES.get(error.code, ReceiptCode.UNKNOWN),
+            observed if observed is not None else "unknown",
         )
     return OperationOutcome(
         receipt=OperationReceipt(ReceiptCode.APPLIED),
         writes=("feature_state", "audit"),
         events=(),
-        entity_state="migrated",
+        entity_state=new_state,
     )
 
 

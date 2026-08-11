@@ -157,6 +157,9 @@ class TransitionOutcome:
     reason_code: str | None
     reason_owner: str | None
     spec_id: str | None
+    #: True when nothing was applied because this exact command was already
+    #: applied before (§2.6): the receipt is the original one.
+    duplicate: bool = False
 
 
 class TransitionRefused(Exception):
@@ -802,6 +805,8 @@ def _w_external_effect(ctx: ApplyContext) -> None:
                 ReceiptCodes.VERSION_CONFLICT, "effect moved by another writer"
             )
         ctx.scratch["effect_id"] = ctx.aggregate_id
+        ctx.scratch["effect_from_state"] = ctx.from_state
+        ctx.scratch["effect_version"] = ctx.command.expected_version + 1
         return
 
     companion = _companion_for(ctx, "external_effect")
@@ -810,13 +815,17 @@ def _w_external_effect(ctx: ApplyContext) -> None:
         # create a second one. §3.6 binds the companion's owner to the root
         # aggregate, so the effect is looked up by that owner.
         effect = _effect_owned_by_root(ctx, companion["from_state"])
+        ctx.scratch["effect_from_state"] = effect.state
         effect.state = companion["to_state"]
         effect.version += 1
         effect.updated_at = ctx.now
         ctx.session.flush()
         ctx.scratch["effect_id"] = effect.effect_id
+        ctx.scratch["effect_version"] = effect.version
         return
     _new_effect(ctx, state="intent_recorded", origin="dal_dispatched")
+    ctx.scratch["effect_from_state"] = None
+    ctx.scratch["effect_version"] = 1
 
 
 def _effect_owned_by_root(ctx: ApplyContext, from_state: str) -> ExternalEffect:
@@ -913,25 +922,57 @@ def _w_observed_external_effect(ctx: ApplyContext) -> None:
 
 def _w_external_effect_outcome(ctx: ApplyContext) -> None:
     effect = _effect_for(ctx)
+    if (
+        ctx.spec["aggregate_type"] != "external_effect"
+        and ctx.scratch.get("effect_id") == effect.effect_id
+    ):
+        # The companion close already performed this effect's transition
+        # earlier in the apply order; the receipt and event recorded it.
+        # Raising the outcome here would move the same row a second time in
+        # one atomic unit -- a second version the receipts never mention.
+        return
+    ctx.scratch["effect_id"] = effect.effect_id
+    ctx.scratch["effect_from_state"] = effect.state
     effect.state = "confirmed_completed"
     effect.version += 1
     effect.updated_at = ctx.now
     ctx.session.flush()
+    ctx.scratch["effect_version"] = effect.version
 
 
 def _w_external_effect_inventory(ctx: ApplyContext) -> None:
-    """Recompute the owner's effect inventory digest (§3.2.1)."""
+    """Recompute the owner's effect inventory digest (§3.2.1).
+
+    The inventory is the *feature's* full set of effects, "不按
+    active/terminal/origin 过滤" — which includes effects owned by the
+    feature's recovery cases. Querying only `owner_aggregate_id == feature_id`
+    would miss exactly the effects a cancel/block decision most needs to see:
+    a recovery case's in-flight effect is still one of the feature's external
+    facts.
+    """
     table = ExternalEffect.__table__
+    feature_id = _owner_feature_id(ctx)
+    owner_ids: list[str] = [feature_id]
+    if feature_id != ctx.aggregate_id:
+        owner_ids.append(ctx.aggregate_id)
+    case_table = RecoveryCase.__table__
+    owner_ids.extend(
+        ctx.session.execute(
+            select(case_table.c.recovery_case_id).where(
+                case_table.c.feature_id == feature_id
+            )
+        ).scalars()
+    )
     rows = sorted(
         ctx.session.execute(
             select(table.c.effect_id, table.c.version, table.c.state).where(
-                table.c.owner_aggregate_id == ctx.aggregate_id
+                table.c.owner_aggregate_id.in_(owner_ids)
             )
         ).all()
     )
     inventory = {
         "schema_version": "dal.external-effect-inventory-binding/1.0",
-        "feature_id": _owner_feature_id(ctx),
+        "feature_id": feature_id,
         "effects": [
             {"effect_id": r[0], "version": r[1], "state": r[2]} for r in rows
         ],
@@ -940,23 +981,32 @@ def _w_external_effect_inventory(ctx: ApplyContext) -> None:
     feature = Feature.__table__
     ctx.session.execute(
         update(feature)
-        .where(feature.c.feature_id == _owner_feature_id(ctx))
+        .where(feature.c.feature_id == feature_id)
         .values(external_effect_inventory_sha256=digest)
     )
 
 
 def _w_external_effect_transition_receipt(ctx: ApplyContext) -> None:
     effect = _effect_under_command(ctx)
+    companion = _companion_for(ctx, "external_effect")
     ctx.session.add(
         TransitionReceipt(
             receipt_id=new_id(),
             idempotency_key=f"{ctx.command.idempotency_key}:effect",
             aggregate_type="external_effect",
             aggregate_id=effect.effect_id,
-            aggregate_version=effect.version,
-            spec_id=ctx.spec["spec_id"],
+            aggregate_version=ctx.scratch.get("effect_version", effect.version),
+            # A companion carries its own id: §2.3.1 gives each companion an
+            # independent identity and receipt, so naming the root spec here
+            # would attribute the effect's transition to a spec that did not
+            # perform it.
+            spec_id=companion["companion_id"] if companion is not None else ctx.spec["spec_id"],
             command_type=ctx.command.command_type,
-            from_state=effect.state,
+            # The pre-transition state, captured before `external_effect`
+            # mutated the row earlier in the apply order. Reading
+            # `effect.state` here would write the new state into both fields
+            # and erase the transition the receipt exists to prove.
+            from_state=ctx.scratch.get("effect_from_state", effect.state),
             to_state=effect.state,
             receipt_code=ReceiptCodes.APPLIED,
             receipt_schema_version=RECEIPT_SCHEMAS["external_effect"],
@@ -993,6 +1043,7 @@ def _w_recovery_case(ctx: ApplyContext) -> None:
                 ReceiptCodes.VERSION_CONFLICT, "recovery case moved by another writer"
             )
         ctx.scratch["recovery_case_id"] = ctx.aggregate_id
+        ctx.scratch["recovery_case_state"] = ctx.to_state
         return
     case = RecoveryCase(
         recovery_case_id=new_id(),
@@ -1010,20 +1061,41 @@ def _w_recovery_case(ctx: ApplyContext) -> None:
     ctx.session.add(case)
     ctx.session.flush()
     ctx.scratch["recovery_case_id"] = case.recovery_case_id
+    # The receipt and companion event must describe the case as it actually
+    # exists -- a later applier (a decision write set) may move it off
+    # `investigating` before the receipt writer runs, and the receipt is the
+    # only durable record of where the case ended up.
+    ctx.scratch["recovery_case_state"] = "investigating"
 
 
 def _w_recovery_transition_receipt(ctx: ApplyContext) -> None:
+    is_case_aggregate = ctx.spec["aggregate_type"] == "recovery_case"
     ctx.session.add(
         TransitionReceipt(
             receipt_id=new_id(),
             idempotency_key=f"{ctx.command.idempotency_key}:recovery",
             aggregate_type="recovery_case",
             aggregate_id=ctx.scratch.get("recovery_case_id", ctx.aggregate_id),
-            aggregate_version=(ctx.command.expected_version or 0) + 1,
+            # The receipt binds the recovery case's own version (§2.5), not
+            # the root aggregate's: a case created by this command
+            # (RECOVERY-OPEN) is at version 1 even though the command carried
+            # the feature's expected_version; a case being advanced is CAS'd
+            # against its own expected_version, so `+ 1` holds only there.
+            aggregate_version=(
+                (ctx.command.expected_version or 0) + 1 if is_case_aggregate else 1
+            ),
             spec_id=ctx.spec["spec_id"],
             command_type=ctx.command.command_type,
-            from_state=ctx.from_state,
-            to_state=ctx.to_state,
+            from_state=ctx.from_state if is_case_aggregate else None,
+            # The case's own destination, recorded by `_w_recovery_case`. The
+            # root's `to_state` would write the *feature's* state onto the
+            # case's receipt whenever the two differ (RECOVERY-OPEN leaves the
+            # feature in `needs_human` while the case starts `investigating`).
+            to_state=(
+                ctx.to_state
+                if is_case_aggregate
+                else ctx.scratch.get("recovery_case_state", ctx.to_state)
+            ),
             receipt_code=ReceiptCodes.APPLIED,
             receipt_schema_version=RECEIPT_SCHEMAS["recovery_case"],
             request_payload_sha256=ctx.request_payload_sha256,
@@ -1339,18 +1411,33 @@ def apply_transition(
                 )
 
             replayed = session.execute(
-                select(TransitionReceipt.__table__.c.request_payload_sha256).where(
+                select(
+                    TransitionReceipt.__table__.c.request_payload_sha256,
+                    TransitionReceipt.__table__.c.from_state,
+                    TransitionReceipt.__table__.c.to_state,
+                    TransitionReceipt.__table__.c.spec_id,
+                    TransitionReceipt.__table__.c.receipt_schema_version,
+                ).where(
                     TransitionReceipt.__table__.c.idempotency_key
                     == command.idempotency_key
                 )
-            ).scalar_one_or_none()
+            ).first()
             if replayed is not None:
-                if replayed != request_digest:
+                if replayed[0] != request_digest:
                     raise TransitionRefused(
                         ReceiptCodes.IDEMPOTENCY_CONFLICT,
                         "command key reused with different content",
                     )
-                raise _Replay(from_state)
+                # §2.6: a replay returns the *original* receipt, not the
+                # aggregate's current state -- a later transition may have
+                # moved it, and answering with "now" would erase what this
+                # command actually did.
+                raise _Replay(
+                    from_state=replayed[1],
+                    to_state=replayed[2],
+                    spec_id=replayed[3],
+                    receipt_schema=replayed[4],
+                )
 
             parameters = command.command_parameters
             spec = registry.resolve(
@@ -1420,14 +1507,15 @@ def apply_transition(
     except _Replay as replay:
         return TransitionOutcome(
             receipt_code=ReceiptCodes.APPLIED,
-            receipt_schema=RECEIPT_SCHEMAS[command.aggregate_type],
+            receipt_schema=replay.receipt_schema,
             writes=(),
             events=(),
-            from_state=replay.state,
-            to_state=replay.state,
+            from_state=replay.from_state,
+            to_state=replay.to_state,
             reason_code=None,
             reason_owner=None,
-            spec_id=None,
+            spec_id=replay.spec_id,
+            duplicate=True,
         )
     except TransitionRefused as refusal:
         return TransitionOutcome(
@@ -1468,7 +1556,7 @@ def apply_transition(
 
 def _emit_companion_events(ctx: ApplyContext) -> None:
     """One event row per companion transition, in the same transaction."""
-    for index, companion in enumerate(ctx.spec["atomic_companion_transitions"], 1):
+    for companion in ctx.spec["atomic_companion_transitions"]:
         # §3.6 binds an ExternalEffect companion to the root entity by
         # `owner_aggregate_id_source`, and fixes its owner type to the root's.
         # An unrecognised source would attach the effect to something else, so
@@ -1485,15 +1573,56 @@ def _emit_companion_events(ctx: ApplyContext) -> None:
                     ReceiptCodes.POLICY_DENIED,
                     f"companion {companion['companion_id']} owner type mismatch",
                 )
+        # The event belongs to the companion's aggregate, so both its id and
+        # its version come from that aggregate -- never from the root, and
+        # never from the companion's position in the list (§3.4). An
+        # ExternalEffect companion's effect was created or closed by an earlier
+        # applier, which recorded both in scratch; a missing entry means the
+        # write set that produces the effect was left out, which is a spec
+        # defect, not a default.
+        if companion["aggregate_type"] == "external_effect":
+            companion_aggregate_id = ctx.scratch.get("effect_id")
+            companion_aggregate_version = ctx.scratch.get("effect_version")
+            if companion_aggregate_id is None or companion_aggregate_version is None:
+                raise DalError(
+                    DalErrorCode.INTERNAL_ERROR,
+                    internal_detail=(
+                        f"companion {companion['companion_id']} has no effect in "
+                        "scratch: the write set is missing its effect member"
+                    ),
+                )
+        elif companion["aggregate_type"] == "recovery_case":
+            companion_aggregate_id = ctx.scratch.get("recovery_case_id")
+            if companion_aggregate_id is None:
+                raise DalError(
+                    DalErrorCode.INTERNAL_ERROR,
+                    internal_detail=(
+                        f"companion {companion['companion_id']} has no recovery "
+                        "case in scratch: the write set is missing recovery_case"
+                    ),
+                )
+            companion_aggregate_version = (
+                (ctx.command.expected_version or 0) + 1
+                if ctx.spec["aggregate_type"] == "recovery_case"
+                else 1
+            )
+        else:  # pragma: no cover - registry contains no other companion types
+            raise DalError(
+                DalErrorCode.INTERNAL_ERROR,
+                internal_detail=(
+                    f"unknown companion aggregate type: "
+                    f"{companion['aggregate_type']}"
+                ),
+            )
         payload = {"companion_id": companion["companion_id"]}
         ctx.session.add(
             Event(
-                event_id=f"{ctx.event_id}-companion-{index}",
+                event_id=f"{ctx.event_id}-companion-{companion['companion_id']}",
                 schema_version=EVENT_SCHEMA_VERSION,
                 event_type=companion["event_type"],
                 aggregate_type=companion["aggregate_type"],
-                aggregate_id=ctx.scratch.get("effect_id", ctx.aggregate_id),
-                aggregate_version=index,
+                aggregate_id=companion_aggregate_id,
+                aggregate_version=companion_aggregate_version,
                 command_id=ctx.command.idempotency_key,
                 causation_id=ctx.event_id,
                 correlation_id=ctx.aggregate_id,
@@ -1511,9 +1640,19 @@ def _emit_companion_events(ctx: ApplyContext) -> None:
 class _Replay(Exception):
     """An exact replay of an already-applied command. Rolls back, returns the receipt."""
 
-    def __init__(self, state: str) -> None:
-        self.state = state
-        super().__init__(state)
+    def __init__(
+        self,
+        *,
+        from_state: str | None,
+        to_state: str,
+        spec_id: str,
+        receipt_schema: str,
+    ) -> None:
+        self.from_state = from_state
+        self.to_state = to_state
+        self.spec_id = spec_id
+        self.receipt_schema = receipt_schema
+        super().__init__(f"{from_state} -> {to_state}")
 
 
 # The apply order and the applier table must name exactly the same members.

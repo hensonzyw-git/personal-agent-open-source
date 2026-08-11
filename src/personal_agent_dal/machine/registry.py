@@ -14,7 +14,7 @@ Resolution is by the exact tuple
 `(aggregate_type, from_state, command_type, target_state, effect_outcome,
 owner_aggregate_type, decision_action, reason_code)`. Wildcards are forbidden
 by §2.3.1 — each `from_state` is its own immutable `spec_id` — and the tuple
-above is the smallest key that is unique across all 275 specs.
+above is the smallest key that is unique across all 276 specs.
 """
 
 from __future__ import annotations
