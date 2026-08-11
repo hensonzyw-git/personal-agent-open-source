@@ -30,6 +30,7 @@ struct ChatView: View {
             Divider()
             composer
         }
+        .background(Color.screenBackground)
         .navigationTitle("对话")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
@@ -112,7 +113,7 @@ struct ChatView: View {
                     if let error = model.lastError {
                         Text(error)
                             .font(.footnote)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(.danger)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -137,9 +138,11 @@ struct ChatView: View {
         case .userMessage(let text, let clarificationOf):
             VStack(alignment: .trailing, spacing: 2) {
                 Text(text)
-                    .padding(10)
-                    .background(Color.accentColor.opacity(0.15))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.userBubble)
+                    .clipShape(RoundedRectangle(cornerRadius: Metric.bubbleRadius))
                 if clarificationOf != nil {
                     Text("补充澄清").font(.caption2).foregroundStyle(.secondary)
                 }
@@ -205,6 +208,14 @@ struct ChatView: View {
         cancellation: CancellationNote
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let badge = terminalBadge(for: outcome) {
+                HStack {
+                    Spacer(minLength: 0)
+                    Text(badge.text)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(badge.color)
+                }
+            }
             switch outcome {
             case .running:
                 HStack(spacing: 6) {
@@ -214,7 +225,7 @@ struct ChatView: View {
 
             case .recorded(let recordID, let tool):
                 Label("已写入飞书账本", systemImage: "checkmark.seal")
-                    .foregroundStyle(.green)
+                    .foregroundStyle(.accentText)
                 field("记录 ID", recordID)
                 if let tool { field("工具", tool) }
 
@@ -223,7 +234,7 @@ struct ChatView: View {
 
             case .needsClarification(let question):
                 Label("需要澄清", systemImage: "questionmark.circle")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.pending)
                 Text(question ?? "服务端没有给出问题正文；请重新描述这笔记录。")
                 if let operationID, question != nil {
                     Button("回答这个问题") {
@@ -236,7 +247,7 @@ struct ChatView: View {
 
             case .needsDuplicateDecision(let checkID, let existing):
                 Label("疑似重复，尚未写入", systemImage: "doc.on.doc")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.pending)
                 if let existing { Text(existing) }
                 field("duplicate_check_id", checkID)
                 if let resolved = model.resolvedDuplicateDecisions[checkID] {
@@ -282,12 +293,12 @@ struct ChatView: View {
 
             case .failedSafe(let reason):
                 Label("未写入", systemImage: "xmark.circle")
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.danger)
                 if let reason { field("原因", reason) }
 
             case .needsManualReview(let reason, let recordID):
                 Label("需要人工核对：写入结果无法确认", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.pending)
                 if let reason { field("原因", reason) }
                 if let recordID { field("记录 ID", recordID) }
                 if let operationID {
@@ -300,8 +311,12 @@ struct ChatView: View {
 
             case .indeterminate(let raw):
                 // The honest answer: this build cannot say what happened.
+                // §1i puts D1 at `danger`, not at the amber the other unresolved
+                // states use: amber means "waiting for you", and this state is not
+                // waiting for anything -- it is the one outcome that looks like a
+                // success and must never be read as one.
                 Label("本客户端无法判定结果", systemImage: "questionmark.diamond")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.danger)
                 field("服务端状态", raw)
                 Text("请不要当作已记录；在服务端或每日复核中确认。")
                     .font(.caption)
@@ -317,10 +332,77 @@ struct ChatView: View {
                 field("operation_id", operationID)
             }
         }
-        .padding(10)
+        .padding(Metric.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .background(Color.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(borderColor(for: outcome), lineWidth: borderWidth(for: outcome))
+        )
+    }
+
+    /// §1o 组件二: the terminal-state label in the card's top corner.
+    ///
+    /// One label set covers every outcome, so the *absence* of 写后回读一致 is itself
+    /// legible — §3.2's rule that a state may never be promoted only works if the
+    /// reader can see which rung was actually reached.
+    ///
+    /// `.answered` carries 无工具调用 (§2b). That case is a model reply with no tool
+    /// call behind it, and on 2026-08-11 one of those read as "好的，帮你记上！" with
+    /// nothing written. The card was correct to withhold a receipt, but nothing on
+    /// screen contradicted the sentence; this label is that contradiction.
+    private struct TerminalBadge {
+        let text: String
+        let color: Color
+    }
+
+    private func terminalBadge(for outcome: OperationOutcome) -> TerminalBadge? {
+        switch outcome {
+        // Not terminal: a badge here would name an outcome that has not happened.
+        case .running:
+            return nil
+        case .recorded:
+            return TerminalBadge(text: "写后回读一致", color: .accentText)
+        case .answered:
+            return TerminalBadge(text: "无工具调用", color: .secondary)
+        case .needsClarification, .needsDuplicateDecision, .needsManualReview:
+            return TerminalBadge(text: "待你处理", color: .pending)
+        case .failedSafe:
+            return TerminalBadge(text: "零副作用", color: .secondary)
+        case .cancelledBeforeSubmit:
+            return TerminalBadge(text: "你中止了", color: .secondary)
+        case .indeterminate:
+            return TerminalBadge(text: "无法判定", color: .danger)
+        }
+    }
+
+    /// §1i: 五种终态的边框与底色刻意不同重，**只有 D1 用实心红框**，而安全失败与已取消
+    /// 用最轻的样式。
+    ///
+    /// The weighting is the message, so it is derived from the outcome rather than
+    /// passed in by each call site: every card that renders `indeterminate` gets the
+    /// heavy border, and no card that does not render it can accidentally acquire one.
+    private func borderColor(for outcome: OperationOutcome) -> Color {
+        switch outcome {
+        case .indeterminate:
+            return .danger
+        case .needsClarification, .needsDuplicateDecision, .needsManualReview:
+            return .pending
+        default:
+            return .ink.opacity(0.12)
+        }
+    }
+
+    private func borderWidth(for outcome: OperationOutcome) -> CGFloat {
+        switch outcome {
+        case .indeterminate:
+            return 2
+        case .needsClarification, .needsDuplicateDecision, .needsManualReview:
+            return 1
+        default:
+            return Metric.hairline
+        }
     }
 
     private func liveCard(_ receipt: OperationReceipt) -> some View {
@@ -402,7 +484,7 @@ struct ChatView: View {
     private func unresolvedCard(_ pending: ChatTimeline.PendingSend) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("上一条消息尚未确认", systemImage: "clock.arrow.circlepath")
-                .foregroundStyle(.orange)
+                .foregroundStyle(.pending)
             Text(pending.text).font(.callout)
             if let operationID = pending.operationID {
                 field("operation_id", operationID)
@@ -433,10 +515,14 @@ struct ChatView: View {
             .font(.footnote)
             .disabled(model.busy)
         }
-        .padding(10)
+        .padding(Metric.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .background(Color.pending.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(Color.pending.opacity(0.35), lineWidth: Metric.hairline)
+        )
     }
 
     private func field(_ label: String, _ value: String) -> some View {
@@ -493,7 +579,7 @@ struct ChatView: View {
             if model.unresolved != nil {
                 Text("先处理上面那张卡片里的未确认消息，再发新的：否则同一笔可能被记两次。")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.pending)
             }
         }
         .padding(.horizontal)

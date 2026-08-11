@@ -37,13 +37,16 @@ struct ReviewListView: View {
                     }
                 }
                 .foregroundStyle(.primary)
+                .listRowBackground(Color.cardSurface)
             }
             if let error = model.lastError {
                 Text(error)
                     .font(.footnote)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.danger)
+                    .listRowBackground(Color.cardSurface)
             }
         }
+        .designSystemListSurface()
         .navigationTitle("复核")
         .refreshable { await model.load() }
         .task { await model.load() }
@@ -57,8 +60,8 @@ struct ReviewListView: View {
     private func statusBadge(_ status: ReviewStatus) -> some View {
         let (text, color): (String, Color) = {
             switch status {
-            case .pending: return ("待复核", .orange)
-            case .reviewed: return ("已复核", .green)
+            case .pending: return ("待复核", .pending)
+            case .reviewed: return ("已复核", .accentText)
             case .deferred: return ("稍后处理", .secondary)
             case .unrecognised(let raw): return (raw, .secondary)
             }
@@ -111,19 +114,23 @@ private struct ReviewDetailView: View {
             } footer: {
                 Text("确认和稍后都只改变复核状态，不会改动飞书记录；要改账，打开飞书账本直接改。")
             }
+            .listRowBackground(Color.cardSurface)
 
             Section("当日写入（打开时的飞书当前值）") {
                 ForEach(detail.items) { item in
                     itemCard(item)
                 }
             }
+            .listRowBackground(Color.cardSurface)
 
             if let error = model.lastError {
                 Section {
-                    Text(error).foregroundStyle(.red)
+                    Text(error).foregroundStyle(.danger)
                 }
+                .listRowBackground(Color.cardSurface)
             }
         }
+        .designSystemListSurface()
         .navigationTitle("\(detail.summary.reviewDate) 复核")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -149,7 +156,7 @@ private struct ReviewDetailView: View {
                 // record is a review that lies about what was written.
                 Label(unavailableText(unavailable), systemImage: "exclamationmark.triangle")
                     .font(.footnote)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.pending)
             }
             if let values = item.values {
                 ForEach(values.keys.sorted(), id: \.self) { key in
@@ -158,6 +165,7 @@ private struct ReviewDetailView: View {
                         Spacer(minLength: 12)
                         Text(values[key]?.displayText ?? "—")
                             .font(.callout)
+                            .tabularNumbers()
                             .multilineTextAlignment(.trailing)
                             .textSelection(.enabled)
                     }
@@ -166,7 +174,7 @@ private struct ReviewDetailView: View {
             if !item.unreadableFields.isEmpty {
                 Text("以下字段服务端未能解析：\(item.unreadableFields.joined(separator: "、"))")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.pending)
             }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("record_id").font(.caption).foregroundStyle(.secondary)

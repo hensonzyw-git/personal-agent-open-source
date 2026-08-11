@@ -14,6 +14,13 @@ struct PersonalAgentApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(model: model)
+                // The project predates its asset catalogue, so
+                // `ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME` was never set and
+                // an `AccentColor` asset alone does not become the global tint --
+                // every stock control would keep rendering in system blue against a
+                // design that has exactly one accent (§7). Setting it here keeps the
+                // decision in the source rather than in a build setting.
+                .tint(.accentBrand)
                 .task {
                     // The delegate is wired before `start` runs so iOS's
                     // remote-notification callbacks always have a coordinator

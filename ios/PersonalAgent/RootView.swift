@@ -1,5 +1,6 @@
 import PersonalAgentKit
 import SwiftUI
+import UIKit
 
 struct RootView: View {
     @Bindable var model: AppModel
@@ -46,6 +47,7 @@ struct EnrollmentView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            .listRowBackground(Color.cardSurface)
             Section("一次性注册码") {
                 TextField("在服务器执行 personal-agent-device issue-code", text: $model.enrollmentCode)
                     .textInputAutocapitalization(.never)
@@ -60,10 +62,12 @@ struct EnrollmentView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            .listRowBackground(Color.cardSurface)
             if let error = model.lastError {
                 Section {
-                    Text(error).foregroundStyle(.red)
+                    Text(error).foregroundStyle(.danger)
                 }
+                .listRowBackground(Color.cardSurface)
             }
             Section {
                 Button {
@@ -77,10 +81,12 @@ struct EnrollmentView: View {
                 }
                 .disabled(model.busy)
             }
+            .listRowBackground(Color.cardSurface)
         }
         // iOS 26 SDK: `scrollDismissesKeyboardMode` is an environment value now,
         // which also covers Form/List, not just ScrollView.
         .environment(\.scrollDismissesKeyboardMode, .immediately)
+        .designSystemListSurface()
         .navigationTitle("注册设备")
     }
 }
@@ -97,8 +103,9 @@ struct ServiceStatusView: View {
             if model.phase == .revoked {
                 Section {
                     Label("本设备已被撤销，服务端不会再签发 token。", systemImage: "xmark.shield")
-                        .foregroundStyle(.red)
+                        .foregroundStyle(.danger)
                 }
+                .listRowBackground(Color.cardSurface)
             }
 
             Section("设备") {
@@ -116,11 +123,13 @@ struct ServiceStatusView: View {
                     row("显示名", device.displayName)
                 }
             }
+            .listRowBackground(Color.cardSurface)
 
             Section("服务") {
                 row("地址", model.baseURLText)
                 row("工具集合版本", model.capabilities?.allowedToolsVersion ?? "—")
             }
+            .listRowBackground(Color.cardSurface)
 
             Section("本设备可用的工具") {
                 if model.phase == .revoked {
@@ -142,11 +151,13 @@ struct ServiceStatusView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .listRowBackground(Color.cardSurface)
 
             if let error = model.lastError {
                 Section("最近一次错误") {
-                    Text(error).foregroundStyle(.red)
+                    Text(error).foregroundStyle(.danger)
                 }
+                .listRowBackground(Color.cardSurface)
             }
 
             Section {
@@ -169,7 +180,9 @@ struct ServiceStatusView: View {
                     Text("清除本机凭证只删除本机密钥，不等于服务端撤销；两件事分开做。")
                 }
             }
+            .listRowBackground(Color.cardSurface)
         }
+        .designSystemListSurface()
         .navigationTitle("Personal Agent")
         .refreshable { await model.refresh() }
         .confirmationDialog(
@@ -194,14 +207,29 @@ struct ServiceStatusView: View {
         }
     }
 
+    /// A label/value row.
+    ///
+    /// Long opaque values -- `device_id`, the allowed-tools digest -- used to wrap
+    /// to two or three ragged right-aligned lines, which is both ugly and unreadable:
+    /// a hash broken across lines cannot be compared by eye anyway. They are
+    /// truncated in the middle instead, where a hash's distinguishing characters sit
+    /// at both ends, and the whole value stays reachable through long-press copy so
+    /// nothing is actually lost.
     private func row(_ label: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(label).foregroundStyle(.secondary)
             Spacer(minLength: 12)
             Text(value)
-                .multilineTextAlignment(.trailing)
                 .font(.callout)
-                .textSelection(.enabled)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.string = value
+                    } label: {
+                        Label("复制\(label)", systemImage: "doc.on.doc")
+                    }
+                }
         }
     }
 }
