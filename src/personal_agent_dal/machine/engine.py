@@ -126,6 +126,13 @@ class TransitionCommand:
     #: `None` for a creation command: there is no version to compare against yet.
     expected_version: int | None
     idempotency_key: str
+    #: The full evidence documents the trusted resolver collected, each carrying
+    #: the fields the guard validates under the ``evidence.*`` namespace. The
+    #: engine validates their schema (required fields present and non-degenerate)
+    #: before the guard's semantic binding checks — a null receipt ID is a
+    #: schema defect, not a semantic mismatch, and ``None == None`` would pass
+    #: the guard's ``equals_field`` check.
+    evidence_documents: tuple[dict[str, Any], ...] = ()
 
     @classmethod
     def from_fixture(cls, body: dict[str, Any], *, idempotency_key: str) -> "TransitionCommand":
@@ -141,6 +148,7 @@ class TransitionCommand:
             reason_code=body.get("reason_code"),
             expected_version=body["expected_version"],
             idempotency_key=idempotency_key,
+            evidence_documents=tuple(body.get("evidence_documents") or ()),
         )
 
 
@@ -1350,6 +1358,66 @@ def _check_actor_and_evidence(
         )
 
 
+#: Fields an evidence document must carry as non-degenerate values. The guard
+#: validates their *semantic* binding (cross-field equality); the schema stage
+#: validates their *presence* — a null or whitespace receipt ID is a malformed
+#: document, not a semantic mismatch, and ``None == None`` would pass the
+#: guard's ``equals_field`` check.
+_REQUIRED_EVIDENCE_FIELDS: tuple[str, ...] = (
+    "payload_sha256",
+    "impact_sha256",
+    "semantic_binding_sha256",
+    "authoritative_readback_sha256",
+)
+
+
+def _validate_evidence_documents(command: TransitionCommand) -> None:
+    """Schema-stage validation: each evidence document's required fields are present.
+
+    Runs after the actor/evidence-source allowlist and before the guard's
+    semantic binding checks. A document with a null, empty, or whitespace-only
+    required field is rejected here — the guard's ``equals_field`` would pass
+    ``None == None``, hiding the schema defect behind a semantic check that
+    cannot meaningfully evaluate.
+
+    ``authoritative_receipt_id`` is conditionally required: a
+    ``confirmed_completed`` outcome must carry a non-degenerate, whitespace-free
+    receipt ID (the effect was executed and has a receipt); a
+    ``confirmed_not_executed`` outcome may carry ``None`` (nothing was executed,
+    so there is no receipt to cite).
+    """
+    effect_outcome = command.command_parameters.get("effect_outcome")
+    for doc in command.evidence_documents:
+        for field in _REQUIRED_EVIDENCE_FIELDS:
+            value = doc.get(field)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                raise TransitionRefused(
+                    ReceiptCodes.POLICY_DENIED,
+                    f"evidence schema validation failed: "
+                    f"{field} is null/empty/whitespace",
+                )
+        if effect_outcome == "confirmed_completed":
+            receipt_id = doc.get("authoritative_receipt_id")
+            if receipt_id is None or not isinstance(receipt_id, str):
+                raise TransitionRefused(
+                    ReceiptCodes.POLICY_DENIED,
+                    "evidence schema validation failed: "
+                    "authoritative_receipt_id is null for confirmed_completed",
+                )
+            if not receipt_id.strip():
+                raise TransitionRefused(
+                    ReceiptCodes.POLICY_DENIED,
+                    "evidence schema validation failed: "
+                    "authoritative_receipt_id is empty/whitespace",
+                )
+            if receipt_id != receipt_id.strip():
+                raise TransitionRefused(
+                    ReceiptCodes.POLICY_DENIED,
+                    "evidence schema validation failed: "
+                    "authoritative_receipt_id has leading/trailing whitespace",
+                )
+
+
 def _check_guard(spec: dict[str, Any], facts: GuardFacts) -> None:
     guard_id = spec["guard_id"]
     if guard_id is None:
@@ -1469,6 +1537,7 @@ def apply_transition(
                 )
 
             _check_actor_and_evidence(spec, command)
+            _validate_evidence_documents(command)
             _check_guard(spec, facts)
 
             ctx = ApplyContext(
