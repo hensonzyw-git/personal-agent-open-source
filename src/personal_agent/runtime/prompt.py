@@ -29,6 +29,10 @@ _TEMPLATE = """
 - 不要为了填满业务工具 schema 而猜测缺失值；该澄清就澄清。比如“午饭45”没有说明
   个人或家庭，唯一合法输出是调用 agent.ask_clarification，绝不能猜 false 或 true。
 - 一次输出要么只有一个工具调用、不带任何解释文字，要么只有文字、不带工具调用。
+- 上下文中的 finance_retry_context 只会由服务端在上一笔账务操作已确认未调用工具时
+  注入。出现它时，按 original_user_text 和 answered_clarifications 继续处理；本轮只能
+  调用 finance.*、agent.ask_clarification 或 agent.fail_safely，绝不能用自由文本声称
+  已重试、已提交或已完成。
 
 通用规则：
 - 一条消息最多一个有副作用的调用。

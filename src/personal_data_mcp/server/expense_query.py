@@ -8,6 +8,7 @@ only supplies a source that has already been bound to the protected ledger.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from personal_data_mcp.feishu.adapter import FeishuAdapter
@@ -25,7 +26,7 @@ class ExpenseQueryDependencies:
     adapter: FeishuAdapter
     source: BaseSource
     config: LedgerConfig
-    validation: SchemaValidation
+    validate_schema: Callable[[], Awaitable[SchemaValidation]]
     cursor_secret: bytes
 
 
@@ -33,12 +34,16 @@ def build_handler(dependencies: ExpenseQueryDependencies) -> ToolHandler:
     """Return the only handler allowed to expose ``finance.query_expenses``."""
 
     async def handler(invocation: ToolInvocation) -> dict:
+        # The ledger schema is an external mutable boundary. Startup validation
+        # proves only that boot was safe; every request must re-read it before
+        # interpreting rows or issuing a cursor tied to that schema.
+        validation = await dependencies.validate_schema()
         return await query_expenses(
             invocation.arguments,
             adapter=dependencies.adapter,
             source=dependencies.source,
             config=dependencies.config,
-            validation=dependencies.validation,
+            validation=validation,
             cursor_secret=dependencies.cursor_secret,
         )
 

@@ -17,7 +17,10 @@ from cap001_fixtures import IDENTIFIER_KEY
 from personal_agent.context.builder import ContextBuilder, ContextEnvelope
 from personal_agent.context.compactor import Compactor
 from personal_agent.context.config import ContextConfig, default_context_config
-from personal_agent.context.continuation import ClarificationContext
+from personal_agent.context.continuation import (
+    ClarificationContext,
+    FinanceRetryContext,
+)
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent_core.crypto import KeyRing
 
@@ -45,6 +48,7 @@ def envelope_factory(
         current_event_id: str,
         user_text: str,
         clarification_context: ClarificationContext | None,
+        finance_retry_context: FinanceRetryContext | None,
     ) -> ContextEnvelope:
         return builder.build(
             session,
@@ -57,6 +61,7 @@ def envelope_factory(
             user_text=user_text,
             effective_tools=list(tools),
             clarification_context=clarification_context,
+            finance_retry_context=finance_retry_context,
         )
 
     return build_envelope

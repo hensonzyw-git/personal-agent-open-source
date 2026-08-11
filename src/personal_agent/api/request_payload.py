@@ -16,6 +16,7 @@ from typing import Any
 from personal_agent.context.continuation import (
     ClarificationContext,
     ClarificationExchange,
+    FinanceRetryContext,
 )
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
@@ -34,12 +35,14 @@ class ChatRequestPayload:
     clarification_of: str | None = None
     clarification_context: ClarificationContext | None = None
     clarification_question: str | None = None
+    finance_retry_context: FinanceRetryContext | None = None
 
 
 def seal_chat_request(
     keyring: KeyRing, *, request_id: str, payload: ChatRequestPayload
 ) -> dict[str, Any]:
     context = payload.clarification_context
+    retry = payload.finance_retry_context
     data: dict[str, Any] = {
         "kind": _KIND,
         "conversation_id": payload.conversation_id,
@@ -57,6 +60,19 @@ def seal_chat_request(
                 "source_operation_ids": list(context.source_operation_ids),
             }
             if context is not None
+            else None
+        ),
+        "finance_retry_context": (
+            {
+                "original_user_text": retry.original_user_text,
+                "completed_exchanges": [
+                    {"question": item.question, "answer": item.answer}
+                    for item in retry.completed_exchanges
+                ],
+                "source_operation_id": retry.source_operation_id,
+                "source_failure_reason": retry.source_failure_reason,
+            }
+            if retry is not None
             else None
         ),
     }
@@ -125,12 +141,16 @@ def open_chat_request(
             completed_exchanges=tuple(exchanges),
             source_operation_ids=tuple(raw_source_ids),
         )
+    retry_context = _open_retry_context(data.get("finance_retry_context"))
+    if context is not None and retry_context is not None:
+        raise _invalid("sealed chat request has conflicting continuation contexts")
     return ChatRequestPayload(
         conversation_id=conversation_id,
         text=text,
         clarification_of=_optional_str(data.get("clarification_of")),
         clarification_context=context,
         clarification_question=_optional_str(data.get("clarification_question")),
+        finance_retry_context=retry_context,
     )
 
 
@@ -143,6 +163,7 @@ def with_clarification_question(
         clarification_of=payload.clarification_of,
         clarification_context=payload.clarification_context,
         clarification_question=question,
+        finance_retry_context=payload.finance_retry_context,
     )
 
 
@@ -154,6 +175,18 @@ def continuation_context(
         raise _invalid("clarification source has no pending question")
     previous = payload.clarification_context
     if previous is None:
+        retry = payload.finance_retry_context
+        if retry is not None:
+            # The retry source may itself be a clarification answer. Preserve
+            # the complete answered chain when this retry needs one more fact.
+            # Empty source ids select the conservative legacy mode: no raw
+            # event is hidden unless the transcript/reference chain is exact.
+            return ClarificationContext(
+                original_user_text=retry.original_user_text,
+                question=question,
+                completed_exchanges=retry.completed_exchanges,
+                source_operation_ids=(),
+            )
         return ClarificationContext(
             original_user_text=payload.text,
             question=question,
@@ -178,6 +211,39 @@ def continuation_context(
             if previous.source_operation_ids
             else ()
         ),
+    )
+
+
+def _open_retry_context(value: Any) -> FinanceRetryContext | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise _invalid("sealed finance retry context is malformed")
+    original = value.get("original_user_text")
+    source_id = value.get("source_operation_id")
+    reason = value.get("source_failure_reason")
+    raw_exchanges = value.get("completed_exchanges", [])
+    if (
+        not isinstance(original, str)
+        or not isinstance(source_id, str)
+        or not isinstance(reason, str)
+        or not isinstance(raw_exchanges, list)
+    ):
+        raise _invalid("sealed finance retry context is malformed")
+    exchanges: list[ClarificationExchange] = []
+    for raw_exchange in raw_exchanges:
+        if not isinstance(raw_exchange, dict):
+            raise _invalid("sealed finance retry context is malformed")
+        question = raw_exchange.get("question")
+        answer = raw_exchange.get("answer")
+        if not isinstance(question, str) or not isinstance(answer, str):
+            raise _invalid("sealed finance retry context is malformed")
+        exchanges.append(ClarificationExchange(question=question, answer=answer))
+    return FinanceRetryContext(
+        original_user_text=original,
+        completed_exchanges=tuple(exchanges),
+        source_operation_id=source_id,
+        source_failure_reason=reason,
     )
 
 

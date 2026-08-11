@@ -33,6 +33,8 @@ class ErrorCode(StrEnum):
     # call. `DirectAnswer` carries no side effect, so a "我来帮你记录" that
     # never invoked a write tool must not look like success.
     BOOKKEEPING_TOOL_REQUIRED = "BOOKKEEPING_TOOL_REQUIRED"
+    #: A Finance read was answered from model text instead of the fact source.
+    FINANCE_TOOL_REQUIRED = "FINANCE_TOOL_REQUIRED"
 
     # Finance semantics
     CLARIFICATION_REQUIRED = "CLARIFICATION_REQUIRED"
@@ -79,6 +81,9 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.WRITES_DISABLED: "写入已被手动停用，未写入任何记录",
     ErrorCode.BOOKKEEPING_TOOL_REQUIRED: (
         "这是记账请求，但未调用记账工具，没有写入任何记录"
+    ),
+    ErrorCode.FINANCE_TOOL_REQUIRED: (
+        "这是账务查询，但未调用 Finance 工具，未返回账本结果"
     ),
     ErrorCode.CLARIFICATION_REQUIRED: "信息不完整，需要先确认后才能记账",
     ErrorCode.CATEGORY_NOT_ALLOWED: "分类不在账本的合法选项内",

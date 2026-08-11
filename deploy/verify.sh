@@ -206,6 +206,24 @@ if [ "$MCP_CODE" = "405" ]; then
 else
   fail "mcp GET /mcp -> $MCP_CODE, want 405"
 fi
+# A healthy HTTP endpoint is not proof that the newly composed read tool is in
+# the catalog. Exercise only MCP initialize + tools/list; this never invokes a
+# Finance handler or reads ledger data, and its output is discarded.
+expect_success "mcp catalog advertises finance.query_expenses" \
+  sudo -u "$MCP_USER" /opt/personal-agent/.venv/bin/python -c '
+import asyncio
+from personal_agent.mcp_client.core import McpClientCore, StreamableHttpTransport
+
+async def check():
+    async with McpClientCore(
+        "finance", StreamableHttpTransport(url="http://127.0.0.1:8811/mcp")
+    ) as client:
+        names = {tool.name for tool in await client.list_tools()}
+        if "finance.query_expenses" not in names:
+            raise SystemExit(1)
+
+asyncio.run(check())
+'
 # The API requires a device token; an unauthenticated request must be a 401,
 # which proves the app answered through the Unix socket.
 API_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \

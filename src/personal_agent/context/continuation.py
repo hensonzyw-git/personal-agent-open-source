@@ -24,3 +24,13 @@ class ClarificationContext:
     question: str
     completed_exchanges: tuple[ClarificationExchange, ...] = ()
     source_operation_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class FinanceRetryContext:
+    """Exact finance request whose previous attempt provably made no call."""
+
+    original_user_text: str
+    completed_exchanges: tuple[ClarificationExchange, ...] = ()
+    source_operation_id: str = ""
+    source_failure_reason: str = ""

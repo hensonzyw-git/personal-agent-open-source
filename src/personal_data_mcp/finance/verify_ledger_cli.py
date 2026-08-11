@@ -53,6 +53,11 @@ from personal_data_mcp.feishu.base_source import (
 from personal_data_mcp.feishu.credentials import load_credentials
 from personal_data_mcp.finance.ledger_config import LedgerConfig, load_ledger_config
 from personal_data_mcp.finance.query_expenses import query_expenses
+from personal_data_mcp.finance.query_cursor_secret import (
+    CURSOR_SECRET_ENV,
+    QueryCursorSecretError,
+    load_query_cursor_secret,
+)
 from personal_data_mcp.finance.schema_validator import (
     SchemaValidation,
     observed_field_from_feishu,
@@ -60,19 +65,10 @@ from personal_data_mcp.finance.schema_validator import (
 )
 
 
-#: Read from the environment like every other key, so it never reaches a command
-#: line. Must be at least 32 bytes after decoding; `query_expenses` re-checks.
-CURSOR_SECRET_ENV = "PERSONAL_DATA_MCP_QUERY_CURSOR_SECRET"
-
 #: A full pagination has to stop somewhere. A ledger year of personal expenses is
 #: thousands of rows, not millions; this bound exists so a cursor bug becomes a
 #: refusal instead of an unbounded read against the real ledger.
 MAX_PAGES = 500
-
-_BASE64URL_ALPHABET = frozenset(
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-)
-
 
 @dataclass(frozen=True)
 class ReadOnlyLedger:
@@ -172,44 +168,11 @@ async def run_query(
 
 
 def _cursor_secret(env: dict[str, str] | None = None) -> bytes:
-    """Decode the cursor signing key. **base64url only, on purpose.**
-
-    A first draft accepted base64url *or* hex, trying each in turn. That is a
-    guess between two encodings, and the two overlap: a 64-character hex key is
-    also valid base64url, so it decoded as base64 and produced a completely
-    different 48-byte secret than the operator intended. Self-consistent inside
-    this one tool, and wrong the moment anything else reads the same variable.
-    §5.1: do not invent a plausible rule -- pick one and refuse the rest.
-    """
-    import base64
-    import binascii
-    import os
-
-    env = env if env is not None else dict(os.environ)
-    raw = (env.get(CURSOR_SECRET_ENV) or "").strip()
-    if not raw:
-        raise SystemExit(
-            f"set {CURSOR_SECRET_ENV} to the query cursor signing key "
-            "(base64url, at least 32 bytes once decoded)"
-        )
-    # The alphabet is checked before decoding, because `urlsafe_b64decode`
-    # silently *discards* characters outside it: a typo'd key would decode to
-    # some shorter secret instead of being refused, and would be accepted
-    # outright if it still reached 32 bytes. (`validate=True` exists only on
-    # `b64decode`, not the urlsafe variant, so the check is explicit here.)
-    if raw.strip("=") and not set(raw.rstrip("=")) <= _BASE64URL_ALPHABET:
-        raise SystemExit(f"{CURSOR_SECRET_ENV} is not valid base64url")
     try:
-        secret = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
-    except (binascii.Error, ValueError) as error:
-        raise SystemExit(
-            f"{CURSOR_SECRET_ENV} is not valid base64url"
-        ) from error
-    if len(secret) < 32:
-        raise SystemExit(
-            f"{CURSOR_SECRET_ENV} decoded to {len(secret)} bytes; at least 32 "
-            "are required"
-        )
+        secret = load_query_cursor_secret(env)
+    except QueryCursorSecretError as error:
+        raise SystemExit(str(error)) from error
+    assert secret is not None  # required=True above
     return secret
 
 

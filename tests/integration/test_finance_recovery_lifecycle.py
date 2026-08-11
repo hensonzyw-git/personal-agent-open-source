@@ -6,6 +6,8 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from personal_agent_core.timeutil import utc_now
 from personal_data_mcp.server import composition
 
@@ -79,6 +81,91 @@ def test_finance_composition_runs_startup_and_periodic_recovery(
     assert len(calls) >= 2
     assert set(calls) == {composition.RECOVERY_SCAN_LIMIT}
     assert adapter.closed and fx.closed
+
+
+@pytest.mark.parametrize(
+    ("cursor_secret", "should_advertise"),
+    [(None, False), (b"q" * 32, True)],
+)
+def test_finance_composition_advertises_query_only_with_its_cursor_key(
+    monkeypatch, tmp_path: Path, cursor_secret, should_advertise
+) -> None:
+    adapter = Closable()
+    fx = Closable()
+    source = object()
+    validation = object()
+    query_handler = object()
+    captured_query_dependencies: list[object] = []
+    captured_registry: list[dict[str, object]] = []
+    config = SimpleNamespace(
+        base_token="bas_test",
+        ledger_kind="synthetic_test",
+        tables={},
+    )
+    monkeypatch.setattr(
+        composition, "load_protected_config", lambda _, **_kwargs: config
+    )
+    monkeypatch.setattr(composition, "load_credentials", lambda: object())
+    monkeypatch.setattr(composition, "load_base_source", lambda: object())
+    monkeypatch.setattr(
+        composition,
+        "require_synthetic_test_base",
+        lambda *_args, **_kwargs: source,
+    )
+    monkeypatch.setattr(composition, "FeishuAdapter", lambda *_a, **_k: adapter)
+    monkeypatch.setattr(composition, "FxConnector", lambda *_a, **_k: fx)
+    monkeypatch.setattr(composition, "load_data_keyring", lambda: object())
+    monkeypatch.setattr(
+        composition,
+        "load_query_cursor_secret",
+        lambda **_kwargs: cursor_secret,
+    )
+
+    async def validate(_dependencies):
+        return validation
+
+    async def recover(*_args, **_kwargs):
+        return []
+
+    def build_query(dependencies):
+        captured_query_dependencies.append(dependencies)
+        return query_handler
+
+    def build_registry(**handlers):
+        captured_registry.append(handlers)
+        return object()
+
+    monkeypatch.setattr(composition, "fresh_validation", validate)
+    monkeypatch.setattr(composition, "recover_unfinished", recover)
+    monkeypatch.setattr(composition, "build_expense_query_handler", build_query)
+    monkeypatch.setattr(composition, "build_expense_handler", lambda _: object())
+    monkeypatch.setattr(composition, "build_income_handler", lambda _: object())
+    monkeypatch.setattr(composition, "build_family_fund_handler", lambda _: object())
+    monkeypatch.setattr(composition, "build_registry", build_registry)
+    monkeypatch.setattr(composition, "build_record_reader", lambda _: object())
+
+    async def scenario() -> None:
+        async with composition.finance_tools(
+            config_path=tmp_path / "ledger.json",
+            sessions=object(),
+            recovery_interval_seconds=3600,
+        ):
+            pass
+
+    asyncio.run(scenario())
+
+    if should_advertise:
+        assert len(captured_query_dependencies) == 1
+        dependencies = captured_query_dependencies[0]
+        assert dependencies.adapter is adapter
+        assert dependencies.source is source
+        assert dependencies.config is config
+        assert asyncio.run(dependencies.validate_schema()) is validation
+        assert dependencies.cursor_secret == b"q" * 32
+        assert captured_registry[0]["expense_query_handler"] is query_handler
+    else:
+        assert captured_query_dependencies == []
+        assert captured_registry[0]["expense_query_handler"] is None
 
 
 def test_one_failed_execution_does_not_suppress_the_rest_of_the_scan(

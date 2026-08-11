@@ -66,7 +66,10 @@ from personal_agent.auth.enrollment import decode_device_scopes
 from personal_agent.context.builder import ContextBuilder, ContextEnvelope
 from personal_agent.context.compactor import Compactor
 from personal_agent.context.config import ContextConfig, default_context_config
-from personal_agent.context.continuation import ClarificationContext
+from personal_agent.context.continuation import (
+    ClarificationContext,
+    FinanceRetryContext,
+)
 from personal_agent.keys import (
     load_access_token_ring,
     load_agent_data_keyring,
@@ -639,6 +642,7 @@ async def agent_service(
                 current_event_id: str,
                 user_text: str,
                 clarification_context: ClarificationContext | None,
+                finance_retry_context: FinanceRetryContext | None,
             ) -> ContextEnvelope:
                 """Assemble this turn's context (`CAP-001` design §9).
 
@@ -663,6 +667,7 @@ async def agent_service(
                     user_text=user_text,
                     effective_tools=tools,
                     clarification_context=clarification_context,
+                    finance_retry_context=finance_retry_context,
                 )
 
             def compact_session(session, session_id: str) -> None:
