@@ -53,6 +53,7 @@ from personal_data_mcp.feishu.base_source import (
 from personal_data_mcp.feishu.credentials import load_credentials
 from personal_data_mcp.finance.fx_connector import FxConnector
 from personal_data_mcp.finance.ledger_config import LedgerConfig, load_ledger_config
+from personal_data_mcp.finance.query_cursor_secret import load_query_cursor_secret
 from personal_data_mcp.finance.reconciler import reconcile_write
 from personal_data_mcp.server.app import build_registry
 from personal_data_mcp.server.control import RecordReader
@@ -62,6 +63,10 @@ from personal_data_mcp.server.finance_write import (
     build_family_fund_handler,
     build_income_handler,
     fresh_validation,
+)
+from personal_data_mcp.server.expense_query import (
+    ExpenseQueryDependencies,
+    build_handler as build_expense_query_handler,
 )
 from personal_data_mcp.server.handlers import ToolRegistry
 from personal_data_mcp.server.record_reader import build_record_reader
@@ -202,6 +207,7 @@ async def finance_tools(
         raise ValueError("recovery_interval_seconds must be positive")
     allow_production = production_write_allowed()
     config = load_protected_config(config_path, allow_production=allow_production)
+    query_cursor_secret = load_query_cursor_secret(required=False)
     credentials = load_credentials()
     # The binding is chosen by the same switch that admitted the config: a
     # synthetic config always binds through `require_synthetic_test_base`; a
@@ -238,7 +244,21 @@ async def finance_tools(
         # Fail at boot rather than at the first write. This validation is
         # deliberately discarded: the handlers revalidate inside each call.
         await fresh_validation(dependencies)
+        query_handler = (
+            build_expense_query_handler(
+                ExpenseQueryDependencies(
+                    adapter=adapter,
+                    source=source,
+                    config=config,
+                    validate_schema=lambda: fresh_validation(dependencies),
+                    cursor_secret=query_cursor_secret,
+                )
+            )
+            if query_cursor_secret is not None
+            else None
+        )
         registry = build_registry(
+            expense_query_handler=query_handler,
             expense_write_handler=build_expense_handler(dependencies),
             income_write_handler=build_income_handler(dependencies),
             family_fund_handler=build_family_fund_handler(dependencies),

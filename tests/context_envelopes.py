@@ -25,7 +25,10 @@ from personal_agent.api.operation_store import open_operation
 from personal_agent.context.builder import ContextBuilder, ContextEnvelope
 from personal_agent.context.compactor import Compactor
 from personal_agent.context.config import default_context_config
-from personal_agent.context.continuation import ClarificationContext
+from personal_agent.context.continuation import (
+    ClarificationContext,
+    FinanceRetryContext,
+)
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.storage.engine import (
     create_all,
@@ -50,6 +53,7 @@ def envelope_for(
     tools: Sequence[VisibleTool] = (),
     history: Sequence[str] = (),
     clarification: ClarificationContext | None = None,
+    finance_retry: FinanceRetryContext | None = None,
     materialize_clarification_sources: bool = True,
     max_session_event_scan: int = 400,
     config=None,
@@ -154,6 +158,7 @@ def envelope_for(
             user_text=user_text,
             effective_tools=list(tools),
             clarification_context=resolved_clarification,
+            finance_retry_context=finance_retry,
         )
 
 

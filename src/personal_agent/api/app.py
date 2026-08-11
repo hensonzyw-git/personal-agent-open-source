@@ -29,12 +29,13 @@ import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text as text_clause
+from sqlalchemy.exc import IntegrityError
 
 from personal_agent.api import events
 from personal_agent.api.manual_review import (
@@ -83,7 +84,11 @@ from personal_agent.api.request_payload import (
 )
 from personal_agent.auth.tokens import TokenError, TokenKeyRing, verify_access_token
 from personal_agent.context.builder import ContextEnvelope
-from personal_agent.context.continuation import ClarificationContext
+from personal_agent.context.continuation import (
+    ClarificationContext,
+    ClarificationExchange,
+    FinanceRetryContext,
+)
 from personal_agent.context.config import (
     ContextConfig,
     ContextConfigError,
@@ -94,6 +99,10 @@ from personal_agent.context.session_manager import (
     SessionManager,
 )
 from personal_agent.keys import HmacKey, HmacKeyRing
+from personal_agent.runtime.bookkeeping_intent import (
+    is_bookkeeping_write_request,
+    is_finance_retry_request,
+)
 from personal_agent.storage.models import (
     REVIEW_STATUSES,
     ApiRequest,
@@ -136,6 +145,7 @@ class EnvelopeFactory(Protocol):
         current_event_id: str,
         user_text: str,
         clarification_context: ClarificationContext | None,
+        finance_retry_context: FinanceRetryContext | None,
     ) -> ContextEnvelope: ...
 
 
@@ -974,145 +984,36 @@ def _anchor_chat(
 
     with deps.session_factory() as session:
         try:
-            # `CAP-001` design 4.2.3: the client value is resolved onto the
-            # canonical Timeline *before* the fingerprint, the event and the
-            # operation, so it never decides a data boundary. An unknown id is
-            # a refusal, never a second Timeline.
-            timeline_id = events.resolve_timeline(
-                session,
-                deps.identifier_key,
-                client_conversation_id=conversation_id,
-                now=deps.now(),
-            )
-            fingerprint = chat_request_fingerprint(
-                conversation_id=timeline_id,
-                text=text,
-                clarification_of=clarification_of,
-            )
-            opened = open_operation(
-                session,
-                device_id=auth.device_id,
-                client_request_id=key,
-                request_fingerprint=fingerprint,
-                now=deps.now(),
-            )
-            operation = opened.operation
-            if not opened.created:
-                return _AnchoredChat(operation.operation_id, operation.state)
-
-            context = None
-            if clarification_of is not None:
-                source = _owned_operation(
-                    session,
-                    clarification_of,
-                    device_id=auth.device_id,
-                )
-                if source.state != "waiting_for_clarification":
-                    raise AppError(
-                        ErrorCode.INVALID_ARGUMENT,
-                        internal_detail=(
-                            "clarification_of must name an operation waiting "
-                            "for clarification"
+            for claim_attempt in range(2):
+                try:
+                    return run_write_transaction(
+                        session,
+                        lambda: _anchor_chat_in_transaction(
+                            session,
+                            deps,
+                            auth,
+                            key,
+                            conversation_id,
+                            text,
+                            clarification_of,
+                            resolved_classification,
                         ),
+                        attempts=8,
                     )
-                source_payload = open_chat_request(
-                    deps.keyring,
-                    request_id=source.request_id,
-                    envelope=source.api_request.encrypted_request_payload,
-                )
-                if source_payload.conversation_id != timeline_id:
-                    raise AppError(
-                        ErrorCode.INVALID_ARGUMENT,
-                        internal_detail=(
-                            "clarification must stay in the source conversation"
-                        ),
+                except IntegrityError as exc:
+                    # Usually SQLite serialises this as a snapshot conflict. If
+                    # both consumers instead reach the unique retry-lineage
+                    # constraint, the loser gets one fresh-state pass and then
+                    # anchors an unbound retry. Do not mask other constraints.
+                    retry_claim_conflict = (
+                        is_finance_retry_request(text)
+                        and "operations.retry_of_operation_id" in str(exc.orig)
                     )
-                context = continuation_context(
-                    source_payload,
-                    source_operation_id=source.operation_id,
-                )
-                transition_operation(
-                    session,
-                    operation_id=source.operation_id,
-                    current_state=source.state,
-                    current_version=source.state_version,
-                    target_state="cancelled_pre_submit",
-                    now=deps.now(),
-                )
-
-            payload = ChatRequestPayload(
-                conversation_id=timeline_id,
-                text=text,
-                clarification_of=clarification_of,
-                clarification_context=context,
-            )
-            operation.api_request.encrypted_request_payload = seal_chat_request(
-                deps.keyring,
-                request_id=operation.request_id,
-                payload=payload,
-            )
-            # A clarification answer belongs to the Session its question was
-            # asked in, even though the source operation has just been parked.
-            pinned = None
-            if clarification_of is not None:
-                pinned = _session_of_operation(session, clarification_of)
-            decision = deps.session_manager.select_session(
-                session,
-                conversation_id=timeline_id,
-                user_text=text,
-                now=deps.now(),
-                pinned_session_id=pinned,
-                resolved_classification=resolved_classification,
-            )
-            turn_id = events.new_turn_id()
-            if decision.is_boundary:
-                # A boundary is a Timeline fact with fixed wording, so every
-                # device renders the same divider. It is never fed back to the
-                # model as an instruction.
-                events.append_event(
-                    session,
-                    deps.keyring,
-                    conversation_id=timeline_id,
-                    session_id=decision.session_id,
-                    turn_id=turn_id,
-                    event_type=(
-                        events.SESSION_BOUNDARY_CORRECTED
-                        if decision.relation_kind == "corrects_boundary"
-                        else events.SESSION_DIVIDER
-                    ),
-                    content={"reason": decision.reason},
-                    operation_id=None,
-                    now=deps.now(),
-                )
-            events.append_event(
-                session,
-                deps.keyring,
-                conversation_id=timeline_id,
-                session_id=decision.session_id,
-                turn_id=turn_id,
-                event_type=events.USER_MESSAGE,
-                content={
-                    "text": text,
-                    **(
-                        {"clarification_of": clarification_of}
-                        if clarification_of is not None
-                        else {}
-                    ),
-                },
-                operation_id=operation.operation_id,
-                now=deps.now(),
-            )
-            logger.info(
-                "session boundary %s",
-                json.dumps(decision.audit_record(), sort_keys=True),
-            )
-            session.commit()
-            return _AnchoredChat(operation.operation_id, operation.state)
+                    if claim_attempt == 0 and retry_claim_conflict:
+                        continue
+                    raise
+            raise AssertionError("unreachable")  # pragma: no cover
         except StaleOperationVersionError as exc:
-            # The rollback below really does remove the request and operation
-            # this call opened: `begin_nested()` is a savepoint on this engine,
-            # so nothing it created survives the failed transaction.
-            session.rollback()
             raise AppError(
                 ErrorCode.INVALID_ARGUMENT,
                 internal_detail=(
@@ -1122,6 +1023,155 @@ def _anchor_chat(
         except Exception:
             session.rollback()
             raise
+
+
+def _anchor_chat_in_transaction(
+    session,
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    key: str,
+    conversation_id: str,
+    text: str,
+    clarification_of: str | None,
+    resolved_classification: ResolvedClassification,
+) -> _AnchoredChat:
+    """Anchor one chat against the transaction's current database snapshot."""
+    timeline_id = events.resolve_timeline(
+        session,
+        deps.identifier_key,
+        client_conversation_id=conversation_id,
+        now=deps.now(),
+    )
+    fingerprint = chat_request_fingerprint(
+        conversation_id=timeline_id,
+        text=text,
+        clarification_of=clarification_of,
+    )
+    opened = open_operation(
+        session,
+        device_id=auth.device_id,
+        client_request_id=key,
+        request_fingerprint=fingerprint,
+        now=deps.now(),
+    )
+    operation = opened.operation
+    if not opened.created:
+        return _AnchoredChat(operation.operation_id, operation.state)
+
+    context = None
+    retry_context = None
+    retry_source = None
+    if clarification_of is not None:
+        source = _owned_operation(
+            session,
+            clarification_of,
+            device_id=auth.device_id,
+        )
+        if source.state != "waiting_for_clarification":
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail=(
+                    "clarification_of must name an operation waiting for clarification"
+                ),
+            )
+        source_payload = open_chat_request(
+            deps.keyring,
+            request_id=source.request_id,
+            envelope=source.api_request.encrypted_request_payload,
+        )
+        if source_payload.conversation_id != timeline_id:
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail="clarification must stay in the source conversation",
+            )
+        context = continuation_context(
+            source_payload,
+            source_operation_id=source.operation_id,
+        )
+        transition_operation(
+            session,
+            operation_id=source.operation_id,
+            current_state=source.state,
+            current_version=source.state_version,
+            target_state="cancelled_pre_submit",
+            now=deps.now(),
+        )
+    elif is_finance_retry_request(text):
+        retry_source, retry_context = _eligible_finance_retry(
+            session,
+            deps,
+            device_id=auth.device_id,
+            conversation_id=timeline_id,
+            now=deps.now(),
+        )
+        if retry_source is not None:
+            operation.retry_of_operation_id = retry_source.operation_id
+
+    payload = ChatRequestPayload(
+        conversation_id=timeline_id,
+        text=text,
+        clarification_of=clarification_of,
+        clarification_context=context,
+        finance_retry_context=retry_context,
+    )
+    operation.api_request.encrypted_request_payload = seal_chat_request(
+        deps.keyring,
+        request_id=operation.request_id,
+        payload=payload,
+    )
+    pinned = None
+    if clarification_of is not None:
+        pinned = _session_of_operation(session, clarification_of)
+    elif retry_source is not None:
+        pinned = _session_of_operation(session, retry_source.operation_id)
+    decision = deps.session_manager.select_session(
+        session,
+        conversation_id=timeline_id,
+        user_text=text,
+        now=deps.now(),
+        pinned_session_id=pinned,
+        resolved_classification=resolved_classification,
+    )
+    turn_id = events.new_turn_id()
+    if decision.is_boundary:
+        events.append_event(
+            session,
+            deps.keyring,
+            conversation_id=timeline_id,
+            session_id=decision.session_id,
+            turn_id=turn_id,
+            event_type=(
+                events.SESSION_BOUNDARY_CORRECTED
+                if decision.relation_kind == "corrects_boundary"
+                else events.SESSION_DIVIDER
+            ),
+            content={"reason": decision.reason},
+            operation_id=None,
+            now=deps.now(),
+        )
+    events.append_event(
+        session,
+        deps.keyring,
+        conversation_id=timeline_id,
+        session_id=decision.session_id,
+        turn_id=turn_id,
+        event_type=events.USER_MESSAGE,
+        content={
+            "text": text,
+            **(
+                {"clarification_of": clarification_of}
+                if clarification_of is not None
+                else {}
+            ),
+        },
+        operation_id=operation.operation_id,
+        now=deps.now(),
+    )
+    logger.info(
+        "session boundary %s",
+        json.dumps(decision.audit_record(), sort_keys=True),
+    )
+    return _AnchoredChat(operation.operation_id, operation.state)
 
 
 def _process_chat(
@@ -1303,9 +1353,107 @@ def _context_factory(
             current_event_id=anchor.event_id,
             user_text=payload.text,
             clarification_context=payload.clarification_context,
+            finance_retry_context=payload.finance_retry_context,
         )
 
     return _TurnContext(build)
+
+
+_SAFE_FINANCE_RETRY_FAILURES = frozenset(
+    {"model_unavailable", ErrorCode.BOOKKEEPING_TOOL_REQUIRED.value}
+)
+_FINANCE_RETRY_LOOKBACK = timedelta(hours=24)
+
+
+def _eligible_finance_retry(
+    session,
+    deps: AgentApiDeps,
+    *,
+    device_id: str,
+    conversation_id: str,
+    now: datetime,
+) -> tuple[Operation | None, FinanceRetryContext | None]:
+    """Return the newest unconsumed Finance failure known to have made no call.
+
+    `failed_safe` alone is insufficient: a policy refusal, a dispatched write,
+    or a manual-review outcome must never be replayed. The closed reason set,
+    `tool IS NULL`, sealed request inspection and one-shot lineage jointly make
+    the retry narrower than the user's short phrase.
+    """
+    candidates = (
+        session.query(Operation)
+        .join(ApiRequest, Operation.request_id == ApiRequest.request_id)
+        .join(
+            ConversationEvent,
+            ConversationEvent.operation_id == Operation.operation_id,
+        )
+        .filter(
+            ApiRequest.device_id == device_id,
+            ConversationEvent.conversation_id == conversation_id,
+            ConversationEvent.event_type == events.USER_MESSAGE,
+            Operation.updated_at >= now - _FINANCE_RETRY_LOOKBACK,
+        )
+        .order_by(ConversationEvent.timeline_sequence.desc())
+        .yield_per(100)
+    )
+    for source in candidates:
+        payload = open_chat_request(
+            deps.keyring,
+            request_id=source.request_id,
+            envelope=source.api_request.encrypted_request_payload,
+        )
+        if payload.conversation_id != conversation_id:
+            continue
+        retry = payload.finance_retry_context
+        if retry is not None:
+            original = retry.original_user_text
+            exchanges = retry.completed_exchanges
+        elif payload.clarification_context is not None:
+            clarification = payload.clarification_context
+            original = clarification.original_user_text
+            exchanges = (
+                *clarification.completed_exchanges,
+                ClarificationExchange(
+                    question=clarification.question,
+                    answer=payload.text,
+                ),
+            )
+        else:
+            original = payload.text
+            exchanges = ()
+        finance_related = (
+            is_bookkeeping_write_request(original)
+            or payload.finance_retry_context is not None
+            or payload.clarification_context is not None
+            or is_finance_retry_request(payload.text)
+            or (source.tool is not None and source.tool.startswith("finance."))
+        )
+        if not finance_related:
+            continue
+        # Stop at the newest Finance-related operation. A later successful,
+        # dispatched, parked or outcome-unknown turn is a hard barrier: looking
+        # behind it for an older failure could duplicate a write. Ordinary chat
+        # between the failure and the explicit retry is intentionally ignored.
+        already_consumed = (
+            session.query(Operation.operation_id)
+            .filter(Operation.retry_of_operation_id == source.operation_id)
+            .first()
+        )
+        if (
+            source.state != "failed_safe"
+            or source.tool is not None
+            or source.failure_reason not in _SAFE_FINANCE_RETRY_FAILURES
+            or already_consumed is not None
+            or not is_bookkeeping_write_request(original)
+        ):
+            return None, None
+        return source, FinanceRetryContext(
+            original_user_text=original,
+            completed_exchanges=tuple(exchanges),
+            source_operation_id=source.operation_id,
+            source_failure_reason=source.failure_reason or "",
+        )
+    return None, None
 
 
 def _session_of_operation(session, operation_id: str) -> str | None:

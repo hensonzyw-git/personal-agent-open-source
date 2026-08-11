@@ -69,8 +69,10 @@ Deliberate choices, and why:
   that verification *is* this rollout (step 8/9). If a unit dies with `SECCOMP`
   in the journal, identify the syscall first, relax only what is needed, and
   record the deviation in `PROJECT_STATUS.md`. Do not preemptively weaken.
-- **No `--allow-tool` is set.** The composed catalog (three write tools +
-  `meta.capabilities`) is exactly what the live Simulator run exercised. A
+- **No `--allow-tool` is set.** The composed catalog contains the three write
+  tools, `meta.capabilities`, and `finance.query_expenses` when its independent
+  cursor credential is present. The older live Simulator run exercised only
+  the three writes plus meta. A
   read-only rollout would be expressed by adding `--allow-tool` to the API
   unit's `ExecStart`; that is a product decision, not a default.
 
@@ -96,7 +98,32 @@ sudo bash ~/personal-agent-deploy/provision_server_keys.sh
 ```
 
 Creates both env skeletons with the key-ring variables. Refuses to overwrite —
-key rotation is a deliberate act.
+key rotation is a deliberate act. Fresh installs also mint the independent
+Finance-query cursor secret directly on the server.
+
+For an existing ECS provisioned before the query composition fix, add only that
+missing credential without rotating any other key:
+
+```sh
+# First ship the reviewed deploy directory (step 1), so this is the script from
+# the same checkout as the application wheel.
+sudo bash ~/personal-agent-deploy/provision_query_cursor_secret.sh
+```
+
+The script serialises concurrent runs, does not print or replace the secret,
+and does not restart either service. Re-running it after success is a no-op.
+Continue through steps 5–8 in order: install this checkout, upgrade both
+databases (including Agent migration `0005`), then explicitly restart the
+already-enabled services in dependency order:
+
+```sh
+sudo systemctl restart personal-data-mcp
+sudo systemctl restart personal-agent-api
+```
+
+Finally run `verify.sh`. The acceptance script performs MCP `tools/list` and fails unless
+`finance.query_expenses` is genuinely advertised; it does not call the query
+handler or read ledger data.
 
 ### 4. Secrets: GLM, Feishu, user id (Mac → ECS)
 
@@ -217,6 +244,7 @@ files, key dirs) **each paired with the positive control that the owning user
 can read the same path**, socket group/mode for Nginx, MCP loopback-only, no
 8810 TCP listener, the DEV-034 timer enabled and active with a successful
 immediate report, 405 from the real MCP endpoint, 401 through the real API socket,
+the real MCP catalog advertising `finance.query_expenses`,
 the DEV-036 review/cleanup/backup oneshots successfully exercised, both backup
 witness timestamps readable but not writable by the observer, the last success
 fresh within 48 hours, the DEV-039 write switch present as root:root/0644 with
@@ -470,7 +498,9 @@ of a rollback.
   including full unit removal/reinstall and Nginx removal/restore while the
   personal site stayed 200; see
   `docs/evidence/DEV039完整恢复与回滚演练_2026-08-03.md`.
-- `finance.query_expenses` — its cursor-signing credential is not loaded by
-  server composition; the tool stays unadvertised (unchanged from DEV-027).
+- `finance.query_expenses` — server composition now advertises it only when
+  `PERSONAL_DATA_MCP_QUERY_CURSOR_SECRET` is present and strictly valid. The
+  code path is offline-tested; ECS catalog and real-iPhone query evidence still
+  have to be captured after deployment.
 - Real APNs device registration/sending and live receipt evidence — inputs are
   ready, but implementation remains outside this rollout.

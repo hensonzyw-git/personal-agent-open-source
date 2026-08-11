@@ -75,13 +75,14 @@ from personal_agent.policy.bridge import (
     GovernedToolBridge,
 )
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.finance_tools import FINANCE_READ_TOOLS
 from personal_agent_core.host_context import HostContext, ServiceKeyRing
 from personal_agent_core.manifest import canonical_json
 
 
 #: Tools with no side effect, which `resolve` may therefore execute outright.
 READ_TOOLS: frozenset[str] = frozenset(
-    {"finance.query_expenses", "meta.capabilities"}
+    {*FINANCE_READ_TOOLS, "meta.capabilities"}
 )
 
 
