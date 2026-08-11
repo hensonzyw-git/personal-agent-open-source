@@ -1,5 +1,5 @@
 {
-  "registry_sha256": "c9ddb46cde67a9cdbc04294ee2e7b1299dea9b00384779471d4b62d2044ec0a8",
+  "registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
   "schema_version": "dal.transition-spec-registry/1.0",
   "specs": [
     {
@@ -882,6 +882,58 @@
       "result_reason_owner": "feature",
       "schema_version": "dal.transition-spec/1.0",
       "spec_id": "BLK-DRIFT--fixing",
+      "success_receipt_code": "APPLIED",
+      "success_receipt_schema": "dal.transition-receipt/1.0",
+      "to_state": "needs_human"
+    },
+    {
+      "actor_evidence_bindings": [
+        {
+          "actor_type": "service",
+          "required_evidence_source_types": [
+            "workflow-service"
+          ]
+        }
+      ],
+      "aggregate_type": "feature",
+      "allowed_actor_types": [
+        "service"
+      ],
+      "allowed_decision_reason_codes": [],
+      "allowed_evidence_source_types": [
+        "workflow-service"
+      ],
+      "allowed_reason_codes": [
+        "STATE_DRIFT"
+      ],
+      "atomic_companion_transitions": [],
+      "atomic_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "command_parameters": {
+        "effect_outcome": null,
+        "target_state": "needs_human"
+      },
+      "command_type": "block_feature",
+      "event_type": "feature.blocked",
+      "evidence_schema_version": "dal.evidence.state-drift/1.0",
+      "from_state": "paused",
+      "guard_id": null,
+      "minimum_run_gate": "G1",
+      "required_evidence_schema_versions": [
+        "dal.evidence.state-drift/1.0"
+      ],
+      "requires_decision_action": null,
+      "result_reason_code": "STATE_DRIFT",
+      "result_reason_owner": "feature",
+      "schema_version": "dal.transition-spec/1.0",
+      "spec_id": "BLK-DRIFT--paused",
       "success_receipt_code": "APPLIED",
       "success_receipt_schema": "dal.transition-receipt/1.0",
       "to_state": "needs_human"

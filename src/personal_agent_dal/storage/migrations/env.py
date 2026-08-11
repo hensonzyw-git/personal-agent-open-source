@@ -19,6 +19,7 @@ from __future__ import annotations
 from alembic import context
 from sqlalchemy import Engine
 
+from personal_agent_dal.storage import machine_models  # noqa: F401 - registers tables
 from personal_agent_dal.storage.models import Base
 
 

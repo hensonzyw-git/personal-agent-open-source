@@ -1,5 +1,5 @@
 {
-  "authority_sha256": "0c20c8b163172bf436bd733f23e11f6ef73ae34e201b35455d703e171e444654",
+  "authority_sha256": "ea67980a510cf3ebb1531566ead6bb07fe3bacd551511110c8887705ed0e5b96",
   "authority_version": "1.0",
   "entries": {
     "dal.oracle/DAL-T-EVIDENCE-BINDING-001/completed_ascii_whitespace_authoritative_receipt/G1/1.0": {
@@ -30481,6 +30481,99 @@
         "entity_id": "fixture-entity",
         "entity_type": "feature",
         "state": "fixing",
+        "version": 7
+      },
+      "resolver_input": {
+        "commands": [
+          {
+            "actor_type": "unauthorized-actor",
+            "aggregate_id": "fixture-entity",
+            "aggregate_type": "feature",
+            "command_parameters": {
+              "effect_outcome": null,
+              "target_state": "needs_human"
+            },
+            "command_type": "block_feature",
+            "decision_action": null,
+            "evidence_schema_versions": [
+              "dal.evidence.state-drift/1.0"
+            ],
+            "evidence_source_types": [
+              "workflow-service"
+            ],
+            "expected_version": 7,
+            "reason_code": "STATE_DRIFT",
+            "schema_version": "dal.test-transition-command/1.0"
+          }
+        ],
+        "kind": "single"
+      },
+      "trusted_resolver_context": {
+        "guard_preconditions": {
+          "facts": [],
+          "guard_id": null,
+          "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
+          "schema_version": "dal.guard-fixture/1.0"
+        },
+        "schema_version": "dal.test-trusted-resolver-context/1.0"
+      }
+    },
+    "dal.oracle/DAL-T-SM-001/actor_deny--blk-drift--paused/G1/1.0": {
+      "authoritative_context": null,
+      "coverage_ref": "BLK-DRIFT--paused",
+      "expected_result": {
+        "allowed_write_set": [],
+        "coverage_ref": "BLK-DRIFT--paused",
+        "expected_atomic_companion_transitions": [],
+        "expected_event_trace": [],
+        "expected_external_effect_trace": [],
+        "expected_final_snapshot": {
+          "entity_type": "feature",
+          "reason_code": null,
+          "reason_owner": null,
+          "state": "paused"
+        },
+        "expected_receipts": [
+          {
+            "code": "POLICY_DENIED",
+            "count": 1,
+            "schema_version": "dal.transition-receipt/1.0"
+          }
+        ],
+        "expected_related_snapshots": [],
+        "expected_state_trace": [
+          "paused",
+          "paused"
+        ],
+        "forbidden_side_effects": [
+          "provider_call",
+          "github_write",
+          "worker_start",
+          "production_access"
+        ],
+        "injection_operation": {
+          "injection_point": "dal.inject/DAL-T-SM-001/actor_deny--blk-drift--paused/G1/1.0",
+          "occurrence": 1,
+          "operation_id": "actor_deny--blk-drift--paused",
+          "schema_version": "dal.test-injection/1.0"
+        },
+        "pre_state": {
+          "entity_id": "fixture-entity",
+          "entity_type": "feature",
+          "state": "paused",
+          "version": 7
+        },
+        "run_gate": "G1",
+        "scenario_assertions": [],
+        "schema_version": "dal.test-oracle/1.0",
+        "test_id": "DAL-T-SM-001",
+        "variant_id": "actor_deny--blk-drift--paused"
+      },
+      "fixture_ref": "dal.fixture/DAL-T-SM-001/actor_deny--blk-drift--paused/G1/1.0",
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "paused",
         "version": 7
       },
       "resolver_input": {
@@ -61417,6 +61510,99 @@
         "entity_id": "fixture-entity",
         "entity_type": "feature",
         "state": "fixing",
+        "version": 7
+      },
+      "resolver_input": {
+        "commands": [
+          {
+            "actor_type": "service",
+            "aggregate_id": "fixture-entity",
+            "aggregate_type": "feature",
+            "command_parameters": {
+              "effect_outcome": null,
+              "target_state": "needs_human"
+            },
+            "command_type": "block_feature",
+            "decision_action": null,
+            "evidence_schema_versions": [
+              "dal.evidence.state-drift/1.0"
+            ],
+            "evidence_source_types": [
+              "unauthorized-source"
+            ],
+            "expected_version": 7,
+            "reason_code": "STATE_DRIFT",
+            "schema_version": "dal.test-transition-command/1.0"
+          }
+        ],
+        "kind": "single"
+      },
+      "trusted_resolver_context": {
+        "guard_preconditions": {
+          "facts": [],
+          "guard_id": null,
+          "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
+          "schema_version": "dal.guard-fixture/1.0"
+        },
+        "schema_version": "dal.test-trusted-resolver-context/1.0"
+      }
+    },
+    "dal.oracle/DAL-T-SM-001/evidence_source_deny--blk-drift--paused/G1/1.0": {
+      "authoritative_context": null,
+      "coverage_ref": "BLK-DRIFT--paused",
+      "expected_result": {
+        "allowed_write_set": [],
+        "coverage_ref": "BLK-DRIFT--paused",
+        "expected_atomic_companion_transitions": [],
+        "expected_event_trace": [],
+        "expected_external_effect_trace": [],
+        "expected_final_snapshot": {
+          "entity_type": "feature",
+          "reason_code": null,
+          "reason_owner": null,
+          "state": "paused"
+        },
+        "expected_receipts": [
+          {
+            "code": "POLICY_DENIED",
+            "count": 1,
+            "schema_version": "dal.transition-receipt/1.0"
+          }
+        ],
+        "expected_related_snapshots": [],
+        "expected_state_trace": [
+          "paused",
+          "paused"
+        ],
+        "forbidden_side_effects": [
+          "provider_call",
+          "github_write",
+          "worker_start",
+          "production_access"
+        ],
+        "injection_operation": {
+          "injection_point": "dal.inject/DAL-T-SM-001/evidence_source_deny--blk-drift--paused/G1/1.0",
+          "occurrence": 1,
+          "operation_id": "evidence_source_deny--blk-drift--paused",
+          "schema_version": "dal.test-injection/1.0"
+        },
+        "pre_state": {
+          "entity_id": "fixture-entity",
+          "entity_type": "feature",
+          "state": "paused",
+          "version": 7
+        },
+        "run_gate": "G1",
+        "scenario_assertions": [],
+        "schema_version": "dal.test-oracle/1.0",
+        "test_id": "DAL-T-SM-001",
+        "variant_id": "evidence_source_deny--blk-drift--paused"
+      },
+      "fixture_ref": "dal.fixture/DAL-T-SM-001/evidence_source_deny--blk-drift--paused/G1/1.0",
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "paused",
         "version": 7
       },
       "resolver_input": {
@@ -93326,6 +93512,109 @@
         "entity_id": "fixture-entity",
         "entity_type": "feature",
         "state": "fixing",
+        "version": 7
+      },
+      "resolver_input": {
+        "commands": [
+          {
+            "actor_type": "service",
+            "aggregate_id": "fixture-entity",
+            "aggregate_type": "feature",
+            "command_parameters": {
+              "effect_outcome": null,
+              "target_state": "needs_human"
+            },
+            "command_type": "block_feature",
+            "decision_action": null,
+            "evidence_schema_versions": [
+              "dal.evidence.state-drift/1.0"
+            ],
+            "evidence_source_types": [
+              "workflow-service"
+            ],
+            "expected_version": 7,
+            "reason_code": "STATE_DRIFT",
+            "schema_version": "dal.test-transition-command/1.0"
+          }
+        ],
+        "kind": "single"
+      },
+      "trusted_resolver_context": {
+        "guard_preconditions": {
+          "facts": [],
+          "guard_id": null,
+          "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
+          "schema_version": "dal.guard-fixture/1.0"
+        },
+        "schema_version": "dal.test-trusted-resolver-context/1.0"
+      }
+    },
+    "dal.oracle/DAL-T-SM-001/expanded_spec_allow--blk-drift--paused/G1/1.0": {
+      "authoritative_context": null,
+      "coverage_ref": "BLK-DRIFT--paused",
+      "expected_result": {
+        "allowed_write_set": [
+          "aggregate",
+          "business_event",
+          "transition_receipt",
+          "audit",
+          "decision_create",
+          "decision_projection",
+          "notification_outbox"
+        ],
+        "coverage_ref": "BLK-DRIFT--paused",
+        "expected_atomic_companion_transitions": [],
+        "expected_event_trace": [
+          "feature.blocked"
+        ],
+        "expected_external_effect_trace": [],
+        "expected_final_snapshot": {
+          "entity_type": "feature",
+          "reason_code": "STATE_DRIFT",
+          "reason_owner": "feature",
+          "state": "needs_human"
+        },
+        "expected_receipts": [
+          {
+            "code": "APPLIED",
+            "count": 1,
+            "schema_version": "dal.transition-receipt/1.0"
+          }
+        ],
+        "expected_related_snapshots": [],
+        "expected_state_trace": [
+          "paused",
+          "needs_human"
+        ],
+        "forbidden_side_effects": [
+          "provider_call",
+          "github_write",
+          "worker_start",
+          "production_access"
+        ],
+        "injection_operation": {
+          "injection_point": "dal.inject/DAL-T-SM-001/expanded_spec_allow--blk-drift--paused/G1/1.0",
+          "occurrence": 1,
+          "operation_id": "expanded_spec_allow--blk-drift--paused",
+          "schema_version": "dal.test-injection/1.0"
+        },
+        "pre_state": {
+          "entity_id": "fixture-entity",
+          "entity_type": "feature",
+          "state": "paused",
+          "version": 7
+        },
+        "run_gate": "G1",
+        "scenario_assertions": [],
+        "schema_version": "dal.test-oracle/1.0",
+        "test_id": "DAL-T-SM-001",
+        "variant_id": "expanded_spec_allow--blk-drift--paused"
+      },
+      "fixture_ref": "dal.fixture/DAL-T-SM-001/expanded_spec_allow--blk-drift--paused/G1/1.0",
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "paused",
         "version": 7
       },
       "resolver_input": {
@@ -151538,15 +151827,15 @@
       }
     }
   },
-  "frozen_transition_registry_sha256": "c9ddb46cde67a9cdbc04294ee2e7b1299dea9b00384779471d4b62d2044ec0a8",
+  "frozen_transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
   "schema_version": "dal.transition-oracle-authority/1.0",
   "semantic_counts": {
-    "complete_pre_state_command_result_entries": 1068,
-    "resolver_command_objects": 1069,
+    "complete_pre_state_command_result_entries": 1071,
+    "resolver_command_objects": 1072,
     "sequence_entries": 1,
-    "single_command_entries": 1067,
-    "transition_oracle_entries": 1068,
-    "transition_specs": 275
+    "single_command_entries": 1070,
+    "transition_oracle_entries": 1071,
+    "transition_specs": 276
   },
   "source_boundary": "static-independent-review-authority; never generated by build_contract_manifests.py",
   "transition_specs": {
@@ -152430,6 +152719,58 @@
       "result_reason_owner": "feature",
       "schema_version": "dal.transition-spec/1.0",
       "spec_id": "BLK-DRIFT--fixing",
+      "success_receipt_code": "APPLIED",
+      "success_receipt_schema": "dal.transition-receipt/1.0",
+      "to_state": "needs_human"
+    },
+    "BLK-DRIFT--paused": {
+      "actor_evidence_bindings": [
+        {
+          "actor_type": "service",
+          "required_evidence_source_types": [
+            "workflow-service"
+          ]
+        }
+      ],
+      "aggregate_type": "feature",
+      "allowed_actor_types": [
+        "service"
+      ],
+      "allowed_decision_reason_codes": [],
+      "allowed_evidence_source_types": [
+        "workflow-service"
+      ],
+      "allowed_reason_codes": [
+        "STATE_DRIFT"
+      ],
+      "atomic_companion_transitions": [],
+      "atomic_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "command_parameters": {
+        "effect_outcome": null,
+        "target_state": "needs_human"
+      },
+      "command_type": "block_feature",
+      "event_type": "feature.blocked",
+      "evidence_schema_version": "dal.evidence.state-drift/1.0",
+      "from_state": "paused",
+      "guard_id": null,
+      "minimum_run_gate": "G1",
+      "required_evidence_schema_versions": [
+        "dal.evidence.state-drift/1.0"
+      ],
+      "requires_decision_action": null,
+      "result_reason_code": "STATE_DRIFT",
+      "result_reason_owner": "feature",
+      "schema_version": "dal.transition-spec/1.0",
+      "spec_id": "BLK-DRIFT--paused",
       "success_receipt_code": "APPLIED",
       "success_receipt_schema": "dal.transition-receipt/1.0",
       "to_state": "needs_human"

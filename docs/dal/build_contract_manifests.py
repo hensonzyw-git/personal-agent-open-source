@@ -1158,7 +1158,7 @@ def build_transition_registry() -> tuple[list[dict], str]:
         ("BLK-BUDGET", ["planning", "coding", "reviewing", "fixing"], "needs_human", "BUDGET_LIMIT", "budget-controller", "dal.evidence.budget/1.0"),
         ("BLK-LOOP", ["fixing"], "needs_human", "REVIEW_LOOP_LIMIT", "workflow-service", "dal.evidence.review-loop/1.0"),
         ("BLK-GIT", ["approved", "coding", "verifying", "reviewing", "fixing", "verified", "awaiting_merge"], "needs_human", "GIT_CONFLICT", "github-control", "dal.evidence.git-readback/1.0"),
-        ("BLK-DRIFT", ["awaiting_plan_review", "approved", "coding", "verifying", "reviewing", "fixing", "verified", "awaiting_merge"], "needs_human", "STATE_DRIFT", "workflow-service", "dal.evidence.state-drift/1.0"),
+        ("BLK-DRIFT", ["awaiting_plan_review", "approved", "coding", "verifying", "reviewing", "fixing", "verified", "awaiting_merge", "paused"], "needs_human", "STATE_DRIFT", "workflow-service", "dal.evidence.state-drift/1.0"),
         ("BLK-POST-EFFECT", ["merged", "deployed"], "needs_human", "POST_EFFECT_EXCEPTION", "workflow-service", "dal.evidence.post-effect-failure/1.0"),
     ]
     for family, states, target, reason, source, evidence in blocks:
