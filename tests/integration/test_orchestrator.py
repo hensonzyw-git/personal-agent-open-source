@@ -49,7 +49,7 @@ from personal_agent.storage.engine import (
 )
 from personal_agent.storage.models import Device, Operation
 from personal_agent_core.crypto import KeyRing, generate_key
-from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.errors import AppError, ErrorCode, ModelFailureReason
 
 
 NOW = datetime(2026, 7, 24, 7, 0, tzinfo=timezone.utc)
@@ -459,6 +459,29 @@ def test_a_model_failure_fails_safe(session, keyring) -> None:
     )
     assert result.state == "failed_safe"
     assert result.failure_reason == "model_unavailable"
+
+
+def test_a_classified_model_failure_persists_its_safe_reason(session, keyring) -> None:
+    class TimeoutInterpreter:
+        def interpret(self, *, envelope):
+            from personal_agent.api.orchestrator import InterpreterError
+
+            raise InterpreterError(
+                "provider timed out",
+                failure_reason=ModelFailureReason.PROVIDER_TIMEOUT.value,
+            )
+
+    op = _fresh_operation(session)
+    result = _run(
+        session,
+        op,
+        interpreter=TimeoutInterpreter(),
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == ModelFailureReason.PROVIDER_TIMEOUT.value
+    assert op.failure_reason == ModelFailureReason.PROVIDER_TIMEOUT.value
 
 
 def test_a_read_completes_without_touching_the_write_states(session, keyring) -> None:

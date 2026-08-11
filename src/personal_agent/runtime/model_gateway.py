@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from personal_agent.context.builder import ContextEnvelope
+from personal_agent_core.errors import ModelFailureReason
 
 
 class ModelGatewayError(RuntimeError):
@@ -30,6 +31,23 @@ class ModelGatewayError(RuntimeError):
     The interpreter translates it into the orchestrator's `InterpreterError`, so a
     bad model turn becomes a safe failure and never a write.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: ModelFailureReason = ModelFailureReason.UNAVAILABLE,
+        provider_status: int | None = None,
+        provider_code: str | None = None,
+        provider_request_id: str | None = None,
+        exception_type: str | None = None,
+    ) -> None:
+        self.reason = reason
+        self.provider_status = provider_status
+        self.provider_code = provider_code
+        self.provider_request_id = provider_request_id
+        self.exception_type = exception_type
+        super().__init__(message)
 
 
 @dataclass(frozen=True)

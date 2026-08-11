@@ -69,6 +69,32 @@ class ErrorCode(StrEnum):
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
+class ModelFailureReason(StrEnum):
+    """Stable, safe-to-store reasons for a pre-submit model-turn failure.
+
+    These are operation ``failure_reason`` values rather than ``ErrorCode``
+    envelopes: a chat operation has already been accepted and needs a durable,
+    retry-safe outcome.  They intentionally contain no provider message or
+    identifier.
+    """
+
+    UNAVAILABLE = "model_unavailable"
+    PROVIDER_TIMEOUT = "model_provider_timeout"
+    PROVIDER_RATE_LIMITED = "model_provider_rate_limited"
+    PROVIDER_AUTH_FAILED = "model_provider_auth_failed"
+    PROVIDER_REJECTED = "model_provider_rejected"
+    PROVIDER_UNAVAILABLE = "model_provider_unavailable"
+    RESPONSE_INVALID = "model_response_invalid"
+
+
+# A failed model turn has not reached a governed business tool.  These reasons
+# are therefore eligible for the sealed, one-shot Finance retry flow; the
+# caller still has to make that explicit and the normal policy path still runs.
+MODEL_RETRYABLE_FAILURE_REASONS: Final[frozenset[str]] = frozenset(
+    reason.value for reason in ModelFailureReason
+)
+
+
 #: Outward messages. Fixed text only: no interpolation of provider output,
 #: amounts, record identifiers, Base or table identifiers.
 ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {

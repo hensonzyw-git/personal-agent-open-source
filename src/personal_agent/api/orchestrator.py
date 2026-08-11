@@ -26,6 +26,7 @@ argument.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -37,7 +38,12 @@ from personal_agent.api.operation_store import transition_operation
 from personal_agent.context.builder import ContextEnvelope
 from personal_agent.storage.models import Operation
 from personal_agent_core.crypto import KeyRing
-from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.errors import (
+    MODEL_RETRYABLE_FAILURE_REASONS,
+    AppError,
+    ErrorCode,
+    ModelFailureReason,
+)
 from personal_agent_core.finance_tools import (
     FINANCE_QUERY_TOOL,
     FINANCE_WRITE_TOOLS,
@@ -45,6 +51,9 @@ from personal_agent_core.finance_tools import (
 
 
 # --- interpreter results -----------------------------------------------------
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -86,6 +95,21 @@ class InterpreterError(Exception):
     transport failure, and the orchestrator turns it into a safe `failed_safe`
     rather than letting it crash the request. It is never a write.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_reason: str = ModelFailureReason.UNAVAILABLE.value,
+    ) -> None:
+        # Do not let an arbitrary third-party exception turn into a durable
+        # public reason.  Gateway-derived reasons are a closed, reviewed set.
+        self.failure_reason = (
+            failure_reason
+            if failure_reason in MODEL_RETRYABLE_FAILURE_REASONS
+            else ModelFailureReason.UNAVAILABLE.value
+        )
+        super().__init__(message)
 
 
 class Interpreter(Protocol):
@@ -309,12 +333,24 @@ def run_operation(
 
     try:
         interpretation = interpreter.interpret(envelope=envelope)
-    except InterpreterError:
+    except InterpreterError as exc:
         # A model or transport failure is a safe failure, never a write. The
         # operation is still pre-submit, so this cannot hide a side effect.
+        logger.warning(
+            "model turn failed operation_id=%s trace_id=%s reason=%s",
+            operation.operation_id,
+            operation.trace_id,
+            exc.failure_reason,
+        )
         _step(session, operation, "interpreting", now)
-        _step(session, operation, "failed_safe", now, failure_reason="model_unavailable")
-        return RunResult(state="failed_safe", failure_reason="model_unavailable")
+        _step(
+            session,
+            operation,
+            "failed_safe",
+            now,
+            failure_reason=exc.failure_reason,
+        )
+        return RunResult(state="failed_safe", failure_reason=exc.failure_reason)
 
     # Do not hold SQLite's single-writer lock across the 25-second model budget.
     # The durable state remains `accepted` while the side-effect-free proposal is

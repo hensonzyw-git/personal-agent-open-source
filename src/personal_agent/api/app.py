@@ -111,7 +111,11 @@ from personal_agent.storage.models import (
     Operation,
 )
 from personal_agent_core.crypto import KeyRing
-from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.errors import (
+    MODEL_RETRYABLE_FAILURE_REASONS,
+    AppError,
+    ErrorCode,
+)
 from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.tool_ir import TOOL_CONTRACTS
 
@@ -1360,7 +1364,7 @@ def _context_factory(
 
 
 _SAFE_FINANCE_RETRY_FAILURES = frozenset(
-    {"model_unavailable", ErrorCode.BOOKKEEPING_TOOL_REQUIRED.value}
+    {*MODEL_RETRYABLE_FAILURE_REASONS, ErrorCode.BOOKKEEPING_TOOL_REQUIRED.value}
 )
 _FINANCE_RETRY_LOOKBACK = timedelta(hours=24)
 

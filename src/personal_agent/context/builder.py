@@ -80,7 +80,11 @@ from personal_agent.storage.models import (
     Operation,
 )
 from personal_agent_core.crypto import KeyRing
-from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.errors import (
+    MODEL_RETRYABLE_FAILURE_REASONS,
+    AppError,
+    ErrorCode,
+)
 from personal_agent_core.finance_tools import FINANCE_QUERY_TOOL
 from personal_agent_core.manifest import canonical_json
 
@@ -915,7 +919,10 @@ class ContextBuilder:
             or not isinstance(context.source_operation_id, str)
             or not context.source_operation_id.strip()
             or context.source_failure_reason
-            not in {"model_unavailable", ErrorCode.BOOKKEEPING_TOOL_REQUIRED.value}
+            not in {
+                *MODEL_RETRYABLE_FAILURE_REASONS,
+                ErrorCode.BOOKKEEPING_TOOL_REQUIRED.value,
+            }
         ):
             raise AppError(
                 ErrorCode.CONTEXT_UNAVAILABLE,
