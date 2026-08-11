@@ -31,6 +31,16 @@ extension Color {
     static let pending = Color("Pending")
     /// `#1C1917` / `#F5F1EA`. Primary text.
     static let ink = Color("Ink")
+    /// `#F7F4ED` / `#1F1D1C`. The tinted band a receipt's external-evidence line
+    /// sits in — a distinct surface from the card body, which is what separates
+    /// 「这是我们写的字段」 from 「这是外部系统的证据」 (§1d).
+    static let cardFooter = Color("CardFooter")
+    /// The card outline. Alpha is baked in (18% light, 11% dark) because §1d's
+    /// cards are near-invisible against the background by design and this line is
+    /// the only thing separating them.
+    static let cardBorder = Color("CardBorder")
+    /// The 14%/11% rule between a card's internal rows.
+    static let hairlineDivider = Color("HairlineDivider")
 }
 
 /// The same tokens reached through a leading dot at a `ShapeStyle` position, which
@@ -47,16 +57,32 @@ extension ShapeStyle where Self == Color {
     static var danger: Color { Color.danger }
     static var pending: Color { Color.pending }
     static var ink: Color { Color.ink }
+    static var cardFooter: Color { Color.cardFooter }
+    static var cardBorder: Color { Color.cardBorder }
+    static var hairlineDivider: Color { Color.hairlineDivider }
 }
 
 /// Spacing and radius scale. The draft uses a small set of repeated values; naming
 /// them stops the current situation where 6/8/10/12 appear as bare literals and no
 /// one can tell which are deliberate.
+/// Measured off §1d rather than chosen here.
 enum Metric {
-    static let cardPadding: CGFloat = 14
     static let cardRadius: CGFloat = 16
+    static let cardInset: CGFloat = 16
+    /// `padding: 14px 16px 12px` on the header block.
+    static let cardHeaderTop: CGFloat = 14
+    static let cardHeaderBottom: CGFloat = 12
+    /// Each field row is `padding: 11px 0` above its own top rule.
+    static let fieldRowPadding: CGFloat = 11
+    /// The evidence band: `padding: 10px 16px`.
+    static let footerPadding: CGFloat = 10
+    /// Each action in the footer row: `padding: 13px`.
+    static let actionPadding: CGFloat = 13
     static let cardSpacing: CGFloat = 8
+    /// The bubble is not a uniform round-rect: `20px 20px 6px 20px`. The tight
+    /// bottom-trailing corner is what points it at its sender.
     static let bubbleRadius: CGFloat = 20
+    static let bubbleTailRadius: CGFloat = 6
     static let chipRadius: CGFloat = 11
     static let rowSpacing: CGFloat = 12
     static let hairline: CGFloat = 0.5

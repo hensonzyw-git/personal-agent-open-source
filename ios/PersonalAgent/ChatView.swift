@@ -1,5 +1,6 @@
 import PersonalAgentKit
 import SwiftUI
+import UIKit
 
 /// `DEV-030`'s chat screen: one continuous Timeline, cursor-paged history, and a
 /// structured receipt under each message.
@@ -151,7 +152,14 @@ struct ChatView: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     .background(Color.userBubble)
-                    .clipShape(RoundedRectangle(cornerRadius: Metric.bubbleRadius))
+                    .clipShape(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: Metric.bubbleRadius,
+                            bottomLeadingRadius: Metric.bubbleRadius,
+                            bottomTrailingRadius: Metric.bubbleTailRadius,
+                            topTrailingRadius: Metric.bubbleRadius
+                        )
+                    )
                 if clarificationOf != nil {
                     Text("补充澄清").font(.caption2).foregroundStyle(.secondary)
                 }
@@ -216,14 +224,139 @@ struct ChatView: View {
         operationID: String?,
         cancellation: CancellationNote
     ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let badge = terminalBadge(for: outcome) {
-                HStack {
-                    Spacer(minLength: 0)
-                    Text(badge.text)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(badge.color)
+        // §1d draws the recorded receipt as a composed card -- header, divided
+        // field rows, a tinted evidence band and a footer action row. §1i's other
+        // states are plain label-and-body cards, so only this one gets the full
+        // structure; giving them all the same chrome would flatten a distinction
+        // the design makes deliberately.
+        if case .recorded(let recordID, let tool) = outcome {
+            recordedReceiptCard(recordID: recordID, tool: tool, operationID: operationID)
+        } else {
+            plainReceiptCard(
+                outcome: outcome,
+                state: state,
+                operationID: operationID,
+                cancellation: cancellation
+            )
+        }
+    }
+
+    // §1d: the composed 记账回执.
+    private func recordedReceiptCard(
+        recordID: String, tool: String?, operationID: String?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("记账回执").font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                Text("写后回读一致")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.accentText)
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.top, Metric.cardHeaderTop)
+            .padding(.bottom, Metric.cardHeaderBottom)
+
+            // §1d's 名称 / 金额 / 分类 / 日期 / 归属 need G1 -- the projection carries
+            // no business fields at all -- so the only row that exists is the tool.
+            // The layout is the final one; the field count waits on the server.
+            //
+            // The identifiers are deliberately not rows. `operation_id` is an
+            // internal request handle, and while `record_id` **is** the external
+            // evidence that separates 已写入 from a model's claim, a 20-character
+            // opaque string is not what makes it readable -- it is what makes the
+            // card unreadable. Both stay reachable through long-press, so the
+            // evidence is one gesture away rather than gone.
+            VStack(spacing: 0) {
+                if let tool { fieldRow("工具", tool) }
+            }
+            .padding(.horizontal, Metric.cardInset)
+
+            recordedActionRow
+                .overlay(alignment: .top) { hairline }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(Color.cardBorder, lineWidth: Metric.hairline)
+        )
+        .modifier(EvidenceMenu(recordID: recordID, operationID: operationID))
+    }
+
+    /// Long-press exposes the identifiers the card no longer prints.
+    ///
+    /// They were removed from the face because they are unreadable noise, not
+    /// because they stopped mattering: `record_id` is still the only thing that
+    /// makes 已写入 checkable against Feishu, and a receipt whose evidence cannot be
+    /// retrieved at all is a receipt that has to be taken on trust.
+    private struct EvidenceMenu: ViewModifier {
+        let recordID: String?
+        let operationID: String?
+
+        func body(content: Content) -> some View {
+            content.contextMenu {
+                if let recordID {
+                    Button {
+                        UIPasteboard.general.string = recordID
+                    } label: {
+                        Label("复制记录 ID", systemImage: "doc.on.doc")
+                    }
                 }
+                if let operationID {
+                    Button {
+                        UIPasteboard.general.string = operationID
+                    } label: {
+                        Label("复制 operation_id", systemImage: "number")
+                    }
+                }
+            }
+        }
+    }
+
+    private var hairline: some View {
+        Rectangle()
+            .fill(Color.hairlineDivider)
+            .frame(height: Metric.hairline)
+    }
+
+    /// A field row carries its own top rule, so rows stack without a trailing one.
+    private func fieldRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label).font(.footnote).foregroundStyle(.secondary)
+            Spacer(minLength: 12)
+            Text(value)
+                .font(.footnote.monospaced())
+                .tabularNumbers()
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
+        .padding(.vertical, Metric.fieldRowPadding)
+        .overlay(alignment: .top) { hairline }
+    }
+
+    @ViewBuilder
+    private func plainReceiptCard(
+        outcome: OperationOutcome,
+        state: OperationState,
+        operationID: String?,
+        cancellation: CancellationNote
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // §2b's chip, not a full-width heading. A right-aligned label spent a
+            // whole line announcing 无工具调用 above two lines of reply -- on the
+            // most common card in the Timeline, that is a third of its height given
+            // to a tag. Same information, read as a tag instead of a title.
+            if let badge = terminalBadge(for: outcome) {
+                Text(badge.text)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(badge.color)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 3)
+                    .background(Color.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
             }
             switch outcome {
             case .running:
@@ -232,12 +365,10 @@ struct ChatView: View {
                     Text("服务端仍在处理（\(state.wire)）").font(.callout)
                 }
 
-            case .recorded(let recordID, let tool):
-                Label("已写入飞书账本", systemImage: "checkmark.seal")
-                    .foregroundStyle(.accentText)
-                field("记录 ID", recordID)
-                if let tool { field("工具", tool) }
-                recordedActions
+            // Handled by `recordedReceiptCard` above; listed only to keep the
+            // switch exhaustive, so a new outcome still fails to compile here.
+            case .recorded:
+                EmptyView()
 
             case .answered(let text):
                 Text(text)
@@ -338,11 +469,8 @@ struct ChatView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if let operationID {
-                field("operation_id", operationID)
-            }
         }
-        .padding(Metric.cardPadding)
+        .padding(Metric.cardInset)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.cardSurface)
         .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
@@ -350,6 +478,10 @@ struct ChatView: View {
             RoundedRectangle(cornerRadius: Metric.cardRadius)
                 .strokeBorder(borderColor(for: outcome), lineWidth: borderWidth(for: outcome))
         )
+        // Same trade as the recorded card: off the face, one long-press away. The
+        // `needs_manual_review` card keeps printing its 记录 ID inside the body,
+        // because there the whole task is to go and look that row up in Feishu.
+        .modifier(EvidenceMenu(recordID: nil, operationID: operationID))
     }
 
     /// §1o 组件二: the terminal-state label in the card's top corner.
@@ -400,7 +532,7 @@ struct ChatView: View {
         case .needsClarification, .needsDuplicateDecision, .needsManualReview:
             return .pending
         default:
-            return .ink.opacity(0.12)
+            return .cardBorder
         }
     }
 
@@ -425,17 +557,39 @@ struct ChatView: View {
     /// §1c's chips do: neither is a complete instruction, and a tap that writes to
     /// the ledger unreviewed is the wrong default here.
     @ViewBuilder
-    private var recordedActions: some View {
-        HStack(spacing: 16) {
+    private var recordedActionRow: some View {
+        HStack(spacing: 0) {
             if let ledgerURL = model.ledgerURL {
                 Link("打开飞书账本", destination: ledgerURL)
+                    .foregroundStyle(.accentText)
+                    .modifier(ActionCell())
+                verticalHairline
             }
             Button("再记一笔") { model.draft = "记一笔" }
+                .modifier(ActionCell())
+            verticalHairline
             Button("查本月支出") { model.draft = "查本月支出" }
-            Spacer(minLength: 0)
+                .modifier(ActionCell())
         }
-        .font(.footnote)
-        .padding(.top, 2)
+        .font(.system(size: 14.5, weight: .medium))
+    }
+
+    /// §1d divides the actions with a rule rather than spacing them apart, so each
+    /// one owns an equal share of the row and its tap target reaches the card edge.
+    private struct ActionCell: ViewModifier {
+        func body(content: Content) -> some View {
+            content
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, Metric.actionPadding)
+                .contentShape(Rectangle())
+        }
+    }
+
+    private var verticalHairline: some View {
+        Rectangle()
+            .fill(Color.hairlineDivider)
+            .frame(width: Metric.hairline)
+            .frame(maxHeight: .infinity)
     }
 
     private func liveCard(_ receipt: OperationReceipt) -> some View {
@@ -548,7 +702,7 @@ struct ChatView: View {
             .font(.footnote)
             .disabled(model.busy)
         }
-        .padding(Metric.cardPadding)
+        .padding(Metric.cardInset)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.pending.opacity(0.1))
         .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
