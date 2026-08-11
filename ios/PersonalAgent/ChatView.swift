@@ -1,5 +1,6 @@
 import PersonalAgentKit
 import SwiftUI
+import UIKit
 
 /// `DEV-030`'s chat screen: one continuous Timeline, cursor-paged history, and a
 /// structured receipt under each message.
@@ -30,8 +31,10 @@ struct ChatView: View {
             Divider()
             composer
         }
-        .navigationTitle("对话")
-        .navigationBarTitleDisplayMode(.inline)
+        .background(Color.screenBackground)
+        // No title of its own: §1a makes the Timeline the whole surface, so the
+        // navigation bar belongs to the app rather than to this view. `RootView`
+        // sets it, together with the status entry.
         .confirmationDialog(
             "服务端已提示这笔与现有记录疑似重复。仍然写入一条新记录？",
             isPresented: Binding(
@@ -100,6 +103,14 @@ struct ChatView: View {
                         .disabled(model.loadingOlder)
                     }
 
+                    // §1c. Only when the Timeline is genuinely empty -- not while
+                    // history is still paging in, and not while a receipt is in
+                    // flight, either of which would make "说一句话就行" a lie about
+                    // what the screen knows.
+                    if model.events.isEmpty, !model.hasOlder, model.liveReceipt == nil {
+                        EmptyTimelineView(tools: model.tools) { model.draft = $0 }
+                    }
+
                     ForEach(model.events) { event in
                         entry(event).id(event.eventID)
                     }
@@ -112,7 +123,7 @@ struct ChatView: View {
                     if let error = model.lastError {
                         Text(error)
                             .font(.footnote)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(.danger)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -137,9 +148,18 @@ struct ChatView: View {
         case .userMessage(let text, let clarificationOf):
             VStack(alignment: .trailing, spacing: 2) {
                 Text(text)
-                    .padding(10)
-                    .background(Color.accentColor.opacity(0.15))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.userBubble)
+                    .clipShape(
+                        UnevenRoundedRectangle(
+                            topLeadingRadius: Metric.bubbleRadius,
+                            bottomLeadingRadius: Metric.bubbleRadius,
+                            bottomTrailingRadius: Metric.bubbleTailRadius,
+                            topTrailingRadius: Metric.bubbleRadius
+                        )
+                    )
                 if clarificationOf != nil {
                     Text("补充澄清").font(.caption2).foregroundStyle(.secondary)
                 }
@@ -204,7 +224,140 @@ struct ChatView: View {
         operationID: String?,
         cancellation: CancellationNote
     ) -> some View {
+        // §1d draws the recorded receipt as a composed card -- header, divided
+        // field rows, a tinted evidence band and a footer action row. §1i's other
+        // states are plain label-and-body cards, so only this one gets the full
+        // structure; giving them all the same chrome would flatten a distinction
+        // the design makes deliberately.
+        if case .recorded(let recordID, let tool) = outcome {
+            recordedReceiptCard(recordID: recordID, tool: tool, operationID: operationID)
+        } else {
+            plainReceiptCard(
+                outcome: outcome,
+                state: state,
+                operationID: operationID,
+                cancellation: cancellation
+            )
+        }
+    }
+
+    // §1d: the composed 记账回执.
+    private func recordedReceiptCard(
+        recordID: String, tool: String?, operationID: String?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("记账回执").font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                Text("写后回读一致")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.accentText)
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.top, Metric.cardHeaderTop)
+            .padding(.bottom, Metric.cardHeaderBottom)
+
+            // §1d's 名称 / 金额 / 分类 / 日期 / 归属 need G1 -- the projection carries
+            // no business fields at all -- so the only row that exists is the tool.
+            // The layout is the final one; the field count waits on the server.
+            //
+            // The identifiers are deliberately not rows. `operation_id` is an
+            // internal request handle, and while `record_id` **is** the external
+            // evidence that separates 已写入 from a model's claim, a 20-character
+            // opaque string is not what makes it readable -- it is what makes the
+            // card unreadable. Both stay reachable through long-press, so the
+            // evidence is one gesture away rather than gone.
+            VStack(spacing: 0) {
+                if let tool { fieldRow("工具", tool) }
+            }
+            .padding(.horizontal, Metric.cardInset)
+
+            recordedActionRow
+                .overlay(alignment: .top) { hairline }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(Color.cardBorder, lineWidth: Metric.hairline)
+        )
+        .modifier(EvidenceMenu(recordID: recordID, operationID: operationID))
+    }
+
+    /// Long-press exposes the identifiers the card no longer prints.
+    ///
+    /// They were removed from the face because they are unreadable noise, not
+    /// because they stopped mattering: `record_id` is still the only thing that
+    /// makes 已写入 checkable against Feishu, and a receipt whose evidence cannot be
+    /// retrieved at all is a receipt that has to be taken on trust.
+    private struct EvidenceMenu: ViewModifier {
+        let recordID: String?
+        let operationID: String?
+
+        func body(content: Content) -> some View {
+            content.contextMenu {
+                if let recordID {
+                    Button {
+                        UIPasteboard.general.string = recordID
+                    } label: {
+                        Label("复制记录 ID", systemImage: "doc.on.doc")
+                    }
+                }
+                if let operationID {
+                    Button {
+                        UIPasteboard.general.string = operationID
+                    } label: {
+                        Label("复制 operation_id", systemImage: "number")
+                    }
+                }
+            }
+        }
+    }
+
+    private var hairline: some View {
+        Rectangle()
+            .fill(Color.hairlineDivider)
+            .frame(height: Metric.hairline)
+    }
+
+    /// A field row carries its own top rule, so rows stack without a trailing one.
+    private func fieldRow(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label).font(.footnote).foregroundStyle(.secondary)
+            Spacer(minLength: 12)
+            Text(value)
+                .font(.footnote.monospaced())
+                .tabularNumbers()
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
+        .padding(.vertical, Metric.fieldRowPadding)
+        .overlay(alignment: .top) { hairline }
+    }
+
+    @ViewBuilder
+    private func plainReceiptCard(
+        outcome: OperationOutcome,
+        state: OperationState,
+        operationID: String?,
+        cancellation: CancellationNote
+    ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            // §2b's chip, not a full-width heading. A right-aligned label spent a
+            // whole line announcing 无工具调用 above two lines of reply -- on the
+            // most common card in the Timeline, that is a third of its height given
+            // to a tag. Same information, read as a tag instead of a title.
+            if let badge = terminalBadge(for: outcome) {
+                Text(badge.text)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(badge.color)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 3)
+                    .background(Color.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+            }
             switch outcome {
             case .running:
                 HStack(spacing: 6) {
@@ -212,18 +365,17 @@ struct ChatView: View {
                     Text("服务端仍在处理（\(state.wire)）").font(.callout)
                 }
 
-            case .recorded(let recordID, let tool):
-                Label("已写入飞书账本", systemImage: "checkmark.seal")
-                    .foregroundStyle(.green)
-                field("记录 ID", recordID)
-                if let tool { field("工具", tool) }
+            // Handled by `recordedReceiptCard` above; listed only to keep the
+            // switch exhaustive, so a new outcome still fails to compile here.
+            case .recorded:
+                EmptyView()
 
             case .answered(let text):
                 Text(text)
 
             case .needsClarification(let question):
                 Label("需要澄清", systemImage: "questionmark.circle")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.pending)
                 Text(question ?? "服务端没有给出问题正文；请重新描述这笔记录。")
                 if let operationID, question != nil {
                     Button("回答这个问题") {
@@ -236,7 +388,7 @@ struct ChatView: View {
 
             case .needsDuplicateDecision(let checkID, let existing):
                 Label("疑似重复，尚未写入", systemImage: "doc.on.doc")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.pending)
                 if let existing { Text(existing) }
                 field("duplicate_check_id", checkID)
                 if let resolved = model.resolvedDuplicateDecisions[checkID] {
@@ -282,12 +434,12 @@ struct ChatView: View {
 
             case .failedSafe(let reason):
                 Label("未写入", systemImage: "xmark.circle")
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.danger)
                 if let reason { field("原因", reason) }
 
             case .needsManualReview(let reason, let recordID):
                 Label("需要人工核对：写入结果无法确认", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.pending)
                 if let reason { field("原因", reason) }
                 if let recordID { field("记录 ID", recordID) }
                 if let operationID {
@@ -300,8 +452,12 @@ struct ChatView: View {
 
             case .indeterminate(let raw):
                 // The honest answer: this build cannot say what happened.
+                // §1i puts D1 at `danger`, not at the amber the other unresolved
+                // states use: amber means "waiting for you", and this state is not
+                // waiting for anything -- it is the one outcome that looks like a
+                // success and must never be read as one.
                 Label("本客户端无法判定结果", systemImage: "questionmark.diamond")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.danger)
                 field("服务端状态", raw)
                 Text("请不要当作已记录；在服务端或每日复核中确认。")
                     .font(.caption)
@@ -313,14 +469,127 @@ struct ChatView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if let operationID {
-                field("operation_id", operationID)
-            }
         }
-        .padding(10)
+        .padding(Metric.cardInset)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .background(Color.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(borderColor(for: outcome), lineWidth: borderWidth(for: outcome))
+        )
+        // Same trade as the recorded card: off the face, one long-press away. The
+        // `needs_manual_review` card keeps printing its 记录 ID inside the body,
+        // because there the whole task is to go and look that row up in Feishu.
+        .modifier(EvidenceMenu(recordID: nil, operationID: operationID))
+    }
+
+    /// §1o 组件二: the terminal-state label in the card's top corner.
+    ///
+    /// One label set covers every outcome, so the *absence* of 写后回读一致 is itself
+    /// legible — §3.2's rule that a state may never be promoted only works if the
+    /// reader can see which rung was actually reached.
+    ///
+    /// `.answered` carries 无工具调用 (§2b). That case is a model reply with no tool
+    /// call behind it, and on 2026-08-11 one of those read as "好的，帮你记上！" with
+    /// nothing written. The card was correct to withhold a receipt, but nothing on
+    /// screen contradicted the sentence; this label is that contradiction.
+    private struct TerminalBadge {
+        let text: String
+        let color: Color
+    }
+
+    private func terminalBadge(for outcome: OperationOutcome) -> TerminalBadge? {
+        switch outcome {
+        // Not terminal: a badge here would name an outcome that has not happened.
+        case .running:
+            return nil
+        case .recorded:
+            return TerminalBadge(text: "写后回读一致", color: .accentText)
+        case .answered:
+            return TerminalBadge(text: "无工具调用", color: .secondary)
+        case .needsClarification, .needsDuplicateDecision, .needsManualReview:
+            return TerminalBadge(text: "待你处理", color: .pending)
+        case .failedSafe:
+            return TerminalBadge(text: "零副作用", color: .secondary)
+        case .cancelledBeforeSubmit:
+            return TerminalBadge(text: "你中止了", color: .secondary)
+        case .indeterminate:
+            return TerminalBadge(text: "无法判定", color: .danger)
+        }
+    }
+
+    /// §1i: 五种终态的边框与底色刻意不同重，**只有 D1 用实心红框**，而安全失败与已取消
+    /// 用最轻的样式。
+    ///
+    /// The weighting is the message, so it is derived from the outcome rather than
+    /// passed in by each call site: every card that renders `indeterminate` gets the
+    /// heavy border, and no card that does not render it can accidentally acquire one.
+    private func borderColor(for outcome: OperationOutcome) -> Color {
+        switch outcome {
+        case .indeterminate:
+            return .danger
+        case .needsClarification, .needsDuplicateDecision, .needsManualReview:
+            return .pending
+        default:
+            return .cardBorder
+        }
+    }
+
+    private func borderWidth(for outcome: OperationOutcome) -> CGFloat {
+        switch outcome {
+        case .indeterminate:
+            return 2
+        case .needsClarification, .needsDuplicateDecision, .needsManualReview:
+            return 1
+        default:
+            return Metric.hairline
+        }
+    }
+
+    /// §1d's follow-on action row under a receipt: 打开飞书账本 · 再记一笔 · 查本月支出.
+    ///
+    /// Only on `recorded`. A row that ends 「再记一笔」 under a card that did not
+    /// record anything invites exactly the mistake §3.2 exists to prevent, so the
+    /// actions follow the evidence rather than the intent.
+    ///
+    /// The two prompts fill the composer instead of sending, for the same reason
+    /// §1c's chips do: neither is a complete instruction, and a tap that writes to
+    /// the ledger unreviewed is the wrong default here.
+    @ViewBuilder
+    private var recordedActionRow: some View {
+        HStack(spacing: 0) {
+            if let ledgerURL = model.ledgerURL {
+                Link("打开飞书账本", destination: ledgerURL)
+                    .foregroundStyle(.accentText)
+                    .modifier(ActionCell())
+                verticalHairline
+            }
+            Button("再记一笔") { model.draft = "记一笔" }
+                .modifier(ActionCell())
+            verticalHairline
+            Button("查本月支出") { model.draft = "查本月支出" }
+                .modifier(ActionCell())
+        }
+        .font(.system(size: 14.5, weight: .medium))
+    }
+
+    /// §1d divides the actions with a rule rather than spacing them apart, so each
+    /// one owns an equal share of the row and its tap target reaches the card edge.
+    private struct ActionCell: ViewModifier {
+        func body(content: Content) -> some View {
+            content
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, Metric.actionPadding)
+                .contentShape(Rectangle())
+        }
+    }
+
+    private var verticalHairline: some View {
+        Rectangle()
+            .fill(Color.hairlineDivider)
+            .frame(width: Metric.hairline)
+            .frame(maxHeight: .infinity)
     }
 
     private func liveCard(_ receipt: OperationReceipt) -> some View {
@@ -402,7 +671,7 @@ struct ChatView: View {
     private func unresolvedCard(_ pending: ChatTimeline.PendingSend) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("上一条消息尚未确认", systemImage: "clock.arrow.circlepath")
-                .foregroundStyle(.orange)
+                .foregroundStyle(.pending)
             Text(pending.text).font(.callout)
             if let operationID = pending.operationID {
                 field("operation_id", operationID)
@@ -433,10 +702,14 @@ struct ChatView: View {
             .font(.footnote)
             .disabled(model.busy)
         }
-        .padding(10)
+        .padding(Metric.cardInset)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .background(Color.pending.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(Color.pending.opacity(0.35), lineWidth: Metric.hairline)
+        )
     }
 
     private func field(_ label: String, _ value: String) -> some View {
@@ -493,7 +766,7 @@ struct ChatView: View {
             if model.unresolved != nil {
                 Text("先处理上面那张卡片里的未确认消息，再发新的：否则同一笔可能被记两次。")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.pending)
             }
         }
         .padding(.horizontal)
