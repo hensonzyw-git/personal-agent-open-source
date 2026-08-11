@@ -118,6 +118,7 @@ final class AppModel {
             // compiled here. Pushed on every refresh rather than at construction so
             // a tool granted or withdrawn server-side appears without a reinstall.
             chat?.tools = read.tools
+            chat?.ledgerURL = read.validatedLedgerURL
             await openReview(session: session, capabilities: read)
         } catch AgentClientError.deviceRejected {
             phase = .revoked

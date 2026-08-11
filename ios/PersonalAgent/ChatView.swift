@@ -237,6 +237,7 @@ struct ChatView: View {
                     .foregroundStyle(.accentText)
                 field("记录 ID", recordID)
                 if let tool { field("工具", tool) }
+                recordedActions
 
             case .answered(let text):
                 Text(text)
@@ -412,6 +413,29 @@ struct ChatView: View {
         default:
             return Metric.hairline
         }
+    }
+
+    /// §1d's follow-on action row under a receipt: 打开飞书账本 · 再记一笔 · 查本月支出.
+    ///
+    /// Only on `recorded`. A row that ends 「再记一笔」 under a card that did not
+    /// record anything invites exactly the mistake §3.2 exists to prevent, so the
+    /// actions follow the evidence rather than the intent.
+    ///
+    /// The two prompts fill the composer instead of sending, for the same reason
+    /// §1c's chips do: neither is a complete instruction, and a tap that writes to
+    /// the ledger unreviewed is the wrong default here.
+    @ViewBuilder
+    private var recordedActions: some View {
+        HStack(spacing: 16) {
+            if let ledgerURL = model.ledgerURL {
+                Link("打开飞书账本", destination: ledgerURL)
+            }
+            Button("再记一笔") { model.draft = "记一笔" }
+            Button("查本月支出") { model.draft = "查本月支出" }
+            Spacer(minLength: 0)
+        }
+        .font(.footnote)
+        .padding(.top, 2)
     }
 
     private func liveCard(_ receipt: OperationReceipt) -> some View {

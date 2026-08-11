@@ -21,6 +21,10 @@ final class ChatModel {
     /// not the same as an empty one, so the empty state omits the section entirely
     /// rather than claiming nothing is available.
     var tools: [Capabilities.Tool] = []
+    /// §1d's 打开飞书账本 action on a receipt. Re-validated on every refresh through
+    /// the same `Capabilities.validatedLedgerURL` the review surface uses, so the
+    /// two can never disagree about whether a jump is safe to offer.
+    var ledgerURL: URL?
     /// The receipt of the message in hand, live or just settled.
     var liveReceipt: OperationReceipt?
     /// Set while a parked clarification is being answered, so the next send

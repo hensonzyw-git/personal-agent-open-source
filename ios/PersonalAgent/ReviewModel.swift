@@ -41,13 +41,7 @@ final class ReviewModel {
     /// being a valid `https` URL retracts the jump rather than keeping the last
     /// good one: stale and missing are both "the service names no ledger now".
     func updateLedgerURL(from capabilities: Capabilities) {
-        guard let raw = capabilities.ledgerURL,
-              let url = URL(string: raw), url.scheme == "https"
-        else {
-            ledgerURL = nil
-            return
-        }
-        ledgerURL = url
+        ledgerURL = capabilities.validatedLedgerURL
     }
 
     func load() async {
