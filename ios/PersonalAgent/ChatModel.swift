@@ -16,6 +16,11 @@ final class ChatModel {
     var events: [TimelineEvent] = []
     var hasOlder = false
     var draft: String = ""
+    /// §1c: what `/v1/capabilities` says this device may do, for the empty state's
+    /// 能力清单. Empty until the first successful read -- an unread capability set is
+    /// not the same as an empty one, so the empty state omits the section entirely
+    /// rather than claiming nothing is available.
+    var tools: [Capabilities.Tool] = []
     /// The receipt of the message in hand, live or just settled.
     var liveReceipt: OperationReceipt?
     /// Set while a parked clarification is being answered, so the next send

@@ -101,6 +101,14 @@ struct ChatView: View {
                         .disabled(model.loadingOlder)
                     }
 
+                    // §1c. Only when the Timeline is genuinely empty -- not while
+                    // history is still paging in, and not while a receipt is in
+                    // flight, either of which would make "说一句话就行" a lie about
+                    // what the screen knows.
+                    if model.events.isEmpty, !model.hasOlder, model.liveReceipt == nil {
+                        EmptyTimelineView(tools: model.tools) { model.draft = $0 }
+                    }
+
                     ForEach(model.events) { event in
                         entry(event).id(event.eventID)
                     }
