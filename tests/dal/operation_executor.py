@@ -35,10 +35,18 @@ from tests.dal.side_effects import SideEffectProbe
 
 @dataclass(frozen=True)
 class ReceiptRecord:
-    """One emitted receipt, in the shape the oracle asserts against."""
+    """One emitted receipt, in the shape the oracle asserts against.
+
+    `duplicate` and `receipt_id` are only populated by the state-machine
+    executors, where an idempotent replay returns the *original* receipt
+    (§2.6): the oracle freezes `duplicate_flags` and `unique_receipt_ids`, and
+    the comparator needs to see them to assert them.
+    """
 
     code: str
     schema_version: str
+    duplicate: bool = False
+    receipt_id: str | None = None
 
 
 @dataclass
@@ -61,7 +69,20 @@ class ExecutionTrace:
     declared_write_set: list[str] = field(default_factory=list)
     event_trace: list[str] = field(default_factory=list)
     external_effect_trace: list[str] = field(default_factory=list)
+    #: Scenario metrics the frozen `scenario_assertions` clauses are judged
+    #: against (e.g. `business_event_count`, `aggregate_version_increment`).
+    metrics: dict[str, Any] = field(default_factory=dict)
     final_state: str = ""
+    #: The command aggregate's persisted stop reason and its owner, as written
+    #: by the transition. The oracle freezes both in `expected_final_snapshot`
+    #: and both must be judged, not only the state.
+    final_reason_code: str | None = None
+    final_reason_owner: str | None = None
+    #: The command aggregate's type, for the oracle's `entity_type` check.
+    final_entity_type: str = ""
+    #: The companion transition identities observed in the sequence (§2.3.1);
+    #: the oracle freezes them as `expected_atomic_companion_transitions`.
+    companion_ids: list[str] = field(default_factory=list)
     probe: SideEffectProbe | None = None
 
 
