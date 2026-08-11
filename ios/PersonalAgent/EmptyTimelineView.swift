@@ -24,37 +24,20 @@ struct EmptyTimelineView: View {
     private static let quickPrompts = ["记一笔", "查本月支出"]
     private static let domainNames = ["finance": "财务"]
 
-    private struct CapabilityGroup: Identifiable {
-        let id: String
-        let displayName: String
-        let detail: String?
+    /// Which domains to show and what belongs to each is decided by
+    /// `Capabilities.userFacingDomains` in `PersonalAgentKit`, where it is covered by
+    /// tests. Those are safety rules — an omitted grant is invisible to the reader —
+    /// and they do not belong in a layer with no test target.
+    ///
+    /// What stays here is the only genuinely presentational part: turning a raw
+    /// alias domain into a name. An unnamed domain keeps its raw prefix, so a new
+    /// one shows up as an odd-looking row rather than not at all.
+    private var groups: [CapabilityDomain] {
+        Capabilities.userFacingDomains(from: tools)
     }
 
-    /// Groups the granted tools by their alias domain.
-    ///
-    /// An **unknown domain falls back to its raw prefix rather than being dropped**:
-    /// a capability this build has no name for is still one the device was granted,
-    /// and a list that quietly omits it misrepresents what the assistant can do.
-    ///
-    /// `meta.*` is excluded as infrastructure rather than user capability. That is a
-    /// presentation choice, not a contract fact, and it hides nothing — the status
-    /// screen still lists every tool the server returned.
-    private var groups: [CapabilityGroup] {
-        var order: [String] = []
-        var summaries: [String: [String]] = [:]
-        for tool in tools {
-            let domain = tool.alias.split(separator: ".").first.map(String.init) ?? tool.alias
-            guard domain != "meta" else { continue }
-            if summaries[domain] == nil { order.append(domain) }
-            summaries[domain, default: []].append(tool.summary ?? tool.alias)
-        }
-        return order.map { domain in
-            CapabilityGroup(
-                id: domain,
-                displayName: Self.domainNames[domain] ?? domain,
-                detail: summaries[domain]?.joined(separator: " · ")
-            )
-        }
+    private func displayName(_ domain: CapabilityDomain) -> String {
+        Self.domainNames[domain.id] ?? domain.id
     }
 
     var body: some View {
@@ -76,7 +59,11 @@ struct EmptyTimelineView: View {
                         .font(.footnote.weight(.medium))
                         .foregroundStyle(.secondary)
                     ForEach(groups) { group in
-                        row(group.displayName, group.detail, available: true)
+                        row(
+                            displayName(group),
+                            group.entries.joined(separator: " · "),
+                            available: true
+                        )
                     }
                     ForEach(Self.plannedDomains, id: \.self) { name in
                         row(name, nil, available: false)
