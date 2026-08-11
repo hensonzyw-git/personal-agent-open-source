@@ -16,6 +16,24 @@ final class ChatModel {
     var events: [TimelineEvent] = []
     var hasOlder = false
     var draft: String = ""
+    /// The message that has left the composer but whose Timeline event has not come
+    /// back yet.
+    ///
+    /// §3.4's first half: the message goes up immediately and then shows its own
+    /// waiting state, instead of sitting in the composer for the whole round trip
+    /// and appearing together with the result.
+    ///
+    /// It is **not** a Timeline event and never becomes one. It is cleared the
+    /// moment the server's own copy arrives through `syncNewer`/`mirror`, so the
+    /// rule that history is read back from the server rather than invented locally
+    /// still holds — this is a pending element in front of the history, not an entry
+    /// in it.
+    ///
+    /// §3.4's *second* half, the composer staying usable so a second message can be
+    /// sent while this one is in flight, is deliberately not implemented: it depends
+    /// on write serialisation that does not exist yet, and without it two concurrent
+    /// writes both pass the duplicate gate.
+    private(set) var sending: String?
     /// §1c: what `/v1/capabilities` says this device may do, for the empty state's
     /// 能力清单. Empty until the first successful read -- an unread capability set is
     /// not the same as an empty one, so the empty state omits the section entirely
@@ -141,11 +159,14 @@ final class ChatModel {
         busy = true
         defer { busy = false }
         let clarificationOf = answering?.operationID
+        // Out of the composer and onto the screen before the request leaves.
+        draft = ""
+        sending = text
+        defer { sending = nil }
         do {
             let receipt = try await timeline.send(
                 text: text, clarificationOf: clarificationOf
             )
-            draft = ""
             answering = nil
             liveReceipt = receipt
             lastError = nil
@@ -157,6 +178,19 @@ final class ChatModel {
             lastError = describe(error)
         }
         await mirrorPendingSlots()
+
+        // Give the text back only when nothing is tracking it.
+        //
+        // `ChatTimeline.send` persists the pending record *before* the request
+        // leaves, so an ambiguous failure leaves a slot behind and `unresolved`
+        // owns the message -- restoring the draft there would invite a second send
+        // against a first one that may well have landed. The pending record is
+        // cleared only when the server proved it never anchored, and that is
+        // exactly the case where the message is genuinely gone and the user should
+        // find their words still in the box.
+        if lastError != nil, unresolved == nil, draft.isEmpty {
+            draft = text
+        }
     }
 
     /// Ask the server to cancel. Past a possible submit this only records the

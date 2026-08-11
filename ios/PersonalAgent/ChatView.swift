@@ -25,6 +25,9 @@ struct ChatView: View {
         let resolution: ManualResolution
     }
 
+    /// Scroll target for the in-flight bubble, which has no `event_id` to use.
+    private static let sendingAnchor = "pending-send"
+
     var body: some View {
         VStack(spacing: 0) {
             timeline
@@ -115,6 +118,13 @@ struct ChatView: View {
                         entry(event).id(event.eventID)
                     }
 
+                    // §3.4: the message is on screen before the server has heard of
+                    // it, and says so. It sits after the history because that is
+                    // where it will land once the server's own copy arrives.
+                    if let sending = model.sending {
+                        sendingBubble(sending).id(Self.sendingAnchor)
+                    }
+
                     if let receipt = model.liveReceipt,
                        !model.hasMirroredReceipt(receipt) {
                         liveCard(receipt)
@@ -137,7 +147,48 @@ struct ChatView: View {
                     withAnimation { proxy.scrollTo(last, anchor: .bottom) }
                 }
             }
+            // The optimistic bubble is the point at which the user expects to see
+            // their message; arriving without scrolling to it would put it off
+            // screen on a full Timeline and look exactly like nothing happened.
+            .onChange(of: model.sending != nil) { _, isSending in
+                guard isSending else { return }
+                withAnimation { proxy.scrollTo(Self.sendingAnchor, anchor: .bottom) }
+            }
         }
+    }
+
+    /// The in-flight message: the same bubble it will become, dimmed, with 发送中
+    /// under it.
+    ///
+    /// Drawn from the bubble the Timeline uses rather than a separate style, so
+    /// nothing moves or changes shape when the server's copy replaces it. What
+    /// distinguishes the two is opacity and the label — §3.2 in miniature: 发送中 is
+    /// a weaker claim than 已发送, and the screen must not let the first read as the
+    /// second.
+    private func sendingBubble(_ text: String) -> some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            Text(text)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Color.userBubble)
+                .clipShape(
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: Metric.bubbleRadius,
+                        bottomLeadingRadius: Metric.bubbleRadius,
+                        bottomTrailingRadius: Metric.bubbleTailRadius,
+                        topTrailingRadius: Metric.bubbleRadius
+                    )
+                )
+                .opacity(0.55)
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.mini)
+                Text("发送中")
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
     // --- one Timeline entry ---------------------------------------------------
