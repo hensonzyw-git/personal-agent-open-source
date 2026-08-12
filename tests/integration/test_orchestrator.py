@@ -152,7 +152,7 @@ def _fresh_operation(session, key="req-1") -> Operation:
 
 
 def _run(session, op, *, interpreter, dispatcher, keyring, authorize=allow,
-         text="午饭 45 个人支出", build_context=None):
+         text="午饭 45 个人支出", build_context=None, now=NOW):
     return run_operation(
         session,
         op,
@@ -163,7 +163,7 @@ def _run(session, op, *, interpreter, dispatcher, keyring, authorize=allow,
         dispatcher=dispatcher,
         authorize=authorize,
         keyring=keyring,
-        now=NOW,
+        now=now,
     )
 
 
@@ -496,6 +496,82 @@ def test_a_read_completes_without_touching_the_write_states(session, keyring) ->
     )
     assert result.state == "succeeded"
     assert result.answer == "本月 ¥2093"
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        (
+            "finance.log_expense",
+            {
+                "name": "午饭",
+                "input_amount": "45.00",
+                "input_currency": "CNY",
+                "is_family_expense": False,
+                "entry_kind": "expense",
+                "category": "餐饮",
+            },
+        ),
+        (
+            "finance.log_income",
+            {
+                "income_description": "工资",
+                "input_amount": "100.00",
+                "input_currency": "CNY",
+            },
+        ),
+    ],
+)
+def test_omitted_finance_date_uses_durable_message_receipt_day(
+    session, keyring, tool, arguments
+) -> None:
+    """The default is receipt-bound, not the model or worker's current day."""
+    op = _fresh_operation(session)
+    dispatcher = FakeDispatcher(resolve=ResolveFailedSafe(reason="test_stop"))
+
+    _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(ToolCall(tool, arguments)),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="午饭 45" if tool == "finance.log_expense" else "工资 100",
+        now=NOW + timedelta(days=2),
+    )
+
+    assert dispatcher.resolve_calls == [
+        {
+            "tool": tool,
+            "model_args": {**arguments, "occurred_on": "2026-07-24"},
+        }
+    ]
+
+
+def test_explicit_finance_date_is_not_overwritten_or_repaired(session, keyring) -> None:
+    op = _fresh_operation(session)
+    arguments = {
+        "name": "午饭",
+        "input_amount": "45.00",
+        "input_currency": "CNY",
+        "occurred_on": "2026-07-23",
+        "is_family_expense": False,
+        "entry_kind": "expense",
+        "category": "餐饮",
+    }
+    dispatcher = FakeDispatcher(resolve=ResolveFailedSafe(reason="test_stop"))
+
+    _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(ToolCall("finance.log_expense", arguments)),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="昨天午饭 45",
+    )
+
+    assert dispatcher.resolve_calls == [
+        {"tool": "finance.log_expense", "model_args": arguments}
+    ]
 
 
 def test_tool_text_disposition_is_a_content_free_audit_record(session, keyring, caplog) -> None:

@@ -29,6 +29,7 @@ from personal_agent.storage.engine import (
     session_factory,
 )
 from personal_agent.storage.models import Device, EnrollmentCode
+from personal_agent_core.manifest import load_manifest
 
 
 NOW = datetime(2026, 7, 26, 7, 0, tzinfo=timezone.utc)
@@ -149,6 +150,29 @@ def test_set_scopes_replaces_the_set(database: Path, capsys) -> None:
         "device.self.read",
         DEVICE_MANAGE_SCOPE,
     }
+
+
+def test_rebind_tools_updates_only_an_active_device_manifest(
+    database: Path, capsys
+) -> None:
+    seed_device(database)
+    before_scopes = read_device(database).scopes
+
+    run(database, "rebind-tools", "--device-id", "dev-1")
+
+    rebound = read_device(database)
+    assert rebound.allowed_tools_version == load_manifest()["allowed_tools_version"]
+    assert rebound.scopes == before_scopes
+    assert rebound.status == "active"
+    assert "tools_version: v1 ->" in capsys.readouterr().out
+
+
+def test_rebind_tools_refuses_a_revoked_device(database: Path) -> None:
+    seed_device(database)
+    run(database, "revoke", "--device-id", "dev-1")
+
+    with pytest.raises(SystemExit, match="non-active"):
+        run(database, "rebind-tools", "--device-id", "dev-1")
 
 
 def test_an_unknown_scope_is_refused_rather_than_granted(database: Path) -> None:

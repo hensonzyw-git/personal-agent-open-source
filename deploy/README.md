@@ -411,11 +411,19 @@ sudo -u personal-data-mcp /opt/personal-agent/.venv/bin/personal-data-mcp-observ
   --database /var/lib/personal-agent-api/agent.sqlite issue-code
 /opt/personal-agent/operator-cli.sh personal-agent-device \
   --database /var/lib/personal-agent-api/agent.sqlite list
+/opt/personal-agent/operator-cli.sh personal-agent-device \
+  --database /var/lib/personal-agent-api/agent.sqlite rebind-tools \
+  --device-id <active-device-id>
 ```
 
 The wrapper runs the CLI as `personal-agent-api` with `api.env` loaded; the
 0700 data directory gives `deploy` no direct path to the database, which
 is what keeps the audit trail honest about which identity touched it.
+
+When a reviewed deployment changes `allowed_tools_version`, `rebind-tools` is
+the explicit operator step that grants an existing active device the installed
+catalog. It refuses revoked devices and does not alter scopes, key binding or
+device status.
 
 ## Fault breakpoint (DEV-040 §13.2 chaos drill)
 

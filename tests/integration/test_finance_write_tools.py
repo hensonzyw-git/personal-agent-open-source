@@ -359,6 +359,31 @@ def checks(sessions) -> list[DuplicateCheck]:
 # --- the write itself --------------------------------------------------------
 
 
+@pytest.mark.parametrize("tool", ("finance.log_expense", "finance.log_income"))
+def test_mcp_refuses_a_missing_host_resolved_date_before_any_create(
+    sessions, keyring, caller, tool
+) -> None:
+    """Only the Agent Host may apply the receipt-bound date default."""
+    arguments = (
+        {key: value for key, value in LUNCH.items() if key != "occurred_on"}
+        if tool == "finance.log_expense"
+        else {
+            "income_description": "发工资",
+            "input_amount": "100",
+            "input_currency": "CNY",
+        }
+    )
+    fake = FakeBitable()
+
+    result, _ = run(
+        call(fake, sessions, keyring, caller, tool=tool, arguments=arguments)
+    )
+
+    assert error_code(result) == ErrorCode.INVALID_ARGUMENT.value
+    assert fake.creates == []
+    assert executions(sessions) == []
+
+
 def test_an_expense_is_written_and_matches_the_frozen_output_schema(
     sessions, keyring, caller
 ) -> None:

@@ -201,7 +201,6 @@ _EXPENSE_ENTRY_SCHEMA: Final[dict[str, Any]] = {
         "name",
         "input_amount",
         "input_currency",
-        "occurred_on",
         "is_family_expense",
         "entry_kind",
     ],
@@ -252,7 +251,8 @@ _EXPENSE_ENTRY_SCHEMA: Final[dict[str, Any]] = {
             "pattern": DATE_PATTERN,
             "description": (
                 "实际付款/入账日期的绝对值，YYYY-MM-DD。不要传“昨天”这类相对表达。"
-                "今天为未来行程付款仍记今天。"
+                "今天为未来行程付款仍记今天。模型省略此字段时，Host 按该消息的"
+                "Asia/Shanghai 接收日填入绝对日期；显式值必须保持为有效绝对日期。"
             ),
         },
         "is_family_expense": {
@@ -516,7 +516,6 @@ LOG_INCOME = ToolContract(
             "income_description",
             "input_amount",
             "input_currency",
-            "occurred_on",
         ],
         "properties": {
             "income_description": {
@@ -547,7 +546,11 @@ LOG_INCOME = ToolContract(
                 "type": "string",
                 "format": "date",
                 "pattern": DATE_PATTERN,
-                "description": "实际入账日期的绝对值，YYYY-MM-DD。",
+                "description": (
+                    "实际入账日期的绝对值，YYYY-MM-DD。模型省略此字段时，Host 按"
+                    "该消息的 Asia/Shanghai 接收日填入绝对日期；显式值必须保持为"
+                    "有效绝对日期。"
+                ),
             },
         },
     },

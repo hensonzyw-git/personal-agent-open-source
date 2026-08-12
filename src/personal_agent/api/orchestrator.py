@@ -45,9 +45,11 @@ from personal_agent_core.errors import (
     ModelFailureReason,
 )
 from personal_agent_core.finance_tools import (
+    FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS,
     FINANCE_QUERY_TOOL,
     FINANCE_WRITE_TOOLS,
 )
+from personal_agent_core.timeutil import format_ledger_date, ledger_date
 
 
 # --- interpreter results -----------------------------------------------------
@@ -479,10 +481,9 @@ def run_operation(
             failure_reason=required_reason,
         )
 
+    model_args = _with_host_defaulted_occurred_on(operation, interpretation)
     try:
-        cleaned = authorize(
-            tool=interpretation.tool, model_args=interpretation.model_args
-        )
+        cleaned = authorize(tool=interpretation.tool, model_args=model_args)
     except AppError as denied:
         reason = _policy_reason(denied)
         _step(session, operation, "failed_safe", now, failure_reason=reason)
@@ -491,6 +492,29 @@ def run_operation(
     _step(session, operation, "dispatching", now, tool=interpretation.tool)
     outcome = dispatcher.resolve(tool=interpretation.tool, model_args=cleaned)
     return _apply_resolve(session, operation, outcome, dispatcher, keyring, now)
+
+
+def _with_host_defaulted_occurred_on(
+    operation: Operation, interpretation: ToolCall
+) -> dict[str, Any]:
+    """Fill only an omitted Finance write date from the received message day.
+
+    An explicit null, empty string or malformed date remains model output and is
+    deliberately *not* repaired here; schema validation then rejects it.  The
+    durable request receipt, rather than the worker's clock, defines "today".
+    """
+    arguments = interpretation.model_args
+    if (
+        interpretation.tool not in FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
+        or "occurred_on" in arguments
+    ):
+        return arguments
+    return {
+        **arguments,
+        "occurred_on": format_ledger_date(
+            ledger_date(operation.api_request.received_at)
+        ),
+    }
 
 
 def _finance_required_reason(envelope: ContextEnvelope) -> str:

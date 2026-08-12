@@ -34,6 +34,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.finance_tools import FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
 from personal_agent_core.host_context import HOST_ONLY_FIELDS, ServiceKeyRing
 from personal_agent_core.mcp_protocol import ModernProtocolOnlyMiddleware
 from personal_agent_core.write_switch import WriteSwitch
@@ -191,6 +192,18 @@ async def dispatch(
                     f"{list(exc.absolute_path)}"
                 ),
             ) from exc
+        if (
+            name in FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
+            and "occurred_on" not in arguments
+        ):
+            # The schema is intentionally permissive only at the model boundary:
+            # the Agent Host has to derive and bind the message-receipt date
+            # before the signed MCP call.  Never let a bypass reach handlers with
+            # a missing date or silently choose this process's current day.
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail=f"{name} is missing Host-resolved occurred_on",
+            )
 
         payload = await handler(
             ToolInvocation(

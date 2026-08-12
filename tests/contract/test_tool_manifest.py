@@ -197,6 +197,15 @@ def test_income_never_borrows_expense_semantics() -> None:
         assert forbidden not in properties
 
 
+def test_write_date_is_optional_only_for_the_host_receipt_default() -> None:
+    """The Host must bind the dynamic default before it calls the MCP server."""
+    for name in ("finance.log_expense", "finance.log_income"):
+        schema = tool(name)["model_input_schema"]
+        assert "occurred_on" not in schema["required"]
+        assert "default" not in schema["properties"]["occurred_on"]
+        assert "Asia/Shanghai 接收日" in schema["properties"]["occurred_on"]["description"]
+
+
 def test_expense_categories_match_the_verified_ledger() -> None:
     field = tool("finance.log_expense")["model_input_schema"]["properties"]["category"]
     assert field["enum"] == [*ALLOWED_EXPENSE_CATEGORIES, None]
@@ -228,6 +237,16 @@ def test_normal_expense_requires_a_category_and_nonzero_amount() -> None:
         "category": "餐饮",
     }
     jsonschema.validate(valid, schema)
+    # Dynamic defaults are Host-resolved from the durable receipt timestamp, so
+    # omission is valid model output.  An explicit malformed value is not
+    # silently repaired and still fails at the schema boundary.
+    jsonschema.validate(
+        {key: value for key, value in valid.items() if key != "occurred_on"},
+        schema,
+    )
+    for invalid_date in ("今天", "", None):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({**valid, "occurred_on": invalid_date}, schema)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(
             {

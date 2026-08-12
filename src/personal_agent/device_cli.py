@@ -5,7 +5,7 @@ device and adjusting scopes are **operator** actions on the server, and that no
 public administrator API is added for them. This is that operator surface: it
 runs on the host, against the Agent database, over SSH.
 
-Three deliberate properties:
+Four deliberate properties:
 
 - **the code is shown once and never stored.** The database holds a SHA-256 of
   it, so this is the only moment it exists in readable form. It is printed to
@@ -17,6 +17,9 @@ Three deliberate properties:
 - **a scope must exist to be granted.** `set-scopes` validates against the
   device scopes and the scopes the current tool manifest actually declares, so a
   typo produces a refusal instead of a device that silently holds nothing.
+- **a manifest rebind is explicit.** `rebind-tools` can update an active
+  device's catalog binding only after the operator has reviewed the new build;
+  it never changes scopes, keys or device status.
 """
 
 from __future__ import annotations
@@ -65,7 +68,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Operator device management for the Agent API: mint an enrollment "
-            "code, list devices, revoke one, or set its scopes."
+            "code, list devices, revoke one, set scopes, or rebind tools."
         )
     )
     parser.add_argument("--database", type=Path, required=True)
@@ -100,6 +103,12 @@ def main() -> None:
         help="Repeatable. The resulting set replaces the current one.",
     )
 
+    rebind = sub.add_parser(
+        "rebind-tools",
+        help="Explicitly bind one active device to this build's tool manifest.",
+    )
+    rebind.add_argument("--device-id", required=True)
+
     args = parser.parse_args()
 
     if not args.database.exists():
@@ -122,6 +131,8 @@ def main() -> None:
                     _revoke(session, device_id=args.device_id, now=now)
                 elif args.command == "set-scopes":
                     _set_scopes(session, device_id=args.device_id, scopes=args.scope)
+                elif args.command == "rebind-tools":
+                    _rebind_tools(session, device_id=args.device_id)
                 session.commit()
             except Exception:
                 session.rollback()
@@ -189,6 +200,26 @@ def _set_scopes(session, *, device_id: str, scopes: list[str]) -> None:
     print(
         "Existing access tokens keep the scopes they were minted with for up to "
         "10 minutes; the next token carries the new set."
+    )
+
+
+def _rebind_tools(session, *, device_id: str) -> None:
+    """Grant an existing active device exactly this build's reviewed catalog."""
+    device = session.get(Device, device_id)
+    if device is None:
+        raise SystemExit(f"no such device {device_id}")
+    if device.status != "active":
+        raise SystemExit(f"refusing to rebind non-active device {device_id}")
+    before = device.allowed_tools_version
+    current = load_manifest()["allowed_tools_version"]
+    if before == current:
+        print(f"{device_id} already bound to current tool manifest")
+        return
+    device.allowed_tools_version = current
+    print(f"{device_id} tools_version: {before} -> {current}")
+    print(
+        "Scopes, key binding and device status are unchanged. The next token "
+        "carries the new manifest version."
     )
 
 

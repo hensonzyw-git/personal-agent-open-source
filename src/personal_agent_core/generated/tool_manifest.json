@@ -74,7 +74,7 @@
   "disabled_tools": [
     "finance.log_expense_batch"
   ],
-  "allowed_tools_version": "5b44139001ee6330ca4948f0ba7d90c274e1a4730e1d812d4b1e74821a86b92d",
+  "allowed_tools_version": "6575dd69b74e4f6be38bbdc2dfea3c65e55aa8c38d56c2f21bea1c811ec1b1bf",
   "tools": [
     {
       "name": "finance.log_expense",
@@ -94,7 +94,6 @@
           "name",
           "input_amount",
           "input_currency",
-          "occurred_on",
           "is_family_expense",
           "entry_kind"
         ],
@@ -162,7 +161,7 @@
             "type": "string",
             "format": "date",
             "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
-            "description": "实际付款/入账日期的绝对值，YYYY-MM-DD。不要传“昨天”这类相对表达。今天为未来行程付款仍记今天。"
+            "description": "实际付款/入账日期的绝对值，YYYY-MM-DD。不要传“昨天”这类相对表达。今天为未来行程付款仍记今天。模型省略此字段时，Host 按该消息的Asia/Shanghai 接收日填入绝对日期；显式值必须保持为有效绝对日期。"
           },
           "is_family_expense": {
             "type": "boolean",
@@ -337,8 +336,8 @@
         "SOURCE_COMMIT_UNKNOWN",
         "SOURCE_COMMITTED_MISMATCH"
       ],
-      "input_schema_hash": "5690b4bfaf971fd824b2052c3bea66feaaa89eda014083d461802b1935f060d0",
-      "contract_hash": "5bb8192b5133c8e3e79b0fd4d43b06af3657f832717bee042d91dd3bcd7dc49b"
+      "input_schema_hash": "f300a6f42f89d8db35ff566e5288d369287ea8f9cb4828438023921c53591a0c",
+      "contract_hash": "57c9b3f884774077cbaf99248b97032643b94ffc8781a621470512a42f3ff134"
     },
     {
       "name": "finance.log_expense_batch",
@@ -369,7 +368,6 @@
                 "name",
                 "input_amount",
                 "input_currency",
-                "occurred_on",
                 "is_family_expense",
                 "entry_kind"
               ],
@@ -437,7 +435,7 @@
                   "type": "string",
                   "format": "date",
                   "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
-                  "description": "实际付款/入账日期的绝对值，YYYY-MM-DD。不要传“昨天”这类相对表达。今天为未来行程付款仍记今天。"
+                  "description": "实际付款/入账日期的绝对值，YYYY-MM-DD。不要传“昨天”这类相对表达。今天为未来行程付款仍记今天。模型省略此字段时，Host 按该消息的Asia/Shanghai 接收日填入绝对日期；显式值必须保持为有效绝对日期。"
                 },
                 "is_family_expense": {
                   "type": "boolean",
@@ -638,8 +636,8 @@
         "SOURCE_COMMIT_UNKNOWN",
         "SOURCE_COMMITTED_MISMATCH"
       ],
-      "input_schema_hash": "d1a4ea90cd969d624c4f37f45abbb4d647786663c7aabd1ed181893e66f21557",
-      "contract_hash": "8dc18000e10381750040766399b991d2be9b2b3b434d71a8c227a6d817a5cd52"
+      "input_schema_hash": "7dcd88bfc3436d877016cdd50904fe2de778f8c73c65b412fdca770603dfec63",
+      "contract_hash": "8dd6a4626cc35656b24d94195eda50c314d25fe71ae82615ecfac8fb39138e0b"
     },
     {
       "name": "finance.log_income",
@@ -658,8 +656,7 @@
         "required": [
           "income_description",
           "input_amount",
-          "input_currency",
-          "occurred_on"
+          "input_currency"
         ],
         "properties": {
           "income_description": {
@@ -706,7 +703,7 @@
             "type": "string",
             "format": "date",
             "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
-            "description": "实际入账日期的绝对值，YYYY-MM-DD。"
+            "description": "实际入账日期的绝对值，YYYY-MM-DD。模型省略此字段时，Host 按该消息的 Asia/Shanghai 接收日填入绝对日期；显式值必须保持为有效绝对日期。"
           }
         }
       },
@@ -822,8 +819,8 @@
         "SOURCE_COMMIT_UNKNOWN",
         "SOURCE_COMMITTED_MISMATCH"
       ],
-      "input_schema_hash": "b67f4f0f1cd6c6455fcf8d6f613c34fd9e283c8838f8e4134cb76dd297e18e8f",
-      "contract_hash": "8819afc0e82731875b5353011da1de14e3d67281442119770111686c2e83313a"
+      "input_schema_hash": "eeb791038e6547dde489cab4bcecfe7454b3fbff4dfd717fb44133b95bd76f0a",
+      "contract_hash": "83bf20e51e88e08decc6ca6888daa1be6af26ea88ccad1f7591818385f8a752e"
     },
     {
       "name": "finance.update_family_fund",

@@ -14,6 +14,14 @@ FINANCE_QUERY_TOOL = "finance.query_expenses"
 
 FINANCE_READ_TOOLS: frozenset[str] = frozenset({FINANCE_QUERY_TOOL})
 
+# These tools accept a model omission only because the Agent Host resolves the
+# durable message-receipt date before policy binds and signs their arguments.
+# The MCP server rejects a missing field, so the default can never leak into a
+# direct connector call as an accidental handler error or a different clock.
+FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS: frozenset[str] = frozenset(
+    {"finance.log_expense", "finance.log_income"}
+)
+
 FINANCE_WRITE_TOOLS: frozenset[str] = frozenset(
     {
         "finance.log_expense",
