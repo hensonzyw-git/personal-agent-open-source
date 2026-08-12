@@ -57,14 +57,18 @@ def test_prompt_forbids_model_side_duplicate_judgement() -> None:
 def test_prompt_states_the_output_discipline_the_adapter_enforces() -> None:
     """The 2026-07-26 live smoke found all three of these shapes on real GLM.
 
-    The gateway already fails closed on prose-as-a-question and on a tool call
-    mixed with text, so these lines are not the safety property; they exist so a
-    correct outcome is not lost to a preventable malformed turn.
+    The gateway still fails closed on prose-as-a-question and multiple calls.
+    One valid call plus text has an explicit suppressed-untrusted disposition;
+    these lines reduce that preventable provider shape without making the prompt
+    the safety boundary.
     """
 
     prompt = build_system_prompt(today="2026-07-24")
     assert "任何需要用户回答的问句都必须" in prompt
-    assert "不带任何解释文字" in prompt
+    assert "只输出一个工具调用，不附带解释文字" in prompt
+    assert "标记为不可信并抑制" in prompt
+    assert "它绝不会成为用户可见回答、工具参数" in prompt
+    assert "或成功/写入证据" in prompt
     assert "日期缺失永远不是澄清理由" in prompt
     assert "前两天" in prompt
     assert "不能唯一确定日期" in prompt

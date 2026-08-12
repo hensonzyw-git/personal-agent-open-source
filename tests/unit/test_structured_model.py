@@ -101,7 +101,7 @@ def test_a_structured_answer_is_returned_untouched() -> None:
     assert [d["function"]["name"] for d in generate.kwargs["declarations"]] == [
         "decide"
     ]
-    assert generate.kwargs["required_function_name"] == "decide"
+    assert generate.kwargs["allowed_function_names"] == ["decide"]
 
 
 def test_an_over_budget_request_is_refused_before_the_generator() -> None:

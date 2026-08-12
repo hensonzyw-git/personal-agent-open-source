@@ -65,24 +65,41 @@ class DirectAnswer:
 
 @dataclass(frozen=True)
 class ToolCall:
-    """A model-chosen tool and its model-facing arguments."""
+    """A model-chosen tool and its model-facing arguments.
+
+    ``suppressed_untrusted_text`` is a response-contract disposition, not model
+    content. It is true only when the gateway received one valid tool call plus
+    prose; that prose has already been excluded and may not influence policy,
+    dispatch or an operation result.
+    """
 
     tool: str
     model_args: dict[str, Any]
+    suppressed_untrusted_text: bool = False
 
 
 @dataclass(frozen=True)
 class Clarification:
-    """A structured question; it parks instead of pretending to be an answer."""
+    """A structured question; it parks instead of pretending to be an answer.
+
+    Provider prose beside the control call is never used as the question; when
+    present, its suppression disposition is retained for safe observability.
+    """
 
     question: str
+    suppressed_untrusted_text: bool = False
 
 
 @dataclass(frozen=True)
 class FailSafeInterpretation:
-    """A model-selected outcome backed by a frozen, non-write safety gate."""
+    """A model-selected outcome backed by a frozen, non-write safety gate.
+
+    Any prose beside the control call remains suppressed and cannot change the
+    fixed failure reason.
+    """
 
     reason: str
+    suppressed_untrusted_text: bool = False
 
 
 Interpretation = DirectAnswer | ToolCall | Clarification | FailSafeInterpretation
@@ -357,6 +374,22 @@ def run_operation(
     # obtained; cancellation can still win cleanly, and a crash safely replays
     # the sealed request. The state walk is committed only after the proposal.
     _step(session, operation, "interpreting", now)
+
+    if (
+        isinstance(
+            interpretation, (ToolCall, Clarification, FailSafeInterpretation)
+        )
+        and interpretation.suppressed_untrusted_text
+    ):
+        # This is a fixed, content-free audit record. The accompanying model
+        # prose is intentionally not retained; it cannot be mistaken for a
+        # user-visible result, tool argument or external-write evidence.
+        logger.info(
+            "model response accepted operation_id=%s trace_id=%s "
+            "response_disposition=tool_text_suppressed_untrusted",
+            operation.operation_id,
+            operation.trace_id,
+        )
 
     if isinstance(interpretation, Clarification):
         _step(

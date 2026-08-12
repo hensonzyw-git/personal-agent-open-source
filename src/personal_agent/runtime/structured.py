@@ -209,7 +209,7 @@ class StructuredModelClient:
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
                 timeout=self._timeout,
-                required_function_name=request.function_name,
+                allowed_function_names=[request.function_name],
             )
         except StructuredCallError:
             raise

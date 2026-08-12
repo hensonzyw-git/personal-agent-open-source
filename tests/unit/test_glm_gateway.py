@@ -43,6 +43,13 @@ _EXPENSE = VisibleTool(
     risk_level="R2",
     required_scopes=("finance.write",),
 )
+_QUERY = VisibleTool(
+    alias="finance.query_expenses",
+    description="查询支出",
+    input_schema={"type": "object", "properties": {"view": {"type": "string"}}},
+    risk_level="R1",
+    required_scopes=("finance.read",),
+)
 
 
 def _response(*parts, error_code=None):
@@ -121,6 +128,57 @@ def test_a_tool_call_response_becomes_one_proposed_tool_call(envelope) -> None:
     )
 
 
+def test_one_valid_tool_call_plus_prose_is_explicitly_suppressed(envelope) -> None:
+    gateway, _ = _gateway(
+        _response(
+            _call("finance.log_expense", {"name": "午饭", "input_amount": "45"}),
+            _text("这段文字不是工具参数，也不是给用户的结果。"),
+        )
+    )
+
+    proposal = _propose(gateway, envelope)
+
+    assert proposal == ProposedToolCall(
+        "finance.log_expense",
+        {"name": "午饭", "input_amount": "45"},
+        suppressed_untrusted_text=True,
+    )
+    assert "这段文字" not in repr(proposal)
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "expected_type"),
+    [
+        (
+            "agent.ask_clarification",
+            {"question": "个人还是家庭？"},
+            ProposedClarification,
+        ),
+        (
+            "agent.fail_batch_unavailable",
+            {},
+            ProposedFailure,
+        ),
+        (
+            "agent.fail_safely",
+            {"reason": ErrorCode.UNSUPPORTED_OPERATION.value},
+            ProposedFailure,
+        ),
+    ],
+)
+def test_internal_tool_plus_prose_keeps_the_same_suppressed_disposition(
+    envelope, name, arguments, expected_type
+) -> None:
+    gateway, _ = _gateway(
+        _response(_call(name, arguments), _text("控制调用之外的说明不会被保留。"))
+    )
+
+    proposal = _propose(gateway, envelope)
+
+    assert isinstance(proposal, expected_type)
+    assert proposal.suppressed_untrusted_text is True
+
+
 def test_a_plain_answer_becomes_a_proposed_answer(envelope) -> None:
     gateway, _ = _gateway(_response(_text("你好")))
     assert _propose(gateway, envelope) == ProposedAnswer("你好")
@@ -133,6 +191,12 @@ def test_the_request_is_bounded_and_declares_business_and_internal_tools(envelop
     assert kwargs["model"] == "openai/glm-5.2"
     assert kwargs["api_base"] == _PINNED
     assert kwargs["timeout"] == 25.0
+    assert kwargs["allowed_function_names"] == [
+        "finance.log_expense",
+        "agent.ask_clarification",
+        "agent.fail_batch_unavailable",
+        "agent.fail_safely",
+    ]
     assert kwargs["system"] == "SYS"
     # Assembled context travels as data, ahead of the current message, and the
     # current message is always last.
@@ -260,6 +324,25 @@ def test_the_declarations_sent_are_the_ones_the_budget_measured(
                 },
             },
         },
+    ]
+
+
+def test_a_finance_query_requires_only_the_query_or_safe_internal_calls(tmp_path) -> None:
+    built = envelope_for(
+        tmp_path,
+        user_text="查一下这个月花了多少钱",
+        tools=[_EXPENSE, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.query_expenses", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    assert built.finance_required_tool == "finance.query_expenses"
+    assert generate.kwargs["allowed_function_names"] == [
+        "finance.query_expenses",
+        "agent.ask_clarification",
+        "agent.fail_safely",
     ]
 
 
@@ -497,7 +580,6 @@ def test_clarification_schema_boundary_and_extra_fields(envelope) -> None:
             _call("finance.log_expense", {}),
             _call("finance.log_income", {}),
         ),
-        _response(_text("已记录"), _call("finance.log_expense", {})),
         _response(_text("ok"), error_code="MAX_TOKENS"),
     ],
 )
@@ -615,10 +697,16 @@ def test_malformed_model_response_is_separate_from_provider_failures(
         (
             _response(
                 _call("finance.log_expense", {}),
+                _text("不要丢掉我"),
                 _call("finance.log_income", {}),
             ),
             ModelFailureReason.RESPONSE_AMBIGUOUS,
             "multiple_tool_calls",
+        ),
+        (
+            _response(_call("finance.log_expense", []), _text("无效参数")),
+            ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+            "tool_arguments",
         ),
         (
             _response(_text("ok"), error_code="MODEL_ERROR"),
@@ -714,7 +802,7 @@ def test_production_generator_uses_the_adk_model_contract(monkeypatch) -> None:
         temperature=0.1,
         max_tokens=512,
         timeout=25.0,
-        required_function_name="meta.capabilities",
+        allowed_function_names=["meta.capabilities"],
     )
     assert actual is expected
     assert captured["init"]["api_base"] == _PINNED
@@ -734,3 +822,32 @@ def test_production_generator_uses_the_adk_model_contract(monkeypatch) -> None:
         "type": "object",
         "properties": {},
     }
+
+
+@pytest.mark.parametrize(
+    "allowed", [[], ["unknown"], ["meta.capabilities", "meta.capabilities"]]
+)
+def test_production_generator_rejects_an_invalid_required_subset(allowed) -> None:
+    """The trusted provider mode cannot name an undeclared or duplicate tool."""
+    with pytest.raises(ModelGatewayError, match="non-empty declared subset"):
+        generate_with_adk(
+            model="openai/glm-5.2",
+            api_key="secret",
+            api_base=_PINNED,
+            system="SYS",
+            messages=[{"role": "user", "content": "hi"}],
+            declarations=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "meta.capabilities",
+                        "description": "能力",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            temperature=0.1,
+            max_tokens=512,
+            timeout=25.0,
+            allowed_function_names=allowed,
+        )

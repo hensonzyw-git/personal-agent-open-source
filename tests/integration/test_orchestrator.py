@@ -8,6 +8,7 @@ ones that do not depend on a real model or a live Base -- the state walk, the
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -495,6 +496,60 @@ def test_a_read_completes_without_touching_the_write_states(session, keyring) ->
     )
     assert result.state == "succeeded"
     assert result.answer == "本月 ¥2093"
+
+
+def test_tool_text_disposition_is_a_content_free_audit_record(session, keyring, caplog) -> None:
+    """Provider prose beside one call never becomes arguments or a result."""
+    caplog.set_level(logging.INFO, logger="personal_agent.api.orchestrator")
+    op = _fresh_operation(session)
+    dispatcher = FakeDispatcher(resolve=ReadCompleted("本月 ¥2093"))
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            ToolCall(
+                "finance.query_expenses",
+                {"view": "total"},
+                suppressed_untrusted_text=True,
+            )
+        ),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="查一下这个月花了多少钱",
+    )
+
+    assert result.state == "succeeded"
+    assert result.answer == "本月 ¥2093"
+    assert dispatcher.resolve_calls == [
+        {"tool": "finance.query_expenses", "model_args": {"view": "total"}}
+    ]
+    assert "response_disposition=tool_text_suppressed_untrusted" in caplog.text
+    session.refresh(op)
+    assert op.safe_result == "本月 ¥2093"
+
+
+def test_internal_tool_text_disposition_is_logged_without_changing_outcome(
+    session, keyring, caplog
+) -> None:
+    caplog.set_level(logging.INFO, logger="personal_agent.api.orchestrator")
+    op = _fresh_operation(session)
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            FailSafeInterpretation(
+                ErrorCode.BATCH_ATOMICITY_UNAVAILABLE.value,
+                suppressed_untrusted_text=True,
+            )
+        ),
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        text="两笔合计记账",
+    )
+
+    assert result.state == "failed_safe"
+    assert result.failure_reason == ErrorCode.BATCH_ATOMICITY_UNAVAILABLE.value
+    assert "response_disposition=tool_text_suppressed_untrusted" in caplog.text
 
 
 def test_a_resolved_write_walks_through_verification_to_success(session, keyring):

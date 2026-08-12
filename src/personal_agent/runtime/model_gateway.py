@@ -65,25 +65,40 @@ class ProposedToolCall:
 
     `arguments` are whatever the model produced; they are validated by the tool's
     JSON Schema and stripped of any Host-only fields at the policy boundary, never
-    here.
+    here. ``suppressed_untrusted_text`` records the explicit response-contract
+    disposition when the provider supplied prose alongside the one call. The
+    prose itself never crosses this boundary: it is neither user-visible nor
+    execution input nor evidence of a result.
     """
 
     tool: str
     arguments: dict[str, Any]
+    suppressed_untrusted_text: bool = False
 
 
 @dataclass(frozen=True)
 class ProposedClarification:
-    """A structured, side-effect-free question that parks the operation."""
+    """A structured, side-effect-free question that parks the operation.
+
+    ``suppressed_untrusted_text`` is set when the provider attached prose to
+    this otherwise valid control call. The prose is not the clarification.
+    """
 
     question: str
+    suppressed_untrusted_text: bool = False
 
 
 @dataclass(frozen=True)
 class ProposedFailure:
-    """A structured fail-closed outcome selected for a frozen safety gate."""
+    """A structured fail-closed outcome selected for a frozen safety gate.
+
+    The same response disposition is carried for control calls so every
+    accepted single-call-plus-text shape is observable without retaining the
+    provider prose.
+    """
 
     reason: str
+    suppressed_untrusted_text: bool = False
 
 
 ModelProposal = (
@@ -103,7 +118,11 @@ class ModelGateway(Protocol):
 
     The implementation must return exactly one proposal and must not execute a
     tool. A response containing multiple tool calls is malformed and fails
-    closed; it is never truncated to the first call.
+    closed; it is never truncated to the first call. A provider may attach prose
+    to one otherwise valid tool call only through the explicit
+    ``suppressed_untrusted_text`` disposition; that prose is not a direct answer
+    or control result and never reaches policy, dispatch, the user-visible
+    result, or evidence.
     """
 
     def propose(

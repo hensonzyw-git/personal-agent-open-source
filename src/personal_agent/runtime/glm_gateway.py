@@ -36,6 +36,7 @@ from personal_agent.runtime.model_gateway import (
     ProposedToolCall,
 )
 from personal_agent_core.errors import ErrorCode, ModelFailureReason
+from personal_agent_core.finance_tools import FINANCE_WRITE_TOOLS
 
 
 ZHIPU_API_BASE = "https://open.bigmodel.cn/api/paas/v4/"
@@ -103,6 +104,9 @@ class GlmGateway:
                 temperature=self._temperature,
                 max_tokens=self._max_tokens,
                 timeout=self._timeout,
+                allowed_function_names=_required_function_names(
+                    envelope, declarations
+                ),
             )
         except ModelGatewayError as exc:
             _log_model_failure(
@@ -489,12 +493,7 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
                 reason=ModelFailureReason.RESPONSE_AMBIGUOUS,
                 response_shape="multiple_tool_calls",
             )
-        if text_parts:
-            raise _invalid_model_response(
-                "model mixed a tool call with a direct answer",
-                reason=ModelFailureReason.RESPONSE_AMBIGUOUS,
-                response_shape="tool_and_text",
-            )
+        suppressed_untrusted_text = bool(text_parts)
         call = calls[0]
         name = getattr(call, "name", None)
         if not isinstance(name, str) or not name:
@@ -524,7 +523,10 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
                     reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
                     response_shape="clarification_question",
                 )
-            return ProposedClarification(question=question.strip())
+            return ProposedClarification(
+                question=question.strip(),
+                suppressed_untrusted_text=suppressed_untrusted_text,
+            )
         if name == _FAIL_BATCH:
             if arguments:
                 raise _invalid_model_response(
@@ -532,7 +534,10 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
                     reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
                     response_shape="batch_failure_arguments",
                 )
-            return ProposedFailure(reason=ErrorCode.BATCH_ATOMICITY_UNAVAILABLE.value)
+            return ProposedFailure(
+                reason=ErrorCode.BATCH_ATOMICITY_UNAVAILABLE.value,
+                suppressed_untrusted_text=suppressed_untrusted_text,
+            )
         if name == _FAIL_SAFELY:
             if set(arguments) != {"reason"}:
                 raise _invalid_model_response(
@@ -547,8 +552,18 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
                     reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
                     response_shape="fail_safe_reason",
                 )
-            return ProposedFailure(reason=reason)
-        return ProposedToolCall(tool=name, arguments=arguments)
+            return ProposedFailure(
+                reason=reason,
+                suppressed_untrusted_text=suppressed_untrusted_text,
+            )
+        return ProposedToolCall(
+            tool=name,
+            arguments=arguments,
+            # This is an explicit protocol disposition, not a best-effort
+            # repair: the adjacent text is not incorporated into the call,
+            # answer, audit evidence or any persisted user-facing result.
+            suppressed_untrusted_text=suppressed_untrusted_text,
+        )
 
     answer = "".join(text_parts).strip()
     if not answer:
@@ -650,13 +665,15 @@ def generate_with_adk(
     temperature: float,
     max_tokens: int,
     timeout: float,
-    required_function_name: str | None = None,
+    allowed_function_names: list[str] | None = None,
 ) -> Any:
     """Generate one non-streaming turn through Google ADK's model contract.
 
-    Chat leaves function selection automatic because a direct answer is legal.
-    A structured auxiliary call supplies ``required_function_name`` and is
-    transported as ADK ``ANY`` with exactly that one allowed name.
+    Chat leaves function selection automatic when a direct answer is legal.
+    Trusted callers may instead provide a non-empty subset of declarations;
+    that subset is transported as ADK ``ANY``. Finance turns use this to
+    require one explicitly scoped business or safe internal function instead
+    of allowing a prose-only response.
     """
 
     # Lazy imports keep the base package importable when the optional runtime is
@@ -674,16 +691,20 @@ def generate_with_adk(
         for item in declarations
     ]
     tool_config = None
-    if required_function_name is not None:
+    if allowed_function_names is not None:
         declared_names = [function.name for function in functions]
-        if declared_names != [required_function_name]:
+        if (
+            not allowed_function_names
+            or len(set(allowed_function_names)) != len(allowed_function_names)
+            or any(name not in declared_names for name in allowed_function_names)
+        ):
             raise ModelGatewayError(
-                "required function must be the only declared function"
+                "required functions must be a non-empty declared subset"
             )
         tool_config = types.ToolConfig(
             function_calling_config=types.FunctionCallingConfig(
                 mode=types.FunctionCallingConfigMode.ANY,
-                allowed_function_names=[required_function_name],
+                allowed_function_names=allowed_function_names,
             )
         )
     llm = LiteLlm(
@@ -731,3 +752,31 @@ def generate_with_adk(
         return responses[0]
 
     return asyncio.run(one_response())
+
+
+def _required_function_names(
+    envelope: ContextEnvelope, declarations: list[dict[str, Any]]
+) -> list[str] | None:
+    """Return the trusted function-choice subset for a Finance turn.
+
+    The envelope is the only trusted source for the Finance intent class; the
+    model cannot loosen its own tool choice. We preserve declaration order so
+    the selected names are a measured subset of the exact provider request.
+    """
+
+    if not envelope.finance_intent_required:
+        return None
+    allowed = {_ASK_CLARIFICATION, _FAIL_SAFELY}
+    if envelope.finance_required_tool is not None:
+        allowed.add(envelope.finance_required_tool)
+    else:
+        allowed.update(FINANCE_WRITE_TOOLS)
+        allowed.add(_FAIL_BATCH)
+    selected = [
+        item["function"]["name"]
+        for item in declarations
+        if item["function"]["name"] in allowed
+    ]
+    if not selected:  # pragma: no cover - internal declarations are mandatory
+        raise ModelGatewayError("Finance turn had no allowed function declarations")
+    return selected

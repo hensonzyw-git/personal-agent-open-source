@@ -58,11 +58,21 @@ class ModelInterpreter:
             ) from exc
         if isinstance(proposal, ProposedToolCall):
             # Passed through unchanged; policy decides whether it may run.
-            return ToolCall(tool=proposal.tool, model_args=dict(proposal.arguments))
+            return ToolCall(
+                tool=proposal.tool,
+                model_args=dict(proposal.arguments),
+                suppressed_untrusted_text=proposal.suppressed_untrusted_text,
+            )
         if isinstance(proposal, ProposedClarification):
-            return Clarification(question=proposal.question)
+            return Clarification(
+                question=proposal.question,
+                suppressed_untrusted_text=proposal.suppressed_untrusted_text,
+            )
         if isinstance(proposal, ProposedFailure):
-            return FailSafeInterpretation(reason=proposal.reason)
+            return FailSafeInterpretation(
+                reason=proposal.reason,
+                suppressed_untrusted_text=proposal.suppressed_untrusted_text,
+            )
         if isinstance(proposal, ProposedAnswer):
             return DirectAnswer(text=proposal.text)
         raise TypeError(  # pragma: no cover - the union is exhaustive above

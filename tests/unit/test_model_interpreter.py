@@ -78,6 +78,25 @@ def test_structured_non_write_proposals_keep_their_state_meaning(
     )
 
 
+@pytest.mark.parametrize(
+    "proposal",
+    [
+        ProposedClarification(
+            "个人还是家庭支出？", suppressed_untrusted_text=True
+        ),
+        ProposedFailure(
+            "BATCH_ATOMICITY_UNAVAILABLE", suppressed_untrusted_text=True
+        ),
+    ],
+)
+def test_internal_mixed_response_disposition_reaches_the_orchestrator(
+    envelope, proposal
+) -> None:
+    result = _interpreter(proposal).interpret(envelope=envelope)
+
+    assert result.suppressed_untrusted_text is True
+
+
 def test_a_proposed_tool_call_becomes_a_tool_call_with_copied_args(
     envelope,
 ) -> None:
@@ -89,6 +108,19 @@ def test_a_proposed_tool_call_becomes_a_tool_call_with_copied_args(
     assert result.model_args == args
     # The args are copied, not aliased to the model's dict.
     assert result.model_args is not args
+
+
+def test_a_suppressed_text_disposition_survives_to_the_orchestrator(envelope) -> None:
+    result = _interpreter(
+        ProposedToolCall(
+            "finance.log_expense",
+            {"name": "午饭"},
+            suppressed_untrusted_text=True,
+        )
+    ).interpret(envelope=envelope)
+
+    assert isinstance(result, ToolCall)
+    assert result.suppressed_untrusted_text is True
 
 
 def test_an_off_catalog_tool_is_passed_through_for_policy_to_reject(
