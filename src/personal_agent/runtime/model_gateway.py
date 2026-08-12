@@ -86,6 +86,10 @@ class ProposedClarification:
 
     question: str
     suppressed_untrusted_text: bool = False
+    #: Required for provider-originated clarification calls.  ``None`` is kept
+    #: only for hand-written offline interpreter fixtures; the GLM response
+    #: parser refuses a missing reason.
+    reason: str | None = None
 
 
 @dataclass(frozen=True)

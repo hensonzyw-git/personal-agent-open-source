@@ -151,7 +151,7 @@ def test_one_valid_tool_call_plus_prose_is_explicitly_suppressed(envelope) -> No
     [
         (
             "agent.ask_clarification",
-            {"question": "个人还是家庭？"},
+            {"question": "个人还是家庭？", "reason": "other"},
             ProposedClarification,
         ),
         (
@@ -281,13 +281,21 @@ def test_the_declarations_sent_are_the_ones_the_budget_measured(
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["question"],
+                "required": ["question", "reason"],
                 "properties": {
                     "question": {
                         "type": "string",
                         "minLength": 1,
                         "maxLength": MAX_CLARIFICATION_QUESTION_CHARS,
-                    }
+                    },
+                    "reason": {
+                        "type": "string",
+                        "enum": ["date", "other"],
+                        "description": (
+                            "仅当用户明确给出了无法唯一确定的日期表达时用 date；"
+                            "未说明日期时 Host 默认当天，绝不能用 date。"
+                        ),
+                    },
                 },
             },
         },
@@ -492,9 +500,16 @@ def test_clarification_sources_are_excluded_before_the_raw_scan_limit(
 
 def test_structured_clarification_and_batch_gate_are_not_direct_answers(envelope) -> None:
     clarification, _ = _gateway(
-        _response(_call("agent.ask_clarification", {"question": "个人还是家庭？"}))
+        _response(
+            _call(
+                "agent.ask_clarification",
+                {"question": "个人还是家庭？", "reason": "other"},
+            )
+        )
     )
-    assert _propose(clarification, envelope) == ProposedClarification("个人还是家庭？")
+    assert _propose(clarification, envelope) == ProposedClarification(
+        "个人还是家庭？", reason="other"
+    )
 
     batch, _ = _gateway(_response(_call("agent.fail_batch_unavailable", {})))
     assert _propose(batch, envelope) == ProposedFailure(
@@ -539,7 +554,11 @@ def test_invalid_fail_safe_reasons_fail_closed(envelope, arguments) -> None:
 )
 def test_invalid_clarification_questions_fail_closed(envelope, question) -> None:
     gateway, _ = _gateway(
-        _response(_call("agent.ask_clarification", {"question": question}))
+        _response(
+            _call(
+                "agent.ask_clarification", {"question": question, "reason": "other"}
+            )
+        )
     )
     with pytest.raises(ModelGatewayError):
         _propose(gateway, envelope)
@@ -550,7 +569,10 @@ def test_clarification_schema_boundary_and_extra_fields(envelope) -> None:
         _response(
             _call(
                 "agent.ask_clarification",
-                {"question": "问" * MAX_CLARIFICATION_QUESTION_CHARS},
+                {
+                    "question": "问" * MAX_CLARIFICATION_QUESTION_CHARS,
+                    "reason": "other",
+                },
             )
         )
     )
@@ -562,12 +584,44 @@ def test_clarification_schema_boundary_and_extra_fields(envelope) -> None:
         _response(
             _call(
                 "agent.ask_clarification",
-                {"question": "个人还是家庭？", "unexpected": True},
+                {
+                    "question": "个人还是家庭？",
+                    "reason": "other",
+                    "unexpected": True,
+                },
             )
         )
     )
     with pytest.raises(ModelGatewayError, match="unexpected arguments"):
         _propose(extra, envelope)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"question": "哪天？"},
+        {"question": "哪天？", "reason": "unknown"},
+        {"question": "哪天？", "reason": None},
+    ],
+)
+def test_clarification_reason_is_a_closed_control_field(envelope, arguments) -> None:
+    gateway, _ = _gateway(_response(_call("agent.ask_clarification", arguments)))
+
+    with pytest.raises(ModelGatewayError, match="clarification"):
+        _propose(gateway, envelope)
+
+
+def test_date_default_retry_excludes_clarification_from_the_forced_set(envelope) -> None:
+    retrying = envelope.with_finance_date_default_retry()
+    gateway, generate = _gateway(_response(_call("finance.log_expense", {})))
+
+    _propose(gateway, retrying)
+
+    assert generate.kwargs["allowed_function_names"] == [
+        "finance.log_expense",
+        "agent.fail_batch_unavailable",
+        "agent.fail_safely",
+    ]
 
 
 @pytest.mark.parametrize(

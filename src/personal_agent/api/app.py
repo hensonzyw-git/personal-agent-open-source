@@ -360,7 +360,11 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         return AuthContext(
             device_id=device.device_id,
             scopes=tuple(claims.get("scopes", [])),
-            allowed_tools_version=claims["allowed_tools_version"],
+            # A short-lived token proves enrollment, but it intentionally does
+            # not freeze the device's governed tool binding.  Rebinding tools
+            # must take effect immediately and the capability projection must
+            # describe the same current database row enforced by dispatch.
+            allowed_tools_version=device.allowed_tools_version,
         )
 
     def idempotency_key(request: Request) -> str:

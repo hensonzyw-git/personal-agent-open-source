@@ -1208,6 +1208,31 @@ def test_capabilities_reports_the_effective_tools_without_schemas(
     ]
 
 
+def test_capabilities_reports_current_device_binding_before_token_refresh(
+    keys, agent_db, finance
+) -> None:
+    """The capability projection cannot lag a rebinding token claim."""
+    async def scenario():
+        async with agent_service(
+            config_for(agent_db, finance),
+            build_gateway=lambda: FakeGateway(ProposedAnswer(text="hi")),
+            write_switch=shared_enabled_write_switch(),
+        ) as composed:
+            async with http_for(composed.deps) as client:
+                return await client.get(
+                    "/v1/capabilities",
+                    headers={
+                        "Authorization": (
+                            f"Bearer {access_token(version='old-token-claim')}"
+                        )
+                    },
+                )
+
+    response = asyncio.run(scenario())
+    assert response.status_code == 200
+    assert response.json()["allowed_tools_version"] == MANIFEST_VERSION
+
+
 # --- startup recovery --------------------------------------------------------
 
 

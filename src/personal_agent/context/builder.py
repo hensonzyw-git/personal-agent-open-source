@@ -45,7 +45,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from dataclasses import InitVar, dataclass, field
+from dataclasses import InitVar, dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Final, Iterable, Mapping, Sequence
 
@@ -237,6 +237,9 @@ class ContextEnvelope:
     #: An explicit retry phrase for which the server found no eligible sealed
     #: zero-write source. The orchestrator rejects it before calling the model.
     finance_retry_unbound: bool = False
+    #: Set only by the orchestrator after a provider incorrectly asked for an
+    #: omitted Finance date.  It is a one-shot control retry, not user input.
+    finance_date_default_retry: bool = False
     trimmed: tuple[str, ...] = ()
     dropped_counts: Mapping[str, int] = field(default_factory=dict)
     #: Estimated tokens per component kind, before the safety margin. §16.1
@@ -315,6 +318,11 @@ class ContextEnvelope:
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail="an unbound Finance retry needs a Finance turn",
             )
+        if self.finance_date_default_retry and not self.finance_intent_required:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="a date-default retry needs a Finance turn",
+            )
         # "Immutable" has to be true of the containers too, or a caller holding
         # the envelope could still edit what a model was told it may send.
         if not isinstance(self.components, tuple):
@@ -331,6 +339,30 @@ class ContextEnvelope:
 
     def texts_of(self, kind: ComponentKind) -> tuple[str, ...]:
         return tuple(item.text for item in self.components if item.kind is kind)
+
+    def with_finance_date_default_retry(self) -> "ContextEnvelope":
+        """Return the one permitted retry projection of this validated turn.
+
+        `ContextEnvelope` deliberately rejects ordinary dataclass copying: an
+        arbitrary caller must not be able to present an unbudgeted object as a
+        validated model input.  This narrow transition changes only a
+        Host-owned control bit and carries the original validation witness.
+        """
+        if not self.finance_intent_required:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="a date-default retry needs a Finance turn",
+            )
+        if self.finance_date_default_retry:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="a date-default retry may happen only once",
+            )
+        return replace(
+            self,
+            finance_date_default_retry=True,
+            _budget_validation_witness=_BUDGET_VALIDATION_WITNESS,
+        )
 
     @property
     def system_instruction(self) -> str:
@@ -375,6 +407,7 @@ class ContextEnvelope:
             "finance_intent_required": self.finance_intent_required,
             "finance_required_tool": self.finance_required_tool,
             "finance_retry_unbound": self.finance_retry_unbound,
+            "finance_date_default_retry": self.finance_date_default_retry,
             "trimmed": list(self.trimmed),
             "dropped_counts": dict(self.dropped_counts),
         }

@@ -67,6 +67,7 @@ class ModelInterpreter:
             return Clarification(
                 question=proposal.question,
                 suppressed_untrusted_text=proposal.suppressed_untrusted_text,
+                reason=proposal.reason,
             )
         if isinstance(proposal, ProposedFailure):
             return FailSafeInterpretation(

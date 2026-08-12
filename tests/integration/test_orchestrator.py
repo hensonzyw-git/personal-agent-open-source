@@ -30,6 +30,7 @@ from personal_agent.api.orchestrator import (
     CommitDuplicateZeroWrite,
     CommitFailedSafe,
     CommitUnknown,
+    Clarification,
     DirectAnswer,
     FailSafeInterpretation,
     NeedsClarification,
@@ -545,6 +546,86 @@ def test_omitted_finance_date_uses_durable_message_receipt_day(
             "model_args": {**arguments, "occurred_on": "2026-07-24"},
         }
     ]
+
+
+def test_date_clarification_retries_once_then_uses_receipt_day(session, keyring) -> None:
+    class DateClarifyingInterpreter:
+        def __init__(self) -> None:
+            self.envelopes = []
+
+        def interpret(self, *, envelope):
+            self.envelopes.append(envelope)
+            if len(self.envelopes) == 1:
+                return Clarification("是今天还是其他日期？", reason="date")
+            return ToolCall(
+                "finance.log_expense",
+                {
+                    "name": "午饭",
+                    "input_amount": "54.90",
+                    "input_currency": "CNY",
+                    "is_family_expense": False,
+                    "entry_kind": "expense",
+                    "category": "餐饮",
+                },
+            )
+
+    op = _fresh_operation(session)
+    interpreter = DateClarifyingInterpreter()
+    dispatcher = FakeDispatcher(resolve=ResolveFailedSafe(reason="test_stop"))
+
+    _run(
+        session,
+        op,
+        interpreter=interpreter,
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="午饭 54.9 个人",
+    )
+
+    assert [item.finance_date_default_retry for item in interpreter.envelopes] == [
+        False,
+        True,
+    ]
+    assert dispatcher.resolve_calls == [
+        {
+            "tool": "finance.log_expense",
+            "model_args": {
+                "name": "午饭",
+                "input_amount": "54.90",
+                "input_currency": "CNY",
+                "is_family_expense": False,
+                "entry_kind": "expense",
+                "category": "餐饮",
+                "occurred_on": "2026-07-24",
+            },
+        }
+    ]
+
+
+def test_date_default_retry_refuses_a_second_clarification(session, keyring) -> None:
+    class RepeatingInterpreter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def interpret(self, *, envelope):
+            self.calls += 1
+            return Clarification("请补充信息", reason="date" if self.calls == 1 else "other")
+
+    op = _fresh_operation(session)
+    interpreter = RepeatingInterpreter()
+    result = _run(
+        session,
+        op,
+        interpreter=interpreter,
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        text="午饭 54.9 个人",
+    )
+
+    assert interpreter.calls == 2
+    assert result.state == "failed_safe"
+    assert result.failure_reason == ErrorCode.BOOKKEEPING_TOOL_REQUIRED.value
+    assert op.safe_result is None
 
 
 def test_explicit_finance_date_is_not_overwritten_or_repaired(session, keyring) -> None:

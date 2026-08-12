@@ -90,6 +90,10 @@ class Clarification:
 
     question: str
     suppressed_untrusted_text: bool = False
+    #: A closed control-plane classification emitted by the model gateway.
+    #: It is never a user-visible explanation and is not accepted without the
+    #: gateway's schema validation.
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -352,6 +356,20 @@ def run_operation(
 
     try:
         interpretation = interpreter.interpret(envelope=envelope)
+        if _requires_date_default_retry(envelope, interpretation):
+            # A missing date is deterministically filled from the durable
+            # request receipt after the model chooses a Finance tool.  It is
+            # therefore not a user-information gap.  Give the model one
+            # side-effect-free retry whose allowed function set excludes every
+            # clarification call; it can select a governed Finance tool or
+            # fail safely, but cannot ask the user for today's date.
+            logger.info(
+                "model date clarification retried operation_id=%s trace_id=%s",
+                operation.operation_id,
+                operation.trace_id,
+            )
+            envelope = envelope.with_finance_date_default_retry()
+            interpretation = interpreter.interpret(envelope=envelope)
     except InterpreterError as exc:
         # A model or transport failure is a safe failure, never a write. The
         # operation is still pre-submit, so this cannot hide a side effect.
@@ -394,6 +412,14 @@ def run_operation(
         )
 
     if isinstance(interpretation, Clarification):
+        if envelope.finance_date_default_retry:
+            # The gateway itself should have rejected this shape because the
+            # retry has no clarification function in its allowed set.  Keep a
+            # second guard at the orchestration boundary so a faulty adapter
+            # cannot surface any forbidden question to the user.
+            reason = _finance_required_reason(envelope)
+            _step(session, operation, "failed_safe", now, failure_reason=reason)
+            return RunResult(state="failed_safe", failure_reason=reason)
         _step(
             session,
             operation,
@@ -515,6 +541,23 @@ def _with_host_defaulted_occurred_on(
             ledger_date(operation.api_request.received_at)
         ),
     }
+
+
+def _requires_date_default_retry(
+    envelope: ContextEnvelope, interpretation: Interpretation
+) -> bool:
+    """Whether the model incorrectly treated an omitted Finance date as a gap.
+
+    The reason is a validated control field, not an inference from provider
+    prose.  A retry is restricted to one Finance turn and never re-enters this
+    branch because its envelope marks the retry as already consumed.
+    """
+    return (
+        envelope.finance_intent_required
+        and not envelope.finance_date_default_retry
+        and isinstance(interpretation, Clarification)
+        and interpretation.reason == "date"
+    )
 
 
 def _finance_required_reason(envelope: ContextEnvelope) -> str:

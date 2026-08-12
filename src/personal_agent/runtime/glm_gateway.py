@@ -264,13 +264,21 @@ def _internal_declarations() -> list[dict[str, Any]]:
                 "parameters": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["question"],
+                    "required": ["question", "reason"],
                     "properties": {
                         "question": {
                             "type": "string",
                             "minLength": 1,
                             "maxLength": MAX_CLARIFICATION_QUESTION_CHARS,
-                        }
+                        },
+                        "reason": {
+                            "type": "string",
+                            "enum": ["date", "other"],
+                            "description": (
+                                "仅当用户明确给出了无法唯一确定的日期表达时用 date；"
+                                "未说明日期时 Host 默认当天，绝不能用 date。"
+                            ),
+                        },
                     },
                 },
             },
@@ -504,7 +512,7 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
             )
         arguments = _parse_arguments(getattr(call, "args", None))
         if name == _ASK_CLARIFICATION:
-            if set(arguments) != {"question"}:
+            if set(arguments) != {"question", "reason"}:
                 raise _invalid_model_response(
                     "clarification had unexpected arguments",
                     reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
@@ -523,9 +531,17 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
                     reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
                     response_shape="clarification_question",
                 )
+            reason = arguments.get("reason")
+            if reason not in {"date", "other"}:
+                raise _invalid_model_response(
+                    "clarification had an invalid reason",
+                    reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                    response_shape="clarification_reason",
+                )
             return ProposedClarification(
                 question=question.strip(),
                 suppressed_untrusted_text=suppressed_untrusted_text,
+                reason=reason,
             )
         if name == _FAIL_BATCH:
             if arguments:
@@ -767,6 +783,8 @@ def _required_function_names(
     if not envelope.finance_intent_required:
         return None
     allowed = {_ASK_CLARIFICATION, _FAIL_SAFELY}
+    if envelope.finance_date_default_retry:
+        allowed.remove(_ASK_CLARIFICATION)
     if envelope.finance_required_tool is not None:
         allowed.add(envelope.finance_required_tool)
     else:
