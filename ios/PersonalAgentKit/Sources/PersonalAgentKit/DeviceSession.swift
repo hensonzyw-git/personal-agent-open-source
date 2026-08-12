@@ -229,6 +229,7 @@ public actor DeviceSession {
         conversationID: String,
         text: String,
         clarificationOf: String?,
+        startNewSession: Bool = false,
         idempotencyKey: String
     ) async throws -> OperationReceipt {
         try await authorized {
@@ -236,6 +237,7 @@ public actor DeviceSession {
                 conversationID: conversationID,
                 text: text,
                 clarificationOf: clarificationOf,
+                startNewSession: startNewSession,
                 idempotencyKey: idempotencyKey,
                 token: $0
             )

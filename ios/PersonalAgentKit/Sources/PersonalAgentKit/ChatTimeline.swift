@@ -29,8 +29,26 @@ public actor ChatTimeline {
         public let conversationID: String
         public let text: String
         public let clarificationOf: String?
+        /// Nil preserves decoding of pending sends written by older app builds.
+        public let startNewSession: Bool?
         /// Known only once the server has answered at least once.
         public var operationID: String?
+
+        public init(
+            idempotencyKey: String,
+            conversationID: String,
+            text: String,
+            clarificationOf: String?,
+            startNewSession: Bool? = nil,
+            operationID: String?
+        ) {
+            self.idempotencyKey = idempotencyKey
+            self.conversationID = conversationID
+            self.text = text
+            self.clarificationOf = clarificationOf
+            self.startNewSession = startNewSession
+            self.operationID = operationID
+        }
     }
 
     /// `DEV-031`. One duplicate decision whose reply never arrived. Persisted
@@ -199,7 +217,9 @@ public actor ChatTimeline {
     /// The receipt returned is the last one the server gave; `.running` means it is
     /// still working and the pending record is still on disk for `resume()`.
     public func send(
-        text: String, clarificationOf: String? = nil
+        text: String,
+        clarificationOf: String? = nil,
+        startNewSession: Bool = false
     ) async throws -> OperationReceipt {
         let id = try requireConversation()
         if let pending = try loadPending() {
@@ -210,6 +230,7 @@ public actor ChatTimeline {
             conversationID: id,
             text: text,
             clarificationOf: clarificationOf,
+            startNewSession: startNewSession ? true : nil,
             operationID: nil
         )
         // Persist before the request leaves. A crash in between leaves a key with
@@ -222,6 +243,7 @@ public actor ChatTimeline {
                 conversationID: pending.conversationID,
                 text: pending.text,
                 clarificationOf: pending.clarificationOf,
+                startNewSession: pending.startNewSession == true,
                 idempotencyKey: pending.idempotencyKey
             )
         } catch let error as AgentClientError where Self.provesNotAnchored(error) {
@@ -252,6 +274,7 @@ public actor ChatTimeline {
                 conversationID: pending.conversationID,
                 text: pending.text,
                 clarificationOf: pending.clarificationOf,
+                startNewSession: pending.startNewSession == true,
                 idempotencyKey: pending.idempotencyKey
             )
         } catch let error as AgentClientError where Self.provesNotAnchored(error) {
@@ -549,6 +572,7 @@ public protocol ChatBackend: Sendable {
         conversationID: String,
         text: String,
         clarificationOf: String?,
+        startNewSession: Bool,
         idempotencyKey: String
     ) async throws -> OperationReceipt
 

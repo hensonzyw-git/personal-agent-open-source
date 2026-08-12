@@ -51,6 +51,13 @@ from personal_agent.api.control_client import (
     ControlPlaneError,
     FinanceControlClient,
 )
+from personal_agent.api.finance_query_projection import (
+    QUERY_RESULT_UNREADABLE,
+    FinanceQueryProjectionError,
+    canonical_projection_json,
+    decode_finance_query_projection,
+    summarise_query_projection,
+)
 from personal_agent.api.intent import WriteIntent
 from personal_agent.api.orchestrator import (
     CommitClarificationZeroWrite,
@@ -78,11 +85,28 @@ from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.finance_tools import FINANCE_READ_TOOLS
 from personal_agent_core.host_context import HostContext, ServiceKeyRing
 from personal_agent_core.manifest import canonical_json
+from personal_agent_core.tool_ir import TOOL_CONTRACTS
 
 
 #: Tools with no side effect, which `resolve` may therefore execute outright.
 READ_TOOLS: frozenset[str] = frozenset(
     {*FINANCE_READ_TOOLS, "meta.capabilities"}
+)
+
+#: The governed read tools whose `trusted_result` is a structured query
+#: projection rather than a prose answer. Derived from the IR so a second
+#: governed read tool cannot silently bypass the strict decoder and have its
+#: canonical JSON echoed as `answer` -- the exact bug this change exists to fix.
+#: Narrowed to the tools whose output contract is the expense query projection
+#: (identified by its `metric` const): `meta.capabilities` is a read but not a
+#: query, and must keep the plain `answer` path.
+_QUERY_RESULT_TOOLS: frozenset[str] = frozenset(
+    contract.name
+    for contract in TOOL_CONTRACTS
+    if contract.effect == "read"
+    and contract.enabled
+    and contract.output_schema.get("properties", {}).get("metric", {}).get("const")
+    == "personal_spend_total_cny"
 )
 
 
@@ -188,6 +212,19 @@ class McpFinanceDispatcher:
         except (AppError, McpTimeoutError, McpTransportError) as error:
             # A read has no side effect, so every failure is a safe failure.
             return ResolveFailedSafe(reason=_reason(error))
+        if tool in _QUERY_RESULT_TOOLS:
+            # A query result is not a string to echo back. It is projected
+            # through the strict whitelist; a result the projection cannot
+            # read is a safe failure, never a JSON dump shown as an answer.
+            try:
+                projection = decode_finance_query_projection(result)
+            except FinanceQueryProjectionError:
+                return ResolveFailedSafe(reason=QUERY_RESULT_UNREADABLE)
+            return ReadCompleted(
+                result=canonical_projection_json(projection),
+                projection=projection,
+                answer=summarise_query_projection(projection),
+            )
         return ReadCompleted(result=canonical_json(result))
 
     # --- phase 2: commit -----------------------------------------------------

@@ -45,9 +45,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import InitVar, dataclass, field, replace
 from types import MappingProxyType
-from typing import Any, Final, Iterable, Mapping, Sequence
+from typing import Any, Final
 
 from sqlalchemy import or_
 
@@ -75,6 +77,7 @@ from personal_agent.runtime.bookkeeping_intent import (
 )
 from personal_agent.storage.models import (
     TERMINAL_OPERATION_STATES,
+    ContextCheckpoint,
     ContextSession,
     ConversationEvent,
     Operation,
@@ -87,7 +90,6 @@ from personal_agent_core.errors import (
 )
 from personal_agent_core.finance_tools import FINANCE_QUERY_TOOL
 from personal_agent_core.manifest import canonical_json
-
 
 SCHEMA_VERSION: Final[str] = "context_envelope_v1"
 
@@ -124,6 +126,30 @@ LINEAGE_STOP_REASONS: Final[frozenset[str]] = frozenset(
 #: `raw_window_scan_capped` rather than quietly shortening the window.
 MAX_SESSION_EVENT_SCAN: Final[int] = 400
 RAW_WINDOW_CAPPED: Final[str] = "raw_window_scan_capped"
+
+# A receipt-day default is valid only when the source Finance instruction did
+# not itself name a date.  This deliberately recognizes a broad set of date
+# shapes: a false positive merely preserves a clarification; a false negative
+# could rewrite an explicitly intended payment date.
+_EXPLICIT_DATE_IN_FINANCE_SOURCE_RE = re.compile(
+    r"(?:今天|昨天|前天|明天|后天|本周|上周|下周|本月|上个月|下个月|"
+    r"今年|去年|明年|前(?:两|\d+)天|(?:周|星期|礼拜)[一二三四五六]|"
+    r"(?:周日|周天|星期日|星期天|礼拜日|礼拜天)|"
+    r"[一二三四五六七八九十]{1,3}月(?=[一二三四五六七八九十\s\d]{1,3}[日号])"
+    r"[一二三四五六七八九十]{1,3}[日号]|"
+    r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\s*月(?:\s*\d{1,2}\s*(?:日|号)?)?)"
+)
+
+
+def finance_source_allows_receipt_date_default(source_text: str) -> bool:
+    """Whether omission may safely mean the server receipt day.
+
+    This is deliberately conservative.  A false positive merely leaves the
+    model to supply an explicit date; a false negative could replace a payment
+    the user said was yesterday with today.  The function is also used by the
+    model evaluator so it scores the same Host default boundary as production.
+    """
+    return not _EXPLICIT_DATE_IN_FINANCE_SOURCE_RE.search(source_text)
 
 #: Recorded when an *ancestor* Session's Checkpoint had to go to fit the budget.
 #: This Session's own Checkpoint is never in that set: it is what replaces this
@@ -234,12 +260,20 @@ class ContextEnvelope:
     #: The exact Finance tool required where the intent is unambiguous. Query
     #: turns use this to prevent a model from turning a read into a write.
     finance_required_tool: str | None = None
+    #: The trusted Builder derived that the source Finance write contains no
+    #: date expression, so the Host may use its receipt-day default if the
+    #: provider redundantly asks for one.  This stays separate from the model's
+    #: clarification reason and from the visible current continuation answer.
+    finance_date_default_eligible: bool = False
     #: An explicit retry phrase for which the server found no eligible sealed
     #: zero-write source. The orchestrator rejects it before calling the model.
     finance_retry_unbound: bool = False
     #: Set only by the orchestrator after a provider incorrectly asked for an
     #: omitted Finance date.  It is a one-shot control retry, not user input.
     finance_date_default_retry: bool = False
+    #: An earlier checkpoint for this Session was invalidated.  Rebuild only
+    #: after this turn becomes terminal, never while its source state can move.
+    checkpoint_rebuild_required: bool = False
     trimmed: tuple[str, ...] = ()
     dropped_counts: Mapping[str, int] = field(default_factory=dict)
     #: Estimated tokens per component kind, before the safety margin. §16.1
@@ -318,6 +352,16 @@ class ContextEnvelope:
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail="an unbound Finance retry needs a Finance turn",
             )
+        if self.finance_date_default_eligible and (
+            not self.finance_intent_required
+            or self.finance_required_tool is not None
+        ):
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail=(
+                    "a Finance date default is only valid for a write intent"
+                ),
+            )
         if self.finance_date_default_retry and not self.finance_intent_required:
             raise AppError(
                 ErrorCode.INTERNAL_ERROR,
@@ -340,7 +384,7 @@ class ContextEnvelope:
     def texts_of(self, kind: ComponentKind) -> tuple[str, ...]:
         return tuple(item.text for item in self.components if item.kind is kind)
 
-    def with_finance_date_default_retry(self) -> "ContextEnvelope":
+    def with_finance_date_default_retry(self) -> ContextEnvelope:
         """Return the one permitted retry projection of this validated turn.
 
         `ContextEnvelope` deliberately rejects ordinary dataclass copying: an
@@ -404,8 +448,10 @@ class ContextEnvelope:
             "config_version": self.config_version,
             "estimator_version": self.estimator_version,
             "compaction_requested": self.compaction_requested,
+            "checkpoint_rebuild_required": self.checkpoint_rebuild_required,
             "finance_intent_required": self.finance_intent_required,
             "finance_required_tool": self.finance_required_tool,
+            "finance_date_default_eligible": self.finance_date_default_eligible,
             "finance_retry_unbound": self.finance_retry_unbound,
             "finance_date_default_retry": self.finance_date_default_retry,
             "trimmed": list(self.trimmed),
@@ -485,6 +531,11 @@ class ContextBuilder:
 
         checkpoint = self._compactor.active_checkpoint(
             db, keyring, session_id=session_id
+        )
+        checkpoint_rebuild_required = checkpoint is None and bool(
+            db.query(ContextCheckpoint)
+            .filter_by(session_id=session_id, status="invalid")
+            .first()
         )
         checkpoint_id = checkpoint[1].checkpoint_id if checkpoint else None
         covered_through = (
@@ -600,6 +651,11 @@ class ContextBuilder:
             if is_finance_query_request(finance_source_text)
             else None
         )
+        finance_date_default_eligible = (
+            finance_intent_required
+            and finance_required_tool is None
+            and finance_source_allows_receipt_date_default(finance_source_text)
+        )
         finance_retry_unbound = (
             clarification_context is None
             and finance_retry_context is None
@@ -632,6 +688,7 @@ class ContextBuilder:
                     ),
                     "finance_intent_required": finance_intent_required,
                     "finance_required_tool": finance_required_tool,
+                    "finance_date_default_eligible": finance_date_default_eligible,
                     "finance_retry_unbound": finance_retry_unbound,
                     "checkpoint_id": checkpoint_id,
                     "lineage": list(surviving_lineage),
@@ -642,10 +699,14 @@ class ContextBuilder:
                     "config_version": outcome.config_version,
                 },
             ),
-            compaction_requested=outcome.compaction_requested,
+            compaction_requested=(
+                outcome.compaction_requested or checkpoint_rebuild_required
+            ),
             finance_intent_required=finance_intent_required,
             finance_required_tool=finance_required_tool,
+            finance_date_default_eligible=finance_date_default_eligible,
             finance_retry_unbound=finance_retry_unbound,
+            checkpoint_rebuild_required=checkpoint_rebuild_required,
             trimmed=trimmed,
             dropped_counts=dict(outcome.dropped_counts),
             component_tokens=self._tokens_by_kind(outcome.components),

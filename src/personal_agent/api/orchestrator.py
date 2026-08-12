@@ -27,12 +27,14 @@ argument.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
 from personal_agent.api.duplicate_flow import record_possible_duplicate
+from personal_agent.api.finance_query_projection import FinanceQueryProjection
 from personal_agent.api.intent import WriteIntent, open_intent
 from personal_agent.api.operation_store import transition_operation
 from personal_agent.context.builder import ContextEnvelope
@@ -51,11 +53,21 @@ from personal_agent_core.finance_tools import (
 )
 from personal_agent_core.timeutil import format_ledger_date, ledger_date
 
-
 # --- interpreter results -----------------------------------------------------
 
 
 logger = logging.getLogger(__name__)
+
+
+# `agent.ask_clarification.reason` is model-generated control metadata.  It is
+# schema-validated, but it is not a trustworthy statement that the question
+# really concerns a date: GLM has returned a plainly date-only question with
+# `reason="other"` in production.  These markers are used only to enable the
+# already side-effect-free, clarification-free retry below; they never supply a
+# business argument or authorise a write.
+_DATE_QUESTION_RE = re.compile(
+    r"(?:日期|哪天|何时|什么时候|今天|昨天|前天|几月|几日|几号)"
+)
 
 
 @dataclass(frozen=True)
@@ -162,9 +174,17 @@ class Resolved:
 
 @dataclass(frozen=True)
 class ReadCompleted:
-    """A read tool finished with a safe, already-projected result."""
+    """A read tool finished with a safe, already-projected result.
+
+    ``result`` is the durable ``safe_result`` carrier. For
+    ``finance.query_expenses`` the read also carries the validated
+    ``projection`` and a deterministic ``answer`` fallback for clients that
+    predate ``query_result``; every other read carries only the result string.
+    """
 
     result: str
+    projection: FinanceQueryProjection | None = None
+    answer: str | None = None
 
 
 @dataclass(frozen=True)
@@ -269,6 +289,9 @@ class RunResult:
     duplicate_check_id: str | None = None
     duplicate_existing: str | None = None
     failure_reason: str | None = None
+    #: The validated, whitelisted ``finance.query_expenses`` projection, present
+    #: only when the read was a query that decoded successfully.
+    query_result: dict[str, Any] | None = None
 
 
 Clock = datetime | Callable[[], datetime]
@@ -507,7 +530,9 @@ def run_operation(
             failure_reason=required_reason,
         )
 
-    model_args = _with_host_defaulted_occurred_on(operation, interpretation)
+    model_args = _with_host_defaulted_occurred_on(
+        envelope, operation, interpretation
+    )
     try:
         cleaned = authorize(tool=interpretation.tool, model_args=model_args)
     except AppError as denied:
@@ -521,18 +546,22 @@ def run_operation(
 
 
 def _with_host_defaulted_occurred_on(
-    operation: Operation, interpretation: ToolCall
+    envelope: ContextEnvelope, operation: Operation, interpretation: ToolCall
 ) -> dict[str, Any]:
-    """Fill only an omitted Finance write date from the received message day.
+    """Fill an omitted Finance write date only when source text had no date.
 
     An explicit null, empty string or malformed date remains model output and is
-    deliberately *not* repaired here; schema validation then rejects it.  The
-    durable request receipt, rather than the worker's clock, defines "today".
+    deliberately *not* repaired here; schema validation then rejects it.  An
+    omitted date after an explicit user date is also not repaired: it must fail
+    safely rather than turn yesterday's payment into today.  Where defaulting is
+    allowed, the durable request receipt, rather than the worker's clock,
+    defines "today".
     """
     arguments = interpretation.model_args
     if (
         interpretation.tool not in FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
         or "occurred_on" in arguments
+        or not envelope.finance_date_default_eligible
     ):
         return arguments
     return {
@@ -546,17 +575,27 @@ def _with_host_defaulted_occurred_on(
 def _requires_date_default_retry(
     envelope: ContextEnvelope, interpretation: Interpretation
 ) -> bool:
-    """Whether the model incorrectly treated an omitted Finance date as a gap.
+    """Whether a write's omitted date was incorrectly treated as a gap.
 
-    The reason is a validated control field, not an inference from provider
-    prose.  A retry is restricted to one Finance turn and never re-enters this
-    branch because its envelope marks the retry as already consumed.
+    The model's closed ``reason`` field is a useful signal but cannot be the
+    sole gate: a production response asked "是今天还是其他日期？" under
+    ``reason="other"``.  Looking at the bounded clarification question can
+    only unlock one retry with clarification removed; it never supplies an
+    argument or bypasses policy.  In contrast, an explicit date in the user's
+    input is authoritative and must never be overwritten with the receipt day.
+    That source-level fact is carried by the trusted Builder, rather than
+    inferred from a possible continuation answer.
     """
     return (
         envelope.finance_intent_required
+        and envelope.finance_required_tool is None
+        and envelope.finance_date_default_eligible
         and not envelope.finance_date_default_retry
         and isinstance(interpretation, Clarification)
-        and interpretation.reason == "date"
+        and (
+            interpretation.reason == "date"
+            or _DATE_QUESTION_RE.search(interpretation.question) is not None
+        )
     )
 
 
@@ -591,6 +630,13 @@ def _apply_resolve(
 ) -> RunResult:
     if isinstance(outcome, ReadCompleted):
         _step(session, operation, "succeeded", now, safe_result=outcome.result)
+        if outcome.projection is not None:
+            return RunResult(
+                state="succeeded",
+                record_id=None,
+                answer=outcome.answer,
+                query_result=outcome.projection.to_dict(),
+            )
         return RunResult(state="succeeded", record_id=None, answer=outcome.result)
 
     if isinstance(outcome, NeedsClarification):

@@ -9,7 +9,11 @@ from personal_agent.api.orchestrator import (
     ToolCall,
 )
 from personal_agent.context.builder import ComponentKind
-from personal_agent.eval_cli import envelope_factory, score_interpretation, visible_tools
+from personal_agent.eval_cli import (
+    envelope_factory,
+    score_interpretation,
+    visible_tools,
+)
 from personal_agent_core.evalset import (
     EvalCase,
     EvalPriorTurn,
@@ -17,7 +21,6 @@ from personal_agent_core.evalset import (
     domain_of,
     load_cases,
 )
-
 
 CASES = {case.id: case for case in load_cases()}
 
@@ -43,6 +46,39 @@ def test_model_scoring_uses_real_outcomes_not_case_counts() -> None:
     assert passed.passed and passed.safety_pass
     assert not failed.passed and not failed.safety_pass
     assert any("category" in problem for problem in failed.problems)
+
+
+def test_model_scoring_applies_the_same_receipt_date_default_as_the_host() -> None:
+    case = CASES["EXP-019"]
+    omitted_date = ToolCall(
+        tool=case.expected.tool or "",
+        model_args={
+            name: value
+            for name, value in case.expected.arguments.items()
+            if name != "occurred_on"
+        },
+    )
+
+    outcome = score_interpretation(case, omitted_date, evaluator="test")
+
+    assert outcome.passed and outcome.safety_pass
+
+
+def test_model_scoring_never_defaults_an_omitted_explicit_date() -> None:
+    case = CASES["EXP-004"]
+    omitted_date = ToolCall(
+        tool=case.expected.tool or "",
+        model_args={
+            name: value
+            for name, value in case.expected.arguments.items()
+            if name != "occurred_on"
+        },
+    )
+
+    outcome = score_interpretation(case, omitted_date, evaluator="test")
+
+    assert not outcome.passed
+    assert "occurred_on: expected '2026-07-22', got None" in outcome.problems
 
 
 def test_clarification_and_structured_rejection_are_mechanically_scored() -> None:

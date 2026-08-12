@@ -10,27 +10,31 @@ from __future__ import annotations
 
 import logging
 import tempfile
-from datetime import datetime, timedelta, timezone
-from functools import lru_cache
+from datetime import UTC, datetime, timedelta
+from functools import cache
 from pathlib import Path
 
 import pytest
-
 from context_envelopes import envelope_for
+
 from personal_agent.api.duplicate_flow import decide_duplicate
-from personal_agent.api.operation_state import is_recoverable, is_terminal
-from personal_agent.api.recovery import _RECOVERY_PATHS
+from personal_agent.api.finance_query_projection import (
+    canonical_projection_json,
+    decode_finance_query_projection,
+    summarise_query_projection,
+)
 from personal_agent.api.intent import WriteIntent, open_intent
+from personal_agent.api.operation_state import is_recoverable, is_terminal
 from personal_agent.api.operation_store import (
     open_operation,
     request_cancel,
 )
 from personal_agent.api.orchestrator import (
+    Clarification,
     CommitClarificationZeroWrite,
     CommitDuplicateZeroWrite,
     CommitFailedSafe,
     CommitUnknown,
-    Clarification,
     DirectAnswer,
     FailSafeInterpretation,
     NeedsClarification,
@@ -42,6 +46,7 @@ from personal_agent.api.orchestrator import (
     Written,
     run_operation,
 )
+from personal_agent.api.recovery import _RECOVERY_PATHS
 from personal_agent.context.continuation import ClarificationContext
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.storage.engine import (
@@ -53,8 +58,7 @@ from personal_agent.storage.models import Device, Operation
 from personal_agent_core.crypto import KeyRing, generate_key
 from personal_agent_core.errors import AppError, ErrorCode, ModelFailureReason
 
-
-NOW = datetime(2026, 7, 24, 7, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 24, 7, 0, tzinfo=UTC)
 
 
 @pytest.fixture()
@@ -90,7 +94,7 @@ def keyring() -> KeyRing:
 # --- fakes -------------------------------------------------------------------
 
 
-@lru_cache(maxsize=None)
+@cache
 def _envelope(text: str):
     """One real, budget-validated envelope per distinct message.
 
@@ -130,6 +134,35 @@ class FakeDispatcher:
             }
         )
         return self._commit
+
+
+def _query_total_result() -> dict:
+    """A `finance.query_expenses` total result in the real output-schema shape."""
+    return {
+        "status": "ok",
+        "view": "total",
+        "filters_applied": {
+            "date_range": {"start": "2026-01-01", "end": "2026-12-31"},
+            "categories": ["网球"],
+            "name_contains": [],
+            "is_family_expense": "all",
+            "personal_amount_cny": None,
+        },
+        "metric": "personal_spend_total_cny",
+        "record_count": 3,
+        "personal_spend_total_cny": "1200.00",
+        "source_system": "feishu_bitable",
+        "evidence": {
+            "kind": "aggregate_query",
+            "query_id": "qry_1",
+            "config_checksum": "cfg",
+            "schema_snapshot_checksum": "schema",
+            "scanned_pages": 1,
+            "matched_count": 3,
+            "started_at": "2026-08-12T00:00:00Z",
+            "completed_at": "2026-08-12T00:00:01Z",
+        },
+    }
 
 
 def allow(*, tool, model_args):
@@ -602,6 +635,77 @@ def test_date_clarification_retries_once_then_uses_receipt_day(session, keyring)
     ]
 
 
+def test_date_question_retries_when_model_mislabels_it_as_other(session, keyring) -> None:
+    """A real GLM response asked a date question under ``reason=other``.
+
+    The retry is still safe: it only removes the clarification tool, and the
+    Host supplies the receipt-bound date after the model chooses a write tool.
+    """
+
+    class MislabelledDateInterpreter:
+        def __init__(self) -> None:
+            self.envelopes = []
+
+        def interpret(self, *, envelope):
+            self.envelopes.append(envelope)
+            if len(self.envelopes) == 1:
+                return Clarification("是今天还是其他日期？", reason="other")
+            return ToolCall(
+                "finance.log_expense",
+                {
+                    "name": "午饭",
+                    "input_amount": "54.90",
+                    "input_currency": "CNY",
+                    "is_family_expense": False,
+                    "entry_kind": "expense",
+                    "category": "餐饮",
+                },
+            )
+
+    op = _fresh_operation(session)
+    interpreter = MislabelledDateInterpreter()
+    dispatcher = FakeDispatcher(resolve=ResolveFailedSafe(reason="test_stop"))
+
+    _run(
+        session,
+        op,
+        interpreter=interpreter,
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="午饭 54.9 个人",
+    )
+
+    assert [item.finance_date_default_retry for item in interpreter.envelopes] == [
+        False,
+        True,
+    ]
+    assert dispatcher.resolve_calls[0]["model_args"]["occurred_on"] == "2026-07-24"
+
+
+def test_date_question_does_not_override_an_explicit_user_date(session, keyring) -> None:
+    class WrongDateInterpreter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def interpret(self, *, envelope):
+            self.calls += 1
+            return Clarification("是今天还是其他日期？", reason="other")
+
+    op = _fresh_operation(session)
+    interpreter = WrongDateInterpreter()
+    result = _run(
+        session,
+        op,
+        interpreter=interpreter,
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        text="昨天午饭 54.9 个人",
+    )
+
+    assert interpreter.calls == 1
+    assert result.state == "waiting_for_clarification"
+
+
 def test_date_default_retry_refuses_a_second_clarification(session, keyring) -> None:
     class RepeatingInterpreter:
         def __init__(self) -> None:
@@ -655,6 +759,36 @@ def test_explicit_finance_date_is_not_overwritten_or_repaired(session, keyring) 
     ]
 
 
+def test_omitted_explicit_finance_date_is_not_repaired_to_receipt_day(
+    session, keyring
+) -> None:
+    """A missing model field must not rewrite the user's "昨天" as today."""
+
+    op = _fresh_operation(session)
+    arguments = {
+        "name": "午饭",
+        "input_amount": "45.00",
+        "input_currency": "CNY",
+        "is_family_expense": False,
+        "entry_kind": "expense",
+        "category": "餐饮",
+    }
+    dispatcher = FakeDispatcher(resolve=ResolveFailedSafe(reason="test_stop"))
+
+    _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(ToolCall("finance.log_expense", arguments)),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="昨天午饭 45 个人",
+    )
+
+    assert dispatcher.resolve_calls == [
+        {"tool": "finance.log_expense", "model_args": arguments}
+    ]
+
+
 def test_tool_text_disposition_is_a_content_free_audit_record(session, keyring, caplog) -> None:
     """Provider prose beside one call never becomes arguments or a result."""
     caplog.set_level(logging.INFO, logger="personal_agent.api.orchestrator")
@@ -683,6 +817,39 @@ def test_tool_text_disposition_is_a_content_free_audit_record(session, keyring, 
     assert "response_disposition=tool_text_suppressed_untrusted" in caplog.text
     session.refresh(op)
     assert op.safe_result == "本月 ¥2093"
+
+
+def test_a_query_read_projects_a_structured_result(session, keyring) -> None:
+    """A succeeded query carries the whitelisted projection, never a JSON string."""
+    projection = decode_finance_query_projection(_query_total_result())
+    dispatcher = FakeDispatcher(
+        resolve=ReadCompleted(
+            result=canonical_projection_json(projection),
+            projection=projection,
+            answer=summarise_query_projection(projection),
+        )
+    )
+    op = _fresh_operation(session)
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            ToolCall("finance.query_expenses", {"view": "total"})
+        ),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="查一下我今年打网球花了多少钱",
+    )
+
+    assert result.state == "succeeded"
+    assert result.record_id is None
+    assert result.query_result == projection.to_dict()
+    assert result.answer == "共 3 条记录，个人支出合计 ¥1200.00"
+    session.refresh(op)
+    # The durable `safe_result` is the projection's canonical JSON, readable
+    # back through the same strict decoder -- so history and the live receipt
+    # can never disagree.
+    assert decode_finance_query_projection(op.safe_result) == projection
 
 
 def test_internal_tool_text_disposition_is_logged_without_changing_outcome(

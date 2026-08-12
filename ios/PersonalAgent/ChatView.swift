@@ -19,6 +19,7 @@ struct ChatView: View {
     /// one tap: the server records the first answer and refuses a contradicting
     /// one, so a mis-tap cannot be corrected in the app.
     @State private var confirmingResolution: ResolutionIntent?
+    @State private var confirmingNewTopic = false
     /// §3c: the 详情单 sheet showing every identifier this card carries, opened
     /// from the long-press menu's second item (or the explicit 查看标识符 affordance
     /// on non-success cards). `nil` hides the sheet.
@@ -45,6 +46,18 @@ struct ChatView: View {
         // No title of its own: §1a makes the Timeline the whole surface, so the
         // navigation bar belongs to the app rather than to this view. `RootView`
         // sets it, together with the status entry.
+        .confirmationDialog(
+            "开始新话题？",
+            isPresented: $confirmingNewTopic,
+            titleVisibility: .visible
+        ) {
+            Button("放弃未提交待办并开始") {
+                model.prepareNewTopic()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("下一条消息会安全取消当前仍未提交的待办，并从新话题开始。若某项操作可能已经提交，服务端会拒绝切换，不会把它当作已放弃。")
+        }
         .confirmationDialog(
             "服务端已提示这笔与现有记录疑似重复。仍然写入一条新记录？",
             isPresented: Binding(
@@ -84,6 +97,18 @@ struct ChatView: View {
         } message: {
             Text("这个结论记录后不能在应用里改判：服务端会拒绝相反的答复。它只写在这次操作旁边，不会改动账本。")
         }
+        .confirmationDialog(
+            "开始新话题？",
+            isPresented: $confirmingNewTopic,
+            titleVisibility: .visible
+        ) {
+            Button("放弃未提交待办并开始") {
+                model.prepareNewTopic()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("下一条消息会安全取消当前仍未提交的待办，并从新话题开始。若某项操作可能已经提交，服务端会拒绝切换，不会把它当作已放弃。")
+        }
         // §3c: the 详情单 for every identifier a card carries. Off the card face
         // (they are unreadable noise there) but one menu item away, and for
         // non-success cards explicitly reachable. Full strings, no truncation,
@@ -114,6 +139,12 @@ struct ChatView: View {
                             withAnimation { copiedPrefix = nil }
                         }
                     }
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("新话题") { confirmingNewTopic = true }
+                    .disabled(model.busy || model.unresolved != nil)
             }
         }
     }
@@ -256,12 +287,13 @@ struct ChatView: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
 
-        case .operationResult(let outcome, let state):
+        case .operationResult(let outcome, let state, let toolEvidence):
             receiptCard(
                 outcome: outcome,
                 state: state,
                 operationID: event.operationID,
-                cancellation: .none
+                cancellation: .none,
+                toolEvidence: toolEvidence
             )
 
         case .sessionDivider(let reason, let corrected):
@@ -312,7 +344,8 @@ struct ChatView: View {
         outcome: OperationOutcome,
         state: OperationState,
         operationID: String?,
-        cancellation: CancellationNote
+        cancellation: CancellationNote,
+        toolEvidence: ToolEvidence
     ) -> some View {
         // §3a: 回执三档, and the tier is decided by how many non-empty fields the
         // receipt actually carries, not by a switch the server toggles. Today the
@@ -324,15 +357,19 @@ struct ChatView: View {
         // three (the composed card) without a client-side switch.
         //
         // §1i's non-recorded states are plain label-and-body cards and do not take
-        // part in the tiers at all.
+        // part in the tiers at all. A query result is its own card too: structured
+        // data is never flattened into a prose answer (§1i).
         if case .recorded(let recordID, let tool) = outcome {
             recordedReceipt(recordID: recordID, tool: tool, operationID: operationID)
+        } else if case .answeredWithQuery(let result, let tool) = outcome {
+            queryReceiptCard(result: result, tool: tool, operationID: operationID)
         } else {
             plainReceiptCard(
                 outcome: outcome,
                 state: state,
                 operationID: operationID,
-                cancellation: cancellation
+                cancellation: cancellation,
+                toolEvidence: toolEvidence
             )
         }
     }
@@ -397,7 +434,10 @@ struct ChatView: View {
             // §3d: no header row on tiers one/two, so the terminal-state label is
             // a leading chip rather than the header's 12pt capsule. Same colour
             // semantics, different chrome.
-            terminalChip(for: .recorded(recordID: recordID, tool: tool))
+            terminalChip(
+                for: .recorded(recordID: recordID, tool: tool),
+                toolEvidence: .known(tool)
+            )
 
             // §3a's 轨迹文字: 财务 · 记一笔支出, drawn from the granted tool set
             // rather than the raw alias, so the row reads as a tool did something.
@@ -446,7 +486,10 @@ struct ChatView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("记账回执").font(.callout.weight(.medium))
                 Spacer(minLength: 8)
-                terminalCapsule(for: .recorded(recordID: recordID, tool: tool))
+                terminalCapsule(
+                    for: .recorded(recordID: recordID, tool: tool),
+                    toolEvidence: .known(tool)
+                )
             }
             .padding(.horizontal, Metric.cardInset)
             .padding(.top, Metric.cardHeaderTop)
@@ -589,19 +632,193 @@ struct ChatView: View {
         .overlay(alignment: .top) { hairline }
     }
 
+    /// A structured Finance query result rendered as its own card, per view.
+    ///
+    /// This is not a prose answer and not a receipt: the server validated the
+    /// projection, and the three views are deliberately different -- a total
+    /// shows one figure with its 口径, by_category shows the breakdown, and
+    /// records shows a bounded page with a 继续查看 entry instead of claiming a
+    /// page is the whole answer. None of it comes from what the model wrote.
+    @ViewBuilder
+    private func queryReceiptCard(
+        result: FinanceQueryResult, tool: String?, operationID: String?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("查询结果").font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                if let tool {
+                    Text(tool).font(.caption.monospaced()).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.top, Metric.cardHeaderTop)
+            .padding(.bottom, Metric.cardHeaderBottom)
+
+            VStack(spacing: 0) {
+                queryScope(result)
+                switch result.view {
+                case .total:
+                    queryTotal(result)
+                case .byCategory:
+                    queryByCategory(result)
+                case .records:
+                    queryRecords(result)
+                }
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.bottom, Metric.cardInset)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(Color.cardBorder, lineWidth: Metric.hairline)
+        )
+        // §3c: the same long-press menu and identifier sheet as the recorded
+        // receipt. A query has no `record_id` of its own, but its `operation_id`
+        // is what the evidence would be checked against, and it stays reachable.
+        .modifier(evidenceMenu(recordID: nil, operationID: operationID, explicit: false))
+    }
+
+    /// The query 口径 (date range / category filters) the result was computed
+    /// under, so the figure is not read as "everything" when it is not.
+    @ViewBuilder
+    private func queryScope(_ result: FinanceQueryResult) -> some View {
+        let dates = result.filtersApplied["date_range"]?.objectValue
+        let start = dates?["start"]?.stringValue
+        let end = dates?["end"]?.stringValue
+        let categories = result.filtersApplied["categories"]?.arrayValue?
+            .compactMap { $0.stringValue }
+        if start != nil || end != nil || !(categories?.isEmpty ?? true) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("筛选口径").font(.footnote).foregroundStyle(.secondary)
+                    Spacer(minLength: 12)
+                    Text(scopeText(start: start, end: end))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if let categories, !categories.isEmpty {
+                    Text("分类：\(categories.joined(separator: "、"))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, Metric.fieldRowPadding)
+            .overlay(alignment: .top) { hairline }
+        }
+    }
+
+    private func scopeText(start: String?, end: String?) -> String {
+        switch (start, end) {
+        case (let s?, let e?): return "\(s) ~ \(e)"
+        case (let s?, nil): return "从 \(s) 起"
+        case (nil, let e?): return "至 \(e)"
+        case (nil, nil): return "全部时间"
+        }
+    }
+
+    private func queryTotal(_ result: FinanceQueryResult) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("个人支出合计").font(.callout).foregroundStyle(.secondary)
+                Spacer(minLength: 12)
+                Text("¥\(result.amount ?? "—")")
+                    .font(.title3.weight(.semibold))
+                    .tabularNumbers()
+            }
+            .padding(.vertical, Metric.fieldRowPadding)
+            .overlay(alignment: .top) { hairline }
+            fieldRow("记录数", "\(result.recordCount)")
+            if !result.sourceSystem.isEmpty {
+                fieldRow("数据源", result.sourceSystem)
+            }
+        }
+    }
+
+    private func queryByCategory(_ result: FinanceQueryResult) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("合计").font(.callout).foregroundStyle(.secondary)
+                Spacer(minLength: 12)
+                Text("¥\(result.amount ?? "—")")
+                    .font(.title3.weight(.semibold))
+                    .tabularNumbers()
+            }
+            .padding(.vertical, Metric.fieldRowPadding)
+            .overlay(alignment: .top) { hairline }
+            ForEach(Array(result.byCategory.enumerated()), id: \.offset) { _, bucket in
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(bucket.category ?? "未分类").font(.callout)
+                    Spacer(minLength: 12)
+                    if let share = bucket.share {
+                        Text("\(share)%").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(bucket.amount)
+                        .font(.callout.monospaced())
+                        .tabularNumbers()
+                }
+                .padding(.vertical, Metric.fieldRowPadding)
+                .overlay(alignment: .top) { hairline }
+            }
+            fieldRow("记录数", "\(result.recordCount)")
+        }
+    }
+
+    private func queryRecords(_ result: FinanceQueryResult) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(result.records.enumerated()), id: \.offset) { _, row in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.name).font(.callout)
+                    HStack(spacing: 8) {
+                        Text("¥\(row.amount)")
+                            .font(.caption.monospaced())
+                            .tabularNumbers()
+                            .foregroundStyle(.secondary)
+                        if let occurredOn = row.occurredOn {
+                            Text(occurredOn).font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let category = row.category {
+                            Text(category).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(.vertical, Metric.fieldRowPadding)
+                .overlay(alignment: .top) { hairline }
+            }
+            if result.nextCursor != nil {
+                Text("已显示部分明细，查询结果还有更多。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, Metric.fieldRowPadding)
+                    .overlay(alignment: .top) { hairline }
+                Button("继续查看更多明细") { model.draft = "继续查看上一条查询的支出明细" }
+                    .font(.footnote)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Metric.fieldRowPadding)
+                    .overlay(alignment: .top) { hairline }
+            } else {
+                fieldRow("明细页", "已全部显示（共 \(result.recordCount) 条）")
+            }
+        }
+    }
+
     @ViewBuilder
     private func plainReceiptCard(
         outcome: OperationOutcome,
         state: OperationState,
         operationID: String?,
-        cancellation: CancellationNote
+        cancellation: CancellationNote,
+        toolEvidence: ToolEvidence
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             // §2b's chip, not a full-width heading. A right-aligned label spent a
             // whole line announcing 无工具调用 above two lines of reply -- on the
             // most common card in the Timeline, that is a third of its height given
             // to a tag. Same information, read as a tag instead of a title.
-            terminalChip(for: outcome)
+            terminalChip(for: outcome, toolEvidence: toolEvidence)
             switch outcome {
             case .running:
                 HStack(spacing: 6) {
@@ -609,9 +826,10 @@ struct ChatView: View {
                     Text("服务端仍在处理（\(state.wire)）").font(.callout)
                 }
 
-            // Handled by `recordedReceipt` above; listed only to keep the
-            // switch exhaustive, so a new outcome still fails to compile here.
-            case .recorded:
+            // Handled by `recordedReceipt` and `queryReceiptCard` above;
+            // listed only to keep the switch exhaustive, so a new outcome still
+            // fails to compile here.
+            case .recorded, .answeredWithQuery:
                 EmptyView()
 
             case .answered(let text):
@@ -703,6 +921,14 @@ struct ChatView: View {
                 Label("本客户端无法判定结果", systemImage: "questionmark.diamond")
                     .foregroundStyle(.danger)
                 field("服务端状态", raw)
+                if case .unknown = toolEvidence {
+                    // An event that predates tool recording carries an `answer`
+                    // this client cannot trust as a clean reply (it may be the
+                    // old raw query JSON). A missing fact is not "no tool".
+                    Text("工具事实不可用：该历史事件未记录工具。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text("请不要当作已记录；在服务端或每日复核中确认。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -763,7 +989,9 @@ struct ChatView: View {
         let color: Color
     }
 
-    private func terminalBadge(for outcome: OperationOutcome) -> TerminalBadge? {
+    private func terminalBadge(
+        for outcome: OperationOutcome, toolEvidence: ToolEvidence
+    ) -> TerminalBadge? {
         switch outcome {
         // Not terminal: a badge here would name an outcome that has not happened.
         case .running:
@@ -776,7 +1004,22 @@ struct ChatView: View {
             // back only if the comparison is ever actually implemented.
             return TerminalBadge(text: "账本已存在此记录", color: .accentText)
         case .answered:
-            return TerminalBadge(text: "无工具调用", color: .secondary)
+            // 无工具调用 is only claimed when the server explicitly recorded
+            // `tool == null` for a direct answer. A history event that predates
+            // tool recording is a missing fact, not a negative one, and an event
+            // that names a tool is neither.
+            switch toolEvidence {
+            case .known(nil):
+                return TerminalBadge(text: "无工具调用", color: .secondary)
+            case .known(let tool):
+                return tool.map { TerminalBadge(text: "工具：\($0)", color: .secondary) }
+            case .unknown:
+                return TerminalBadge(text: "工具事实不可用", color: .secondary)
+            }
+        case .answeredWithQuery:
+            // The query card carries its own header; a badge here would compete
+            // with the structured rows it renders.
+            return nil
         case .needsClarification, .needsDuplicateDecision, .needsManualReview:
             return TerminalBadge(text: "待你处理", color: .pending)
         case .failedSafe:
@@ -790,9 +1033,14 @@ struct ChatView: View {
 
     /// §3d: the terminal-state label as a **leading chip** (tiers one/two, where
     /// there is no header row). 7pt 圆角, 11.5pt/600, 22pt 高, 9pt 内边距.
+    ///
+    /// `toolEvidence` decides the `.answered` wording (无工具调用 vs 工具：x vs
+    /// 工具事实不可用), exactly as the tier-three capsule reads the same state.
     @ViewBuilder
-    private func terminalChip(for outcome: OperationOutcome) -> some View {
-        if let badge = terminalBadge(for: outcome) {
+    private func terminalChip(
+        for outcome: OperationOutcome, toolEvidence: ToolEvidence
+    ) -> some View {
+        if let badge = terminalBadge(for: outcome, toolEvidence: toolEvidence) {
             Text(badge.text)
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(badge.color)
@@ -807,8 +1055,10 @@ struct ChatView: View {
     /// header row exists). Same colour semantics as the leading chip, so the same
     /// state reads the same in both layouts.
     @ViewBuilder
-    private func terminalCapsule(for outcome: OperationOutcome) -> some View {
-        if let badge = terminalBadge(for: outcome) {
+    private func terminalCapsule(
+        for outcome: OperationOutcome, toolEvidence: ToolEvidence
+    ) -> some View {
+        if let badge = terminalBadge(for: outcome, toolEvidence: toolEvidence) {
             Text(badge.text)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(badge.color)
@@ -898,7 +1148,9 @@ struct ChatView: View {
                 outcome: receipt.outcome,
                 state: receipt.state,
                 operationID: receipt.operationID,
-                cancellation: receipt.cancellation
+                cancellation: receipt.cancellation,
+                // The live receipt always carries the tool fact, even when null.
+                toolEvidence: .known(receipt.tool)
             )
             if !receipt.outcome.isSettled {
                 Button("请求取消", role: .destructive) {
@@ -1053,6 +1305,16 @@ struct ChatView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("取消") { model.cancelAnswering() }.font(.caption)
+                }
+            }
+            if model.startNewTopic {
+                HStack {
+                    Text("下一条消息将开始新话题")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("取消") { model.cancelNewTopic() }
+                        .font(.caption)
                 }
             }
             if let pending = model.unresolved {

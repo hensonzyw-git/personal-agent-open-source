@@ -289,9 +289,23 @@ class SessionManager:
         now: datetime,
         pinned_session_id: str | None = None,
         resolved_classification: ResolvedClassification | None = None,
+        force_new_session: bool = False,
     ) -> SessionDecision:
         """Run the fixed §6.1 order and return a structured decision."""
         current = self.open_session(db, conversation_id=conversation_id)
+
+        if force_new_session:
+            return self._open_new(
+                db,
+                conversation_id=conversation_id,
+                previous=current,
+                reason="explicit_reset",
+                relation_kind="new_topic",
+                parent=None,
+                now=now,
+                classifier_version=None,
+                confidence_band=None,
+            )
 
         # Steps 3-4. A non-terminal operation pins its Session outright. This
         # is checked before every heuristic, including the user's own words:

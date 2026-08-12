@@ -64,6 +64,7 @@ class ErrorCode(StrEnum):
     INVALID_CURSOR = "INVALID_CURSOR"
     CONTEXT_BUDGET_EXCEEDED = "CONTEXT_BUDGET_EXCEEDED"
     CONTEXT_UNAVAILABLE = "CONTEXT_UNAVAILABLE"
+    PENDING_OPERATION_NOT_CANCELLABLE = "PENDING_OPERATION_NOT_CANCELLABLE"
 
     # Internal
     INTERNAL_ERROR = "INTERNAL_ERROR"
@@ -137,6 +138,9 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.INVALID_CURSOR: "翻页游标无效或已过期",
     ErrorCode.CONTEXT_BUDGET_EXCEEDED: "本轮必要上下文超出可用长度，未调用模型",
     ErrorCode.CONTEXT_UNAVAILABLE: "暂时无法安全组装对话上下文",
+    ErrorCode.PENDING_OPERATION_NOT_CANCELLABLE: (
+        "当前待办可能已提交，不能放弃后另开话题"
+    ),
     ErrorCode.INTERNAL_ERROR: "服务内部错误",
 }
 

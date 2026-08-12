@@ -1087,6 +1087,8 @@ def test_an_unverifiable_checkpoint_is_not_used(db, keyring):
 
     envelope = _build(db, keyring)
     assert envelope.checkpoint_id is None
+    assert envelope.checkpoint_rebuild_required is True
+    assert envelope.compaction_requested is True
     assert not envelope.texts_of(ComponentKind.CHECKPOINT)
     # The raw archive is what remains, and it was never deleted.
     assert envelope.texts_of(ComponentKind.RAW_EVENT)

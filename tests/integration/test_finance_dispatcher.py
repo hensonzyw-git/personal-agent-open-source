@@ -142,6 +142,35 @@ class FakeBridge:
         )
 
 
+#: A query result in the shape the real `finance.query_expenses` output schema
+#: produces. `resolve` must project it rather than echo the raw dict.
+QUERY_TOTAL = {
+    "status": "ok",
+    "view": "total",
+    "filters_applied": {
+        "date_range": {"start": "2026-01-01", "end": "2026-12-31"},
+        "categories": ["网球"],
+        "name_contains": [],
+        "is_family_expense": "all",
+        "personal_amount_cny": None,
+    },
+    "metric": "personal_spend_total_cny",
+    "record_count": 2,
+    "personal_spend_total_cny": "1200.00",
+    "source_system": "feishu_bitable",
+    "evidence": {
+        "kind": "aggregate_query",
+        "query_id": "qry_1",
+        "config_checksum": "cfg",
+        "schema_snapshot_checksum": "schema",
+        "scanned_pages": 1,
+        "matched_count": 2,
+        "started_at": "2026-08-12T00:00:00Z",
+        "completed_at": "2026-08-12T00:00:01Z",
+    },
+}
+
+
 class FakeControl:
     def __init__(
         self,
@@ -213,14 +242,62 @@ def test_resolving_a_write_sends_nothing_at_all() -> None:
 
 
 def test_resolving_a_read_executes_it_and_completes() -> None:
-    bridge = FakeBridge(result={"view": "total", "personal_spend_total_cny": "1"})
+    bridge = FakeBridge(result=QUERY_TOTAL)
     outcome = dispatcher(bridge).resolve(
         tool="finance.query_expenses", model_args={"view": "total"}
     )
 
     assert isinstance(outcome, ReadCompleted)
+    assert outcome.projection is not None
+    # The durable carrier is the whitelisted projection, not the raw result.
+    assert json.loads(outcome.result) == outcome.projection.to_dict()
     assert json.loads(outcome.result)["view"] == "total"
+    # The deterministic text fallback is derived from the projection only.
+    assert outcome.answer == "共 2 条记录，个人支出合计 ¥1200.00"
     assert len(bridge.calls) == 1
+
+
+def test_a_query_result_with_an_unknown_view_fails_closed() -> None:
+    bridge = FakeBridge(result={**QUERY_TOTAL, "view": "pie_chart"})
+    outcome = dispatcher(bridge).resolve(
+        tool="finance.query_expenses", model_args={"view": "total"}
+    )
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "query_result_unreadable"
+    # A refused projection carries no result field at all, so the raw result
+    # cannot leak; only the fixed reason survives.
+    assert not hasattr(outcome, "result")
+
+
+def test_a_query_result_with_unknown_fields_fails_closed() -> None:
+    bridge = FakeBridge(result={**QUERY_TOTAL, "provider_prose": "已写入成功"})
+    outcome = dispatcher(bridge).resolve(
+        tool="finance.query_expenses", model_args={"view": "total"}
+    )
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "query_result_unreadable"
+
+
+def test_a_query_result_with_wrong_field_types_fails_closed() -> None:
+    bridge = FakeBridge(result={**QUERY_TOTAL, "record_count": "two"})
+    outcome = dispatcher(bridge).resolve(
+        tool="finance.query_expenses", model_args={"view": "total"}
+    )
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "query_result_unreadable"
+
+
+def test_a_query_result_that_is_not_json_fails_closed() -> None:
+    bridge = FakeBridge(result="not a dict")
+    outcome = dispatcher(bridge).resolve(
+        tool="finance.query_expenses", model_args={"view": "total"}
+    )
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "query_result_unreadable"
 
 
 def test_a_failing_read_is_a_safe_failure() -> None:
