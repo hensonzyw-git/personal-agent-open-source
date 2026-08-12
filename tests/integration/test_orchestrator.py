@@ -10,27 +10,26 @@ from __future__ import annotations
 
 import logging
 import tempfile
-from datetime import datetime, timedelta, timezone
-from functools import lru_cache
+from datetime import UTC, datetime, timedelta
+from functools import cache
 from pathlib import Path
 
 import pytest
-
 from context_envelopes import envelope_for
+
 from personal_agent.api.duplicate_flow import decide_duplicate
-from personal_agent.api.operation_state import is_recoverable, is_terminal
-from personal_agent.api.recovery import _RECOVERY_PATHS
 from personal_agent.api.intent import WriteIntent, open_intent
+from personal_agent.api.operation_state import is_recoverable, is_terminal
 from personal_agent.api.operation_store import (
     open_operation,
     request_cancel,
 )
 from personal_agent.api.orchestrator import (
+    Clarification,
     CommitClarificationZeroWrite,
     CommitDuplicateZeroWrite,
     CommitFailedSafe,
     CommitUnknown,
-    Clarification,
     DirectAnswer,
     FailSafeInterpretation,
     NeedsClarification,
@@ -42,6 +41,7 @@ from personal_agent.api.orchestrator import (
     Written,
     run_operation,
 )
+from personal_agent.api.recovery import _RECOVERY_PATHS
 from personal_agent.context.continuation import ClarificationContext
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.storage.engine import (
@@ -53,8 +53,7 @@ from personal_agent.storage.models import Device, Operation
 from personal_agent_core.crypto import KeyRing, generate_key
 from personal_agent_core.errors import AppError, ErrorCode, ModelFailureReason
 
-
-NOW = datetime(2026, 7, 24, 7, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 24, 7, 0, tzinfo=UTC)
 
 
 @pytest.fixture()
@@ -90,7 +89,7 @@ def keyring() -> KeyRing:
 # --- fakes -------------------------------------------------------------------
 
 
-@lru_cache(maxsize=None)
+@cache
 def _envelope(text: str):
     """One real, budget-validated envelope per distinct message.
 
@@ -602,6 +601,77 @@ def test_date_clarification_retries_once_then_uses_receipt_day(session, keyring)
     ]
 
 
+def test_date_question_retries_when_model_mislabels_it_as_other(session, keyring) -> None:
+    """A real GLM response asked a date question under ``reason=other``.
+
+    The retry is still safe: it only removes the clarification tool, and the
+    Host supplies the receipt-bound date after the model chooses a write tool.
+    """
+
+    class MislabelledDateInterpreter:
+        def __init__(self) -> None:
+            self.envelopes = []
+
+        def interpret(self, *, envelope):
+            self.envelopes.append(envelope)
+            if len(self.envelopes) == 1:
+                return Clarification("是今天还是其他日期？", reason="other")
+            return ToolCall(
+                "finance.log_expense",
+                {
+                    "name": "午饭",
+                    "input_amount": "54.90",
+                    "input_currency": "CNY",
+                    "is_family_expense": False,
+                    "entry_kind": "expense",
+                    "category": "餐饮",
+                },
+            )
+
+    op = _fresh_operation(session)
+    interpreter = MislabelledDateInterpreter()
+    dispatcher = FakeDispatcher(resolve=ResolveFailedSafe(reason="test_stop"))
+
+    _run(
+        session,
+        op,
+        interpreter=interpreter,
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="午饭 54.9 个人",
+    )
+
+    assert [item.finance_date_default_retry for item in interpreter.envelopes] == [
+        False,
+        True,
+    ]
+    assert dispatcher.resolve_calls[0]["model_args"]["occurred_on"] == "2026-07-24"
+
+
+def test_date_question_does_not_override_an_explicit_user_date(session, keyring) -> None:
+    class WrongDateInterpreter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def interpret(self, *, envelope):
+            self.calls += 1
+            return Clarification("是今天还是其他日期？", reason="other")
+
+    op = _fresh_operation(session)
+    interpreter = WrongDateInterpreter()
+    result = _run(
+        session,
+        op,
+        interpreter=interpreter,
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        text="昨天午饭 54.9 个人",
+    )
+
+    assert interpreter.calls == 1
+    assert result.state == "waiting_for_clarification"
+
+
 def test_date_default_retry_refuses_a_second_clarification(session, keyring) -> None:
     class RepeatingInterpreter:
         def __init__(self) -> None:
@@ -648,6 +718,36 @@ def test_explicit_finance_date_is_not_overwritten_or_repaired(session, keyring) 
         dispatcher=dispatcher,
         keyring=keyring,
         text="昨天午饭 45",
+    )
+
+    assert dispatcher.resolve_calls == [
+        {"tool": "finance.log_expense", "model_args": arguments}
+    ]
+
+
+def test_omitted_explicit_finance_date_is_not_repaired_to_receipt_day(
+    session, keyring
+) -> None:
+    """A missing model field must not rewrite the user's "昨天" as today."""
+
+    op = _fresh_operation(session)
+    arguments = {
+        "name": "午饭",
+        "input_amount": "45.00",
+        "input_currency": "CNY",
+        "is_family_expense": False,
+        "entry_kind": "expense",
+        "category": "餐饮",
+    }
+    dispatcher = FakeDispatcher(resolve=ResolveFailedSafe(reason="test_stop"))
+
+    _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(ToolCall("finance.log_expense", arguments)),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="昨天午饭 45 个人",
     )
 
     assert dispatcher.resolve_calls == [

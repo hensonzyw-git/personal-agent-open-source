@@ -113,3 +113,24 @@ def test_prompt_contains_the_frozen_expense_classification_contract() -> None:
         "不能判断充电宝是购买还是借用",
     ):
         assert rule in prompt
+
+
+def test_prompt_pins_query_aggregation_and_full_calendar_ranges() -> None:
+    prompt = build_system_prompt(today="2026-08-12")
+    assert "当年 1 月 1 日至 12 月 31 日" in prompt
+    assert "绝不能截断到今天" in prompt
+    assert "“花了多少钱”“一共多少”或“总额”时用 total" in prompt
+    assert "分类统计或分类聚合时用\n  by_category" in prompt
+    assert "明确要求“哪些”“列出”“明细”或“账单列表”时用 records" in prompt
+
+
+def test_prompt_distinguishes_travel_from_local_transport_and_preserves_names() -> None:
+    prompt = build_system_prompt(today="2026-08-12")
+    for rule in (
+        "不得写成“出行”",
+        "打车、地铁、停车等本地交通",
+        "把目的地（如东京、美国、瑞士）放入 trip_tag",
+        "“买水”“买衣服”“买洗水果篮”“买网球”不能删成",
+        "“东京机票”“瑞士酒店”则分别以“机票”“酒店”为 name",
+    ):
+        assert rule in prompt

@@ -36,6 +36,9 @@ class ChatRequestPayload:
     clarification_context: ClarificationContext | None = None
     clarification_question: str | None = None
     finance_retry_context: FinanceRetryContext | None = None
+    #: A user-confirmed instruction to abandon only pre-submit work and attach
+    #: this message to a fresh semantic Session.
+    start_new_session: bool = False
 
 
 def seal_chat_request(
@@ -75,6 +78,7 @@ def seal_chat_request(
             if retry is not None
             else None
         ),
+        "start_new_session": payload.start_new_session,
     }
     return keyring.encrypt(
         canonical_json(data).encode("utf-8"),
@@ -151,6 +155,7 @@ def open_chat_request(
         clarification_context=context,
         clarification_question=_optional_str(data.get("clarification_question")),
         finance_retry_context=retry_context,
+        start_new_session=_optional_bool(data.get("start_new_session"), False),
     )
 
 
@@ -164,6 +169,7 @@ def with_clarification_question(
         clarification_context=payload.clarification_context,
         clarification_question=question,
         finance_retry_context=payload.finance_retry_context,
+        start_new_session=payload.start_new_session,
     )
 
 
@@ -251,6 +257,15 @@ def _optional_str(value: Any) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
+        raise _invalid("sealed chat request is malformed")
+    return value
+
+
+def _optional_bool(value: Any, default: bool) -> bool:
+    """Read a backward-compatible optional boolean without coercion."""
+    if value is None:
+        return default
+    if not isinstance(value, bool):
         raise _invalid("sealed chat request is malformed")
     return value
 

@@ -48,6 +48,9 @@ final class ChatModel {
     /// Set while a parked clarification is being answered, so the next send
     /// carries `clarification_of` instead of starting an unrelated message.
     var answering: (operationID: String, question: String)?
+    /// The next submitted message is a user-confirmed, server-side Session
+    /// reset. It remains local until `ChatTimeline` persists its idempotent key.
+    var startNewTopic = false
     /// An unresolved message this launch inherited. Shown rather than hidden: it
     /// may hold a write nobody has confirmed yet.
     var unresolved: ChatTimeline.PendingSend?
@@ -159,15 +162,19 @@ final class ChatModel {
         busy = true
         defer { busy = false }
         let clarificationOf = answering?.operationID
+        let startNewSession = startNewTopic
         // Out of the composer and onto the screen before the request leaves.
         draft = ""
         sending = text
         defer { sending = nil }
         do {
             let receipt = try await timeline.send(
-                text: text, clarificationOf: clarificationOf
+                text: text,
+                clarificationOf: clarificationOf,
+                startNewSession: startNewSession
             )
             answering = nil
+            startNewTopic = false
             liveReceipt = receipt
             lastError = nil
             // The user message and the result are Timeline events, so the screen
@@ -248,6 +255,18 @@ final class ChatModel {
 
     func cancelAnswering() {
         answering = nil
+    }
+
+    func prepareNewTopic() {
+        // A clarification answer must retain its source Session. The explicit
+        // reset intentionally abandons that pre-submit source server-side.
+        answering = nil
+        startNewTopic = true
+        lastError = nil
+    }
+
+    func cancelNewTopic() {
+        startNewTopic = false
     }
 
     // --- duplicate decisions (`DEV-031`) ---------------------------------------

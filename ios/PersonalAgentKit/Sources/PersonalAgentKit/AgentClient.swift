@@ -148,6 +148,7 @@ public struct AgentClient: Sendable {
         conversationID: String,
         text: String,
         clarificationOf: String? = nil,
+        startNewSession: Bool = false,
         idempotencyKey: String,
         token: String
     ) async throws -> OperationReceipt {
@@ -159,6 +160,7 @@ public struct AgentClient: Sendable {
                 "text": text,
                 "clarification_of": clarificationOf,
             ],
+            booleanBody: ["start_new_session": startNewSession],
             token: token,
             headers: ["Idempotency-Key": idempotencyKey],
             accepting: [200, 202],
@@ -330,6 +332,7 @@ public struct AgentClient: Sendable {
         method: String,
         path: String,
         body: [String: String?]? = nil,
+        booleanBody: [String: Bool] = [:],
         token: String? = nil,
         headers: [String: String] = [:],
         query: [URLQueryItem] = [],
@@ -355,8 +358,12 @@ public struct AgentClient: Sendable {
         }
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            var encoded = body.mapValues { $0 as Any? ?? NSNull() }
+            for (field, value) in booleanBody {
+                encoded[field] = value
+            }
             request.httpBody = try JSONSerialization.data(
-                withJSONObject: body.mapValues { $0 as Any? ?? NSNull() }
+                withJSONObject: encoded
             )
         }
 
