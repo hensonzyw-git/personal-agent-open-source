@@ -31,7 +31,15 @@ from pathlib import Path
 
 import pytest
 
-from personal_agent.api.app import _RECORD_ID_RESULT_TOOLS, _operation_projection
+from personal_agent.api.app import (
+    _QUERY_RESULT_TOOLS,
+    _RECORD_ID_RESULT_TOOLS,
+    _operation_event_content,
+    _operation_projection,
+)
+from personal_agent.api.finance_dispatcher import (
+    _QUERY_RESULT_TOOLS as DISPATCHER_QUERY_RESULT_TOOLS,
+)
 from personal_agent.api.operation_state import is_terminal
 from personal_agent.storage.models import OPERATION_STATES, Operation
 from personal_agent_core.tool_ir import TOOL_CONTRACTS
@@ -59,16 +67,29 @@ def _operation_for(case: dict) -> Operation:
     `record_id`, `answer`, `clarification` and `duplicate_existing` are all the
     same column -- `safe_result` -- which is exactly why the projection has to
     decide between them from the state and the tool, and why this test exists.
+    A `query_result` is also the same column: its durable carrier is canonical
+    JSON of the whitelisted projection, and the projection re-decodes it into
+    `query_result` plus a deterministic `answer` summary.
     """
     receipt = case["receipt"]
-    safe_result = next(
-        (
-            receipt[name]
-            for name in ("record_id", "answer", "clarification", "duplicate_existing")
-            if receipt.get(name) is not None
-        ),
-        None,
-    )
+    if "query_result" in receipt:
+        safe_result = json.dumps(
+            receipt["query_result"], ensure_ascii=False, sort_keys=True
+        )
+    else:
+        safe_result = next(
+            (
+                receipt[name]
+                for name in (
+                    "record_id",
+                    "answer",
+                    "clarification",
+                    "duplicate_existing",
+                )
+                if receipt.get(name) is not None
+            ),
+            None,
+        )
     return Operation(
         operation_id=receipt["operation_id"],
         state=receipt["state"],
@@ -82,7 +103,7 @@ def _operation_for(case: dict) -> Operation:
 
 
 def test_contract_version_is_pinned() -> None:
-    assert V["contract"] == "chat_receipt_projection_v2"
+    assert V["contract"] == "chat_receipt_projection_v4"
     assert V["cases"], "an empty vector file would pass every check vacuously"
 
 
@@ -95,6 +116,11 @@ def test_every_operation_state_is_in_the_vector() -> None:
 
 def test_record_evidence_tools_match_the_server() -> None:
     assert V["record_evidence_tools"] == sorted(_RECORD_ID_RESULT_TOOLS)
+
+
+def test_query_evidence_tools_match_the_server() -> None:
+    """The client holds its hard-coded query check against this set."""
+    assert V["query_evidence_tools"] == sorted(_QUERY_RESULT_TOOLS)
 
 
 def test_the_evidence_set_is_derived_from_the_ir_not_hand_listed() -> None:
@@ -113,6 +139,33 @@ def test_the_evidence_set_is_derived_from_the_ir_not_hand_listed() -> None:
         contract.name for contract in TOOL_CONTRACTS if contract.risk_level == "R2"
     }
     assert "finance.log_expense_batch" in _RECORD_ID_RESULT_TOOLS
+
+
+def test_the_query_projection_tool_set_is_derived_from_the_ir() -> None:
+    """Every enabled governed *query* must project as a query, not raw JSON.
+
+    A hand-listed query set would drift silently the day a second governed query
+    ships: the projection would fall through to the `answer` branch and emit
+    canonical JSON as the user-facing reply -- exactly the bug this change
+    exists to fix. The API projection and the dispatcher's own set must be the
+    same IR-derived set, so the two stages can never disagree about which tool
+    is a structured query. `meta.capabilities` is a governed read but not a
+    query, and must be excluded so it keeps the plain `answer` path.
+    """
+    ir_derived = {
+        contract.name
+        for contract in TOOL_CONTRACTS
+        if contract.effect == "read"
+        and contract.enabled
+        and contract.output_schema.get("properties", {}).get("metric", {}).get(
+            "const"
+        )
+        == "personal_spend_total_cny"
+    }
+    assert _QUERY_RESULT_TOOLS == ir_derived
+    assert DISPATCHER_QUERY_RESULT_TOOLS == ir_derived
+    assert "finance.query_expenses" in ir_derived
+    assert "meta.capabilities" not in ir_derived
 
 
 def test_manual_review_preserves_a_known_record_id() -> None:
@@ -152,6 +205,7 @@ def test_receipt_fields_are_closed(case: dict) -> None:
         "clarification",
         "duplicate_existing",
         "answer",
+        "query_result",
     }
     assert set(case["receipt"]) <= allowed
 
@@ -203,3 +257,74 @@ def test_a_detached_client_is_never_projected_as_a_rollback(case: dict) -> None:
         assert case["expected_outcome"] != "cancelled_before_submit"
     else:
         assert case["expected_cancellation"] == "none"
+
+
+def _case(name: str) -> dict:
+    return next(case for case in V["cases"] if case["name"] == name)
+
+
+def test_query_receipt_and_timeline_event_carry_the_same_facts() -> None:
+    """The immediate projection and the Timeline event must never disagree."""
+    for name in ("query_total", "query_by_category", "query_records"):
+        operation = _operation_for(_case(name))
+        receipt = _operation_projection(operation)
+        event = _operation_event_content(operation)
+        assert event["tool"] == receipt["tool"] == "finance.query_expenses"
+        assert event["query_result"] == receipt["query_result"]
+        assert event["answer"] == receipt["answer"]
+
+
+def test_a_query_safe_result_that_does_not_decode_fails_closed() -> None:
+    operation = _operation_for(
+        {
+            "receipt": {
+                "operation_id": "op_bad_query",
+                "state": "succeeded",
+                "cancel_requested": False,
+                "client_detached": False,
+                "tool": "finance.query_expenses",
+                "record_id": None,
+                "failure_reason": None,
+                "duplicate_check_id": None,
+            }
+        }
+    )
+    operation.safe_result = "not a query projection"
+    receipt = _operation_projection(operation)
+    # A result that cannot be projected is never shown as an answer and never
+    # becomes a card; it stays silently unknown until recovery.
+    assert "query_result" not in receipt
+    assert "answer" not in receipt
+    event = _operation_event_content(operation)
+    assert "query_result" not in event
+    assert "answer" not in event
+
+
+def test_query_result_is_only_projected_for_the_query_tool() -> None:
+    """A write card must never regress into a query card."""
+    for case in V["cases"]:
+        operation = _operation_for(case)
+        if case["receipt"]["tool"] != "finance.query_expenses":
+            assert "query_result" not in _operation_projection(operation)
+
+
+def test_new_events_carry_tool_explicitly_even_when_null() -> None:
+    """`tool` is a fact the server recorded; its absence is 'unknown', not 'no tool'."""
+    operation = _operation_for(
+        {
+            "receipt": {
+                "operation_id": "op_direct_answer",
+                "state": "succeeded",
+                "cancel_requested": False,
+                "client_detached": False,
+                "tool": None,
+                "record_id": None,
+                "failure_reason": None,
+                "duplicate_check_id": None,
+                "answer": "好的",
+            }
+        }
+    )
+    event = _operation_event_content(operation)
+    assert "tool" in event
+    assert event["tool"] is None

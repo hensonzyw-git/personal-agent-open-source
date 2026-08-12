@@ -112,6 +112,132 @@ public enum OperationState: Sendable, Equatable {
     // polls a parked operation forever or stops watching a live write.
 }
 
+// --- the Finance query result ------------------------------------------------
+
+/// The structured `finance.query_expenses` projection, decoded strictly.
+///
+/// The server projects exactly the whitelisted fields of its query contract
+/// into `query_result`; this type reads that object and nothing else. An
+/// unknown `view` refuses to decode -- the receipt then has no query result and
+/// the screen says this build cannot show it, rather than rendering a JSON
+/// string or claiming a success. `amount` is `nil` only for the `records` view.
+public struct FinanceQueryResult: Sendable, Equatable {
+    public enum View: String, Sendable, Equatable {
+        case total
+        case byCategory = "by_category"
+        case records
+    }
+
+    /// One `by_category` bucket.
+    public struct CategoryBucket: Sendable, Equatable {
+        public let category: String?
+        public let amount: String
+        public let recordCount: Int
+        public let share: String?
+    }
+
+    /// One `records` row, bounded by the server's page size -- a page is never
+    /// presented as the whole answer, which is what `nextCursor` exists for.
+    public struct RecordRow: Sendable, Equatable {
+        public let recordID: String
+        public let name: String
+        public let occurredOn: String?
+        public let category: String?
+        public let isFamilyExpense: Bool
+        public let amount: String
+    }
+
+    public let view: View
+    public let recordCount: Int
+    public let filtersApplied: [String: JSONValue]
+    public let sourceSystem: String
+    /// `personal_spend_total_cny`; present for `total` and `by_category`.
+    public let amount: String?
+    public let byCategory: [CategoryBucket]
+    public let records: [RecordRow]
+    /// Present only when a `records` page has a next page to continue into.
+    public let nextCursor: String?
+}
+
+extension FinanceQueryResult: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case view
+        case recordCount = "record_count"
+        case filtersApplied = "filters_applied"
+        case sourceSystem = "source_system"
+        case amount = "personal_spend_total_cny"
+        case byCategory = "by_category"
+        case records
+        case nextCursor = "next_cursor"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let rawView = try container.decode(String.self, forKey: .view)
+        guard let view = View(rawValue: rawView) else {
+            // A view this build cannot render is not a card. Refusing the whole
+            // projection keeps the raw result off the screen.
+            throw DecodingError.dataCorruptedError(
+                forKey: .view,
+                in: container,
+                debugDescription: "unknown query view \(rawView)"
+            )
+        }
+        self.view = view
+        self.recordCount = try container.decode(Int.self, forKey: .recordCount)
+        self.filtersApplied =
+            try container.decodeIfPresent(
+                [String: JSONValue].self, forKey: .filtersApplied
+            ) ?? [:]
+        self.sourceSystem =
+            try container.decodeIfPresent(String.self, forKey: .sourceSystem) ?? ""
+        self.amount = try container.decodeIfPresent(String.self, forKey: .amount)
+        self.byCategory =
+            try container.decodeIfPresent([CategoryBucket].self, forKey: .byCategory) ?? []
+        self.records =
+            try container.decodeIfPresent([RecordRow].self, forKey: .records) ?? []
+        self.nextCursor = try container.decodeIfPresent(String.self, forKey: .nextCursor)
+    }
+}
+
+extension FinanceQueryResult.CategoryBucket: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case category
+        case amount = "personal_spend_total_cny"
+        case recordCount = "record_count"
+        case share = "share_of_total"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        category = try container.decodeIfPresent(String.self, forKey: .category)
+        amount = try container.decode(String.self, forKey: .amount)
+        recordCount = try container.decode(Int.self, forKey: .recordCount)
+        share = try container.decodeIfPresent(String.self, forKey: .share)
+    }
+}
+
+extension FinanceQueryResult.RecordRow: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case recordID = "record_id"
+        case name
+        case occurredOn = "occurred_on"
+        case category
+        case isFamilyExpense = "is_family_expense"
+        case amount = "personal_spend_cny"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        recordID = try container.decode(String.self, forKey: .recordID)
+        name = try container.decode(String.self, forKey: .name)
+        occurredOn = try container.decodeIfPresent(String.self, forKey: .occurredOn)
+        category = try container.decodeIfPresent(String.self, forKey: .category)
+        isFamilyExpense = try container.decode(Bool.self, forKey: .isFamilyExpense)
+        amount = try container.decode(String.self, forKey: .amount)
+    }
+}
+
 // --- the receipt -------------------------------------------------------------
 
 /// What the app is allowed to tell the user about one operation.
@@ -130,6 +256,9 @@ public enum OperationOutcome: Sendable, Equatable {
     case recorded(recordID: String, tool: String?)
     /// A no-side-effect answer.
     case answered(String)
+    /// A structured Finance query result, read-only, rendered as a card rather
+    /// than as prose. `tool` is the recorded query tool, shown on the card.
+    case answeredWithQuery(result: FinanceQueryResult, tool: String?)
     /// Nothing was written.
     case failedSafe(reason: String?)
     /// Something may have been written and could not be verified. Never shown as
@@ -159,7 +288,7 @@ public enum OperationOutcome: Sendable, Equatable {
         case .running, .needsManualReview, .indeterminate:
             return false
         case .needsClarification, .needsDuplicateDecision, .recorded, .answered,
-             .failedSafe, .cancelledBeforeSubmit:
+             .answeredWithQuery, .failedSafe, .cancelledBeforeSubmit:
             return true
         }
     }
@@ -198,6 +327,9 @@ public struct OperationReceipt: Sendable, Equatable {
     public let clarification: String?
     public let duplicateExisting: String?
     public let answer: String?
+    /// The structured `finance.query_expenses` projection, when the tool was a
+    /// query and the result decoded. `nil` for every other tool.
+    public let queryResult: FinanceQueryResult?
 
     public init(
         operationID: String,
@@ -210,7 +342,8 @@ public struct OperationReceipt: Sendable, Equatable {
         duplicateCheckID: String?,
         clarification: String?,
         duplicateExisting: String?,
-        answer: String?
+        answer: String?,
+        queryResult: FinanceQueryResult? = nil
     ) {
         self.operationID = operationID
         self.state = state
@@ -223,6 +356,7 @@ public struct OperationReceipt: Sendable, Equatable {
         self.clarification = clarification
         self.duplicateExisting = duplicateExisting
         self.answer = answer
+        self.queryResult = queryResult
     }
 
     /// The tools whose success is a ledger row. Kept here so `succeeded` for one
@@ -243,16 +377,27 @@ public struct OperationReceipt: Sendable, Equatable {
         "finance.update_family_fund",
     ]
 
+    /// The governed read tools whose success is a structured query card, never a
+    /// prose answer. It mirrors the server's IR-derived `_QUERY_RESULT_TOOLS`;
+    /// the client uses it only to decide a `succeeded` must carry a decodable
+    /// `query_result`, never to grant anything. `chat_receipt_vectors.json`
+    /// (`query_evidence_tools`, v4) holds the two sides equal, so a renamed or
+    /// newly shipped governed query fails both suites before it reaches a user.
+    public static let queryEvidenceTools: Set<String> = [
+        "finance.query_expenses",
+    ]
+
     public var outcome: OperationOutcome {
         Self.project(
             state: state,
-            tool: tool,
+            toolEvidence: .known(tool),
             recordID: recordID,
             failureReason: failureReason,
             duplicateCheckID: duplicateCheckID,
             clarification: clarification,
             duplicateExisting: duplicateExisting,
-            answer: answer
+            answer: answer,
+            queryResult: queryResult
         )
     }
 
@@ -267,16 +412,24 @@ public struct OperationReceipt: Sendable, Equatable {
     /// The one projection. A Timeline `operation_result` event goes through the
     /// same function as a live receipt, so history and the live reply can never
     /// disagree about whether something was written.
+    ///
+    /// `toolEvidence` is the tool fact as it was actually recorded: the live
+    /// receipt always carries it (possibly `null`), while an old Timeline event
+    /// may predate tool recording entirely. That distinction is what stops a
+    /// missing fact from being read as "no tool was called".
     static func project(
         state: OperationState,
-        tool: String?,
+        toolEvidence: ToolEvidence,
         recordID: String?,
         failureReason: String?,
         duplicateCheckID: String?,
         clarification: String?,
         duplicateExisting: String?,
-        answer: String?
+        answer: String?,
+        queryResult: FinanceQueryResult? = nil
     ) -> OperationOutcome {
+        let tool: String?
+        if case .known(let value) = toolEvidence { tool = value } else { tool = nil }
         switch state {
         case .accepted, .interpreting, .dispatching, .sourceInProgress, .verifying:
             return .running
@@ -298,6 +451,21 @@ public struct OperationReceipt: Sendable, Equatable {
             if let tool, Self.recordEvidenceTools.contains(tool) {
                 // A governed write that succeeded must carry its external
                 // evidence. Anything else is unknown, not a recorded expense.
+                return .indeterminate(state: state.wire)
+            }
+            if let tool, Self.queryEvidenceTools.contains(tool) {
+                if let queryResult {
+                    return .answeredWithQuery(result: queryResult, tool: tool)
+                }
+                // A query that succeeded without a projectable result is not a
+                // success this client can present.
+                return .indeterminate(state: state.wire)
+            }
+            // Without tool evidence an `answer` cannot be trusted as a clean
+            // direct reply: history recorded before tool recording carried raw
+            // query JSON in `answer`. That case is `.unknown`, and it stays
+            // unknown rather than being read as "no tool was called".
+            if case .unknown = toolEvidence {
                 return .indeterminate(state: state.wire)
             }
             if let answer, !answer.isEmpty {
@@ -329,6 +497,7 @@ extension OperationReceipt: Decodable {
         case clarification
         case duplicateExisting = "duplicate_existing"
         case answer
+        case queryResult = "query_result"
     }
 
     public init(from decoder: Decoder) throws {
@@ -355,6 +524,12 @@ extension OperationReceipt: Decodable {
             String.self, forKey: .duplicateExisting
         )
         answer = try container.decodeIfPresent(String.self, forKey: .answer)
+        // A malformed `query_result` is a query this build cannot render, not a
+        // reason to lose the whole receipt: it decodes to `nil` and the screen
+        // fails closed on the query card while everything else still works.
+        queryResult = try? container.decodeIfPresent(
+            FinanceQueryResult.self, forKey: .queryResult
+        )
     }
 }
 
@@ -395,7 +570,7 @@ public enum ManualResolution: String, Sendable, Equatable, Codable {
 /// The reply to `POST /v1/operations/{id}/resolution`.
 ///
 /// Deliberately *not* an `OperationReceipt`. The server refused to widen
-/// `chat_receipt_projection_v2` for this — a manual resolution is not a chat
+/// `chat_receipt_projection_v4` for this — a manual resolution is not a chat
 /// receipt — and decoding it as one here would quietly re-couple the two
 /// contracts from the client side. `state` is carried so the screen can still
 /// see what the system proved, and it is never overwritten by `resolution`.
@@ -472,12 +647,100 @@ public enum JSONScalar: Sendable, Equatable, Decodable {
     }
 }
 
+/// One JSON value from an event's `content`, including nested structures.
+///
+/// `JSONScalar` above stays for the review surface, whose ledger field values
+/// are all scalars. Timeline content needs more: a Finance query projection is
+/// a nested object, and a page of records is a nested array. This recursive
+/// value keeps those structures intact so history can be decoded back into the
+/// same structured result as the live receipt, instead of degrading a nested
+/// object to `unsupported` and losing the whole card.
+public enum JSONValue: Sendable, Equatable, Codable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case null
+    case object([String: JSONValue])
+    case array([JSONValue])
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode([String: JSONValue].self) {
+            self = .object(value)
+        } else if let value = try? container.decode([JSONValue].self) {
+            self = .array(value)
+        } else {
+            throw DecodingError.dataCorruptedError(
+                in: container, debugDescription: "unsupported JSON value"
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .bool(let value): try container.encode(value)
+        case .null: try container.encodeNil()
+        case .object(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        }
+    }
+
+    public var stringValue: String? {
+        if case .string(let value) = self { return value }
+        return nil
+    }
+
+    public var boolValue: Bool? {
+        if case .bool(let value) = self { return value }
+        return nil
+    }
+
+    public var objectValue: [String: JSONValue]? {
+        if case .object(let value) = self { return value }
+        return nil
+    }
+
+    public var arrayValue: [JSONValue]? {
+        if case .array(let value) = self { return value }
+        return nil
+    }
+}
+
+/// Whether a Timeline `operation_result` event actually recorded which tool ran.
+///
+/// The live receipt always carries `tool` (possibly `null` for an explicit
+/// no-tool direct answer). History before this change did not record it, and
+/// "the event predates tool recording" is a different fact from "the server
+/// recorded no tool". Distinguishing them is what keeps 无工具调用 from being
+/// claimed for an event that never said.
+public enum ToolEvidence: Sendable, Equatable {
+    /// The server recorded a tool. `nil` means an explicit no-tool direct answer.
+    case known(String?)
+    /// The event carries no tool fact; it is unknown, not "no tool".
+    case unknown
+}
+
 /// What one Timeline entry is, as far as the UI is concerned.
 public enum TimelineEntryKind: Sendable, Equatable {
     case userMessage(text: String, clarificationOf: String?)
     /// The structured receipt as it was persisted. Projected by the same code as
-    /// a live receipt.
-    case operationResult(outcome: OperationOutcome, state: OperationState)
+    /// a live receipt. `toolEvidence` records whether the persisted event
+    /// actually carried a tool fact, so a missing fact can never be read as
+    /// "no tool was called".
+    case operationResult(
+        outcome: OperationOutcome, state: OperationState, toolEvidence: ToolEvidence
+    )
     /// A Session boundary. Presentation only — never dialogue, never an
     /// instruction, and the server's fixed wording is a `reason` code.
     case sessionDivider(reason: String?, corrected: Bool)
@@ -500,7 +763,7 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
     /// The server's own timestamp, kept as text. Ordering comes from the server's
     /// page order and never from parsing this.
     public let createdAt: String
-    public let content: [String: JSONScalar]
+    public let content: [String: JSONValue]
 
     public var id: String { eventID }
 
@@ -509,7 +772,7 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
         eventType: String,
         operationID: String?,
         createdAt: String,
-        content: [String: JSONScalar]
+        content: [String: JSONValue]
     ) {
         self.eventID = eventID
         self.eventType = eventType
@@ -535,31 +798,42 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                 return .unrecognised(eventType: eventType)
             }
             let state = OperationState(wire: wire)
+            // Whether the event itself recorded which tool ran. New events carry
+            // `tool` (possibly `null` for an explicit no-tool direct answer);
+            // old events predate it and stay `.unknown`, which is a different
+            // fact from "no tool was called".
+            let toolEvidence: ToolEvidence
+            if let toolScalar = content["tool"] {
+                toolEvidence = .known(toolScalar.stringValue)
+            } else {
+                toolEvidence = .unknown
+            }
+            // A structured Finance query projection, when the event carried one.
+            // Decoded from the nested object so history renders the same card as
+            // the live receipt.
+            let queryResult: FinanceQueryResult?
+            if let object = content["query_result"]?.objectValue,
+               let data = try? JSONEncoder().encode(object) {
+                queryResult = try? JSONDecoder().decode(
+                    FinanceQueryResult.self, from: data
+                )
+            } else {
+                queryResult = nil
+            }
             return .operationResult(
                 outcome: OperationReceipt.project(
                     state: state,
-                    // The persisted event carries no `tool`; evidence is the
-                    // `record_id`, and its absence stays indeterminate.
-                    //
-                    // Passing `nil` skips the `recordEvidenceTools` refusal, so
-                    // history relies on a server invariant this file cannot
-                    // enforce: `_operation_projection` emits `answer` only when
-                    // the tool is **not** a governed write, so a `succeeded`
-                    // expense with no `record_id` carries no `answer` either and
-                    // still lands on `indeterminate` below. If the server ever
-                    // attaches an `answer` to a governed write, this projection
-                    // would render an unproven write as a clean answer — the
-                    // cross-language vectors in `chat_receipt_vectors.json` are
-                    // what hold that invariant in place.
-                    tool: nil,
+                    toolEvidence: toolEvidence,
                     recordID: content["record_id"]?.stringValue,
                     failureReason: content["failure_reason"]?.stringValue,
                     duplicateCheckID: content["duplicate_check_id"]?.stringValue,
                     clarification: content["clarification"]?.stringValue,
                     duplicateExisting: content["duplicate_existing"]?.stringValue,
-                    answer: content["answer"]?.stringValue
+                    answer: content["answer"]?.stringValue,
+                    queryResult: queryResult
                 ),
-                state: state
+                state: state,
+                toolEvidence: toolEvidence
             )
         case "duplicate_decision":
             guard
@@ -612,7 +886,7 @@ extension TimelineEvent: Decodable {
         createdAt = try container.decode(String.self, forKey: .createdAt)
         content =
             try container.decodeIfPresent(
-                [String: JSONScalar].self, forKey: .content
+                [String: JSONValue].self, forKey: .content
             ) ?? [:]
     }
 }

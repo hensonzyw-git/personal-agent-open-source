@@ -1,6 +1,6 @@
 {
-  "contract": "chat_receipt_projection_v2",
-  "note": "DEV-030. Generated from the server's own _operation_projection; the iOS client reads this file rather than a copy. Both sides must agree case by case, because the client's only reason to say 已写入 is a record_id in one of these bodies, and an indeterminate/manual-review result must not release the durable idempotency slot.",
+  "contract": "chat_receipt_projection_v4",
+  "note": "DEV-030. Generated from the server's own _operation_projection; the iOS client reads this file rather than a copy. Both sides must agree case by case, because the client's only reason to say 已写入 is a record_id in one of these bodies, and an indeterminate/manual-review result must not release the durable idempotency slot. v3 adds query_result: a succeeded finance.query_expenses receipt carries the whitelisted projection plus a deterministic answer fallback, and the client renders it as a structured card rather than prose. v4 pins query_evidence_tools: the server derives it from the IR (governed read whose output contract is the expense query projection), and the client holds its hard-coded `tool == \"finance.query_expenses\"` check against it, so a rename or a second governed query fails both suites before it reaches a user.",
   "operation_states": [
     "accepted",
     "interpreting",
@@ -19,6 +19,9 @@
     "finance.log_expense_batch",
     "finance.log_income",
     "finance.update_family_fund"
+  ],
+  "query_evidence_tools": [
+    "finance.query_expenses"
   ],
   "cases": [
     {
@@ -58,9 +61,9 @@
       "expected_cancellation": "none"
     },
     {
-      "name": "read_only_answer",
+      "name": "query_total",
       "receipt": {
-        "operation_id": "op_read_only_answer",
+        "operation_id": "op_query_total",
         "state": "succeeded",
         "cancel_requested": false,
         "client_detached": false,
@@ -68,9 +71,146 @@
         "record_id": null,
         "failure_reason": null,
         "duplicate_check_id": null,
-        "answer": "本月个人支出 2093.00"
+        "answer": "共 3 条记录，个人支出合计 ¥1200.00",
+        "query_result": {
+          "status": "ok",
+          "view": "total",
+          "metric": "personal_spend_total_cny",
+          "record_count": 3,
+          "filters_applied": {
+            "date_range": {"start": "2026-01-01", "end": "2026-12-31"},
+            "categories": ["网球"],
+            "name_contains": [],
+            "is_family_expense": "all",
+            "personal_amount_cny": null
+          },
+          "source_system": "feishu_bitable",
+          "evidence": {
+            "kind": "aggregate_query",
+            "query_id": "qry_total",
+            "config_checksum": "cfg",
+            "schema_snapshot_checksum": "schema",
+            "scanned_pages": 1,
+            "matched_count": 3,
+            "started_at": "2026-08-12T00:00:00Z",
+            "completed_at": "2026-08-12T00:00:01Z"
+          },
+          "personal_spend_total_cny": "1200.00"
+        }
       },
-      "expected_outcome": "answered",
+      "expected_outcome": "answered_with_query",
+      "expected_proves_write": false,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "query_by_category",
+      "receipt": {
+        "operation_id": "op_query_by_category",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "finance.query_expenses",
+        "record_id": null,
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "answer": "共 3 条记录，2 个分类",
+        "query_result": {
+          "status": "ok",
+          "view": "by_category",
+          "metric": "personal_spend_total_cny",
+          "record_count": 3,
+          "filters_applied": {
+            "date_range": {"start": "2026-01-01", "end": "2026-12-31"},
+            "categories": [],
+            "name_contains": ["旅行"],
+            "is_family_expense": "all",
+            "personal_amount_cny": null
+          },
+          "source_system": "feishu_bitable",
+          "evidence": {
+            "kind": "aggregate_query",
+            "query_id": "qry_by_category",
+            "config_checksum": "cfg",
+            "schema_snapshot_checksum": "schema",
+            "scanned_pages": 2,
+            "matched_count": 3,
+            "started_at": "2026-08-12T00:00:00Z",
+            "completed_at": "2026-08-12T00:00:02Z"
+          },
+          "personal_spend_total_cny": "1500.00",
+          "by_category": [
+            {
+              "category": "旅行",
+              "personal_spend_total_cny": "1000.00",
+              "record_count": 2,
+              "share_of_total": "66.67"
+            },
+            {
+              "category": null,
+              "personal_spend_total_cny": "500.00",
+              "record_count": 1,
+              "share_of_total": "33.33"
+            }
+          ]
+        }
+      },
+      "expected_outcome": "answered_with_query",
+      "expected_proves_write": false,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "query_records",
+      "receipt": {
+        "operation_id": "op_query_records",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "finance.query_expenses",
+        "record_id": null,
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "answer": "共 5 条记录，还有更多",
+        "query_result": {
+          "status": "ok",
+          "view": "records",
+          "metric": "personal_spend_total_cny",
+          "record_count": 5,
+          "filters_applied": {
+            "date_range": {"start": "2026-01-01", "end": "2026-12-31"},
+            "categories": ["运动"],
+            "name_contains": [],
+            "is_family_expense": "all",
+            "personal_amount_cny": null
+          },
+          "source_system": "feishu_bitable",
+          "evidence": {
+            "kind": "aggregate_query",
+            "query_id": "qry_records",
+            "config_checksum": "cfg",
+            "schema_snapshot_checksum": "schema",
+            "scanned_pages": 3,
+            "matched_count": 5,
+            "started_at": "2026-08-12T00:00:00Z",
+            "completed_at": "2026-08-12T00:00:03Z"
+          },
+          "records": [
+            {
+              "record_id": "rec1",
+              "name": "网球场地费",
+              "occurred_on": "2026-05-01",
+              "category": "运动",
+              "is_family_expense": false,
+              "personal_spend_cny": "200.00"
+            }
+          ],
+          "next_cursor": "cursor-v1"
+        }
+      },
+      "expected_outcome": "answered_with_query",
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,

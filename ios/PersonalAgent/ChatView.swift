@@ -236,12 +236,13 @@ struct ChatView: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
 
-        case .operationResult(let outcome, let state):
+        case .operationResult(let outcome, let state, let toolEvidence):
             receiptCard(
                 outcome: outcome,
                 state: state,
                 operationID: event.operationID,
-                cancellation: .none
+                cancellation: .none,
+                toolEvidence: toolEvidence
             )
 
         case .sessionDivider(let reason, let corrected):
@@ -292,21 +293,26 @@ struct ChatView: View {
         outcome: OperationOutcome,
         state: OperationState,
         operationID: String?,
-        cancellation: CancellationNote
+        cancellation: CancellationNote,
+        toolEvidence: ToolEvidence
     ) -> some View {
         // §1d draws the recorded receipt as a composed card -- header, divided
         // field rows, a tinted evidence band and a footer action row. §1i's other
         // states are plain label-and-body cards, so only this one gets the full
         // structure; giving them all the same chrome would flatten a distinction
-        // the design makes deliberately.
+        // the design makes deliberately. A query result is its own card too:
+        // structured data is never flattened into a prose answer.
         if case .recorded(let recordID, let tool) = outcome {
             recordedReceiptCard(recordID: recordID, tool: tool, operationID: operationID)
+        } else if case .answeredWithQuery(let result, let tool) = outcome {
+            queryReceiptCard(result: result, tool: tool, operationID: operationID)
         } else {
             plainReceiptCard(
                 outcome: outcome,
                 state: state,
                 operationID: operationID,
-                cancellation: cancellation
+                cancellation: cancellation,
+                toolEvidence: toolEvidence
             )
         }
     }
@@ -407,19 +413,190 @@ struct ChatView: View {
         .overlay(alignment: .top) { hairline }
     }
 
+    /// A structured Finance query result rendered as its own card, per view.
+    ///
+    /// This is not a prose answer and not a receipt: the server validated the
+    /// projection, and the three views are deliberately different -- a total
+    /// shows one figure with its 口径, by_category shows the breakdown, and
+    /// records shows a bounded page with a 继续查看 entry instead of claiming a
+    /// page is the whole answer. None of it comes from what the model wrote.
+    @ViewBuilder
+    private func queryReceiptCard(
+        result: FinanceQueryResult, tool: String?, operationID: String?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("查询结果").font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                if let tool {
+                    Text(tool).font(.caption.monospaced()).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.top, Metric.cardHeaderTop)
+            .padding(.bottom, Metric.cardHeaderBottom)
+
+            VStack(spacing: 0) {
+                queryScope(result)
+                switch result.view {
+                case .total:
+                    queryTotal(result)
+                case .byCategory:
+                    queryByCategory(result)
+                case .records:
+                    queryRecords(result)
+                }
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.bottom, Metric.cardInset)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(Color.cardBorder, lineWidth: Metric.hairline)
+        )
+        .modifier(EvidenceMenu(recordID: nil, operationID: operationID))
+    }
+
+    /// The query 口径 (date range / category filters) the result was computed
+    /// under, so the figure is not read as "everything" when it is not.
+    @ViewBuilder
+    private func queryScope(_ result: FinanceQueryResult) -> some View {
+        let dates = result.filtersApplied["date_range"]?.objectValue
+        let start = dates?["start"]?.stringValue
+        let end = dates?["end"]?.stringValue
+        let categories = result.filtersApplied["categories"]?.arrayValue?
+            .compactMap { $0.stringValue }
+        if start != nil || end != nil || !(categories?.isEmpty ?? true) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("筛选口径").font(.footnote).foregroundStyle(.secondary)
+                    Spacer(minLength: 12)
+                    Text(scopeText(start: start, end: end))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if let categories, !categories.isEmpty {
+                    Text("分类：\(categories.joined(separator: "、"))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, Metric.fieldRowPadding)
+            .overlay(alignment: .top) { hairline }
+        }
+    }
+
+    private func scopeText(start: String?, end: String?) -> String {
+        switch (start, end) {
+        case (let s?, let e?): return "\(s) ~ \(e)"
+        case (let s?, nil): return "从 \(s) 起"
+        case (nil, let e?): return "至 \(e)"
+        case (nil, nil): return "全部时间"
+        }
+    }
+
+    private func queryTotal(_ result: FinanceQueryResult) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("个人支出合计").font(.callout).foregroundStyle(.secondary)
+                Spacer(minLength: 12)
+                Text("¥\(result.amount ?? "—")")
+                    .font(.title3.weight(.semibold))
+                    .tabularNumbers()
+            }
+            .padding(.vertical, Metric.fieldRowPadding)
+            .overlay(alignment: .top) { hairline }
+            fieldRow("记录数", "\(result.recordCount)")
+            if !result.sourceSystem.isEmpty {
+                fieldRow("数据源", result.sourceSystem)
+            }
+        }
+    }
+
+    private func queryByCategory(_ result: FinanceQueryResult) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("合计").font(.callout).foregroundStyle(.secondary)
+                Spacer(minLength: 12)
+                Text("¥\(result.amount ?? "—")")
+                    .font(.title3.weight(.semibold))
+                    .tabularNumbers()
+            }
+            .padding(.vertical, Metric.fieldRowPadding)
+            .overlay(alignment: .top) { hairline }
+            ForEach(Array(result.byCategory.enumerated()), id: \.offset) { _, bucket in
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(bucket.category ?? "未分类").font(.callout)
+                    Spacer(minLength: 12)
+                    if let share = bucket.share {
+                        Text("\(share)%").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(bucket.amount)
+                        .font(.callout.monospaced())
+                        .tabularNumbers()
+                }
+                .padding(.vertical, Metric.fieldRowPadding)
+                .overlay(alignment: .top) { hairline }
+            }
+            fieldRow("记录数", "\(result.recordCount)")
+        }
+    }
+
+    private func queryRecords(_ result: FinanceQueryResult) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(result.records.enumerated()), id: \.offset) { _, row in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.name).font(.callout)
+                    HStack(spacing: 8) {
+                        Text("¥\(row.amount)")
+                            .font(.caption.monospaced())
+                            .tabularNumbers()
+                            .foregroundStyle(.secondary)
+                        if let occurredOn = row.occurredOn {
+                            Text(occurredOn).font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let category = row.category {
+                            Text(category).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(.vertical, Metric.fieldRowPadding)
+                .overlay(alignment: .top) { hairline }
+            }
+            if result.nextCursor != nil {
+                Text("已显示部分明细，查询结果还有更多。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, Metric.fieldRowPadding)
+                    .overlay(alignment: .top) { hairline }
+                Button("继续查看更多明细") { model.draft = "继续查看上一条查询的支出明细" }
+                    .font(.footnote)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Metric.fieldRowPadding)
+                    .overlay(alignment: .top) { hairline }
+            } else {
+                fieldRow("明细页", "已全部显示（共 \(result.recordCount) 条）")
+            }
+        }
+    }
+
     @ViewBuilder
     private func plainReceiptCard(
         outcome: OperationOutcome,
         state: OperationState,
         operationID: String?,
-        cancellation: CancellationNote
+        cancellation: CancellationNote,
+        toolEvidence: ToolEvidence
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             // §2b's chip, not a full-width heading. A right-aligned label spent a
             // whole line announcing 无工具调用 above two lines of reply -- on the
             // most common card in the Timeline, that is a third of its height given
             // to a tag. Same information, read as a tag instead of a title.
-            if let badge = terminalBadge(for: outcome) {
+            if let badge = terminalBadge(for: outcome, toolEvidence: toolEvidence) {
                 Text(badge.text)
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(badge.color)
@@ -435,9 +612,10 @@ struct ChatView: View {
                     Text("服务端仍在处理（\(state.wire)）").font(.callout)
                 }
 
-            // Handled by `recordedReceiptCard` above; listed only to keep the
-            // switch exhaustive, so a new outcome still fails to compile here.
-            case .recorded:
+            // Handled by `recordedReceiptCard` and `queryReceiptCard` above;
+            // listed only to keep the switch exhaustive, so a new outcome still
+            // fails to compile here.
+            case .recorded, .answeredWithQuery:
                 EmptyView()
 
             case .answered(let text):
@@ -529,6 +707,14 @@ struct ChatView: View {
                 Label("本客户端无法判定结果", systemImage: "questionmark.diamond")
                     .foregroundStyle(.danger)
                 field("服务端状态", raw)
+                if case .unknown = toolEvidence {
+                    // An event that predates tool recording carries an `answer`
+                    // this client cannot trust as a clean reply (it may be the
+                    // old raw query JSON). A missing fact is not "no tool".
+                    Text("工具事实不可用：该历史事件未记录工具。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text("请不要当作已记录；在服务端或每日复核中确认。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -569,7 +755,9 @@ struct ChatView: View {
         let color: Color
     }
 
-    private func terminalBadge(for outcome: OperationOutcome) -> TerminalBadge? {
+    private func terminalBadge(
+        for outcome: OperationOutcome, toolEvidence: ToolEvidence
+    ) -> TerminalBadge? {
         switch outcome {
         // Not terminal: a badge here would name an outcome that has not happened.
         case .running:
@@ -577,7 +765,22 @@ struct ChatView: View {
         case .recorded:
             return TerminalBadge(text: "写后回读一致", color: .accentText)
         case .answered:
-            return TerminalBadge(text: "无工具调用", color: .secondary)
+            // 无工具调用 is only claimed when the server explicitly recorded
+            // `tool == null` for a direct answer. A history event that predates
+            // tool recording is a missing fact, not a negative one, and an event
+            // that names a tool is neither.
+            switch toolEvidence {
+            case .known(nil):
+                return TerminalBadge(text: "无工具调用", color: .secondary)
+            case .known(let tool):
+                return tool.map { TerminalBadge(text: "工具：\($0)", color: .secondary) }
+            case .unknown:
+                return TerminalBadge(text: "工具事实不可用", color: .secondary)
+            }
+        case .answeredWithQuery:
+            // The query card carries its own header; a badge here would compete
+            // with the structured rows it renders.
+            return nil
         case .needsClarification, .needsDuplicateDecision, .needsManualReview:
             return TerminalBadge(text: "待你处理", color: .pending)
         case .failedSafe:
@@ -668,7 +871,9 @@ struct ChatView: View {
                 outcome: receipt.outcome,
                 state: receipt.state,
                 operationID: receipt.operationID,
-                cancellation: receipt.cancellation
+                cancellation: receipt.cancellation,
+                // The live receipt always carries the tool fact, even when null.
+                toolEvidence: .known(receipt.tool)
             )
             if !receipt.outcome.isSettled {
                 Button("请求取消", role: .destructive) {

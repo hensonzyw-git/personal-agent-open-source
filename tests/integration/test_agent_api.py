@@ -24,11 +24,17 @@ from fastapi.testclient import TestClient
 from cap001_fixtures import CURSOR_KEY, IDENTIFIER_KEY
 from personal_agent.api import app as agent_app
 from personal_agent.api.app import AgentApiDeps, build_app
+from personal_agent.api.finance_query_projection import (
+    canonical_projection_json,
+    decode_finance_query_projection,
+    summarise_query_projection,
+)
 from personal_agent.api.orchestrator import (
     Clarification,
     DirectAnswer,
     InterpreterError,
     PossibleDuplicate,
+    ReadCompleted,
     Resolved,
     ToolCall,
     Written,
@@ -64,6 +70,35 @@ REQUEST_ID_1 = "11111111-1111-4111-8111-111111111111"
 REQUEST_ID_2 = "22222222-2222-4222-8222-222222222222"
 REQUEST_ID_3 = "33333333-3333-4333-8333-333333333333"
 REQUEST_ID_4 = "44444444-4444-4444-8444-444444444444"
+
+
+def _query_total_result() -> dict:
+    """A `finance.query_expenses` total result in the real output-schema shape."""
+    return {
+        "status": "ok",
+        "view": "total",
+        "filters_applied": {
+            "date_range": {"start": "2026-01-01", "end": "2026-12-31"},
+            "categories": ["网球"],
+            "name_contains": [],
+            "is_family_expense": "all",
+            "personal_amount_cny": None,
+        },
+        "metric": "personal_spend_total_cny",
+        "record_count": 3,
+        "personal_spend_total_cny": "1200.00",
+        "source_system": "feishu_bitable",
+        "evidence": {
+            "kind": "aggregate_query",
+            "query_id": "qry_1",
+            "config_checksum": "cfg",
+            "schema_snapshot_checksum": "schema",
+            "scanned_pages": 1,
+            "matched_count": 3,
+            "started_at": "2026-08-12T00:00:00Z",
+            "completed_at": "2026-08-12T00:00:01Z",
+        },
+    }
 
 
 class FakeInterpreter:
@@ -1127,6 +1162,59 @@ def test_events_list_the_conversation_timeline(engine, token_ring, keyring) -> N
     assert resp.status_code == 200
     kinds = [e["event_type"] for e in resp.json()["events"]]
     assert kinds == ["user_message", "operation_result"]
+
+
+def test_a_query_receipt_and_its_timeline_event_carry_the_same_facts(
+    engine, token_ring, keyring
+) -> None:
+    """The immediate projection and the reloaded event must agree exactly."""
+    projection = decode_finance_query_projection(_query_total_result())
+    dispatcher = FakeDispatcher(
+        resolve=ReadCompleted(
+            result=canonical_projection_json(projection),
+            projection=projection,
+            answer=summarise_query_projection(projection),
+        )
+    )
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=FakeInterpreter(
+            ToolCall("finance.query_expenses", {"view": "total"})
+        ),
+        dispatcher=dispatcher,
+    )
+    response = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "查一下我今年打网球花了多少钱"},
+        headers=_auth(token_ring),
+    )
+    assert response.status_code == 200
+    receipt = response.json()
+    assert receipt["state"] == "succeeded"
+    assert receipt["tool"] == "finance.query_expenses"
+    assert receipt["query_result"]["view"] == "total"
+    assert receipt["answer"] == "共 3 条记录，个人支出合计 ¥1200.00"
+    # A raw JSON dump must never appear as the answer.
+    assert not receipt["answer"].startswith("{")
+
+    timeline = client.get(
+        "/v1/conversations/c1/events",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    result_events = [
+        event
+        for event in timeline.json()["events"]
+        if event["event_type"] == "operation_result"
+    ]
+    assert len(result_events) == 1
+    content = result_events[0]["content"]
+    # The Timeline event carries the same tool and the same projection, so a
+    # history reload renders the identical card.
+    assert content["tool"] == receipt["tool"]
+    assert content["query_result"] == receipt["query_result"]
+    assert content["answer"] == receipt["answer"]
 
 
 # --- the duplicate decision over HTTP ----------------------------------------

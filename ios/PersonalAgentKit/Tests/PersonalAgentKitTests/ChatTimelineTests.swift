@@ -398,17 +398,148 @@ struct OperationReceiptTests {
         #expect(!parsed.outcome.provesWrite)
     }
 
-    @Test("a read-only success is an answer, and still not a write")
+    @Test("a read-only query success is a structured query card, and still not a write")
     func answerIsNotAWrite() throws {
         let parsed = try decode(
             chatReceipt(
                 "succeeded",
                 tool: "finance.query_expenses",
-                extra: ["answer": "本月个人支出 2093.00"]
+                extra: [
+                    "answer": "共 3 条记录，个人支出合计 ¥1200.00",
+                    "query_result": [
+                        "status": "ok",
+                        "view": "total",
+                        "metric": "personal_spend_total_cny",
+                        "record_count": 3,
+                        "filters_applied": ["categories": ["网球"]],
+                        "source_system": "feishu_bitable",
+                        "evidence": ["kind": "aggregate_query"],
+                        "personal_spend_total_cny": "1200.00",
+                    ],
+                ]
             )
         )
-        #expect(parsed.outcome == .answered("本月个人支出 2093.00"))
+        guard case .answeredWithQuery(let result, let tool) = parsed.outcome else {
+            Issue.record("expected a query card, got \(parsed.outcome)")
+            return
+        }
+        #expect(result.view == .total)
+        #expect(result.amount == "1200.00")
+        #expect(result.recordCount == 3)
+        #expect(tool == "finance.query_expenses")
         #expect(!parsed.outcome.provesWrite)
+    }
+
+    @Test("a query tool that succeeded without a projectable result is unknown")
+    func queryWithoutResultIsUnknown() throws {
+        // Defense-in-depth: the server always projects `query_result` for a
+        // succeeded query. If it is missing or malformed, the receipt is not a
+        // clean answer and not a query card -- it is unknown.
+        let parsed = try decode(
+            chatReceipt(
+                "succeeded",
+                tool: "finance.query_expenses",
+                extra: ["answer": "共 3 条记录"]
+            )
+        )
+        #expect(parsed.outcome == .indeterminate(state: "succeeded"))
+    }
+
+    @Test("a by_category query result projects its buckets")
+    func byCategoryProjectsBuckets() throws {
+        let parsed = try decode(
+            chatReceipt(
+                "succeeded",
+                tool: "finance.query_expenses",
+                extra: [
+                    "query_result": [
+                        "view": "by_category",
+                        "record_count": 3,
+                        "personal_spend_total_cny": "1500.00",
+                        "by_category": [
+                            [
+                                "category": "旅行",
+                                "personal_spend_total_cny": "1000.00",
+                                "record_count": 2,
+                                "share_of_total": "66.67",
+                            ],
+                            [
+                                "category": nil,
+                                "personal_spend_total_cny": "500.00",
+                                "record_count": 1,
+                                "share_of_total": "33.33",
+                            ],
+                        ],
+                    ],
+                ]
+            )
+        )
+        guard case .answeredWithQuery(let result, _) = parsed.outcome else {
+            Issue.record("expected a query card, got \(parsed.outcome)")
+            return
+        }
+        #expect(result.view == .byCategory)
+        #expect(result.byCategory.count == 2)
+        #expect(result.byCategory[0].category == "旅行")
+        #expect(result.byCategory[0].amount == "1000.00")
+        #expect(result.byCategory[1].category == nil)
+        #expect(result.byCategory[1].share == "33.33")
+    }
+
+    @Test("a records query result preserves the next-page cursor")
+    func recordsPreservesCursor() throws {
+        let parsed = try decode(
+            chatReceipt(
+                "succeeded",
+                tool: "finance.query_expenses",
+                extra: [
+                    "query_result": [
+                        "view": "records",
+                        "record_count": 5,
+                        "records": [
+                            [
+                                "record_id": "rec1",
+                                "name": "网球场地费",
+                                "occurred_on": "2026-05-01",
+                                "category": "运动",
+                                "is_family_expense": false,
+                                "personal_spend_cny": "200.00",
+                            ]
+                        ],
+                        "next_cursor": "cursor-v1",
+                    ],
+                ]
+            )
+        )
+        guard case .answeredWithQuery(let result, _) = parsed.outcome else {
+            Issue.record("expected a query card, got \(parsed.outcome)")
+            return
+        }
+        #expect(result.view == .records)
+        #expect(result.records.count == 1)
+        #expect(result.records[0].name == "网球场地费")
+        #expect(result.records[0].isFamilyExpense == false)
+        #expect(result.nextCursor == "cursor-v1")
+    }
+
+    @Test("an unknown query view is not a card and not a clean answer")
+    func unknownQueryViewIsUnknown() throws {
+        // The strict decoder refuses a view this build cannot render. The
+        // receipt survives (the query is a read, after all) but projects as
+        // indeterminate, never as prose and never as a success.
+        let parsed = try decode(
+            chatReceipt(
+                "succeeded",
+                tool: "finance.query_expenses",
+                extra: [
+                    "query_result": [
+                        "view": "pie_chart",
+                        "record_count": 3,
+                    ],
+                ]
+            )
+        )
+        #expect(parsed.outcome == .indeterminate(state: "succeeded"))
     }
 
     @Test("an unknown state stops the poll loop and claims nothing")
@@ -518,7 +649,8 @@ struct TimelineEventTests {
             parsed.kind
                 == .operationResult(
                     outcome: .failedSafe(reason: "TOOL_NOT_ALLOWLISTED"),
-                    state: .failedSafe
+                    state: .failedSafe,
+                    toolEvidence: .unknown
                 )
         )
     }
@@ -535,7 +667,9 @@ struct TimelineEventTests {
         #expect(
             parsed.kind
                 == .operationResult(
-                    outcome: .recorded(recordID: "rec-42", tool: nil), state: .succeeded
+                    outcome: .recorded(recordID: "rec-42", tool: nil),
+                    state: .succeeded,
+                    toolEvidence: .unknown
                 )
         )
     }
@@ -548,9 +682,114 @@ struct TimelineEventTests {
         #expect(
             parsed.kind
                 == .operationResult(
-                    outcome: .indeterminate(state: "succeeded"), state: .succeeded
+                    outcome: .indeterminate(state: "succeeded"),
+                    state: .succeeded,
+                    toolEvidence: .unknown
                 )
         )
+    }
+
+    @Test("an explicit no-tool answer stays an answer, never 'unknown tool'")
+    func explicitNoToolAnswer() throws {
+        // New events carry `tool`, including an explicit null for a direct
+        // answer. That is the only shape 无工具调用 may be claimed from.
+        let parsed = try decode(
+            chatEvent(
+                "ev-tool-null",
+                type: "operation_result",
+                content: [
+                    "state": "succeeded",
+                    "tool": nil,
+                    "answer": "好的",
+                ]
+            )
+        )
+        #expect(
+            parsed.kind
+                == .operationResult(
+                    outcome: .answered("好的"),
+                    state: .succeeded,
+                    toolEvidence: .known(nil)
+                )
+        )
+    }
+
+    @Test("an old event without a tool fact stays unknown, not 'no tool'")
+    func missingToolFactIsUnknown() throws {
+        // History recorded before `tool` was persisted carries a plain answer
+        // that could be raw query JSON. Without tool evidence it must not be
+        // read as a clean answer -- and never as 无工具调用.
+        let parsed = try decode(
+            chatEvent(
+                "ev-old",
+                type: "operation_result",
+                content: [
+                    "state": "succeeded",
+                    "answer": "本月个人支出 2093.00",
+                ]
+            )
+        )
+        #expect(
+            parsed.kind
+                == .operationResult(
+                    outcome: .indeterminate(state: "succeeded"),
+                    state: .succeeded,
+                    toolEvidence: .unknown
+                )
+        )
+    }
+
+    @Test("an old event with a raw JSON answer stays unknown")
+    func oldRawJsonAnswerIsUnknown() throws {
+        // The pre-fix shape: a query result dumped as a JSON string into
+        // `answer`. Decoded as a `JSONValue.string`, not a nested object, and
+        // without tool evidence it projects as unknown, never as a clean
+        // answer.
+        let parsed = try decode(
+            chatEvent(
+                "ev-raw-json",
+                type: "operation_result",
+                content: [
+                    "state": "succeeded",
+                    "answer": "{\"status\":\"ok\",\"view\":\"total\"}",
+                ]
+            )
+        )
+        #expect(
+            parsed.kind
+                == .operationResult(
+                    outcome: .indeterminate(state: "succeeded"),
+                    state: .succeeded,
+                    toolEvidence: .unknown
+                )
+        )
+    }
+
+    @Test("a persisted query event projects the same card as the live receipt")
+    func persistedQueryEvent() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-query",
+                type: "operation_result",
+                content: [
+                    "state": "succeeded",
+                    "tool": "finance.query_expenses",
+                    "query_result": [
+                        "view": "total",
+                        "record_count": 3,
+                        "personal_spend_total_cny": "1200.00",
+                    ],
+                ]
+            )
+        )
+        guard case .operationResult(.answeredWithQuery(let result, let tool), .succeeded, .known(let recordedTool)) = parsed.kind else {
+            Issue.record("expected a query card event, got \(parsed.kind)")
+            return
+        }
+        #expect(result.view == .total)
+        #expect(result.amount == "1200.00")
+        #expect(tool == "finance.query_expenses")
+        #expect(recordedTool == "finance.query_expenses")
     }
 
     @Test("a Session divider is presentation, not dialogue")
@@ -1223,6 +1462,7 @@ private struct ReceiptVectors {
     let contract: String
     let operationStates: [String]
     let recordEvidenceTools: [String]
+    let queryEvidenceTools: [String]
     let cases: [Case]
 
     static func load() -> ReceiptVectors? {
@@ -1267,6 +1507,7 @@ private struct ReceiptVectors {
             contract: root["contract"] as? String ?? "",
             operationStates: root["operation_states"] as? [String] ?? [],
             recordEvidenceTools: root["record_evidence_tools"] as? [String] ?? [],
+            queryEvidenceTools: root["query_evidence_tools"] as? [String] ?? [],
             cases: cases
         )
     }
@@ -1280,6 +1521,7 @@ private func label(_ outcome: OperationOutcome) -> String {
     case .needsDuplicateDecision: return "needs_duplicate_decision"
     case .recorded: return "recorded"
     case .answered: return "answered"
+    case .answeredWithQuery: return "answered_with_query"
     case .failedSafe: return "failed_safe"
     case .needsManualReview: return "needs_manual_review"
     case .cancelledBeforeSubmit: return "cancelled_before_submit"
@@ -1303,7 +1545,7 @@ struct ReceiptContractTests {
     @Test("the vector file is the one this build was written against")
     func contractVersion() throws {
         let vectors = try #require(vectors)
-        #expect(vectors.contract == "chat_receipt_projection_v2")
+        #expect(vectors.contract == "chat_receipt_projection_v4")
         #expect(!vectors.cases.isEmpty)
     }
 
@@ -1326,6 +1568,15 @@ struct ReceiptContractTests {
     func evidenceToolsMatch() throws {
         let vectors = try #require(vectors)
         #expect(Set(vectors.recordEvidenceTools) == OperationReceipt.recordEvidenceTools)
+    }
+
+    @Test("the query-evidence tool set matches the server's")
+    func queryEvidenceToolsMatch() throws {
+        // The server's set is IR-derived; the client's is hard-coded. The vector
+        // is what holds them equal, so a rename or a second governed query fails
+        // here before it reaches a user.
+        let vectors = try #require(vectors)
+        #expect(Set(vectors.queryEvidenceTools) == OperationReceipt.queryEvidenceTools)
     }
 
     @Test("every server chatReceipt projects to the outcome both sides agreed on")

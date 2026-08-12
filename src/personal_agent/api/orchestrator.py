@@ -34,6 +34,7 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from personal_agent.api.duplicate_flow import record_possible_duplicate
+from personal_agent.api.finance_query_projection import FinanceQueryProjection
 from personal_agent.api.intent import WriteIntent, open_intent
 from personal_agent.api.operation_store import transition_operation
 from personal_agent.context.builder import ContextEnvelope
@@ -173,9 +174,17 @@ class Resolved:
 
 @dataclass(frozen=True)
 class ReadCompleted:
-    """A read tool finished with a safe, already-projected result."""
+    """A read tool finished with a safe, already-projected result.
+
+    ``result`` is the durable ``safe_result`` carrier. For
+    ``finance.query_expenses`` the read also carries the validated
+    ``projection`` and a deterministic ``answer`` fallback for clients that
+    predate ``query_result``; every other read carries only the result string.
+    """
 
     result: str
+    projection: FinanceQueryProjection | None = None
+    answer: str | None = None
 
 
 @dataclass(frozen=True)
@@ -280,6 +289,9 @@ class RunResult:
     duplicate_check_id: str | None = None
     duplicate_existing: str | None = None
     failure_reason: str | None = None
+    #: The validated, whitelisted ``finance.query_expenses`` projection, present
+    #: only when the read was a query that decoded successfully.
+    query_result: dict[str, Any] | None = None
 
 
 Clock = datetime | Callable[[], datetime]
@@ -618,6 +630,13 @@ def _apply_resolve(
 ) -> RunResult:
     if isinstance(outcome, ReadCompleted):
         _step(session, operation, "succeeded", now, safe_result=outcome.result)
+        if outcome.projection is not None:
+            return RunResult(
+                state="succeeded",
+                record_id=None,
+                answer=outcome.answer,
+                query_result=outcome.projection.to_dict(),
+            )
         return RunResult(state="succeeded", record_id=None, answer=outcome.result)
 
     if isinstance(outcome, NeedsClarification):

@@ -34,7 +34,7 @@ struct ManualReviewResolutionTests {
 
     /// The server's own reply shape for `POST /v1/operations/{id}/resolution`.
     /// Deliberately built here rather than reused from `chatReceipt`: the server
-    /// refused to widen `chat_receipt_projection_v2` for this, and a fixture that
+    /// refused to widen `chat_receipt_projection_v4` for this, and a fixture that
     /// merged the two would hide it if the client ever started decoding one as the
     /// other.
     private func resolutionBody(
@@ -312,7 +312,7 @@ struct ManualReviewResolutionTests {
 
     @Test("a marker with no readable conclusion is unreadable, never blank")
     func anEmptyMarkerIsUnrecognised() {
-        for content: [String: JSONScalar] in [
+        for content: [String: JSONValue] in [
             [:],
             ["resolution": .string("")],
             ["resolution": .number(1)],

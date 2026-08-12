@@ -18,6 +18,11 @@ import pytest
 from context_envelopes import envelope_for
 
 from personal_agent.api.duplicate_flow import decide_duplicate
+from personal_agent.api.finance_query_projection import (
+    canonical_projection_json,
+    decode_finance_query_projection,
+    summarise_query_projection,
+)
 from personal_agent.api.intent import WriteIntent, open_intent
 from personal_agent.api.operation_state import is_recoverable, is_terminal
 from personal_agent.api.operation_store import (
@@ -129,6 +134,35 @@ class FakeDispatcher:
             }
         )
         return self._commit
+
+
+def _query_total_result() -> dict:
+    """A `finance.query_expenses` total result in the real output-schema shape."""
+    return {
+        "status": "ok",
+        "view": "total",
+        "filters_applied": {
+            "date_range": {"start": "2026-01-01", "end": "2026-12-31"},
+            "categories": ["网球"],
+            "name_contains": [],
+            "is_family_expense": "all",
+            "personal_amount_cny": None,
+        },
+        "metric": "personal_spend_total_cny",
+        "record_count": 3,
+        "personal_spend_total_cny": "1200.00",
+        "source_system": "feishu_bitable",
+        "evidence": {
+            "kind": "aggregate_query",
+            "query_id": "qry_1",
+            "config_checksum": "cfg",
+            "schema_snapshot_checksum": "schema",
+            "scanned_pages": 1,
+            "matched_count": 3,
+            "started_at": "2026-08-12T00:00:00Z",
+            "completed_at": "2026-08-12T00:00:01Z",
+        },
+    }
 
 
 def allow(*, tool, model_args):
@@ -783,6 +817,39 @@ def test_tool_text_disposition_is_a_content_free_audit_record(session, keyring, 
     assert "response_disposition=tool_text_suppressed_untrusted" in caplog.text
     session.refresh(op)
     assert op.safe_result == "本月 ¥2093"
+
+
+def test_a_query_read_projects_a_structured_result(session, keyring) -> None:
+    """A succeeded query carries the whitelisted projection, never a JSON string."""
+    projection = decode_finance_query_projection(_query_total_result())
+    dispatcher = FakeDispatcher(
+        resolve=ReadCompleted(
+            result=canonical_projection_json(projection),
+            projection=projection,
+            answer=summarise_query_projection(projection),
+        )
+    )
+    op = _fresh_operation(session)
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            ToolCall("finance.query_expenses", {"view": "total"})
+        ),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="查一下我今年打网球花了多少钱",
+    )
+
+    assert result.state == "succeeded"
+    assert result.record_id is None
+    assert result.query_result == projection.to_dict()
+    assert result.answer == "共 3 条记录，个人支出合计 ¥1200.00"
+    session.refresh(op)
+    # The durable `safe_result` is the projection's canonical JSON, readable
+    # back through the same strict decoder -- so history and the live receipt
+    # can never disagree.
+    assert decode_finance_query_projection(op.safe_result) == projection
 
 
 def test_internal_tool_text_disposition_is_logged_without_changing_outcome(
