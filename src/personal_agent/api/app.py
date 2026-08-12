@@ -61,7 +61,11 @@ from personal_agent.api.operation_store import (
     request_cancel,
     transition_operation,
 )
-from personal_agent.api.operation_state import StaleOperationVersionError
+from personal_agent.api.operation_state import (
+    StaleOperationVersionError,
+    can_cancel_pre_submit,
+    is_terminal,
+)
 from personal_agent.api.orchestrator import (
     Authorizer,
     Dispatcher,
@@ -105,6 +109,7 @@ from personal_agent.runtime.bookkeeping_intent import (
 )
 from personal_agent.storage.models import (
     REVIEW_STATUSES,
+    TERMINAL_OPERATION_STATES,
     ApiRequest,
     ConversationEvent,
     Device,
@@ -228,6 +233,7 @@ _STATUS_BY_CODE = {
     # "so create it".
     ErrorCode.TIMELINE_MISMATCH: 404,
     ErrorCode.INVALID_CURSOR: 400,
+    ErrorCode.PENDING_OPERATION_NOT_CANCELLABLE: 400,
 }
 
 _MAX_JSON_BODY_BYTES = 64 * 1024
@@ -461,6 +467,14 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         conversation_id = _required(body, "conversation_id")
         text = _required(body, "text")
         clarification_of = _optional_operation_id(body, "clarification_of")
+        start_new_session = _optional_bool(body, "start_new_session", default=False)
+        if start_new_session and clarification_of is not None:
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail=(
+                    "start_new_session cannot be combined with clarification_of"
+                ),
+            )
 
         anchored = await asyncio.to_thread(
             _preflight_chat_replay,
@@ -470,15 +484,26 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             conversation_id,
             text,
             clarification_of,
+            start_new_session,
         )
         if anchored is None:
-            resolved_classification = await asyncio.to_thread(
-                _classify_chat_boundary,
-                deps,
-                conversation_id,
-                text,
-                clarification_of,
-            )
+            # This is an explicit, user-confirmed boundary. A classifier must
+            # not spend a model call or be allowed to weaken that instruction.
+            if start_new_session:
+                resolved_classification = ResolvedClassification(
+                    expected_session_id=None,
+                    expected_last_event_at=None,
+                    expected_timeline_sequence=0,
+                    outcome=None,
+                )
+            else:
+                resolved_classification = await asyncio.to_thread(
+                    _classify_chat_boundary,
+                    deps,
+                    conversation_id,
+                    text,
+                    clarification_of,
+                )
             anchored = await asyncio.to_thread(
                 _anchor_chat,
                 deps,
@@ -487,6 +512,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 conversation_id,
                 text,
                 clarification_of,
+                start_new_session,
                 resolved_classification,
             )
         if anchored.state != "accepted":
@@ -883,6 +909,7 @@ def _preflight_chat_replay(
     conversation_id: str,
     text: str,
     clarification_of: str | None,
+    start_new_session: bool,
 ) -> _AnchoredChat | None:
     """Return an existing idempotent chat before spending a classifier call."""
 
@@ -898,6 +925,7 @@ def _preflight_chat_replay(
                 conversation_id=timeline_id,
                 text=text,
                 clarification_of=clarification_of,
+                start_new_session=start_new_session,
             )
             request_row = (
                 session.query(ApiRequest)
@@ -986,6 +1014,7 @@ def _anchor_chat(
     conversation_id: str,
     text: str,
     clarification_of: str | None,
+    start_new_session: bool,
     resolved_classification: ResolvedClassification,
 ) -> _AnchoredChat:
     """Persist request, encrypted payload and user event before model work."""
@@ -1004,6 +1033,7 @@ def _anchor_chat(
                             conversation_id,
                             text,
                             clarification_of,
+                            start_new_session,
                             resolved_classification,
                         ),
                         attempts=8,
@@ -1041,6 +1071,7 @@ def _anchor_chat_in_transaction(
     conversation_id: str,
     text: str,
     clarification_of: str | None,
+    start_new_session: bool,
     resolved_classification: ResolvedClassification,
 ) -> _AnchoredChat:
     """Anchor one chat against the transaction's current database snapshot."""
@@ -1054,6 +1085,7 @@ def _anchor_chat_in_transaction(
         conversation_id=timeline_id,
         text=text,
         clarification_of=clarification_of,
+        start_new_session=start_new_session,
     )
     opened = open_operation(
         session,
@@ -1065,6 +1097,13 @@ def _anchor_chat_in_transaction(
     operation = opened.operation
     if not opened.created:
         return _AnchoredChat(operation.operation_id, operation.state)
+
+    if start_new_session:
+        _abandon_pre_submit_operations_in_open_session(
+            session,
+            deps,
+            conversation_id=timeline_id,
+        )
 
     context = None
     retry_context = None
@@ -1121,6 +1160,7 @@ def _anchor_chat_in_transaction(
         clarification_of=clarification_of,
         clarification_context=context,
         finance_retry_context=retry_context,
+        start_new_session=start_new_session,
     )
     operation.api_request.encrypted_request_payload = seal_chat_request(
         deps.keyring,
@@ -1139,6 +1179,7 @@ def _anchor_chat_in_transaction(
         now=deps.now(),
         pinned_session_id=pinned,
         resolved_classification=resolved_classification,
+        force_new_session=start_new_session,
     )
     turn_id = events.new_turn_id()
     if decision.is_boundary:
@@ -1180,6 +1221,65 @@ def _anchor_chat_in_transaction(
         json.dumps(decision.audit_record(), sort_keys=True),
     )
     return _AnchoredChat(operation.operation_id, operation.state)
+
+
+def _abandon_pre_submit_operations_in_open_session(
+    session,
+    deps: AgentApiDeps,
+    *,
+    conversation_id: str,
+) -> None:
+    """Cancel every safely cancellable pending operation before an explicit reset.
+
+    The caller is inside the same write transaction that later closes the old
+    Session and anchors the new user event.  Any operation that might already
+    have reached its source refuses the whole request, which prevents a divider
+    from claiming that the user safely abandoned work whose outcome is unknown.
+    """
+    current = deps.session_manager.open_session(
+        session, conversation_id=conversation_id
+    )
+    if current is None:
+        return
+    pending = (
+        session.query(Operation)
+        .join(
+            ConversationEvent,
+            ConversationEvent.operation_id == Operation.operation_id,
+        )
+        .filter(
+            ConversationEvent.conversation_id == conversation_id,
+            ConversationEvent.session_id == current.session_id,
+            ~Operation.state.in_(TERMINAL_OPERATION_STATES),
+        )
+        .order_by(ConversationEvent.timeline_sequence)
+        .all()
+    )
+    for pending_operation in pending:
+        if not can_cancel_pre_submit(pending_operation.state):
+            raise AppError(
+                ErrorCode.PENDING_OPERATION_NOT_CANCELLABLE,
+                internal_detail=(
+                    "explicit session reset found an operation that may have "
+                    f"reached its source: {pending_operation.operation_id}"
+                ),
+            )
+    for pending_operation in pending:
+        outcome = request_cancel(
+            session,
+            operation_id=pending_operation.operation_id,
+            now=deps.now(),
+        )
+        if not outcome.cancelled:
+            # A concurrent worker advanced the operation after the first pass.
+            # The surrounding transaction rolls back any earlier cancellation.
+            raise AppError(
+                ErrorCode.PENDING_OPERATION_NOT_CANCELLABLE,
+                internal_detail=(
+                    "operation changed while opening a new Session: "
+                    f"{pending_operation.operation_id}"
+                ),
+            )
 
 
 def _process_chat(
@@ -1252,6 +1352,10 @@ def _process_chat(
                     deps.compact_session is not None
                     and turn_context.envelope is not None
                     and turn_context.envelope.compaction_requested
+                    and (
+                        not turn_context.envelope.checkpoint_rebuild_required
+                        or is_terminal(operation.state)
+                    )
                 )
                 else None
             )
@@ -1825,6 +1929,18 @@ def _required(body: dict[str, Any], field: str) -> str:
         raise AppError(
             ErrorCode.INVALID_ARGUMENT,
             internal_detail=f"{field} is required",
+        )
+    return value
+
+
+def _optional_bool(body: dict[str, Any], field: str, *, default: bool) -> bool:
+    value = body.get(field)
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=f"{field} must be a boolean",
         )
     return value
 

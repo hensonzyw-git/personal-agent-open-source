@@ -19,6 +19,7 @@ struct ChatView: View {
     /// one tap: the server records the first answer and refuses a contradicting
     /// one, so a mis-tap cannot be corrected in the app.
     @State private var confirmingResolution: ResolutionIntent?
+    @State private var confirmingNewTopic = false
 
     struct ResolutionIntent: Equatable {
         let operationID: String
@@ -38,6 +39,18 @@ struct ChatView: View {
         // No title of its own: §1a makes the Timeline the whole surface, so the
         // navigation bar belongs to the app rather than to this view. `RootView`
         // sets it, together with the status entry.
+        .confirmationDialog(
+            "开始新话题？",
+            isPresented: $confirmingNewTopic,
+            titleVisibility: .visible
+        ) {
+            Button("放弃未提交待办并开始") {
+                model.prepareNewTopic()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("下一条消息会安全取消当前仍未提交的待办，并从新话题开始。若某项操作可能已经提交，服务端会拒绝切换，不会把它当作已放弃。")
+        }
         .confirmationDialog(
             "服务端已提示这笔与现有记录疑似重复。仍然写入一条新记录？",
             isPresented: Binding(
@@ -76,6 +89,12 @@ struct ChatView: View {
             Button("再想想", role: .cancel) { confirmingResolution = nil }
         } message: {
             Text("这个结论记录后不能在应用里改判：服务端会拒绝相反的答复。它只写在这次操作旁边，不会改动账本。")
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("新话题") { confirmingNewTopic = true }
+                    .disabled(model.busy || model.unresolved != nil)
+            }
         }
     }
 
@@ -784,6 +803,16 @@ struct ChatView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("取消") { model.cancelAnswering() }.font(.caption)
+                }
+            }
+            if model.startNewTopic {
+                HStack {
+                    Text("下一条消息将开始新话题")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("取消") { model.cancelNewTopic() }
+                        .font(.caption)
                 }
             }
             if let pending = model.unresolved {

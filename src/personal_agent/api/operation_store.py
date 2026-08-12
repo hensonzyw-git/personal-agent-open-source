@@ -48,6 +48,7 @@ def chat_request_fingerprint(
     conversation_id: str,
     text: str,
     clarification_of: str | None = None,
+    start_new_session: bool = False,
 ) -> str:
     """A canonical fingerprint of one chat request's meaning.
 
@@ -59,6 +60,7 @@ def chat_request_fingerprint(
         "conversation_id": conversation_id,
         "text": text,
         "clarification_of": clarification_of,
+        "start_new_session": start_new_session,
     }
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 

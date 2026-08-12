@@ -33,12 +33,13 @@ struct Call: Sendable {
     let path: String
     let query: [String: String]
     let headers: [String: String]
-    /// Only the string fields, which is all this contract sends. Keeping `Any`
-    /// here would make the recorded call non-`Sendable`.
+    /// Scalar JSON fields are split by type so the recorded call stays Sendable.
     let body: [String: String]
+    let booleans: [String: Bool]
 
     var idempotencyKey: String? { headers["Idempotency-Key"] }
     func string(_ field: String) -> String? { body[field] }
+    func bool(_ field: String) -> Bool? { booleans[field] }
 }
 
 struct Reply: Sendable {
@@ -173,7 +174,7 @@ final class ChatStub: URLProtocol {
             path: request.url?.path ?? "",
             query: query,
             headers: request.allHTTPHeaderFields ?? [:],
-            body: Self.decodeBody(request)
+            decodedBody: Self.decodeBody(request)
         )
         guard let port = request.url?.port,
               let service = ServiceRegistry.shared.service(port: port)
@@ -200,7 +201,9 @@ final class ChatStub: URLProtocol {
     /// `URLProtocol` usually hands the body over as a stream rather than as
     /// `httpBody`, and reading only the latter would silently assert against an
     /// empty request. Both are checked.
-    private static func decodeBody(_ request: URLRequest) -> [String: String] {
+    private static func decodeBody(
+        _ request: URLRequest
+    ) -> (strings: [String: String], booleans: [String: Bool]) {
         var data = request.httpBody
         if data == nil, let stream = request.httpBodyStream {
             stream.open()
@@ -218,8 +221,30 @@ final class ChatStub: URLProtocol {
         guard let data, !data.isEmpty,
               let object = try? JSONSerialization.jsonObject(with: data)
                 as? [String: Any]
-        else { return [:] }
-        return object.compactMapValues { $0 as? String }
+        else { return ([:], [:]) }
+        return (
+            object.compactMapValues { $0 as? String },
+            object.compactMapValues { $0 as? Bool }
+        )
+    }
+}
+
+private extension Call {
+    init(
+        method: String,
+        path: String,
+        query: [String: String],
+        headers: [String: String],
+        decodedBody: (strings: [String: String], booleans: [String: Bool])
+    ) {
+        self.init(
+            method: method,
+            path: path,
+            query: query,
+            headers: headers,
+            body: decodedBody.strings,
+            booleans: decodedBody.booleans
+        )
     }
 }
 
@@ -628,6 +653,24 @@ struct ChatSendTests {
         #expect(service.chatPosts.first?.string("conversation_id") == chatTimelineID)
         // A settled operation releases the pending slot.
         #expect(try store.read(CredentialKey.pendingChatSend) == nil)
+    }
+
+    @Test("a confirmed new-topic send carries a boolean reset instruction")
+    func newTopicSendCarriesResetInstruction() async throws {
+        let service = newService()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                return .ok(chatReceipt("succeeded"))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let (chat, _, _) = try await makeChat(service: service)
+
+        _ = try await chat.send(text: "帮我规划周末", startNewSession: true)
+
+        #expect(service.chatPosts.first?.bool("start_new_session") == true)
     }
 
     @Test("a dropped reply resumes the same operation with the same key")

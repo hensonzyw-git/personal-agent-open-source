@@ -9,6 +9,7 @@ duplicate decision are tested as the wire sees them.
 from __future__ import annotations
 
 import json
+import asyncio
 import threading
 import time
 import uuid
@@ -46,7 +47,14 @@ from personal_agent.storage.engine import (
     session_factory,
 )
 from envelope_factory import envelope_factory
-from personal_agent.storage.models import Conversation, Device, Operation
+from personal_agent.storage.models import (
+    ContextSession,
+    ContextCheckpoint,
+    Conversation,
+    ConversationEvent,
+    Device,
+    Operation,
+)
 from personal_agent_core.crypto import KeyRing, generate_key
 from personal_agent_core.errors import AppError, ErrorCode, ModelFailureReason
 
@@ -159,6 +167,7 @@ def _client(
     dispatcher_traces=None,
     sync_wait_seconds=30.0,
     ledger_url=None,
+    compact_session=None,
 ) -> TestClient:
     def build_dispatcher(auth, trace_id):
         if dispatcher_traces is not None:
@@ -179,6 +188,7 @@ def _client(
         now=lambda: NOW,
         sync_wait_seconds=sync_wait_seconds,
         ledger_url=ledger_url,
+        compact_session=compact_session,
     )
     return TestClient(build_app(deps))
 
@@ -364,6 +374,162 @@ def test_the_same_key_with_a_different_body_conflicts(engine, token_ring, keyrin
         headers=_auth(token_ring),
     )
     assert resp.status_code == 409
+
+
+def test_confirmed_new_topic_cancels_a_parked_operation_and_writes_a_divider(
+    engine, token_ring, keyring
+) -> None:
+    interpreter = FakeInterpreter(Clarification("个人还是家庭支出？"))
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=interpreter,
+        dispatcher=FakeDispatcher(),
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    assert parked.status_code == 202
+    assert parked.json()["state"] == "waiting_for_clarification"
+
+    interpreter.result = DirectAnswer("新的话题已开始")
+    reset = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "帮我规划周末",
+            "start_new_session": True,
+        },
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert reset.status_code == 200
+    assert reset.json()["state"] == "succeeded"
+
+    with session_factory(engine)() as session:
+        parked_operation = session.get(Operation, parked.json()["operation_id"])
+        assert parked_operation is not None
+        assert parked_operation.state == "cancelled_pre_submit"
+        sessions = (
+            session.query(ContextSession)
+            .all()
+        )
+        assert len(sessions) == 2
+        closed = next(row for row in sessions if row.status == "closed")
+        opened = next(row for row in sessions if row.status == "open")
+        divider = (
+            session.query(ConversationEvent)
+            .filter(ConversationEvent.event_type == "session_divider")
+            .one()
+        )
+        assert divider.session_id == opened.session_id
+        reset_event = (
+            session.query(ConversationEvent)
+            .filter(ConversationEvent.operation_id == reset.json()["operation_id"])
+            .filter(ConversationEvent.event_type == "user_message")
+            .one()
+        )
+        assert reset_event.session_id == opened.session_id
+        assert closed.session_id != opened.session_id
+
+
+def test_new_topic_refuses_to_cross_an_operation_that_may_be_submitted(
+    engine, token_ring, keyring
+) -> None:
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=FakeInterpreter(Clarification("个人还是家庭支出？")),
+        dispatcher=FakeDispatcher(),
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    with session_factory(engine)() as session:
+        operation = session.get(Operation, parked.json()["operation_id"])
+        assert operation is not None
+        operation.state = "source_in_progress"
+        operation.state_version += 1
+        session.commit()
+
+    refused = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "帮我规划周末",
+            "start_new_session": True,
+        },
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert refused.status_code == 400
+    assert refused.json()["error"]["code"] == "PENDING_OPERATION_NOT_CANCELLABLE"
+    with session_factory(engine)() as session:
+        assert session.query(Operation).count() == 1
+        assert session.query(ContextSession).count() == 1
+
+
+def test_a_terminal_turn_rebuilds_an_invalid_checkpoint_in_the_background(
+    engine, token_ring, keyring
+) -> None:
+    rebuilt: list[str] = []
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=FakeInterpreter(DirectAnswer("ok")),
+        dispatcher=FakeDispatcher(),
+        compact_session=lambda _session, session_id: rebuilt.append(session_id),
+    )
+    first = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "先说一件事"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    assert first.status_code == 200
+    with session_factory(engine)() as session:
+        anchor = (
+            session.query(ConversationEvent)
+            .filter(ConversationEvent.operation_id == first.json()["operation_id"])
+            .filter(ConversationEvent.event_type == "user_message")
+            .one()
+        )
+        checkpoint_id = "ckpt-invalid-test"
+        session.add(
+            ContextCheckpoint(
+                checkpoint_id=checkpoint_id,
+                session_id=anchor.session_id,
+                parent_checkpoint_id=None,
+                status="invalid",
+                covered_from_sequence=1,
+                covered_through_sequence=1,
+                encrypted_payload=keyring.encrypt(
+                    b"{}",
+                    table="context_checkpoints",
+                    column="encrypted_payload",
+                    row_id=checkpoint_id,
+                ),
+                source_hash="invalidated-source",
+                schema_version="context_checkpoint_v1",
+                compactor_version="test",
+                estimated_tokens=0,
+                created_at=NOW,
+            )
+        )
+        session.commit()
+
+    second = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "然后说另一件事"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert second.status_code == 200
+    asyncio.run(client.app.state.drain_background_tasks())
+    assert rebuilt == [anchor.session_id]
 
 
 def test_repeated_clarification_is_exact_budgeted_and_not_duplicated(

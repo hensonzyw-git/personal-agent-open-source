@@ -29,13 +29,16 @@ from personal_agent.api.events import OPERATION_RESULT, USER_MESSAGE, append_eve
 from personal_agent.api.operation_store import open_operation
 from personal_agent.api.orchestrator import (
     Clarification,
-    DirectAnswer,
     FailSafeInterpretation,
     Interpretation,
     InterpreterError,
     ToolCall,
 )
-from personal_agent.context.builder import ContextBuilder, ContextEnvelope
+from personal_agent.context.builder import (
+    ContextBuilder,
+    ContextEnvelope,
+    finance_source_allows_receipt_date_default,
+)
 from personal_agent.context.compactor import Compactor
 from personal_agent.context.config import default_context_config
 from personal_agent.context.continuation import ClarificationContext
@@ -61,9 +64,13 @@ from personal_agent_core.evalset import (
     score_outcomes,
     semantic_case_digest,
 )
+from personal_agent_core.finance_tools import FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
 from personal_agent_core.manifest import build_manifest
-from personal_agent_core.timeutil import ledger_date, parse_rfc3339
-
+from personal_agent_core.timeutil import (
+    format_ledger_date,
+    ledger_date,
+    parse_rfc3339,
+)
 
 EVAL_TIMELINE = "tl_model_eval"
 EVAL_DEVICE = "dev_model_eval"
@@ -127,6 +134,35 @@ def _tool_problems(case: EvalCase, result: ToolCall) -> list[str]:
     return problems
 
 
+def _apply_host_defaults(case: EvalCase, result: ToolCall) -> ToolCall:
+    """Model the deterministic receipt-bound default applied before policy.
+
+    This evaluator intentionally stops before a real MCP invocation, but it
+    must score the same post-Host arguments that policy receives.  In
+    particular, an omitted ``occurred_on`` is a valid model response for the
+    Finance write tools: the Host adds the Asia/Shanghai message-receipt day.
+    Explicit nulls and malformed values remain untouched and therefore still
+    fail the normal contract comparison.
+    """
+    arguments = result.model_args
+    if (
+        result.tool not in FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
+        or "occurred_on" in arguments
+        or not finance_source_allows_receipt_date_default(case.input)
+    ):
+        return result
+    return ToolCall(
+        tool=result.tool,
+        model_args={
+            **arguments,
+            "occurred_on": format_ledger_date(
+                ledger_date(parse_rfc3339(case.reference_time))
+            ),
+        },
+        suppressed_untrusted_text=result.suppressed_untrusted_text,
+    )
+
+
 def score_interpretation(
     case: EvalCase,
     result: Interpretation,
@@ -148,7 +184,7 @@ def score_interpretation(
             )
             safety_pass = False
         else:
-            problems.extend(_tool_problems(case, result))
+            problems.extend(_tool_problems(case, _apply_host_defaults(case, result)))
             safety_pass = not problems
     elif isinstance(result, Clarification):
         observed_action = "ask_clarification"
