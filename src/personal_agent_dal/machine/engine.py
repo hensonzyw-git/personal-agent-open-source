@@ -108,6 +108,15 @@ class ReceiptCodes:
     TERMINAL_STATE: Final[str] = "TERMINAL_STATE"
     VERSION_CONFLICT: Final[str] = "VERSION_CONFLICT"
     IDEMPOTENCY_CONFLICT: Final[str] = "IDEMPOTENCY_CONFLICT"
+    #: An approval is invalid for consumption: already consumed, revoked, or
+    #: expired. Distinct from POLICY_DENIED (an actor/evidence refusal) so a
+    #: replay or audit can tell "the approval was bad" from "the caller was
+    #: not allowed to ask".
+    APPROVAL_INVALID: Final[str] = "APPROVAL_INVALID"
+    #: The decision the command names is stale: its version does not match
+    #: the server's current version, or it has expired. The approval may be
+    #: valid, but acting on a stale decision would bind the wrong state.
+    DECISION_STALE: Final[str] = "DECISION_STALE"
 
 
 @dataclass(frozen=True)
@@ -462,6 +471,32 @@ def _set_decision_status(ctx: ApplyContext, status: str) -> None:
 
 
 def _w_decision_resolve(ctx: ApplyContext) -> None:
+    # §3.3: a decision whose version does not match the server's current
+    # version is stale — acting on it would bind the wrong state. The command
+    # may carry `submitted_decision_version` in its parameters; if it does
+    # not match the open decision's version, refuse before writing.
+    submitted_version = ctx.command.command_parameters.get("submitted_decision_version")
+    if submitted_version is not None:
+        decision = _open_decision(ctx)
+        if decision.decision_version != submitted_version:
+            raise TransitionRefused(
+                ReceiptCodes.DECISION_STALE,
+                f"decision version {decision.decision_version} != "
+                f"submitted {submitted_version}",
+            )
+    # A decision whose expiry has passed is also stale. The Decision row has
+    # no expires_at column (expiry is a server-held fact the trusted resolver
+    # carries), so the command may carry `decision_expires_at`; if the
+    # operation's `now` is past it, refuse before writing.
+    decision_expires = ctx.command.command_parameters.get("decision_expires_at")
+    if decision_expires is not None:
+        from personal_agent_core.timeutil import parse_rfc3339
+        expires_at = parse_rfc3339(decision_expires)
+        if ctx.now > expires_at:
+            raise TransitionRefused(
+                ReceiptCodes.DECISION_STALE,
+                "decision has expired",
+            )
     _set_decision_status(ctx, "resolved")
 
 
@@ -507,6 +542,16 @@ def _w_decision_action_receipt(ctx: ApplyContext) -> None:
 
 
 def _w_approval_record(ctx: ApplyContext) -> None:
+    # A command that names an existing `approval_id` acts on that approval;
+    # recording a fresh unconsumed one would shadow it, and the subsequent
+    # `approval_consume` CAS would then consume the new row and report
+    # success against an approval that was already consumed, revoked or
+    # expired. The named row is validated by `approval_consume`; nothing is
+    # recorded here.
+    named = ctx.command.command_parameters.get("approval_id")
+    if named is not None:
+        ctx.scratch["approval_id"] = named
+        return
     approval = Approval(
         approval_id=new_id(),
         action=ctx.spec["requires_decision_action"] or ctx.command.command_type,
@@ -534,9 +579,19 @@ def _w_approval_record(ctx: ApplyContext) -> None:
 
 
 def _w_approval_consume(ctx: ApplyContext) -> None:
-    """Consume-once, by CAS on `consumed_by_command_id IS NULL` (§3.3)."""
+    """Consume-once, by CAS on `consumed_by_command_id IS NULL` (§3.3).
+
+    A revoked or expired approval is ``APPROVAL_INVALID``, not
+    ``POLICY_DENIED``: the caller is allowed to ask, but the approval itself
+    is bad. An already-consumed approval is the same — a concurrent consumer
+    won the race.
+    """
     table = Approval.__table__
     approval_id = ctx.scratch.get("approval_id")
+    # The command may name a specific approval to consume; otherwise the
+    # oldest unconsumed one is picked.
+    if approval_id is None:
+        approval_id = ctx.command.command_parameters.get("approval_id")
     if approval_id is None:
         approval_id = ctx.session.execute(
             select(table.c.approval_id)
@@ -547,8 +602,33 @@ def _w_approval_consume(ctx: ApplyContext) -> None:
         ).scalar_one_or_none()
     if approval_id is None:
         raise TransitionRefused(
-            ReceiptCodes.POLICY_DENIED, "no unconsumed approval to consume"
+            ReceiptCodes.APPROVAL_INVALID, "no unconsumed approval to consume"
         )
+
+    # Check the approval's state before the CAS: an expired or already-
+    # consumed approval is invalid even if the CAS would otherwise find it.
+    # Revocation is modelled as consumption (a revoked approval has its
+    # `consumed_by_command_id` set to the revocation marker), so the
+    # consumed check covers the revoke_race scenario too.
+    row = ctx.session.execute(
+        select(
+            table.c.consumed_by_command_id,
+            table.c.expires_at,
+        )
+        .where(table.c.approval_id == approval_id)
+        .where(table.c.feature_id == _owner_feature_id(ctx))
+    ).first()
+    if row is not None:
+        consumed_by, expires_at = row
+        if expires_at is not None and ctx.now > expires_at:
+            raise TransitionRefused(
+                ReceiptCodes.APPROVAL_INVALID, "approval has expired"
+            )
+        if consumed_by is not None:
+            raise TransitionRefused(
+                ReceiptCodes.APPROVAL_INVALID, "approval was already consumed"
+            )
+
     result = ctx.session.execute(
         update(table)
         .where(table.c.approval_id == approval_id)
@@ -559,7 +639,7 @@ def _w_approval_consume(ctx: ApplyContext) -> None:
     )
     if result.rowcount != 1:
         raise TransitionRefused(
-            ReceiptCodes.POLICY_DENIED, "approval was already consumed"
+            ReceiptCodes.APPROVAL_INVALID, "approval was already consumed"
         )
     ctx.scratch["approval_id"] = approval_id
 
