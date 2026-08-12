@@ -61,4 +61,32 @@ extension Capabilities {
         }
         return String(head)
     }
+
+    /// The client's display name for one alias domain.
+    ///
+    /// Same honesty rule as the capability rows: an unknown domain keeps its raw
+    /// prefix, so a future domain shows up as an odd-looking name rather than a
+    /// blank one. `finance` is the only domain the current contract names.
+    public static func displayName(forDomain domain: String) -> String {
+        switch domain {
+        case "finance": return "财务"
+        default: return domain
+        }
+    }
+
+    /// One granted tool's human-readable name, e.g. `finance.log_expense` →
+    /// 「财务 · 记一笔支出」.
+    ///
+    /// §3a's 轨迹文字 needs the tool the server named in a receipt; a receipt
+    /// carries only the alias, so the summary (and the domain name) come from the
+    /// granted set. When the alias is not in the set — a tool granted no longer,
+    /// or a history event that carries no tool — the alias is the honest fallback,
+    /// the same fallback the capability rows use.
+    public static func displayName(forAlias alias: String, tools: [Tool]) -> String {
+        let summary = tools.first { $0.alias == alias }?.summary
+        if let summary, !summary.isEmpty {
+            return "\(displayName(forDomain: domain(ofAlias: alias))) · \(summary)"
+        }
+        return alias
+    }
 }

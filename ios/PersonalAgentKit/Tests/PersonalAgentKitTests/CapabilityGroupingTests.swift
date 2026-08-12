@@ -118,4 +118,61 @@ struct CapabilityGroupingTests {
 
         #expect(grouped.map(\.id) == ["meta", "finance"])
     }
+
+    // --- §3a 轨迹文字: the tool a receipt names, shown as 财务 · 记一笔支出 ----
+
+    @Test("a granted tool is shown as 域 · 摘要 for the §3a 轨迹文字")
+    func displayNameJoinsDomainAndSummary() throws {
+        let tools = try self.tools("""
+        [
+          {"alias": "finance.log_expense", "summary": "记一笔支出"},
+          {"alias": "finance.log_income",  "summary": "记一笔收入"}
+        ]
+        """)
+
+        #expect(
+            Capabilities.displayName(forAlias: "finance.log_expense", tools: tools)
+                == "财务 · 记一笔支出"
+        )
+        #expect(
+            Capabilities.displayName(forAlias: "finance.log_income", tools: tools)
+                == "财务 · 记一笔收入"
+        )
+    }
+
+    @Test("an unknown domain keeps its raw prefix in the 轨迹文字")
+    func displayNameKeepsUnknownDomain() throws {
+        let tools = try self.tools("""
+        [{"alias": "seismology.predict", "summary": "预测地震"}]
+        """)
+
+        #expect(
+            Capabilities.displayName(forAlias: "seismology.predict", tools: tools)
+                == "seismology · 预测地震"
+        )
+    }
+
+    @Test("an alias absent from the granted set falls back to the alias itself")
+    func displayNameFallsBackToAlias() throws {
+        let tools = try self.tools("""
+        [{"alias": "finance.log_expense", "summary": "记一笔支出"}]
+        """)
+
+        #expect(
+            Capabilities.displayName(forAlias: "finance.log_income", tools: tools)
+                == "finance.log_income"
+        )
+    }
+
+    @Test("a tool with no summary falls back to the alias, the same fallback the capability rows use")
+    func displayNameWithoutSummary() throws {
+        let tools = try self.tools("""
+        [{"alias": "finance.log_expense"}]
+        """)
+
+        #expect(
+            Capabilities.displayName(forAlias: "finance.log_expense", tools: tools)
+                == "finance.log_expense"
+        )
+    }
 }

@@ -212,6 +212,72 @@ extension ReviewDetail: Decodable {
     }
 }
 
+// --- 待办 counting (§3h 第 4 条) ----------------------------------------------
+
+/// How many review cards are still awaiting Henson.
+///
+/// `reviewed` is the system's conclusion and counts never. `pending` obviously
+/// counts, and so does `unrecognised`: a status this build cannot interpret is
+/// precisely the case a person should look at, and quietly leaving it out of the
+/// count would hide it.
+///
+/// **`deferred` is a 贪睡, not an answer (§3h 第 4 条).** On the day the card was
+/// written it does not count — that is what 稍后处理 means, and counting it would
+/// make the indicator unable to reach zero. But a deferred card is not finished
+/// work, and it must not disappear silently; at the next 0:00 — that is, once the
+/// card's `review_date` is behind today — it is counted again, exactly as the
+/// day's review would have re-included it.
+///
+/// The client cannot know *when* a card was deferred (the server sets no
+/// timestamp on defer), so `review_date` is the honest anchor: the card belongs
+/// to that day, and 贪睡 lasts until that day ends.
+public enum ReviewPendingCount {
+    /// Count with the real current date as the 贪睡 anchor.
+    public static func count(_ summaries: [ReviewSummary]) -> Int {
+        count(summaries, today: today())
+    }
+
+    /// Count against an explicit date, so tests can pin the anchor.
+    public static func count(
+        _ summaries: [ReviewSummary],
+        today: String
+    ) -> Int {
+        summaries.filter { summary in
+            switch summary.status {
+            case .pending, .unrecognised:
+                return true
+            case .reviewed:
+                return false
+            case .deferred:
+                // §3h 第 4 条: 贪睡到 review_date 当天结束；次日重新计入。
+                return summary.reviewDate < today
+            }
+        }.count
+    }
+
+    /// Today's date in the same `YYYY-MM-DD` form the server's `review_date` uses,
+    /// so the `<` comparison above is a lexicographic order over ISO dates.
+    private static func today() -> String {
+        // The server's `review_date` is an Asia/Shanghai calendar date — the
+        // daily-review job runs at 00:05 Asia/Shanghai (`DEV-028`). The 贪睡
+        // boundary must be evaluated against that same timezone, not the device's
+        // local one, or a device in another timezone compares against the wrong
+        // midnight and the deferred card re-enters (or fails to re-enter) a day
+        // early or late.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let components = calendar.dateComponents(
+            [.year, .month, .day], from: Date()
+        )
+        return String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
+    }
+}
+
 // --- presentation helpers ----------------------------------------------------
 
 extension JSONScalar {

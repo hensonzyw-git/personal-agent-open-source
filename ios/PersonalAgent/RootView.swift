@@ -88,7 +88,7 @@ struct EnrollmentView: View {
 
     var body: some View {
         Form {
-            Section("服务地址") {
+            Section {
                 TextField("https://agent.example.invalid", text: $model.baseURLText)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -96,9 +96,11 @@ struct EnrollmentView: View {
                 Text("默认是线上服务；本地联调（模拟器连本机服务）时改为 http://127.0.0.1:8810。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            } header: {
+                groupHeader("服务地址")
             }
             .listRowBackground(Color.cardSurface)
-            Section("一次性注册码") {
+            Section {
                 TextField("在服务器执行 personal-agent-device issue-code", text: $model.enrollmentCode)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -111,6 +113,8 @@ struct EnrollmentView: View {
                 Text("注册码 10 分钟内有效、只能用一次。设备私钥在 Secure Enclave 内生成，不会离开本机。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            } header: {
+                groupHeader("一次性注册码")
             }
             .listRowBackground(Color.cardSurface)
             if let error = model.lastError {
@@ -158,7 +162,7 @@ struct ServiceStatusView: View {
                 .listRowBackground(Color.cardSurface)
             }
 
-            Section("设备") {
+            Section {
                 row("device_id", model.deviceID ?? "—")
                 row("设备密钥", model.keyKind ?? "—")
                 if let device = model.selfDevice {
@@ -172,12 +176,16 @@ struct ServiceStatusView: View {
                     row("推送 token", device.hasPushToken ? "已登记" : "未登记（推送尚未启用）")
                     row("显示名", device.displayName)
                 }
+            } header: {
+                groupHeader("设备")
             }
             .listRowBackground(Color.cardSurface)
 
-            Section("服务") {
+            Section {
                 row("地址", model.baseURLText)
                 row("工具集合版本", model.capabilities?.allowedToolsVersion ?? "—")
+            } header: {
+                groupHeader("服务")
             }
             .listRowBackground(Color.cardSurface)
 
@@ -194,13 +202,15 @@ struct ServiceStatusView: View {
             // not an acceptable cost of a visual refactor. Delete this section when
             // the review card reaches the Timeline.
             if model.review != nil {
-                Section("复核") {
+                Section {
                     NavigationLink("每日复核") { reviewDestination }
+                } header: {
+                    groupHeader("复核")
                 }
                 .listRowBackground(Color.cardSurface)
             }
 
-            Section("本设备可用的工具") {
+            Section {
                 if model.phase == .revoked {
                     // Not "no tools": unreadable. The distinction is the same one
                     // the服务端 makes -- an unreadable answer is never an empty one.
@@ -219,12 +229,16 @@ struct ServiceStatusView: View {
                     Text("服务端没有向本设备开放任何工具。")
                         .foregroundStyle(.secondary)
                 }
+            } header: {
+                groupHeader("本设备可用的工具")
             }
             .listRowBackground(Color.cardSurface)
 
             if let error = model.lastError {
-                Section("最近一次错误") {
+                Section {
                     Text(error).foregroundStyle(.danger)
+                } header: {
+                    groupHeader("最近一次错误")
                 }
                 .listRowBackground(Color.cardSurface)
             }
@@ -308,4 +322,5 @@ struct ServiceStatusView: View {
                 }
         }
     }
+
 }

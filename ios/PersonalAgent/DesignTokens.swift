@@ -17,7 +17,7 @@ extension Color {
     static let accentBrand = Color("AccentColor")
     /// `#D97757` / `#C26A4C`. Darkened in dark mode so white text stays readable.
     static let userBubble = Color("UserBubble")
-    /// `#A8502C` / `#E6A184`. Accent applied to text, e.g. 写后回读一致.
+    /// `#A8502C` / `#E6A184`. Accent applied to text, e.g. 账本已存在此记录.
     static let accentText = Color("AccentText")
     /// `#FDFCF9` / `#1A1817`. The screen behind everything.
     static let screenBackground = Color("ScreenBackground")
@@ -41,6 +41,17 @@ extension Color {
     static let cardBorder = Color("CardBorder")
     /// The 14%/11% rule between a card's internal rows.
     static let hairlineDivider = Color("HairlineDivider")
+    /// §3e: `#F1EEE7` / `#1A1817`. The *grouped* list background behind sections,
+    /// distinct from the chat screen's `screenBackground` (`#FDFCF9`). iOS's own
+    /// grouped background is a cool grey; this is the warm equivalent, so a List
+    /// page reads as the same palette as the Timeline rather than a second design.
+    static let listGroupBackground = Color("ListGroupBackground")
+    /// §3e: the tint for list accents and chevrons — `#A8502C` / `#E08A6B`,
+    /// replacing the system blue that is the one cold colour in this warm palette.
+    static let listAccent = Color("ListAccent")
+    /// §3e: `#1C1917 @ 50%` / `#F5F1EA @ 45%`. A group header in this design is
+    /// quieter than the system grey and warmer than it.
+    static let groupHeaderText = Color("GroupHeaderText")
 }
 
 /// The same tokens reached through a leading dot at a `ShapeStyle` position, which
@@ -60,6 +71,9 @@ extension ShapeStyle where Self == Color {
     static var cardFooter: Color { Color.cardFooter }
     static var cardBorder: Color { Color.cardBorder }
     static var hairlineDivider: Color { Color.hairlineDivider }
+    static var listGroupBackground: Color { Color.listGroupBackground }
+    static var listAccent: Color { Color.listAccent }
+    static var groupHeaderText: Color { Color.groupHeaderText }
 }
 
 /// Spacing and radius scale. The draft uses a small set of repeated values; naming
@@ -94,8 +108,8 @@ extension View {
         monospacedDigit()
     }
 
-    /// Puts a `List` or `Form` on the design's own background instead of the system
-    /// grouped one.
+    /// Puts a `List` or `Form` on the design's own palette instead of the system
+    /// grouped one, and gives its accents the design's warm tint.
     ///
     /// This is not a cosmetic preference. iOS's dark grouped background is
     /// `#1C1C1E` — R28 G28 B30, a **cool** grey — while this design is warm
@@ -103,11 +117,28 @@ extension View {
     /// screens render in the opposite colour temperature from the chat screen, which
     /// is what makes a palette read as broken rather than merely inconsistent.
     ///
-    /// It deliberately changes only the surface. Row structure, sections and system
-    /// list behaviour are untouched, so the structural work `1j`/`1k` still call for
-    /// stays a separate change.
+    /// §3e's 色彩合同 makes three of the system defaults explicit overrides:
+    /// the grouped background (`listGroupBackground`, warm rather than cool),
+    /// the accent/chevron tint (`listAccent`, replacing the system blue — the one
+    /// cold colour in this palette), and the group header text. Row surfaces are
+    /// `.cardSurface` per row, as the 行底色 column of §3e prescribes.
+    ///
+    /// It deliberately changes only surface, tint and header colour. Row structure,
+    /// sections and system list behaviour are untouched, so the structural work
+    /// `1j`/`1k` still call for stays a separate change.
     func designSystemListSurface() -> some View {
         scrollContentBackground(.hidden)
-            .background(Color.screenBackground)
+            .background(Color.listGroupBackground)
+            .tint(Color.listAccent)
+    }
+
+    /// §3e: a group header in this design is quieter and warmer than the system
+    /// grey — 50% 墨 / 45% 米. One helper so every `Section` across the review,
+    /// status and enrollment screens gets the same colour instead of each file
+    /// re-deriving it.
+    func groupHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.footnote)
+            .foregroundStyle(.groupHeaderText)
     }
 }

@@ -22,43 +22,7 @@ struct ReviewListView: View {
                 )
             }
             ForEach(model.summaries) { summary in
-                Button {
-                    Task { await model.open(reviewID: summary.reviewID) }
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(summary.reviewDate).font(.headline)
-                            if let opening = model.opening,
-                               opening.reviewID == summary.reviewID {
-                                // Says what is actually happening -- the values are
-                                // being re-read from Feishu -- next to a counter that
-                                // only advances while the app is alive.
-                                HStack(spacing: 5) {
-                                    Text("正在回读飞书当前值")
-                                    Text(
-                                        timerInterval: opening.since...Date.distantFuture,
-                                        countsDown: false
-                                    )
-                                    .tabularNumbers()
-                                }
-                                .font(.footnote)
-                                .foregroundStyle(.pending)
-                            } else {
-                                Text("\(summary.itemCount) 笔写入")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        Spacer()
-                        statusBadge(summary.status)
-                    }
-                }
-                .foregroundStyle(.primary)
-                .listRowBackground(Color.cardSurface)
-                // A second tap cannot start a second read -- `open` refuses while
-                // busy -- but leaving the rows live made that refusal look like the
-                // tap being ignored.
-                .disabled(model.busy)
+                reviewRow(summary)
             }
             if let error = model.lastError {
                 Text(error)
@@ -78,12 +42,103 @@ struct ReviewListView: View {
         }
     }
 
+    /// §3f: one list row, and the state that row itself is in.
+    ///
+    /// 活性归属于被点的那一行: a row being opened shows its own liveness line
+    /// (with 取消) while every other row stays tappable and scrollable. A failed
+    /// open keeps the row visible and says plainly that what it shows is the
+    /// written-at value, not the current one — 3f's rule that old values must not
+    /// pass for checked ones. Only the row actually opening is disabled, so a
+    /// second tap cannot start a second read of the *same* card.
+    @ViewBuilder
+    private func reviewRow(_ summary: ReviewSummary) -> some View {
+        let isOpening = model.opening?.reviewID == summary.reviewID
+        if let failed = model.openFailed, failed.reviewID == summary.reviewID {
+            // §3f 读取失败: the row stays, marked as showing the stale value.
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    rowTitle(summary)
+                    Spacer()
+                    statusBadge(summary.status)
+                }
+                HStack(spacing: 6) {
+                    Text("读不到当前值 · 显示的是写入时的值")
+                        .font(.footnote)
+                        .foregroundStyle(.pending)
+                    Spacer()
+                    Button("重试") { model.retryOpen() }
+                        .font(.footnote)
+                        .foregroundStyle(.accentText)
+                }
+                if !failed.message.isEmpty {
+                    Text(failed.message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .listRowBackground(Color.cardSurface)
+        } else {
+            Button {
+                model.open(reviewID: summary.reviewID)
+            } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        rowTitle(summary)
+                        Spacer()
+                        statusBadge(summary.status)
+                    }
+                    if isOpening, let opening = model.opening {
+                        // §3f: the liveness line *under* the row, not replacing the
+                        // row's own content. Says what is actually happening — the
+                        // values are being re-read from Feishu — next to a counter
+                        // that only advances while the app is alive, and 取消 aborts
+                        // the real request rather than hiding the line.
+                        HStack(spacing: 6) {
+                            Text("正在回读飞书当前值")
+                            Text(
+                                timerInterval: opening.since...Date.distantFuture,
+                                countsDown: false
+                            )
+                            .tabularNumbers()
+                            Spacer()
+                            Button("取消") { model.cancelOpen() }
+                                .foregroundStyle(.accentText)
+                        }
+                        .font(.footnote)
+                        .foregroundStyle(.pending)
+                    } else {
+                        Text("\(summary.itemCount) 笔写入")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+            .listRowBackground(
+                // §3f: the row being read takes the 面 background so it reads as
+                // active, and its chevron is gone; other rows are untouched.
+                isOpening ? Color.surface : Color.cardSurface
+            )
+            .disabled(isOpening)
+        }
+    }
+
+    private func rowTitle(_ summary: ReviewSummary) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(summary.reviewDate).font(.headline)
+        }
+    }
+
     private func statusBadge(_ status: ReviewStatus) -> some View {
         let (text, color): (String, Color) = {
             switch status {
             case .pending: return ("待复核", .pending)
             case .reviewed: return ("已复核", .accentText)
-            case .deferred: return ("稍后处理", .secondary)
+            case .deferred:
+                // §3h 第 4 条: 「稍后处理」是贪睡, shown as 已推迟 to tell it apart
+                // from 已核 — the card is not done, it is paused until the next 0:00.
+                return ("已推迟", .pending)
             case .unrecognised(let raw): return (raw, .secondary)
             }
         }()
@@ -137,10 +192,12 @@ private struct ReviewDetailView: View {
             }
             .listRowBackground(Color.cardSurface)
 
-            Section("当日写入（打开时的飞书当前值）") {
+            Section {
                 ForEach(detail.items) { item in
                     itemCard(item)
                 }
+            } header: {
+                groupHeader("当日写入（打开时的飞书当前值）")
             }
             .listRowBackground(Color.cardSurface)
 

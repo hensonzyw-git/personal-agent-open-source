@@ -73,21 +73,78 @@ final class ReviewModel {
     }
     private(set) var opening: Opening?
 
-    func open(reviewID: String) async {
-        guard !busy else { return }
-        busy = true
+    /// Which card's open failed, and why. Kept per-row rather than as a global
+    /// error (3f): the failure belongs to the row that was tapped, not to the
+    /// whole list, and the row stays visible — showing 写入时的值 is still better
+    /// than pretending there is nothing to look at.
+    struct OpenFailed: Equatable {
+        let reviewID: String
+        let message: String
+    }
+    private(set) var openFailed: OpenFailed?
+
+    /// The in-flight open, so 取消 can cancel the actual network read rather than
+    /// only hiding the liveness line. `URLSession.data(for:)` responds to Task
+    /// cancellation, so a cancel propagates into the request.
+    private var openTask: Task<Void, Never>?
+
+    /// A monotonically increasing tag so a cancelled open's `defer` cannot clear
+    /// the state of the open that replaced it. Without this, tapping a second row
+    /// while the first is in flight leaves a race: the first's `defer` runs after
+    /// the second has already set `opening`/`openTask`, and wipes them both.
+    private var openGeneration = 0
+
+    /// §3f: open one card. A second tap on another row cancels the first open and
+    /// starts the new one — 活性归属于被点的那一行, and 其余行完全正常可点击. A tap on
+    /// the row already opening is a no-op (its own liveness line already shows).
+    func open(reviewID: String) {
+        guard opening?.reviewID != reviewID else { return }
+        openTask?.cancel()
+        openGeneration += 1
+        let generation = openGeneration
+        openTask = Task { await performOpen(reviewID: reviewID, generation: generation) }
+    }
+
+    /// §3f: abandon the in-flight read. The underlying `URLSession` request is
+    /// cancelled by `Task.cancel()`, so this is a real abort, not a UI smoke-screen.
+    func cancelOpen() {
+        openTask?.cancel()
+        openTask = nil
+        opening = nil
+        openFailed = nil
+    }
+
+    /// §3f: 重试 the failed row — a fresh open of the same card.
+    func retryOpen() {
+        guard let failed = openFailed else { return }
+        openFailed = nil
+        open(reviewID: failed.reviewID)
+    }
+
+    private func performOpen(reviewID: String, generation: Int) async {
         opening = Opening(reviewID: reviewID, since: Date())
+        openFailed = nil
         defer {
-            busy = false
-            opening = nil
+            // Only the latest generation owns the cleanup. An older open's defer
+            // must not wipe the state of the one that superseded it.
+            if generation == openGeneration {
+                openTask = nil
+                opening = nil
+            }
         }
         do {
             let detail = try await center.open(reviewID: reviewID)
+            // A cancel that landed after the read but before we set the sheet must
+            // not still present a card the user had already walked away from.
+            guard !Task.isCancelled else { return }
             openedDetail = OpenedReview(detail: detail)
             summaries = await center.summaries
             lastError = nil
         } catch {
-            lastError = describe(error)
+            // A user-initiated cancel is not an error to show. The row simply
+            // returns to normal.
+            if Task.isCancelled { return }
+            openFailed = OpenFailed(reviewID: reviewID, message: describe(error))
         }
     }
 

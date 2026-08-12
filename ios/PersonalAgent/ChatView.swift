@@ -19,6 +19,13 @@ struct ChatView: View {
     /// one tap: the server records the first answer and refuses a contradicting
     /// one, so a mis-tap cannot be corrected in the app.
     @State private var confirmingResolution: ResolutionIntent?
+    /// §3c: the 详情单 sheet showing every identifier this card carries, opened
+    /// from the long-press menu's second item (or the explicit 查看标识符 affordance
+    /// on non-success cards). `nil` hides the sheet.
+    @State private var identifiers: IdentifierSet?
+    /// §3c: the head of the identifier just copied, shown as a toast so a copy
+    /// confirms itself without the identifiers ever going back on the card face.
+    @State private var copiedPrefix: String?
 
     struct ResolutionIntent: Equatable {
         let operationID: String
@@ -76,6 +83,38 @@ struct ChatView: View {
             Button("再想想", role: .cancel) { confirmingResolution = nil }
         } message: {
             Text("这个结论记录后不能在应用里改判：服务端会拒绝相反的答复。它只写在这次操作旁边，不会改动账本。")
+        }
+        // §3c: the 详情单 for every identifier a card carries. Off the card face
+        // (they are unreadable noise there) but one menu item away, and for
+        // non-success cards explicitly reachable. Full strings, no truncation,
+        // each copyable — the format that exists for 报障 and 排查.
+        .sheet(item: $identifiers) { set in
+            NavigationStack {
+                IdentifierDetailSheet(identifiers: set) { prefix in
+                    withAnimation { copiedPrefix = prefix }
+                }
+            }
+        }
+        // §3c: a copy confirms itself by echoing the head of what was copied,
+        // never the whole string. It appears above the composer and fades after
+        // a beat; the identifiers themselves stay off the card face.
+        .overlay(alignment: .bottom) {
+            if let prefix = copiedPrefix {
+                Text("已复制 \(prefix)…")
+                    .font(.footnote)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.surface)
+                    .clipShape(Capsule())
+                    .padding(.bottom, 56)
+                    .transition(.opacity)
+                    .onAppear {
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .seconds(1.6))
+                            withAnimation { copiedPrefix = nil }
+                        }
+                    }
+            }
         }
     }
 
@@ -275,13 +314,19 @@ struct ChatView: View {
         operationID: String?,
         cancellation: CancellationNote
     ) -> some View {
-        // §1d draws the recorded receipt as a composed card -- header, divided
-        // field rows, a tinted evidence band and a footer action row. §1i's other
-        // states are plain label-and-body cards, so only this one gets the full
-        // structure; giving them all the same chrome would flatten a distinction
-        // the design makes deliberately.
+        // §3a: 回执三档, and the tier is decided by how many non-empty fields the
+        // receipt actually carries, not by a switch the server toggles. Today the
+        // projection carries zero business fields, so every recorded receipt lands
+        // on tier one (a status row) -- the 2026-08-11 acceptance call "格式对了,
+        // 就是很丑" is fixed here, by removing the chrome a field-less receipt
+        // cannot justify. When G1 lands and the projection starts carrying fields,
+        // this same code promotes the receipt to tier two (a row) and then tier
+        // three (the composed card) without a client-side switch.
+        //
+        // §1i's non-recorded states are plain label-and-body cards and do not take
+        // part in the tiers at all.
         if case .recorded(let recordID, let tool) = outcome {
-            recordedReceiptCard(recordID: recordID, tool: tool, operationID: operationID)
+            recordedReceipt(recordID: recordID, tool: tool, operationID: operationID)
         } else {
             plainReceiptCard(
                 outcome: outcome,
@@ -292,26 +337,121 @@ struct ChatView: View {
         }
     }
 
-    // §1d: the composed 记账回执.
-    private func recordedReceiptCard(
+    // --- §3a/§3b: the receipt's three tiers --------------------------------
+
+    /// A field a receipt carries. Kept as a labelled pair so tier three can draw
+    /// a divided field area and tier two can draw the same values side by side;
+    /// the tier is chosen from how many of these the receipt has.
+    private struct ReceiptField: Identifiable, Equatable {
+        let label: String
+        let value: String
+        var id: String { label }
+    }
+
+    /// The fields the server actually returned. `G1` is not done, so this is
+    /// empty today; the tier rules live against this array so that when the
+    /// projection starts carrying 名称/金额/分类/日期/归属 the receipt promotes
+    /// itself on the same code path.
+    private func receiptFields(for tool: String?) -> [ReceiptField] {
+        // G1: the projection carries no business fields yet.
+        []
+    }
+
+    @ViewBuilder
+    private func recordedReceipt(
         recordID: String, tool: String?, operationID: String?
+    ) -> some View {
+        let fields = receiptFields(for: tool)
+        switch fields.count {
+        case 0, 1, 2:
+            // §3a/§3b 档一/档二: a status row. No container, no border, no action
+            // row; 打开飞书账本 becomes an end-of-row link. Tier two (1-2 fields)
+            // is the same row with the fields side by side under the trace line;
+            // tier one (0 fields) is the row alone. Both are deliberately the
+            // lightest form -- a card would imply a structured record to check,
+            // and today there is none to check.
+            recordedStatusRow(
+                recordID: recordID, tool: tool, operationID: operationID, fields: fields
+            )
+        default:
+            // §3a/§3b 档三: the composed card, kept for when ≥3 fields exist.
+            // Its 副标带 is already gone (§2.2): identifiers live behind the
+            // long-press menu, so the band has nothing to carry.
+            recordedCard(recordID: recordID, tool: tool, operationID: operationID, fields: fields)
+        }
+    }
+
+    /// §3a/§3b 档一档二: 状态行. The lightest possible receipt.
+    ///
+    /// No container: a card around a single line of text spends its whole border
+    /// budget announcing a structured record that does not exist yet. What the
+    /// row carries is exactly what the server proved -- the terminal state, the
+    /// tool, and the way to the evidence.
+    private func recordedStatusRow(
+        recordID: String,
+        tool: String?,
+        operationID: String?,
+        fields: [ReceiptField]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // §3d: no header row on tiers one/two, so the terminal-state label is
+            // a leading chip rather than the header's 12pt capsule. Same colour
+            // semantics, different chrome.
+            terminalChip(for: .recorded(recordID: recordID, tool: tool))
+
+            // §3a's 轨迹文字: 财务 · 记一笔支出, drawn from the granted tool set
+            // rather than the raw alias, so the row reads as a tool did something.
+            if let tool, !tool.isEmpty {
+                Text(Capabilities.displayName(forAlias: tool, tools: model.tools))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Tier two only: the 1-2 fields side by side, without their names
+            // (§3b: 字段并排不成表). Tier one has none.
+            if !fields.isEmpty {
+                HStack(spacing: 12) {
+                    ForEach(fields) { field in
+                        Text(field.value)
+                            .font(.footnote.monospaced())
+                            .tabularNumbers()
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            }
+
+            // §3b 约束三: 档一档二没有动作行, and 打开飞书账本 降级为行尾链接. 再记一笔
+            // does not appear -- a receipt with nothing to verify must not invite
+            // another write.
+            if let ledgerURL = model.ledgerURL {
+                Link("打开飞书账本", destination: ledgerURL)
+                    .font(.footnote)
+                    .foregroundStyle(.accentText)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(evidenceMenu(recordID: recordID, operationID: operationID, explicit: false))
+    }
+
+    // §3a/§3b 档三: the composed card, reached only once the receipt carries
+    // ≥3 fields. Header, divided field rows, footer action row; no 副标带.
+    private func recordedCard(
+        recordID: String,
+        tool: String?,
+        operationID: String?,
+        fields: [ReceiptField]
     ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 Text("记账回执").font(.callout.weight(.medium))
                 Spacer(minLength: 8)
-                Text("写后回读一致")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.accentText)
+                terminalCapsule(for: .recorded(recordID: recordID, tool: tool))
             }
             .padding(.horizontal, Metric.cardInset)
             .padding(.top, Metric.cardHeaderTop)
             .padding(.bottom, Metric.cardHeaderBottom)
 
-            // §1d's 名称 / 金额 / 分类 / 日期 / 归属 need G1 -- the projection carries
-            // no business fields at all -- so the only row that exists is the tool.
-            // The layout is the final one; the field count waits on the server.
-            //
             // The identifiers are deliberately not rows. `operation_id` is an
             // internal request handle, and while `record_id` **is** the external
             // evidence that separates 已写入 from a model's claim, a 20-character
@@ -319,7 +459,10 @@ struct ChatView: View {
             // card unreadable. Both stay reachable through long-press, so the
             // evidence is one gesture away rather than gone.
             VStack(spacing: 0) {
-                if let tool { fieldRow("工具", tool) }
+                if let tool { fieldRow("工具", Capabilities.displayName(forAlias: tool, tools: model.tools)) }
+                ForEach(fields) { field in
+                    fieldRow(field.label, field.value)
+                }
             }
             .padding(.horizontal, Metric.cardInset)
 
@@ -333,7 +476,26 @@ struct ChatView: View {
             RoundedRectangle(cornerRadius: Metric.cardRadius)
                 .strokeBorder(Color.cardBorder, lineWidth: Metric.hairline)
         )
-        .modifier(EvidenceMenu(recordID: recordID, operationID: operationID))
+        .modifier(evidenceMenu(recordID: recordID, operationID: operationID, explicit: false))
+    }
+
+    /// Wire a card's long-press menu to the ChatView's identifier sheet and copy
+    /// toast. `explicit` turns on §3c's visible 查看标识符 affordance for the
+    /// non-success cards that need it.
+    private func evidenceMenu(
+        recordID: String?, operationID: String?, explicit: Bool
+    ) -> EvidenceMenu {
+        EvidenceMenu(
+            recordID: recordID,
+            operationID: operationID,
+            showExplicitEntry: explicit,
+            onShowIdentifiers: {
+                identifiers = IdentifierSet(recordID: recordID, operationID: operationID)
+            },
+            onCopied: { prefix in
+                withAnimation { copiedPrefix = prefix }
+            }
+        )
     }
 
     /// Long-press exposes the identifiers the card no longer prints.
@@ -342,27 +504,66 @@ struct ChatView: View {
     /// because they stopped mattering: `record_id` is still the only thing that
     /// makes 已写入 checkable against Feishu, and a receipt whose evidence cannot be
     /// retrieved at all is a receipt that has to be taken on trust.
+    ///
+    /// §3c's three-tier retrieval lives here: 打开飞书账本 is the first tier (already
+    /// on the row), this menu is the second (直接复制 each id), and the 详情单 is
+    /// the third — the menu's second item, listing every identifier in full with
+    /// its own per-item copy, for the cases that need the whole string (报障/排查).
+    /// Copies confirm themselves through a toast echoing the head of the string,
+    /// never the whole identifier.
     private struct EvidenceMenu: ViewModifier {
         let recordID: String?
         let operationID: String?
+        /// True on non-success cards, which §3c says must offer 查看标识符 explicitly
+        /// — long-press is an invisible gesture, and those are the cards where the
+        /// user actually needs the id.
+        let showExplicitEntry: Bool
+        let onShowIdentifiers: () -> Void
+        let onCopied: (String) -> Void
 
         func body(content: Content) -> some View {
-            content.contextMenu {
-                if let recordID {
-                    Button {
-                        UIPasteboard.general.string = recordID
-                    } label: {
-                        Label("复制记录 ID", systemImage: "doc.on.doc")
+            content
+                .contextMenu {
+                    if let recordID {
+                        Button {
+                            UIPasteboard.general.string = recordID
+                            onCopied(String(recordID.prefix(8)))
+                        } label: {
+                            Label("复制记录 ID", systemImage: "doc.on.doc")
+                        }
+                    }
+                    if recordID != nil || operationID != nil {
+                        Button {
+                            onShowIdentifiers()
+                        } label: {
+                            Label("标识符", systemImage: "list.bullet.rectangle")
+                        }
+                    }
+                    if let operationID {
+                        Button {
+                            UIPasteboard.general.string = operationID
+                            onCopied(String(operationID.prefix(8)))
+                        } label: {
+                            Label("复制 operation_id", systemImage: "number")
+                        }
                     }
                 }
-                if let operationID {
-                    Button {
-                        UIPasteboard.general.string = operationID
-                    } label: {
-                        Label("复制 operation_id", systemImage: "number")
+                .overlay(alignment: .topTrailing) {
+                    // §3c: the explicit affordance on non-success cards. Long-press
+                    // is discoverable only to whoever already knows it exists; these
+                    // cards are the ones where the id is the way to the evidence, so
+                    // it gets a visible entry. Success cards keep it hidden.
+                    if showExplicitEntry, recordID != nil || operationID != nil {
+                        Button {
+                            onShowIdentifiers()
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(6)
                     }
                 }
-            }
         }
     }
 
@@ -400,15 +601,7 @@ struct ChatView: View {
             // whole line announcing 无工具调用 above two lines of reply -- on the
             // most common card in the Timeline, that is a third of its height given
             // to a tag. Same information, read as a tag instead of a title.
-            if let badge = terminalBadge(for: outcome) {
-                Text(badge.text)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(badge.color)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 3)
-                    .background(Color.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 7))
-            }
+            terminalChip(for: outcome)
             switch outcome {
             case .running:
                 HStack(spacing: 6) {
@@ -416,7 +609,7 @@ struct ChatView: View {
                     Text("服务端仍在处理（\(state.wire)）").font(.callout)
                 }
 
-            // Handled by `recordedReceiptCard` above; listed only to keep the
+            // Handled by `recordedReceipt` above; listed only to keep the
             // switch exhaustive, so a new outcome still fails to compile here.
             case .recorded:
                 EmptyView()
@@ -532,14 +725,34 @@ struct ChatView: View {
         // Same trade as the recorded card: off the face, one long-press away. The
         // `needs_manual_review` card keeps printing its 记录 ID inside the body,
         // because there the whole task is to go and look that row up in Feishu.
-        .modifier(EvidenceMenu(recordID: nil, operationID: operationID))
+        //
+        // Non-success cards get the explicit 查看标识符 affordance (§3c): long-press
+        // is invisible to anyone who does not already know it exists, and these are
+        // the cards where the id is actually needed. The card's own record id — the
+        // `needs_manual_review` one — reaches the 详情单 through the same menu.
+        .modifier(
+            evidenceMenu(
+                recordID: self.recordID(from: outcome),
+                operationID: operationID,
+                explicit: true
+            )
+        )
+    }
+
+    /// The external record id an outcome itself carries, if any. Only
+    /// `needs_manual_review` names one inside the plain card; the others leave it
+    /// to the menu (or have none). Kept here so the menu and the 详情单 see the
+    /// same value the body already shows.
+    private func recordID(from outcome: OperationOutcome) -> String? {
+        if case .needsManualReview(_, let recordID) = outcome { return recordID }
+        return nil
     }
 
     /// §1o 组件二: the terminal-state label in the card's top corner.
     ///
-    /// One label set covers every outcome, so the *absence* of 写后回读一致 is itself
-    /// legible — §3.2's rule that a state may never be promoted only works if the
-    /// reader can see which rung was actually reached.
+    /// One label set covers every outcome, so the *absence* of 账本已存在此记录 is
+    /// itself legible — §3.2's rule that a state may never be promoted only works
+    /// if the reader can see which rung was actually reached.
     ///
     /// `.answered` carries 无工具调用 (§2b). That case is a model reply with no tool
     /// call behind it, and on 2026-08-11 one of those read as "好的，帮你记上！" with
@@ -556,7 +769,12 @@ struct ChatView: View {
         case .running:
             return nil
         case .recorded:
-            return TerminalBadge(text: "写后回读一致", color: .accentText)
+            // §4.5 文案降级: the system can prove only that the row exists in the
+            // ledger, not that it performed a write-then-read-back comparison.
+            // 「写后回读一致」 claimed a step nothing in the pipeline performs;
+            // this name states the verifiable fact instead, and can be promoted
+            // back only if the comparison is ever actually implemented.
+            return TerminalBadge(text: "账本已存在此记录", color: .accentText)
         case .answered:
             return TerminalBadge(text: "无工具调用", color: .secondary)
         case .needsClarification, .needsDuplicateDecision, .needsManualReview:
@@ -567,6 +785,37 @@ struct ChatView: View {
             return TerminalBadge(text: "你中止了", color: .secondary)
         case .indeterminate:
             return TerminalBadge(text: "无法判定", color: .danger)
+        }
+    }
+
+    /// §3d: the terminal-state label as a **leading chip** (tiers one/two, where
+    /// there is no header row). 7pt 圆角, 11.5pt/600, 22pt 高, 9pt 内边距.
+    @ViewBuilder
+    private func terminalChip(for outcome: OperationOutcome) -> some View {
+        if let badge = terminalBadge(for: outcome) {
+            Text(badge.text)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(badge.color)
+                .padding(.horizontal, 9)
+                .frame(height: 22)
+                .background(Color.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+        }
+    }
+
+    /// §3d: the terminal-state label as a **12pt capsule** (tier three, where the
+    /// header row exists). Same colour semantics as the leading chip, so the same
+    /// state reads the same in both layouts.
+    @ViewBuilder
+    private func terminalCapsule(for outcome: OperationOutcome) -> some View {
+        if let badge = terminalBadge(for: outcome) {
+            Text(badge.text)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(badge.color)
+                .padding(.horizontal, 10)
+                .frame(height: 24)
+                .background(Color.surface)
+                .clipShape(Capsule())
         }
     }
 
@@ -775,6 +1024,26 @@ struct ChatView: View {
 
     // --- composer -------------------------------------------------------------
 
+    /// §3i 阶段一: whether a write is in flight, which is when the composer stops
+    /// sending (but keeps typing).
+    ///
+    /// Three conditions count, because each means a second message could collide
+    /// with the first write:
+    /// - an optimistic bubble has left but the server has not echoed it yet
+    ///   (`sending`);
+    /// - a durable slot holds an unresolved message (`unresolved`);
+    /// - a live receipt is still running.
+    ///
+    /// The input field stays enabled throughout (§3i); what is withheld is the
+    /// *send*. This is phase one's honest middle: 可以打字、可以想, 按不下去, 且告诉
+    /// 你为什么. Phase two (a normal send button plus a queue window) waits on the
+    /// server's write serialisation.
+    private var writingInProgress: Bool {
+        model.sending != nil
+            || model.unresolved != nil
+            || (model.liveReceipt.map { !$0.outcome.isSettled } ?? false)
+    }
+
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let answering = model.answering {
@@ -794,33 +1063,120 @@ struct ChatView: View {
                 unresolvedCard(pending)
             }
             HStack(spacing: 8) {
+                // §3i 阶段一: 输入框不禁用。可以打字、可以想 —— 防重复记账不再靠
+                // 锁住打字承担, 而是把发送挡住（见下）。灰掉输入框连起草下一句
+                // 都不让, 而挡住发送已经足够安全: 同一笔不会被记两次, 因为发不出去。
                 TextField("记一笔，或问一句", text: $model.draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
-                    .disabled(model.unresolved != nil)
-                Button {
-                    Task { await model.send() }
-                } label: {
-                    if model.busy {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "arrow.up.circle.fill").font(.title2)
+                if writingInProgress {
+                    // §3i 阶段一: 写入进行中时, 发送按钮让位给一句说明。告诉用户
+                    // 为什么按不下去, 而不是让他对着一个看似可点却不响应的按钮。
+                    // 阶段二落地后这行被正常发送按钮取代, 排队态由队列窗口承载。
+                    Text("前一笔写完再发")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                } else {
+                    Button {
+                        Task { await model.send() }
+                    } label: {
+                        if model.busy {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "arrow.up.circle.fill").font(.title2)
+                        }
                     }
+                    .disabled(
+                        model.busy
+                            || model.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                                .isEmpty
+                    )
                 }
-                .disabled(
-                    model.busy
-                        || model.unresolved != nil
-                        || model.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-                            .isEmpty
-                )
             }
             if model.unresolved != nil {
-                Text("先处理上面那张卡片里的未确认消息，再发新的：否则同一笔可能被记两次。")
+                Text("上一条消息的结果还没确认。可以先打字, 但发出去要等它处理完: 否则同一笔可能被记两次。")
                     .font(.caption)
                     .foregroundStyle(.pending)
             }
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
+    }
+}
+
+/// §3c: the set of identifiers one card carries, presented by the 详情单 sheet.
+///
+/// `Identifiable` so the sheet is keyed by the operation id (the stable handle
+/// for a card) rather than by value equality. Either side can be nil — a live
+/// receipt has an operation id but may have no record id yet, and a parked
+/// decision has both or neither.
+struct IdentifierSet: Identifiable, Equatable {
+    let recordID: String?
+    let operationID: String?
+    var id: String { operationID ?? recordID ?? "" }
+}
+
+/// §3c 第三层: the 详情单. Every identifier in full — monospaced, unwrapped,
+/// copyable one by one or all at once — for the cases that need the whole string
+/// (报障 / 排查). It is deliberately a second menu item, not a replacement for
+/// the direct-copy items: those are the common case, this is the exhaustive one.
+struct IdentifierDetailSheet: View {
+    let identifiers: IdentifierSet
+    /// Reports a copied head (first 8 characters) so the card can toast it.
+    let onCopied: (String) -> Void
+
+    var body: some View {
+        List {
+            if let recordID = identifiers.recordID {
+                Section {
+                    identifierRow("外部记录 ID", recordID)
+                }
+            }
+            if let operationID = identifiers.operationID {
+                Section {
+                    identifierRow("操作 ID", operationID)
+                }
+            }
+            Section {
+                Button("全部复制") {
+                    copyAll()
+                }
+                .frame(maxWidth: .infinity)
+            } footer: {
+                Text("复制后会在卡片上方回显开头几个字符，便于确认复制的是哪一串。")
+            }
+        }
+        .designSystemListSurface()
+        .navigationTitle("标识符")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func identifierRow(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label).font(.footnote).foregroundStyle(.secondary)
+            Text(value)
+                .font(.footnote.monospaced())
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 4)
+        .contextMenu {
+            Button {
+                UIPasteboard.general.string = value
+                onCopied(String(value.prefix(8)))
+            } label: {
+                Label("复制", systemImage: "doc.on.doc")
+            }
+        }
+    }
+
+    private func copyAll() {
+        let joined = [identifiers.operationID, identifiers.recordID]
+            .compactMap { $0 }
+            .joined(separator: "\n")
+        UIPasteboard.general.string = joined
+        // Report the operation id's head, the stable handle for the card.
+        onCopied(String((identifiers.operationID ?? identifiers.recordID ?? "").prefix(8)))
     }
 }

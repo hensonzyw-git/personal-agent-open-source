@@ -40,20 +40,11 @@ struct AmbientOperationBar: View {
 
 /// How many review cards this client cannot conclude are finished.
 ///
-/// `reviewed` is the system's conclusion and `deferred` is Henson's own "later";
-/// both are answers, so neither is counted. `pending` obviously counts. So does
-/// `unrecognised`: a status this build cannot interpret is precisely the case a
-/// person should look at, and quietly leaving it out of the count would hide it.
-///
-/// **`deferred` is a judgement call, not a contract fact.** A deferred card is not
-/// finished work, and if it should keep nagging, this is the one line to change.
+/// Lives in `PersonalAgentKit` (`ReviewPendingCount`) so the 贪睡 rule — a
+/// `deferred` card stops counting on its day and re-enters at the next 0:00 —
+/// is testable. This thin wrapper keeps the call site readable.
 func pendingReviewCount(_ summaries: [ReviewSummary]) -> Int {
-    summaries.filter { summary in
-        switch summary.status {
-        case .pending, .unrecognised: return true
-        case .reviewed, .deferred: return false
-        }
-    }.count
+    ReviewPendingCount.count(summaries)
 }
 
 #Preview("指示条 · 有待处理") {
