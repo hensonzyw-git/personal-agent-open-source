@@ -142,6 +142,7 @@ def decision_row(*, feature_id: str, decision_id: str = "decision-seeded",
         depends_on_json="[]",
         expires_at=now + timedelta(minutes=15),
         superseded_by=None,
+        notification_priority="normal",
         created_at=now,
         updated_at=now,
     )

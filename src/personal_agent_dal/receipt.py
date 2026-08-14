@@ -48,6 +48,9 @@ class ReceiptCode(StrEnum):
     UNKNOWN = "UNKNOWN"
     VERSION_CONFLICT = "VERSION_CONFLICT"
     IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
+    #: A clean no-op: there was nothing to do (e.g. a notification batch whose
+    #: every member is invalid). Not a success and not a refusal — zero writes.
+    NOOP = "NOOP"
 
 
 @dataclass(frozen=True)

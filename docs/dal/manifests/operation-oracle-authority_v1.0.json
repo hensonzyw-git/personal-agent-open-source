@@ -1,5 +1,5 @@
 {
-  "authority_sha256": "1899da4b1606a46befe263c5d18480e8bb8b3bd7a977e7afe1d740e25575ce18",
+  "authority_sha256": "93fbce70fc86da95269c07512b4a8fb973522738ddba85f033f765b9de199dfe",
   "authority_version": "1.0",
   "entries": {
     "dal.oracle/DAL-T-APP-001/concurrent_consume/G1/1.0": {
@@ -1444,7 +1444,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-7801efd9a63adcce517cd72b",
+            "idempotency_key": "idem-50927d77ee6e9ce46bbfc916",
             "input": {
               "action_sequence": [
                 {
@@ -1465,14 +1465,14 @@
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d-expired",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "expired"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d-resolved",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "resolved"
                   }
                 ],
@@ -1486,14 +1486,14 @@
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d-expired",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "expired"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d-resolved",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "resolved"
                     }
                   ],
@@ -1509,7 +1509,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-00a2713b42810e9b9ca21946",
+            "operation_id": "op-80decfc5e27a7f0c4c515f6f",
             "operation_spec_id": "OP-BATCH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -1589,7 +1589,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-4ec0612afe69471647e8d85d",
+            "idempotency_key": "idem-a1200b8fafeb2f35d354270c",
             "input": {
               "action_sequence": [
                 {
@@ -1610,14 +1610,14 @@
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d1",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d2",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   }
                 ],
@@ -1631,14 +1631,14 @@
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d1",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d2",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     }
                   ],
@@ -1654,7 +1654,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-ac6da5c0a8569e80d9f2c8cd",
+            "operation_id": "op-24ae475b22de717656fc5c42",
             "operation_spec_id": "OP-BATCH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -1734,7 +1734,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-489350e8077028d93b09bb6b",
+            "idempotency_key": "idem-f433acb3ee009bb0dee3eda6",
             "input": {
               "action_sequence": [
                 {
@@ -1755,35 +1755,35 @@
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d1",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d2",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d3",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d4",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d5",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   }
                 ],
@@ -1797,35 +1797,35 @@
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d1",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d2",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d3",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d4",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d5",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     }
                   ],
@@ -1841,7 +1841,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-34c76841fcf16f84c84a5ac7",
+            "operation_id": "op-0e18af1d5202c18bfe2fcb51",
             "operation_spec_id": "OP-BATCH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -1921,7 +1921,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-014c5c1a96710b58c7bb0e8d",
+            "idempotency_key": "idem-5e1a0a1511029c0a49543ed5",
             "input": {
               "action_sequence": [
                 {
@@ -1942,14 +1942,14 @@
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d1",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d2",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "high",
+                    "notification_priority": "immediate",
                     "status": "open"
                   }
                 ],
@@ -1963,14 +1963,14 @@
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d1",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d2",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "high",
+                      "notification_priority": "immediate",
                       "status": "open"
                     }
                   ],
@@ -1986,7 +1986,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-b82e2904b808c7a06a8af706",
+            "operation_id": "op-c1a014c55cd845ee388634e9",
             "operation_spec_id": "OP-BATCH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -2066,7 +2066,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-e16a826d6062d42c549bc103",
+            "idempotency_key": "idem-1fa9861d84f546bba472bb30",
             "input": {
               "action_sequence": [
                 {
@@ -2087,14 +2087,14 @@
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d1",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d2",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   }
                 ],
@@ -2111,14 +2111,14 @@
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d1",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d2",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     }
                   ],
@@ -2134,7 +2134,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-67cbef64a2f3cdbafe0e048f",
+            "operation_id": "op-197516f7f7e3476eb43f91c7",
             "operation_spec_id": "OP-BATCH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -15101,6 +15101,7 @@
         "coverage_ref": null,
         "expected_atomic_companion_transitions": [],
         "expected_event_trace": [
+          "notification.delivery_created",
           "notification.delivery_claimed",
           "notification.delivery_started",
           "notification.delivery_succeeded"
@@ -15233,6 +15234,7 @@
         "coverage_ref": null,
         "expected_atomic_companion_transitions": [],
         "expected_event_trace": [
+          "notification.delivery_created",
           "notification.delivery_claimed",
           "notification.delivery_started",
           "notification.delivery_succeeded"
@@ -15554,6 +15556,7 @@
         "coverage_ref": null,
         "expected_atomic_companion_transitions": [],
         "expected_event_trace": [
+          "notification.delivery_created",
           "notification.delivery_claimed",
           "notification.delivery_started",
           "notification.delivery_succeeded"
@@ -24318,7 +24321,7 @@
   },
   "frozen_evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
   "frozen_guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
-  "frozen_operation_registry_sha256": "759ac3047dec9716eb436d54568e5eb5b92dd94de1bca6d7a31de31a35fb73b7",
+  "frozen_operation_registry_sha256": "314f44f698f0c1ba390287aff14c37d37fad0b418285b948625f435916975938",
   "operation_specs": {
     "OP-APP-001": {
       "allowed_actor_types": [
@@ -25142,7 +25145,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-7801efd9a63adcce517cd72b",
+            "idempotency_key": "idem-50927d77ee6e9ce46bbfc916",
             "input": {
               "action_sequence": [
                 {
@@ -25163,14 +25166,14 @@
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d-expired",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "expired"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d-resolved",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "resolved"
                   }
                 ],
@@ -25184,14 +25187,14 @@
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d-expired",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "expired"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d-resolved",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "resolved"
                     }
                   ],
@@ -25207,7 +25210,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-00a2713b42810e9b9ca21946",
+            "operation_id": "op-80decfc5e27a7f0c4c515f6f",
             "operation_spec_id": "OP-BATCH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -25216,7 +25219,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-4ec0612afe69471647e8d85d",
+            "idempotency_key": "idem-a1200b8fafeb2f35d354270c",
             "input": {
               "action_sequence": [
                 {
@@ -25237,14 +25240,14 @@
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d1",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d2",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   }
                 ],
@@ -25258,14 +25261,14 @@
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d1",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d2",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     }
                   ],
@@ -25281,7 +25284,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-ac6da5c0a8569e80d9f2c8cd",
+            "operation_id": "op-24ae475b22de717656fc5c42",
             "operation_spec_id": "OP-BATCH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -25290,7 +25293,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-489350e8077028d93b09bb6b",
+            "idempotency_key": "idem-f433acb3ee009bb0dee3eda6",
             "input": {
               "action_sequence": [
                 {
@@ -25311,35 +25314,35 @@
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d1",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d2",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d3",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d4",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d5",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   }
                 ],
@@ -25353,35 +25356,35 @@
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d1",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d2",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d3",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d4",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d5",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     }
                   ],
@@ -25397,7 +25400,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-34c76841fcf16f84c84a5ac7",
+            "operation_id": "op-0e18af1d5202c18bfe2fcb51",
             "operation_spec_id": "OP-BATCH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -25406,7 +25409,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-014c5c1a96710b58c7bb0e8d",
+            "idempotency_key": "idem-5e1a0a1511029c0a49543ed5",
             "input": {
               "action_sequence": [
                 {
@@ -25427,14 +25430,14 @@
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d1",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d2",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "high",
+                    "notification_priority": "immediate",
                     "status": "open"
                   }
                 ],
@@ -25448,14 +25451,14 @@
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d1",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d2",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "high",
+                      "notification_priority": "immediate",
                       "status": "open"
                     }
                   ],
@@ -25471,7 +25474,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-b82e2904b808c7a06a8af706",
+            "operation_id": "op-c1a014c55cd845ee388634e9",
             "operation_spec_id": "OP-BATCH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -25480,7 +25483,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-e16a826d6062d42c549bc103",
+            "idempotency_key": "idem-1fa9861d84f546bba472bb30",
             "input": {
               "action_sequence": [
                 {
@@ -25501,14 +25504,14 @@
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d1",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   },
                   {
                     "created_at": "2026-08-09T12:00:00Z",
                     "decision_id": "d2",
                     "expires_at": "2026-08-09T12:10:00Z",
-                    "risk": "medium",
+                    "notification_priority": "normal",
                     "status": "open"
                   }
                 ],
@@ -25525,14 +25528,14 @@
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d1",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     },
                     {
                       "created_at": "2026-08-09T12:00:00Z",
                       "decision_id": "d2",
                       "expires_at": "2026-08-09T12:10:00Z",
-                      "risk": "medium",
+                      "notification_priority": "normal",
                       "status": "open"
                     }
                   ],
@@ -25548,7 +25551,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-67cbef64a2f3cdbafe0e048f",
+            "operation_id": "op-197516f7f7e3476eb43f91c7",
             "operation_spec_id": "OP-BATCH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }

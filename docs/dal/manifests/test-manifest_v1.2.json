@@ -1,9 +1,9 @@
 {
   "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
   "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
-  "manifest_sha256": "dab1f2f08b65b98026ec45955ccec70eaebdef32cc4fb77027c964ce5ee7e5d9",
+  "manifest_sha256": "a2773d2dd597b30aeb92c6138586fe1ee11012c938a5ab65d7c2671339e89266",
   "manifest_version": "1.2",
-  "operation_registry_sha256": "759ac3047dec9716eb436d54568e5eb5b92dd94de1bca6d7a31de31a35fb73b7",
+  "operation_registry_sha256": "314f44f698f0c1ba390287aff14c37d37fad0b418285b948625f435916975938",
   "schema_version": "dal.test-manifest/1.2",
   "test_variants": [
     {
@@ -275,7 +275,7 @@
       "expected_receipt_schema": "dal.operation-receipt/1.0",
       "fixture_ref": "dal.fixture/DAL-T-BATCH-001/all_invalid/G1/1.0",
       "fixture_schema_version": "dal.test-fixture/1.0",
-      "fixture_sha256": "129ba19cb6c3ed70f3339485ecbb244cb374bef63e46bc144cdece4bf2dfff2e",
+      "fixture_sha256": "721892c24a955e6a162a6c486bf36e31b18b080660a2ea3d990a3be9a397334d",
       "injection_point": "dal.inject/DAL-T-BATCH-001/all_invalid/G1/1.0",
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-BATCH-001/all_invalid/G1/1.0",
@@ -298,7 +298,7 @@
       "expected_receipt_schema": "dal.operation-receipt/1.0",
       "fixture_ref": "dal.fixture/DAL-T-BATCH-001/continuous/G1/1.0",
       "fixture_schema_version": "dal.test-fixture/1.0",
-      "fixture_sha256": "e81c191f7a7cf8e1d3e2a40f7b9a0bfc85a34671efebb9fda80190a4d0b21ec3",
+      "fixture_sha256": "4d750e7278a981fdecca413e133eb619f5f01ebdedff989a3a965f2ca0865975",
       "injection_point": "dal.inject/DAL-T-BATCH-001/continuous/G1/1.0",
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-BATCH-001/continuous/G1/1.0",
@@ -321,7 +321,7 @@
       "expected_receipt_schema": "dal.operation-receipt/1.0",
       "fixture_ref": "dal.fixture/DAL-T-BATCH-001/fifth_item/G1/1.0",
       "fixture_schema_version": "dal.test-fixture/1.0",
-      "fixture_sha256": "04dd575b1c7892c791749cf5596c975b38c2e5e4b880f285c27fedc7cceead29",
+      "fixture_sha256": "855440fc31475de685fee501745bd1d2422bd3960cf9aa47d1baa34254ed703d",
       "injection_point": "dal.inject/DAL-T-BATCH-001/fifth_item/G1/1.0",
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-BATCH-001/fifth_item/G1/1.0",
@@ -344,7 +344,7 @@
       "expected_receipt_schema": "dal.operation-receipt/1.0",
       "fixture_ref": "dal.fixture/DAL-T-BATCH-001/high_risk_interrupt/G1/1.0",
       "fixture_schema_version": "dal.test-fixture/1.0",
-      "fixture_sha256": "0c26ac3752c5f1aadd2b08cb096ef77094b819d86a7a4fd4d696975764533466",
+      "fixture_sha256": "dcc2125fcbf992085df11ff670d93a831c0d910fbc26722d3a6724f0909d668c",
       "injection_point": "dal.inject/DAL-T-BATCH-001/high_risk_interrupt/G1/1.0",
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-BATCH-001/high_risk_interrupt/G1/1.0",
@@ -367,7 +367,7 @@
       "expected_receipt_schema": "dal.operation-receipt/1.0",
       "fixture_ref": "dal.fixture/DAL-T-BATCH-001/service_restart/G1/1.0",
       "fixture_schema_version": "dal.test-fixture/1.0",
-      "fixture_sha256": "3ee954b83d1dbc1a482e44d0a192f055c0a75da1b7ffe3867009baca3e414c0f",
+      "fixture_sha256": "220615f1b6a67c2a6c9413e0519236ceb6abf1a6805873a0a03ae3c743f74da1",
       "injection_point": "dal.inject/DAL-T-BATCH-001/service_restart/G1/1.0",
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-BATCH-001/service_restart/G1/1.0",
@@ -5243,7 +5243,7 @@
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-NOTIFY-001/ack_loss/G1/1.0",
       "oracle_schema_version": "dal.test-oracle/1.0",
-      "oracle_sha256": "d11cdb4477b08eab3b335287aa4c60ae5984efabec499337d6ae899015bc4100",
+      "oracle_sha256": "365c1a0dcf9528428e7e2288587192f34fde6255ae5df49350c89c0c9e07c6f8",
       "owner_tasks": [
         "DAL-013"
       ],
@@ -5266,7 +5266,7 @@
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-NOTIFY-001/concurrent_claim/G1/1.0",
       "oracle_schema_version": "dal.test-oracle/1.0",
-      "oracle_sha256": "45ecb9630992a591dfa906d447f015ea347b4e5379073d9d6729e92d86ad19eb",
+      "oracle_sha256": "27259db1bbb787a9c87f40886da035a32534cc626115c531d341575c8c9c1e90",
       "owner_tasks": [
         "DAL-013"
       ],
@@ -5312,7 +5312,7 @@
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-NOTIFY-001/restart/G1/1.0",
       "oracle_schema_version": "dal.test-oracle/1.0",
-      "oracle_sha256": "67b9915e036917358f9546705e8270b3ee16ff47228a26cf5a9e03a850da6882",
+      "oracle_sha256": "ec9a388d4017133df5944f47d9f5693d99508627bb81146dbb008b1c56e75553",
       "owner_tasks": [
         "DAL-013"
       ],

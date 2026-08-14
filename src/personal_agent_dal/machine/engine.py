@@ -416,6 +416,10 @@ def _new_decision(ctx: ApplyContext, *, incident: bool) -> Decision:
         depends_on_json="[]",
         expires_at=ctx.now + timedelta(minutes=15),
         superseded_by=None,
+        # §3.5.2: notification priority is independent of dock_rank. An
+        # incident decision is safety_or_irreversible (or globally blocking),
+        # so it is `immediate`; a normal decision batches.
+        notification_priority="immediate" if incident else "normal",
         created_at=ctx.now,
         updated_at=ctx.now,
     )

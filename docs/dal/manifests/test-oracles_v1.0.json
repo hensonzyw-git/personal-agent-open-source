@@ -1,8 +1,8 @@
 {
-  "catalog_sha256": "878cbab821e282b5435b91b4bb53ad07aff2f308014838d2e9ce943b5ab937c2",
+  "catalog_sha256": "fdf5b451b3a1923aefebd289146e2c2a638f0b438977ed9a5602c25ebe40938b",
   "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
   "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
-  "operation_registry_sha256": "759ac3047dec9716eb436d54568e5eb5b92dd94de1bca6d7a31de31a35fb73b7",
+  "operation_registry_sha256": "314f44f698f0c1ba390287aff14c37d37fad0b418285b948625f435916975938",
   "oracles": {
     "dal.oracle/DAL-T-APP-001/concurrent_consume/G1/1.0": {
       "allowed_write_set": [
@@ -13168,6 +13168,7 @@
       "coverage_ref": null,
       "expected_atomic_companion_transitions": [],
       "expected_event_trace": [
+        "notification.delivery_created",
         "notification.delivery_claimed",
         "notification.delivery_started",
         "notification.delivery_succeeded"
@@ -13225,6 +13226,7 @@
       "coverage_ref": null,
       "expected_atomic_companion_transitions": [],
       "expected_event_trace": [
+        "notification.delivery_created",
         "notification.delivery_claimed",
         "notification.delivery_started",
         "notification.delivery_succeeded"
@@ -13369,6 +13371,7 @@
       "coverage_ref": null,
       "expected_atomic_companion_transitions": [],
       "expected_event_trace": [
+        "notification.delivery_created",
         "notification.delivery_claimed",
         "notification.delivery_started",
         "notification.delivery_succeeded"

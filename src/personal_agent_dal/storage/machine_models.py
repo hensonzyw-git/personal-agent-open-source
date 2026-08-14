@@ -76,6 +76,32 @@ DECISION_STATUSES: Final[tuple[str, ...]] = (
 #: Decision Dock rank, contract §3.5. Fixed, and not re-derivable by a client.
 DOCK_RANKS: Final[tuple[int, ...]] = (0, 1, 2, 3, 4)
 
+#: Notification priority, contract §3.5.2. Independent of `dock_rank`: the rank
+#: is display ordering, this is the notification strategy.
+NOTIFICATION_PRIORITIES: Final[tuple[str, ...]] = ("immediate", "normal")
+
+#: Notification batch states, contract §3.7.
+NOTIFICATION_BATCH_STATES: Final[tuple[str, ...]] = (
+    "open",
+    "ready",
+    "closed",
+    "superseded",
+    "cancelled",
+)
+
+#: Notification delivery states, contract §3.7. `claimed` is present here and
+#: deliberately absent from `outbox_events.delivery_state`: delivery is its own
+#: state machine, not the outbox's.
+NOTIFICATION_DELIVERY_STATES: Final[tuple[str, ...]] = (
+    "pending",
+    "claimed",
+    "delivering",
+    "delivered",
+    "retry_wait",
+    "dead_letter",
+    "cancelled",
+)
+
 
 class TransitionReceipt(Base):
     """One receipt per transition command, successful or refused.
@@ -152,6 +178,7 @@ class Decision(Base):
     depends_on_json: Mapped[str] = mapped_column(Text, nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
     superseded_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notification_priority: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
 
@@ -160,6 +187,10 @@ class Decision(Base):
         CheckConstraint(
             "blocking_scope IN ('global', 'local', 'none')",
             name="blocking_scope",
+        ),
+        CheckConstraint(
+            _in_set("notification_priority", NOTIFICATION_PRIORITIES),
+            name="notification_priority",
         ),
         Index("ix_decisions_feature_id", "feature_id"),
     )
@@ -481,4 +512,67 @@ class ImpactReport(Base):
         CheckConstraint(_hex_of_length("impact_sha256", 64, nullable=False),
                         name="impact_sha256_hex"),
         Index("ix_impact_reports_feature_id", "feature_id"),
+    )
+
+
+class NotificationBatch(Base):
+    """A fixed-window batch of normal-priority decisions, contract §3.5.2/§3.7.
+
+    The window's `flush_at` is fixed at the first member's entry and never
+    extended by later membership. An `immediate` decision closes the batch and
+    flushes it at once; the batch itself never refuses, it only aggregates.
+    """
+
+    __tablename__ = "notification_batches"
+
+    batch_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    flush_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    maximum_items: Mapped[int] = mapped_column(Integer, nullable=False)
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            _in_set("state", NOTIFICATION_BATCH_STATES), name="state"
+        ),
+        UniqueConstraint("batch_id", "channel", "payload_sha256", name="batch_channel_payload"),
+    )
+
+
+class NotificationDelivery(Base):
+    """One delivery of a notification batch, contract §3.7.
+
+    Its state machine is independent of the outbox: a delivery is claimed
+    (compare-and-swap on `claim_epoch`), marked `delivering`, and then either
+    `delivered`, `retry_wait` (bounded backoff), `dead_letter` (attempt limit
+    exhausted) or `cancelled` (every decision no longer valid).
+    """
+
+    __tablename__ = "notification_deliveries"
+
+    delivery_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    batch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    batch_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    claim_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
+    provider_receipt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            _in_set("state", NOTIFICATION_DELIVERY_STATES), name="state"
+        ),
+        CheckConstraint("claim_epoch >= 1", name="claim_epoch_positive"),
+        CheckConstraint("attempt_count >= 0", name="attempt_count_non_negative"),
+        Index("ix_notification_deliveries_batch_id", "batch_id"),
     )

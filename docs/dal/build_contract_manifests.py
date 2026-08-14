@@ -544,11 +544,11 @@ def semantic_operation_input(
         actions, facts, results = ([{"command": "rank_decisions"}, {"command": "project_decision_dock", "maximum_items": 5}], {"source": "decision-store"}, [{"source": "decision-store", "status": "completed", "server_now": "2026-08-09T12:00:00Z", "candidates": candidates}])
     elif test_id == "DAL-T-BATCH-001":
         base_time = "2026-08-09T12:00:00Z"
-        valid = {"decision_id": "d1", "status": "open", "risk": "medium", "created_at": base_time, "expires_at": "2026-08-09T12:10:00Z"}
+        valid = {"decision_id": "d1", "status": "open", "notification_priority": "normal", "created_at": base_time, "expires_at": "2026-08-09T12:10:00Z"}
         if variant == "all_invalid":
             members = [dict(valid, decision_id="d-expired", status="expired"), dict(valid, decision_id="d-resolved", status="resolved")]
         elif variant == "fifth_item": members = [dict(valid, decision_id=f"d{i}") for i in range(1, 6)]
-        elif variant == "high_risk_interrupt": members = [valid, dict(valid, decision_id="d2", risk="high")]
+        elif variant == "high_risk_interrupt": members = [valid, dict(valid, decision_id="d2", notification_priority="immediate")]
         else: members = [valid, dict(valid, decision_id="d2")]
         actions = [{"command": "open_fixed_window", "deadline": "2026-08-09T12:02:00Z"}, {"command": "evaluate_members"}, {"command": "flush_once"}]
         facts = {"server_now": "2026-08-09T12:03:00Z" if variant in {"continuous", "service_restart"} else base_time, "members": members, "persisted_window": {"opened_at": base_time, "deadline": "2026-08-09T12:02:00Z"} if variant == "service_restart" else None, "maximum_items": 5}
@@ -2924,7 +2924,7 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
         None, None, "NOOP", None, [], allowed_writes=[], receipt_schema_override="dal.operation-receipt/1.0",
         scenario_assertions=[{"field": "notification_outbox_create_count", "operator": "equals", "value": 0}, {"field": "batch_window_state", "operator": "equals", "value": "cancelled"}],
     )
-    many("DAL-T-NOTIFY-001", ["ack_loss", "concurrent_claim", "restart"], "G1", ["DAL-013"], "needs_human", "needs_human", None, None, "APPLIED", None, ["notification.delivery_claimed", "notification.delivery_started", "notification.delivery_succeeded"], allowed_writes=["notification_delivery", "notification_outbox", "operation_receipt", "audit"], receipt_schema_override="dal.operation-receipt/1.0")
+    many("DAL-T-NOTIFY-001", ["ack_loss", "concurrent_claim", "restart"], "G1", ["DAL-013"], "needs_human", "needs_human", None, None, "APPLIED", None, ["notification.delivery_created", "notification.delivery_claimed", "notification.delivery_started", "notification.delivery_succeeded"], allowed_writes=["notification_delivery", "notification_outbox", "operation_receipt", "audit"], receipt_schema_override="dal.operation-receipt/1.0")
     permanent_events = ["notification.delivery_created"]
     for attempt in range(1, 6):
         permanent_events.extend(["notification.delivery_claimed", "notification.delivery_started", "notification.delivery_failed"])
