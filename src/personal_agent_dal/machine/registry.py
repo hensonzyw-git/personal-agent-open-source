@@ -62,6 +62,22 @@ def _canonical_bytes():
     return module.canonical_bytes
 
 
+def jcs_sha256(value: Any) -> str:
+    """The RFC 8785 JCS SHA-256 digest the frozen contract binds by.
+
+    Contract §3.2 / §3.2.1 freeze `state_sha256` and `artifact_sha256` as
+    ``SHA-256(RFC 8785 JCS UTF-8 bytes)`` of the binding object. Recomputing
+    that digest here — from the same canonicaliser the generator and the
+    registry hash check share — is what lets a binding validator agree with the
+    frozen `protected_binding_sha256` instead of with itself.
+
+    Raises the canonicaliser's ``JCSCanonicalizationError`` (a ``ValueError``)
+    for any value outside I-JSON; callers that must fail closed on a malformed
+    binding catch that and refuse rather than repair.
+    """
+    return hashlib.sha256(_canonical_bytes()(value)).hexdigest()
+
+
 def _load_verified(filename: str, body_key: str) -> list[dict[str, Any]]:
     """Load one registry and verify its declared `registry_sha256`."""
     path = MANIFESTS_DIR / filename

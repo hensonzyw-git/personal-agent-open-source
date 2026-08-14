@@ -161,6 +161,31 @@ def digest(value: object) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
+def synthetic_state_binding(*, feature_id: str, version: int, state: str) -> dict:
+    checkpoint_states = {
+        "blocked_requirement", "blocked_usage", "blocked_auth", "blocked_test",
+        "blocked_external_prerequisite", "blocked_unknown", "needs_human", "paused",
+    }
+    return {
+        "schema_version": "dal.state-binding/1.0",
+        "feature_id": feature_id,
+        "feature_version": version,
+        "feature_state": state,
+        "checkpoint_state": "coding" if state in checkpoint_states else None,
+        "reason_code": None,
+        "plan_version": None,
+        "artifact_sha256": None,
+        "repository_id": "repo-placeholder",
+        "base_sha": "0" * 40,
+        "result_sha": None,
+        "last_verified_sha": None,
+        "decision_frontier_version": 1,
+        "policy_version": "dal-policy/1.0",
+        "capability_epoch": 1,
+        "external_effect_inventory_sha256": hashlib.sha256(b"").hexdigest(),
+    }
+
+
 def semantic_operation_input(
     test_id: str,
     variant: str,
@@ -222,32 +247,70 @@ def semantic_operation_input(
             "approval_expired": {"server_now": "2026-08-09T12:06:00Z", "decision": dict(decision, expires_at="2026-08-09T12:10:00Z")},
             "decision_expired": {"server_now": "2026-08-09T12:06:00Z", "approval": dict(approval, expires_at="2026-08-09T12:10:00Z"), "decision": dict(decision, expires_at="2026-08-09T12:05:00Z")},
         }[variant]
-        facts = {"server_now": now, "approval": approval, "decision": decision, "submitted_decision_version": 3, **changes}
+        observed_state_sha256 = digest(
+            synthetic_state_binding(
+                feature_id=target["entity_id"],
+                version=target["version"],
+                state=target["state"],
+            )
+        )
+        facts = {"server_now": now, "approval": approval, "decision": decision, "submitted_decision_version": 3, "observed_state_sha256": observed_state_sha256, **changes}
         actions, results = ([{"command": "approve_plan", "decision_id": "decision-0001", "approval_id": "approval-0001"}], [])
     elif test_id == "DAL-T-STATEHASH-001":
-        protected = {"aggregate_version": 7, "base_sha": "1" * 40, "plan_sha256": "1" * 64, "ordered_steps": ["plan", "approve"], "effect_inventory": ["effect-a", "effect-b"]}
+        protected = {
+            "schema_version": "dal.state-binding/1.0",
+            "feature_id": "fixture-entity",
+            "feature_version": 7,
+            "feature_state": "awaiting_plan_review",
+            "checkpoint_state": "coding",
+            "reason_code": None,
+            "plan_version": 1,
+            "artifact_sha256": None,
+            "repository_id": "repo-0001",
+            "base_sha": "1" * 40,
+            "result_sha": None,
+            "last_verified_sha": None,
+            "decision_frontier_version": 3,
+            "policy_version": "dal-policy/1.0",
+            "capability_epoch": 1,
+            "external_effect_inventory_sha256": digest({"effects": ["effect-a", "effect-b"]}),
+        }
         submitted = json.loads(json.dumps(protected))
         if variant == "field": submitted["base_sha"] = "2" * 40
-        elif variant == "order": submitted["ordered_steps"] = ["approve", "plan"]
+        elif variant == "order": submitted["external_effect_inventory_sha256"] = digest({"effects": ["effect-b", "effect-a"]})
         elif variant == "null": submitted["base_sha"] = None
-        elif variant == "version": submitted["aggregate_version"] = 6
+        elif variant == "version": submitted["feature_version"] = 6
         elif variant == "forged_digest": submitted["binding_sha256"] = "f" * 64
-        elif variant == "effect_inventory_order": submitted["effect_inventory"] = ["effect-b", "effect-a"]
-        elif variant == "effect_inventory_membership": submitted["effect_inventory"] = ["effect-a", "effect-c"]
+        elif variant == "effect_inventory_order": submitted["external_effect_inventory_sha256"] = digest({"effects": ["effect-b", "effect-a"], "schema_version": "dal.external-effect-inventory-binding/1.0"})
+        elif variant == "effect_inventory_membership": submitted["external_effect_inventory_sha256"] = digest({"effects": ["effect-a", "effect-c"]})
         actions = [{"command": "consume_decision", "decision_id": "decision-0001"}]
-        facts = {"protected_binding": protected, "submitted_binding": submitted, "canonicalizer": "rfc8785-jcs", "protected_binding_sha256": digest(protected)}
+        facts = {"protected_binding": protected, "current_binding": submitted, "protected_binding_sha256": digest(protected), "observed_binding_sha256": digest(protected)}
         results = []
     elif test_id == "DAL-T-ARTIFACTHASH-001":
-        protected = {"body_sha256": "1" * 64, "body_size": 128, "media_type": "text/markdown", "canonicalizer": "rfc8785-jcs", "metadata": {"path": "plan.md", "version": 1}}
+        canonical_body = "a" * 128
+        protected = {
+            "schema_version": "dal.artifact-binding/1.0",
+            "artifact_schema_version": "dal.plan-artifact/1.0",
+            "media_type": "text/markdown",
+            "feature_id": "fixture-entity",
+            "artifact_kind": "plan",
+            "artifact_version": 1,
+            "base_sha": "1" * 40,
+            "body_canonicalization": "utf8-lf-nfc/1.0",
+            "body_sha256": hashlib.sha256(canonical_body.encode("utf-8")).hexdigest(),
+            "body_size": len(canonical_body.encode("utf-8")),
+            "acceptance_sha256": None,
+            "allowed_paths_sha256": None,
+        }
         submitted = json.loads(json.dumps(protected))
         if variant == "body": submitted["body_sha256"] = "2" * 64
-        elif variant == "metadata": submitted["metadata"]["version"] = 2
-        elif variant == "canonicalizer": submitted["canonicalizer"] = "json-default"
-        elif variant == "field_boundary": submitted["metadata"] = {"path": "plan.md", "version": "1"}
+        elif variant == "metadata": submitted["artifact_version"] = 2
+        elif variant == "canonicalizer": submitted["body_canonicalization"] = "json-default"
+        elif variant == "field_boundary": submitted["artifact_version"] = "1"
         elif variant == "forged_digest": submitted["binding_sha256"] = "f" * 64
         actions = [{"command": "consume_artifact_approval", "artifact_id": "artifact-0001"}]
-        facts = {"protected_artifact": protected, "submitted_artifact": submitted, "protected_binding_sha256": digest(protected)}
-        results = [{"source": "artifact_store", "status": "completed", "body_size": 128, "body_sha256": "1" * 64}]
+        facts = {"protected_artifact": protected, "current_artifact": submitted, "protected_binding_sha256": digest(protected), "observed_binding_sha256": digest(protected)}
+        results = [{"source": "artifact_store", "status": "completed", "canonical_body_utf8": canonical_body}]
     elif test_id == "DAL-T-REC-001":
         transport = {
             "synthetic_kill": "process_killed_after_dispatch",
@@ -437,15 +500,48 @@ def semantic_operation_input(
         facts = {"server_now": now, "server_projection": server, "latest_projection_id": "projection-0005"}
         results = [{"source": "decision_store", "status": "completed", "projection": server}]
     elif test_id == "DAL-T-DOCK-001":
-        candidates = [
-            {"decision_id": "d1", "risk": "high", "deadline": "2026-08-09T12:01:00Z", "root_id": "r1", "depends_on": []},
-            {"decision_id": "d2", "risk": "medium", "deadline": "2026-08-09T12:02:00Z", "root_id": "r2", "depends_on": []},
-        ]
-        if variant == "tie": candidates[1].update({"risk": "high", "deadline": candidates[0]["deadline"]})
-        elif variant == "dependency": candidates[0]["depends_on"] = ["d2"]
-        elif variant == "same_root": candidates[1]["root_id"] = "r1"
-        elif variant == "bulk_high_risk": candidates = [dict(candidates[0], decision_id=f"d{i}") for i in range(1, 7)]
-        actions, facts, results = ([{"command": "rank_decisions"}, {"command": "project_decision_dock", "maximum_items": 5}], {"server_now": "2026-08-09T12:00:00Z", "candidates": candidates, "stable_tiebreaker": "decision_id"}, [])
+        # §3.5.1: rank inputs are the frozen first-match fields, not a free
+        # `risk`/`deadline` guess. Each candidate carries the closed set below.
+        def cand(
+            decision_id, *,
+            root_id, expires_at,
+            safety_or_irreversible=False, blocking_scope="none", depends_on=None,
+            status="open", created_at="2026-08-09T11:00:00Z",
+        ):
+            return {
+                "decision_id": decision_id, "root_id": root_id, "status": status,
+                "safety_or_irreversible": safety_or_irreversible,
+                "blocking_scope": blocking_scope,
+                "depends_on": depends_on or [],
+                "expires_at": expires_at, "created_at": created_at,
+            }
+
+        if variant == "mixed_rank":
+            candidates = [
+                cand("d1", root_id="r1", expires_at="2026-08-09T12:01:00Z", blocking_scope="global"),
+                cand("d2", root_id="r2", expires_at="2026-08-09T12:20:00Z"),
+            ]
+        elif variant == "tie":
+            candidates = [
+                cand("d1", root_id="r1", expires_at="2026-08-09T12:01:00Z", blocking_scope="global"),
+                cand("d2", root_id="r2", expires_at="2026-08-09T12:01:00Z", blocking_scope="global"),
+            ]
+        elif variant == "dependency":
+            candidates = [
+                cand("d1", root_id="r1", expires_at="2026-08-09T12:01:00Z", blocking_scope="global", depends_on=["d2"]),
+                cand("d2", root_id="r2", expires_at="2026-08-09T12:20:00Z"),
+            ]
+        elif variant == "same_root":
+            candidates = [
+                cand("d1", root_id="r1", expires_at="2026-08-09T12:01:00Z", blocking_scope="global"),
+                cand("d2", root_id="r1", expires_at="2026-08-09T12:20:00Z"),
+            ]
+        elif variant == "bulk_high_risk":
+            candidates = [
+                cand(f"d{i}", root_id=f"r{i}", expires_at="2026-08-09T12:05:00Z", safety_or_irreversible=True)
+                for i in range(1, 7)
+            ]
+        actions, facts, results = ([{"command": "rank_decisions"}, {"command": "project_decision_dock", "maximum_items": 5}], {"source": "decision-store"}, [{"source": "decision-store", "status": "completed", "server_now": "2026-08-09T12:00:00Z", "candidates": candidates}])
     elif test_id == "DAL-T-BATCH-001":
         base_time = "2026-08-09T12:00:00Z"
         valid = {"decision_id": "d1", "status": "open", "risk": "medium", "created_at": base_time, "expires_at": "2026-08-09T12:10:00Z"}
@@ -2800,8 +2896,28 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
     for gate in ("G2", "G4"):
         many("DAL-T-CRED-001", [f"{v}--{gate.lower()}" for v in ["env", "fd", "keychain", "proxy", "parent_process", "log"]], gate, ["DAL-017", "DAL-025"], "coding", "needs_human", "feature", "POLICY_FAILURE", "APPLIED", None, ["feature.blocked"])
     many("DAL-T-CARD-001", ["resolved", "expired", "superseded", "stale", "apns_loss", "old_click"], "G1", ["DAL-013"], "awaiting_plan_review", "awaiting_plan_review", None, None, "DECISION_STALE", None, [])
-    many("DAL-T-DOCK-001", ["mixed_rank", "tie", "dependency", "same_root"], "G1", ["DAL-013"], "needs_human", "needs_human", None, None, "APPLIED", None, ["decision.created"], allowed_writes=["decision_projection", "operation_receipt", "audit"], receipt_schema_override="dal.operation-receipt/1.0")
-    add("DAL-T-DOCK-001", "bulk_high_risk", "G1", ["DAL-013"], "needs_human", "needs_human", None, None, "POLICY_DENIED", None, [])
+    def dock_assertions(ordered, ranks, evictions):
+        return [
+            {"field": "ordered_decision_ids", "operator": "equals", "value": ordered},
+            {"field": "ranks", "operator": "equals", "value": ranks},
+            {"field": "evictions", "operator": "equals", "value": evictions},
+        ]
+
+    for dock_variant, dock_ordered, dock_ranks, dock_evictions in [
+        ("mixed_rank", ["d1", "d2"], {"d1": 1, "d2": 4}, {}),
+        ("tie", ["d1", "d2"], {"d1": 1, "d2": 1}, {}),
+        ("dependency", ["d2"], {"d2": 4}, {"d1": "dependency"}),
+        ("same_root", ["d1"], {"d1": 1}, {"d2": "same_root"}),
+        ("bulk_high_risk", ["d1", "d2", "d3", "d4", "d5"],
+         {"d1": 0, "d2": 0, "d3": 0, "d4": 0, "d5": 0}, {"d6": "maximum_items"}),
+    ]:
+        add(
+            "DAL-T-DOCK-001", dock_variant, "G1", ["DAL-013"], "needs_human",
+            "needs_human", None, None, "APPLIED", None, ["decision.created"],
+            allowed_writes=["decision_projection", "operation_receipt", "audit"],
+            receipt_schema_override="dal.operation-receipt/1.0",
+            scenario_assertions=dock_assertions(dock_ordered, dock_ranks, dock_evictions),
+        )
     many("DAL-T-BATCH-001", ["continuous", "service_restart", "fifth_item", "high_risk_interrupt"], "G1", ["DAL-013"], "needs_human", "needs_human", None, None, "APPLIED", None, ["notification.batch_flushed"], allowed_writes=["notification_batch", "notification_outbox", "operation_receipt", "audit"], receipt_schema_override="dal.operation-receipt/1.0")
     add(
         "DAL-T-BATCH-001", "all_invalid", "G1", ["DAL-013"], "needs_human", "needs_human",

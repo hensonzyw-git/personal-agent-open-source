@@ -486,6 +486,41 @@ def test_downgrade_returns_the_database_to_base_and_upgrade_replays(
     assert sorted(inspect(engine).get_table_names()) == migrated
 
 
+def test_0003_downgrade_handles_existing_decision_event(tmp_path: Path) -> None:
+    """A used Dock database can return to 0002 without CHECK failure."""
+
+    from sqlalchemy import inspect, text
+
+    from personal_agent_dal.storage import db
+    from personal_agent_dal.storage.engine import create_database_engine
+
+    engine = create_database_engine(tmp_path / "dal-used-dock.db")
+    db.upgrade(engine)
+    with engine.connect() as connection, connection.begin():
+        connection.execute(
+            text(
+                "INSERT INTO operation_events "
+                "(operation_event_id, event_type, operation_id, occurred_at, detail) "
+                "VALUES ('dock-event', 'decision.created', 'dock-op', "
+                "'2026-08-14T00:00:00.000000Z', '{}')"
+            )
+        )
+
+    db.downgrade(engine, "0002")
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT count(*) FROM operation_events WHERE event_type = 'decision.created'")
+        ).scalar_one() == 0
+    assert "root_id" not in {
+        column["name"] for column in inspect(engine).get_columns("decisions")
+    }
+
+    db.upgrade(engine)
+    assert "root_id" in {
+        column["name"] for column in inspect(engine).get_columns("decisions")
+    }
+
+
 def test_migrated_and_metadata_built_schemas_agree(tmp_path: Path) -> None:
     """`create_all` and the migration must produce the same database.
 

@@ -54,7 +54,7 @@
             "actor_type": "human",
             "concurrency_group": "approval-cas-1",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-c4e5476406ed9a6269bb83f9",
+            "idempotency_key": "idem-7541f6a26fe84a4e8f8904c7",
             "input": {
               "action_sequence": [
                 {
@@ -77,6 +77,7 @@
                   "status": "open",
                   "version": 3
                 },
+                "observed_state_sha256": "68fe15b091c2279ecfcc73adfaa97b0f03ee3a79f959b362e1cc4826523aa81d",
                 "server_now": "2026-08-09T12:00:00Z",
                 "submitted_decision_version": 3
               },
@@ -90,7 +91,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-6c6970a318ffd6f146c8af56",
+            "operation_id": "op-d391605047aedd78158b3d0a",
             "operation_spec_id": "OP-APP-001",
             "schema_version": "dal.test-operation-command/1.0"
           },
@@ -98,7 +99,7 @@
             "actor_type": "human",
             "concurrency_group": "approval-cas-1",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-9f720b732d8906a162609c50",
+            "idempotency_key": "idem-0efc3f5a855d1efd5330ef93",
             "input": {
               "action_sequence": [
                 {
@@ -121,6 +122,7 @@
                   "status": "open",
                   "version": 3
                 },
+                "observed_state_sha256": "68fe15b091c2279ecfcc73adfaa97b0f03ee3a79f959b362e1cc4826523aa81d",
                 "server_now": "2026-08-09T12:00:00Z",
                 "submitted_decision_version": 3
               },
@@ -134,7 +136,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-3a38b57ee72293eb6a9ad8c1",
+            "operation_id": "op-5f4937372acf389eb5052d5f",
             "operation_spec_id": "OP-APP-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -143,7 +145,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-267ab9e0c11881c751f2e79d",
+            "idempotency_key": "idem-c3fb50f6f5a983a132db509a",
             "input": {
               "action_sequence": [
                 {
@@ -165,6 +167,7 @@
                   "status": "open",
                   "version": 3
                 },
+                "observed_state_sha256": "68fe15b091c2279ecfcc73adfaa97b0f03ee3a79f959b362e1cc4826523aa81d",
                 "server_now": "2026-08-09T12:00:00Z",
                 "submitted_decision_version": 3
               },
@@ -177,7 +180,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-3344f0575eb7aa4554861df4",
+            "operation_id": "op-77269a8d072bf1d773c13550",
             "operation_spec_id": "OP-APP-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -186,7 +189,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-4fdb81090a53de16ff344091",
+            "idempotency_key": "idem-f3fabb518b1d093ecc9b3089",
             "input": {
               "action_sequence": [
                 {
@@ -208,6 +211,7 @@
                   "status": "open",
                   "version": 3
                 },
+                "observed_state_sha256": "68fe15b091c2279ecfcc73adfaa97b0f03ee3a79f959b362e1cc4826523aa81d",
                 "server_now": "2026-08-09T12:00:00Z",
                 "submitted_decision_version": 3
               },
@@ -220,7 +224,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-70b8f32c34d2851c59ed8fd4",
+            "operation_id": "op-451560579e2d668693140e55",
             "operation_spec_id": "OP-APP-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -229,7 +233,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-d3ebc850bddef18fdb93bf38",
+            "idempotency_key": "idem-ead0dcca708fff81dcfc59ee",
             "input": {
               "action_sequence": [
                 {
@@ -251,6 +255,7 @@
                   "status": "open",
                   "version": 3
                 },
+                "observed_state_sha256": "68fe15b091c2279ecfcc73adfaa97b0f03ee3a79f959b362e1cc4826523aa81d",
                 "server_now": "2026-08-09T12:00:00Z",
                 "submitted_decision_version": 2
               },
@@ -263,7 +268,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-cb8b486545124da5aa934ef3",
+            "operation_id": "op-c1f4219305f5e379ac78c0db",
             "operation_spec_id": "OP-APP-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -309,7 +314,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-f767a040866993fc8244e9be",
+            "idempotency_key": "idem-8a38fdf08281599b8d91a71b",
             "input": {
               "action_sequence": [
                 {
@@ -331,6 +336,7 @@
                   "status": "open",
                   "version": 3
                 },
+                "observed_state_sha256": "68fe15b091c2279ecfcc73adfaa97b0f03ee3a79f959b362e1cc4826523aa81d",
                 "server_now": "2026-08-09T12:06:00Z",
                 "submitted_decision_version": 3
               },
@@ -343,7 +349,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-261dddc15a85191445b9fc99",
+            "operation_id": "op-22d46084113b5c317f999378",
             "operation_spec_id": "OP-APP-EXP-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -352,7 +358,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-87ede44302d10e28f8019a5f",
+            "idempotency_key": "idem-3388debbecff8ee97666a932",
             "input": {
               "action_sequence": [
                 {
@@ -374,6 +380,7 @@
                   "status": "open",
                   "version": 3
                 },
+                "observed_state_sha256": "68fe15b091c2279ecfcc73adfaa97b0f03ee3a79f959b362e1cc4826523aa81d",
                 "server_now": "2026-08-09T12:06:00Z",
                 "submitted_decision_version": 3
               },
@@ -386,7 +393,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-d9b684b26c33211bf4d6ff1d",
+            "operation_id": "op-309beebfe8815860fbb3c445",
             "operation_spec_id": "OP-APP-EXP-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -434,7 +441,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-2e6f2097a7a2938151353ad3",
+            "idempotency_key": "idem-3ccb57fca8e5b6968357b094",
             "input": {
               "action_sequence": [
                 {
@@ -443,32 +450,40 @@
                 }
               ],
               "authoritative_facts": {
-                "protected_artifact": {
-                  "body_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "body_size": 128,
-                  "canonicalizer": "rfc8785-jcs",
-                  "media_type": "text/markdown",
-                  "metadata": {
-                    "path": "plan.md",
-                    "version": 1
-                  }
-                },
-                "protected_binding_sha256": "69eb63070a90746a75bcdf681e5edcee13f97adb31e4e96616fe06f01e773f47",
-                "submitted_artifact": {
+                "current_artifact": {
+                  "acceptance_sha256": null,
+                  "allowed_paths_sha256": null,
+                  "artifact_kind": "plan",
+                  "artifact_schema_version": "dal.plan-artifact/1.0",
+                  "artifact_version": 1,
+                  "base_sha": "1111111111111111111111111111111111111111",
+                  "body_canonicalization": "utf8-lf-nfc/1.0",
                   "body_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
                   "body_size": 128,
-                  "canonicalizer": "rfc8785-jcs",
+                  "feature_id": "fixture-entity",
                   "media_type": "text/markdown",
-                  "metadata": {
-                    "path": "plan.md",
-                    "version": 1
-                  }
-                }
+                  "schema_version": "dal.artifact-binding/1.0"
+                },
+                "observed_binding_sha256": "7328fb7f103ca3b4da93fb03f283abba8c57a24cc99b11699fa947aa215cef0b",
+                "protected_artifact": {
+                  "acceptance_sha256": null,
+                  "allowed_paths_sha256": null,
+                  "artifact_kind": "plan",
+                  "artifact_schema_version": "dal.plan-artifact/1.0",
+                  "artifact_version": 1,
+                  "base_sha": "1111111111111111111111111111111111111111",
+                  "body_canonicalization": "utf8-lf-nfc/1.0",
+                  "body_sha256": "6836cf13bac400e9105071cd6af47084dfacad4e5e302c94bfed24e013afb73e",
+                  "body_size": 128,
+                  "feature_id": "fixture-entity",
+                  "media_type": "text/markdown",
+                  "schema_version": "dal.artifact-binding/1.0"
+                },
+                "protected_binding_sha256": "7328fb7f103ca3b4da93fb03f283abba8c57a24cc99b11699fa947aa215cef0b"
               },
               "injected_results": [
                 {
-                  "body_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "body_size": 128,
+                  "canonical_body_utf8": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   "source": "artifact_store",
                   "status": "completed"
                 }
@@ -481,7 +496,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-e1cc14b630a1d51ec8c34dcb",
+            "operation_id": "op-c18b3dec22b0c838e685ad15",
             "operation_spec_id": "OP-ARTIFACTHASH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -490,7 +505,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-84746bbe68c0ef30dc50afd4",
+            "idempotency_key": "idem-2adab5abb46648e8618d3d5c",
             "input": {
               "action_sequence": [
                 {
@@ -499,32 +514,40 @@
                 }
               ],
               "authoritative_facts": {
-                "protected_artifact": {
-                  "body_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                "current_artifact": {
+                  "acceptance_sha256": null,
+                  "allowed_paths_sha256": null,
+                  "artifact_kind": "plan",
+                  "artifact_schema_version": "dal.plan-artifact/1.0",
+                  "artifact_version": 1,
+                  "base_sha": "1111111111111111111111111111111111111111",
+                  "body_canonicalization": "json-default",
+                  "body_sha256": "6836cf13bac400e9105071cd6af47084dfacad4e5e302c94bfed24e013afb73e",
                   "body_size": 128,
-                  "canonicalizer": "rfc8785-jcs",
+                  "feature_id": "fixture-entity",
                   "media_type": "text/markdown",
-                  "metadata": {
-                    "path": "plan.md",
-                    "version": 1
-                  }
+                  "schema_version": "dal.artifact-binding/1.0"
                 },
-                "protected_binding_sha256": "69eb63070a90746a75bcdf681e5edcee13f97adb31e4e96616fe06f01e773f47",
-                "submitted_artifact": {
-                  "body_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                "observed_binding_sha256": "7328fb7f103ca3b4da93fb03f283abba8c57a24cc99b11699fa947aa215cef0b",
+                "protected_artifact": {
+                  "acceptance_sha256": null,
+                  "allowed_paths_sha256": null,
+                  "artifact_kind": "plan",
+                  "artifact_schema_version": "dal.plan-artifact/1.0",
+                  "artifact_version": 1,
+                  "base_sha": "1111111111111111111111111111111111111111",
+                  "body_canonicalization": "utf8-lf-nfc/1.0",
+                  "body_sha256": "6836cf13bac400e9105071cd6af47084dfacad4e5e302c94bfed24e013afb73e",
                   "body_size": 128,
-                  "canonicalizer": "json-default",
+                  "feature_id": "fixture-entity",
                   "media_type": "text/markdown",
-                  "metadata": {
-                    "path": "plan.md",
-                    "version": 1
-                  }
-                }
+                  "schema_version": "dal.artifact-binding/1.0"
+                },
+                "protected_binding_sha256": "7328fb7f103ca3b4da93fb03f283abba8c57a24cc99b11699fa947aa215cef0b"
               },
               "injected_results": [
                 {
-                  "body_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "body_size": 128,
+                  "canonical_body_utf8": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   "source": "artifact_store",
                   "status": "completed"
                 }
@@ -537,7 +560,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-32b4bba306da41cfda7f3e7c",
+            "operation_id": "op-6eb2ac5ee4f8be521ca3a764",
             "operation_spec_id": "OP-ARTIFACTHASH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -546,7 +569,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-4bf479e4950743d4dfe0402d",
+            "idempotency_key": "idem-156cf79a4f8170c83d35b24a",
             "input": {
               "action_sequence": [
                 {
@@ -555,32 +578,40 @@
                 }
               ],
               "authoritative_facts": {
-                "protected_artifact": {
-                  "body_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                "current_artifact": {
+                  "acceptance_sha256": null,
+                  "allowed_paths_sha256": null,
+                  "artifact_kind": "plan",
+                  "artifact_schema_version": "dal.plan-artifact/1.0",
+                  "artifact_version": "1",
+                  "base_sha": "1111111111111111111111111111111111111111",
+                  "body_canonicalization": "utf8-lf-nfc/1.0",
+                  "body_sha256": "6836cf13bac400e9105071cd6af47084dfacad4e5e302c94bfed24e013afb73e",
                   "body_size": 128,
-                  "canonicalizer": "rfc8785-jcs",
+                  "feature_id": "fixture-entity",
                   "media_type": "text/markdown",
-                  "metadata": {
-                    "path": "plan.md",
-                    "version": 1
-                  }
+                  "schema_version": "dal.artifact-binding/1.0"
                 },
-                "protected_binding_sha256": "69eb63070a90746a75bcdf681e5edcee13f97adb31e4e96616fe06f01e773f47",
-                "submitted_artifact": {
-                  "body_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                "observed_binding_sha256": "7328fb7f103ca3b4da93fb03f283abba8c57a24cc99b11699fa947aa215cef0b",
+                "protected_artifact": {
+                  "acceptance_sha256": null,
+                  "allowed_paths_sha256": null,
+                  "artifact_kind": "plan",
+                  "artifact_schema_version": "dal.plan-artifact/1.0",
+                  "artifact_version": 1,
+                  "base_sha": "1111111111111111111111111111111111111111",
+                  "body_canonicalization": "utf8-lf-nfc/1.0",
+                  "body_sha256": "6836cf13bac400e9105071cd6af47084dfacad4e5e302c94bfed24e013afb73e",
                   "body_size": 128,
-                  "canonicalizer": "rfc8785-jcs",
+                  "feature_id": "fixture-entity",
                   "media_type": "text/markdown",
-                  "metadata": {
-                    "path": "plan.md",
-                    "version": "1"
-                  }
-                }
+                  "schema_version": "dal.artifact-binding/1.0"
+                },
+                "protected_binding_sha256": "7328fb7f103ca3b4da93fb03f283abba8c57a24cc99b11699fa947aa215cef0b"
               },
               "injected_results": [
                 {
-                  "body_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "body_size": 128,
+                  "canonical_body_utf8": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   "source": "artifact_store",
                   "status": "completed"
                 }
@@ -593,7 +624,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-e0c6665010222079fab2ff27",
+            "operation_id": "op-67039f64089d103180c2c4bc",
             "operation_spec_id": "OP-ARTIFACTHASH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -602,7 +633,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-935eb440681c4262c9c9caa1",
+            "idempotency_key": "idem-fea40ce78427586d858516b0",
             "input": {
               "action_sequence": [
                 {
@@ -611,33 +642,41 @@
                 }
               ],
               "authoritative_facts": {
-                "protected_artifact": {
-                  "body_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "body_size": 128,
-                  "canonicalizer": "rfc8785-jcs",
-                  "media_type": "text/markdown",
-                  "metadata": {
-                    "path": "plan.md",
-                    "version": 1
-                  }
-                },
-                "protected_binding_sha256": "69eb63070a90746a75bcdf681e5edcee13f97adb31e4e96616fe06f01e773f47",
-                "submitted_artifact": {
+                "current_artifact": {
+                  "acceptance_sha256": null,
+                  "allowed_paths_sha256": null,
+                  "artifact_kind": "plan",
+                  "artifact_schema_version": "dal.plan-artifact/1.0",
+                  "artifact_version": 1,
+                  "base_sha": "1111111111111111111111111111111111111111",
                   "binding_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-                  "body_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                  "body_canonicalization": "utf8-lf-nfc/1.0",
+                  "body_sha256": "6836cf13bac400e9105071cd6af47084dfacad4e5e302c94bfed24e013afb73e",
                   "body_size": 128,
-                  "canonicalizer": "rfc8785-jcs",
+                  "feature_id": "fixture-entity",
                   "media_type": "text/markdown",
-                  "metadata": {
-                    "path": "plan.md",
-                    "version": 1
-                  }
-                }
+                  "schema_version": "dal.artifact-binding/1.0"
+                },
+                "observed_binding_sha256": "7328fb7f103ca3b4da93fb03f283abba8c57a24cc99b11699fa947aa215cef0b",
+                "protected_artifact": {
+                  "acceptance_sha256": null,
+                  "allowed_paths_sha256": null,
+                  "artifact_kind": "plan",
+                  "artifact_schema_version": "dal.plan-artifact/1.0",
+                  "artifact_version": 1,
+                  "base_sha": "1111111111111111111111111111111111111111",
+                  "body_canonicalization": "utf8-lf-nfc/1.0",
+                  "body_sha256": "6836cf13bac400e9105071cd6af47084dfacad4e5e302c94bfed24e013afb73e",
+                  "body_size": 128,
+                  "feature_id": "fixture-entity",
+                  "media_type": "text/markdown",
+                  "schema_version": "dal.artifact-binding/1.0"
+                },
+                "protected_binding_sha256": "7328fb7f103ca3b4da93fb03f283abba8c57a24cc99b11699fa947aa215cef0b"
               },
               "injected_results": [
                 {
-                  "body_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "body_size": 128,
+                  "canonical_body_utf8": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   "source": "artifact_store",
                   "status": "completed"
                 }
@@ -650,7 +689,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-a51c8741a55ad8cbddb7357c",
+            "operation_id": "op-4c91612aad82ce8868675a0f",
             "operation_spec_id": "OP-ARTIFACTHASH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -659,7 +698,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-ffcd12695e07a4f0bf36d9d2",
+            "idempotency_key": "idem-063d310c0342375197a75083",
             "input": {
               "action_sequence": [
                 {
@@ -668,32 +707,40 @@
                 }
               ],
               "authoritative_facts": {
-                "protected_artifact": {
-                  "body_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                "current_artifact": {
+                  "acceptance_sha256": null,
+                  "allowed_paths_sha256": null,
+                  "artifact_kind": "plan",
+                  "artifact_schema_version": "dal.plan-artifact/1.0",
+                  "artifact_version": 2,
+                  "base_sha": "1111111111111111111111111111111111111111",
+                  "body_canonicalization": "utf8-lf-nfc/1.0",
+                  "body_sha256": "6836cf13bac400e9105071cd6af47084dfacad4e5e302c94bfed24e013afb73e",
                   "body_size": 128,
-                  "canonicalizer": "rfc8785-jcs",
+                  "feature_id": "fixture-entity",
                   "media_type": "text/markdown",
-                  "metadata": {
-                    "path": "plan.md",
-                    "version": 1
-                  }
+                  "schema_version": "dal.artifact-binding/1.0"
                 },
-                "protected_binding_sha256": "69eb63070a90746a75bcdf681e5edcee13f97adb31e4e96616fe06f01e773f47",
-                "submitted_artifact": {
-                  "body_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                "observed_binding_sha256": "7328fb7f103ca3b4da93fb03f283abba8c57a24cc99b11699fa947aa215cef0b",
+                "protected_artifact": {
+                  "acceptance_sha256": null,
+                  "allowed_paths_sha256": null,
+                  "artifact_kind": "plan",
+                  "artifact_schema_version": "dal.plan-artifact/1.0",
+                  "artifact_version": 1,
+                  "base_sha": "1111111111111111111111111111111111111111",
+                  "body_canonicalization": "utf8-lf-nfc/1.0",
+                  "body_sha256": "6836cf13bac400e9105071cd6af47084dfacad4e5e302c94bfed24e013afb73e",
                   "body_size": 128,
-                  "canonicalizer": "rfc8785-jcs",
+                  "feature_id": "fixture-entity",
                   "media_type": "text/markdown",
-                  "metadata": {
-                    "path": "plan.md",
-                    "version": 2
-                  }
-                }
+                  "schema_version": "dal.artifact-binding/1.0"
+                },
+                "protected_binding_sha256": "7328fb7f103ca3b4da93fb03f283abba8c57a24cc99b11699fa947aa215cef0b"
               },
               "injected_results": [
                 {
-                  "body_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-                  "body_size": 128,
+                  "canonical_body_utf8": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   "source": "artifact_store",
                   "status": "completed"
                 }
@@ -706,7 +753,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-4d8c6d2cad47bb5c273a4237",
+            "operation_id": "op-e8e02c4fb2ce287becb332fe",
             "operation_spec_id": "OP-ARTIFACTHASH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -3596,11 +3643,14 @@
         "decision-store"
       ],
       "allowed_receipt_codes": [
-        "APPLIED",
-        "POLICY_DENIED"
+        "APPLIED"
       ],
       "atomic_write_sets_by_variant": {
-        "bulk_high_risk": [],
+        "bulk_high_risk": [
+          "decision_projection",
+          "operation_receipt",
+          "audit"
+        ],
         "dependency": [
           "decision_projection",
           "operation_receipt",
@@ -3646,7 +3696,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-a3e7bfe2ccd8e24c1848b530",
+            "idempotency_key": "idem-a30af942c9edc68bc6e32d25",
             "input": {
               "action_sequence": [
                 {
@@ -3658,54 +3708,77 @@
                 }
               ],
               "authoritative_facts": {
-                "candidates": [
-                  {
-                    "deadline": "2026-08-09T12:01:00Z",
-                    "decision_id": "d1",
-                    "depends_on": [],
-                    "risk": "high",
-                    "root_id": "r1"
-                  },
-                  {
-                    "deadline": "2026-08-09T12:01:00Z",
-                    "decision_id": "d2",
-                    "depends_on": [],
-                    "risk": "high",
-                    "root_id": "r1"
-                  },
-                  {
-                    "deadline": "2026-08-09T12:01:00Z",
-                    "decision_id": "d3",
-                    "depends_on": [],
-                    "risk": "high",
-                    "root_id": "r1"
-                  },
-                  {
-                    "deadline": "2026-08-09T12:01:00Z",
-                    "decision_id": "d4",
-                    "depends_on": [],
-                    "risk": "high",
-                    "root_id": "r1"
-                  },
-                  {
-                    "deadline": "2026-08-09T12:01:00Z",
-                    "decision_id": "d5",
-                    "depends_on": [],
-                    "risk": "high",
-                    "root_id": "r1"
-                  },
-                  {
-                    "deadline": "2026-08-09T12:01:00Z",
-                    "decision_id": "d6",
-                    "depends_on": [],
-                    "risk": "high",
-                    "root_id": "r1"
-                  }
-                ],
-                "server_now": "2026-08-09T12:00:00Z",
-                "stable_tiebreaker": "decision_id"
+                "source": "decision-store"
               },
-              "injected_results": [],
+              "injected_results": [
+                {
+                  "candidates": [
+                    {
+                      "blocking_scope": "none",
+                      "created_at": "2026-08-09T11:00:00Z",
+                      "decision_id": "d1",
+                      "depends_on": [],
+                      "expires_at": "2026-08-09T12:05:00Z",
+                      "root_id": "r1",
+                      "safety_or_irreversible": true,
+                      "status": "open"
+                    },
+                    {
+                      "blocking_scope": "none",
+                      "created_at": "2026-08-09T11:00:00Z",
+                      "decision_id": "d2",
+                      "depends_on": [],
+                      "expires_at": "2026-08-09T12:05:00Z",
+                      "root_id": "r2",
+                      "safety_or_irreversible": true,
+                      "status": "open"
+                    },
+                    {
+                      "blocking_scope": "none",
+                      "created_at": "2026-08-09T11:00:00Z",
+                      "decision_id": "d3",
+                      "depends_on": [],
+                      "expires_at": "2026-08-09T12:05:00Z",
+                      "root_id": "r3",
+                      "safety_or_irreversible": true,
+                      "status": "open"
+                    },
+                    {
+                      "blocking_scope": "none",
+                      "created_at": "2026-08-09T11:00:00Z",
+                      "decision_id": "d4",
+                      "depends_on": [],
+                      "expires_at": "2026-08-09T12:05:00Z",
+                      "root_id": "r4",
+                      "safety_or_irreversible": true,
+                      "status": "open"
+                    },
+                    {
+                      "blocking_scope": "none",
+                      "created_at": "2026-08-09T11:00:00Z",
+                      "decision_id": "d5",
+                      "depends_on": [],
+                      "expires_at": "2026-08-09T12:05:00Z",
+                      "root_id": "r5",
+                      "safety_or_irreversible": true,
+                      "status": "open"
+                    },
+                    {
+                      "blocking_scope": "none",
+                      "created_at": "2026-08-09T11:00:00Z",
+                      "decision_id": "d6",
+                      "depends_on": [],
+                      "expires_at": "2026-08-09T12:05:00Z",
+                      "root_id": "r6",
+                      "safety_or_irreversible": true,
+                      "status": "open"
+                    }
+                  ],
+                  "server_now": "2026-08-09T12:00:00Z",
+                  "source": "decision-store",
+                  "status": "completed"
+                }
+              ],
               "schema_version": "dal.operation-input/1.0",
               "target": {
                 "entity_id": "fixture-entity",
@@ -3714,7 +3787,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-5ce01f27de9c5dd1f8301c25",
+            "operation_id": "op-9d53f1e599afcd924bc1133f",
             "operation_spec_id": "OP-DOCK-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -3723,7 +3796,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-4bd6c0933a69b0a1c120bcc5",
+            "idempotency_key": "idem-f7d34199e31b6ef0d37f922e",
             "input": {
               "action_sequence": [
                 {
@@ -3735,28 +3808,39 @@
                 }
               ],
               "authoritative_facts": {
-                "candidates": [
-                  {
-                    "deadline": "2026-08-09T12:01:00Z",
-                    "decision_id": "d1",
-                    "depends_on": [
-                      "d2"
-                    ],
-                    "risk": "high",
-                    "root_id": "r1"
-                  },
-                  {
-                    "deadline": "2026-08-09T12:02:00Z",
-                    "decision_id": "d2",
-                    "depends_on": [],
-                    "risk": "medium",
-                    "root_id": "r2"
-                  }
-                ],
-                "server_now": "2026-08-09T12:00:00Z",
-                "stable_tiebreaker": "decision_id"
+                "source": "decision-store"
               },
-              "injected_results": [],
+              "injected_results": [
+                {
+                  "candidates": [
+                    {
+                      "blocking_scope": "global",
+                      "created_at": "2026-08-09T11:00:00Z",
+                      "decision_id": "d1",
+                      "depends_on": [
+                        "d2"
+                      ],
+                      "expires_at": "2026-08-09T12:01:00Z",
+                      "root_id": "r1",
+                      "safety_or_irreversible": false,
+                      "status": "open"
+                    },
+                    {
+                      "blocking_scope": "none",
+                      "created_at": "2026-08-09T11:00:00Z",
+                      "decision_id": "d2",
+                      "depends_on": [],
+                      "expires_at": "2026-08-09T12:20:00Z",
+                      "root_id": "r2",
+                      "safety_or_irreversible": false,
+                      "status": "open"
+                    }
+                  ],
+                  "server_now": "2026-08-09T12:00:00Z",
+                  "source": "decision-store",
+                  "status": "completed"
+                }
+              ],
               "schema_version": "dal.operation-input/1.0",
               "target": {
                 "entity_id": "fixture-entity",
@@ -3765,7 +3849,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-abeb95dbde26ede0a398633e",
+            "operation_id": "op-7a4bc541474f8164f50e3eec",
             "operation_spec_id": "OP-DOCK-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -3774,7 +3858,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-7f690f3bef2155f0392367e5",
+            "idempotency_key": "idem-6df466468a9c118aea1c5600",
             "input": {
               "action_sequence": [
                 {
@@ -3786,26 +3870,37 @@
                 }
               ],
               "authoritative_facts": {
-                "candidates": [
-                  {
-                    "deadline": "2026-08-09T12:01:00Z",
-                    "decision_id": "d1",
-                    "depends_on": [],
-                    "risk": "high",
-                    "root_id": "r1"
-                  },
-                  {
-                    "deadline": "2026-08-09T12:02:00Z",
-                    "decision_id": "d2",
-                    "depends_on": [],
-                    "risk": "medium",
-                    "root_id": "r2"
-                  }
-                ],
-                "server_now": "2026-08-09T12:00:00Z",
-                "stable_tiebreaker": "decision_id"
+                "source": "decision-store"
               },
-              "injected_results": [],
+              "injected_results": [
+                {
+                  "candidates": [
+                    {
+                      "blocking_scope": "global",
+                      "created_at": "2026-08-09T11:00:00Z",
+                      "decision_id": "d1",
+                      "depends_on": [],
+                      "expires_at": "2026-08-09T12:01:00Z",
+                      "root_id": "r1",
+                      "safety_or_irreversible": false,
+                      "status": "open"
+                    },
+                    {
+                      "blocking_scope": "none",
+                      "created_at": "2026-08-09T11:00:00Z",
+                      "decision_id": "d2",
+                      "depends_on": [],
+                      "expires_at": "2026-08-09T12:20:00Z",
+                      "root_id": "r2",
+                      "safety_or_irreversible": false,
+                      "status": "open"
+                    }
+                  ],
+                  "server_now": "2026-08-09T12:00:00Z",
+                  "source": "decision-store",
+                  "status": "completed"
+                }
+              ],
               "schema_version": "dal.operation-input/1.0",
               "target": {
                 "entity_id": "fixture-entity",
@@ -3814,7 +3909,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-02a160cd8c7acd20ade8da80",
+            "operation_id": "op-2c2b25d82a43bac0b39f5bc9",
             "operation_spec_id": "OP-DOCK-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -3823,7 +3918,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-ae5ccdbe23d7e9cc41c56495",
+            "idempotency_key": "idem-98bfe0e94cc0a544ee67293f",
             "input": {
               "action_sequence": [
                 {
@@ -3835,26 +3930,37 @@
                 }
               ],
               "authoritative_facts": {
-                "candidates": [
-                  {
-                    "deadline": "2026-08-09T12:01:00Z",
-                    "decision_id": "d1",
-                    "depends_on": [],
-                    "risk": "high",
-                    "root_id": "r1"
-                  },
-                  {
-                    "deadline": "2026-08-09T12:02:00Z",
-                    "decision_id": "d2",
-                    "depends_on": [],
-                    "risk": "medium",
-                    "root_id": "r1"
-                  }
-                ],
-                "server_now": "2026-08-09T12:00:00Z",
-                "stable_tiebreaker": "decision_id"
+                "source": "decision-store"
               },
-              "injected_results": [],
+              "injected_results": [
+                {
+                  "candidates": [
+                    {
+                      "blocking_scope": "global",
+                      "created_at": "2026-08-09T11:00:00Z",
+                      "decision_id": "d1",
+                      "depends_on": [],
+                      "expires_at": "2026-08-09T12:01:00Z",
+                      "root_id": "r1",
+                      "safety_or_irreversible": false,
+                      "status": "open"
+                    },
+                    {
+                      "blocking_scope": "none",
+                      "created_at": "2026-08-09T11:00:00Z",
+                      "decision_id": "d2",
+                      "depends_on": [],
+                      "expires_at": "2026-08-09T12:20:00Z",
+                      "root_id": "r1",
+                      "safety_or_irreversible": false,
+                      "status": "open"
+                    }
+                  ],
+                  "server_now": "2026-08-09T12:00:00Z",
+                  "source": "decision-store",
+                  "status": "completed"
+                }
+              ],
               "schema_version": "dal.operation-input/1.0",
               "target": {
                 "entity_id": "fixture-entity",
@@ -3863,7 +3969,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-7f711185e34c663867d102e7",
+            "operation_id": "op-6178bc9db531c7e8577c5e7c",
             "operation_spec_id": "OP-DOCK-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -3872,7 +3978,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "decision-store",
-            "idempotency_key": "idem-b96bb2345b4be971c5066937",
+            "idempotency_key": "idem-c26b5dce6d84546002bc5fd2",
             "input": {
               "action_sequence": [
                 {
@@ -3884,26 +3990,37 @@
                 }
               ],
               "authoritative_facts": {
-                "candidates": [
-                  {
-                    "deadline": "2026-08-09T12:01:00Z",
-                    "decision_id": "d1",
-                    "depends_on": [],
-                    "risk": "high",
-                    "root_id": "r1"
-                  },
-                  {
-                    "deadline": "2026-08-09T12:01:00Z",
-                    "decision_id": "d2",
-                    "depends_on": [],
-                    "risk": "high",
-                    "root_id": "r2"
-                  }
-                ],
-                "server_now": "2026-08-09T12:00:00Z",
-                "stable_tiebreaker": "decision_id"
+                "source": "decision-store"
               },
-              "injected_results": [],
+              "injected_results": [
+                {
+                  "candidates": [
+                    {
+                      "blocking_scope": "global",
+                      "created_at": "2026-08-09T11:00:00Z",
+                      "decision_id": "d1",
+                      "depends_on": [],
+                      "expires_at": "2026-08-09T12:01:00Z",
+                      "root_id": "r1",
+                      "safety_or_irreversible": false,
+                      "status": "open"
+                    },
+                    {
+                      "blocking_scope": "global",
+                      "created_at": "2026-08-09T11:00:00Z",
+                      "decision_id": "d2",
+                      "depends_on": [],
+                      "expires_at": "2026-08-09T12:01:00Z",
+                      "root_id": "r2",
+                      "safety_or_irreversible": false,
+                      "status": "open"
+                    }
+                  ],
+                  "server_now": "2026-08-09T12:00:00Z",
+                  "source": "decision-store",
+                  "status": "completed"
+                }
+              ],
               "schema_version": "dal.operation-input/1.0",
               "target": {
                 "entity_id": "fixture-entity",
@@ -3912,7 +4029,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-702ab769c5df7f37f66a87d0",
+            "operation_id": "op-e6b96df44dbd9f4e3b98fd94",
             "operation_spec_id": "OP-DOCK-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -11130,7 +11247,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-b46d1bc40a901283254f1264",
+            "idempotency_key": "idem-f3a1a9e7e761700191c8cd1c",
             "input": {
               "action_sequence": [
                 {
@@ -11139,34 +11256,44 @@
                 }
               ],
               "authoritative_facts": {
-                "canonicalizer": "rfc8785-jcs",
-                "protected_binding": {
-                  "aggregate_version": 7,
+                "current_binding": {
+                  "artifact_sha256": null,
                   "base_sha": "1111111111111111111111111111111111111111",
-                  "effect_inventory": [
-                    "effect-a",
-                    "effect-b"
-                  ],
-                  "ordered_steps": [
-                    "plan",
-                    "approve"
-                  ],
-                  "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+                  "capability_epoch": 1,
+                  "checkpoint_state": "coding",
+                  "decision_frontier_version": 3,
+                  "external_effect_inventory_sha256": "d84e77110a89cdc7e4d4b164cb7659b32b9fb3a5bb9d92f81185c90a79fbe5b9",
+                  "feature_id": "fixture-entity",
+                  "feature_state": "awaiting_plan_review",
+                  "feature_version": 7,
+                  "last_verified_sha": null,
+                  "plan_version": 1,
+                  "policy_version": "dal-policy/1.0",
+                  "reason_code": null,
+                  "repository_id": "repo-0001",
+                  "result_sha": null,
+                  "schema_version": "dal.state-binding/1.0"
                 },
-                "protected_binding_sha256": "ad5996c26f274cf39760e56e6410034c2e6481a643470395efeb4b5eecb9d241",
-                "submitted_binding": {
-                  "aggregate_version": 7,
+                "observed_binding_sha256": "6c9ee3569b00a14e6363e804b4f97f44d876807e3e6d7d6c0d09a41a831d4419",
+                "protected_binding": {
+                  "artifact_sha256": null,
                   "base_sha": "1111111111111111111111111111111111111111",
-                  "effect_inventory": [
-                    "effect-a",
-                    "effect-c"
-                  ],
-                  "ordered_steps": [
-                    "plan",
-                    "approve"
-                  ],
-                  "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
-                }
+                  "capability_epoch": 1,
+                  "checkpoint_state": "coding",
+                  "decision_frontier_version": 3,
+                  "external_effect_inventory_sha256": "984bb21b195867960a7fa6fb274efb6d4aa65f65d36ca6556d5629adc4340201",
+                  "feature_id": "fixture-entity",
+                  "feature_state": "awaiting_plan_review",
+                  "feature_version": 7,
+                  "last_verified_sha": null,
+                  "plan_version": 1,
+                  "policy_version": "dal-policy/1.0",
+                  "reason_code": null,
+                  "repository_id": "repo-0001",
+                  "result_sha": null,
+                  "schema_version": "dal.state-binding/1.0"
+                },
+                "protected_binding_sha256": "6c9ee3569b00a14e6363e804b4f97f44d876807e3e6d7d6c0d09a41a831d4419"
               },
               "injected_results": [],
               "schema_version": "dal.operation-input/1.0",
@@ -11177,7 +11304,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-32776a73f7870fc571a39220",
+            "operation_id": "op-487d2d907bb0df33e24753bd",
             "operation_spec_id": "OP-STATEHASH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -11186,7 +11313,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-a81156e9a5d30168af1a4347",
+            "idempotency_key": "idem-0b80b54038a6fbec8cc74bff",
             "input": {
               "action_sequence": [
                 {
@@ -11195,34 +11322,44 @@
                 }
               ],
               "authoritative_facts": {
-                "canonicalizer": "rfc8785-jcs",
-                "protected_binding": {
-                  "aggregate_version": 7,
+                "current_binding": {
+                  "artifact_sha256": null,
                   "base_sha": "1111111111111111111111111111111111111111",
-                  "effect_inventory": [
-                    "effect-a",
-                    "effect-b"
-                  ],
-                  "ordered_steps": [
-                    "plan",
-                    "approve"
-                  ],
-                  "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+                  "capability_epoch": 1,
+                  "checkpoint_state": "coding",
+                  "decision_frontier_version": 3,
+                  "external_effect_inventory_sha256": "25d5931b7037dff73309470937c7a2fb953f5e7fc879cf12f75fbabb837bc976",
+                  "feature_id": "fixture-entity",
+                  "feature_state": "awaiting_plan_review",
+                  "feature_version": 7,
+                  "last_verified_sha": null,
+                  "plan_version": 1,
+                  "policy_version": "dal-policy/1.0",
+                  "reason_code": null,
+                  "repository_id": "repo-0001",
+                  "result_sha": null,
+                  "schema_version": "dal.state-binding/1.0"
                 },
-                "protected_binding_sha256": "ad5996c26f274cf39760e56e6410034c2e6481a643470395efeb4b5eecb9d241",
-                "submitted_binding": {
-                  "aggregate_version": 7,
+                "observed_binding_sha256": "6c9ee3569b00a14e6363e804b4f97f44d876807e3e6d7d6c0d09a41a831d4419",
+                "protected_binding": {
+                  "artifact_sha256": null,
                   "base_sha": "1111111111111111111111111111111111111111",
-                  "effect_inventory": [
-                    "effect-b",
-                    "effect-a"
-                  ],
-                  "ordered_steps": [
-                    "plan",
-                    "approve"
-                  ],
-                  "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
-                }
+                  "capability_epoch": 1,
+                  "checkpoint_state": "coding",
+                  "decision_frontier_version": 3,
+                  "external_effect_inventory_sha256": "984bb21b195867960a7fa6fb274efb6d4aa65f65d36ca6556d5629adc4340201",
+                  "feature_id": "fixture-entity",
+                  "feature_state": "awaiting_plan_review",
+                  "feature_version": 7,
+                  "last_verified_sha": null,
+                  "plan_version": 1,
+                  "policy_version": "dal-policy/1.0",
+                  "reason_code": null,
+                  "repository_id": "repo-0001",
+                  "result_sha": null,
+                  "schema_version": "dal.state-binding/1.0"
+                },
+                "protected_binding_sha256": "6c9ee3569b00a14e6363e804b4f97f44d876807e3e6d7d6c0d09a41a831d4419"
               },
               "injected_results": [],
               "schema_version": "dal.operation-input/1.0",
@@ -11233,7 +11370,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-9894d531caab3f2a196c970f",
+            "operation_id": "op-8ce35e6bd9aed2a53b86bebd",
             "operation_spec_id": "OP-STATEHASH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -11242,7 +11379,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-f55d5648c2f37143b80d1964",
+            "idempotency_key": "idem-e9c3e0d10e1ec2f7c516a42a",
             "input": {
               "action_sequence": [
                 {
@@ -11251,34 +11388,44 @@
                 }
               ],
               "authoritative_facts": {
-                "canonicalizer": "rfc8785-jcs",
-                "protected_binding": {
-                  "aggregate_version": 7,
-                  "base_sha": "1111111111111111111111111111111111111111",
-                  "effect_inventory": [
-                    "effect-a",
-                    "effect-b"
-                  ],
-                  "ordered_steps": [
-                    "plan",
-                    "approve"
-                  ],
-                  "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
-                },
-                "protected_binding_sha256": "ad5996c26f274cf39760e56e6410034c2e6481a643470395efeb4b5eecb9d241",
-                "submitted_binding": {
-                  "aggregate_version": 7,
+                "current_binding": {
+                  "artifact_sha256": null,
                   "base_sha": "2222222222222222222222222222222222222222",
-                  "effect_inventory": [
-                    "effect-a",
-                    "effect-b"
-                  ],
-                  "ordered_steps": [
-                    "plan",
-                    "approve"
-                  ],
-                  "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
-                }
+                  "capability_epoch": 1,
+                  "checkpoint_state": "coding",
+                  "decision_frontier_version": 3,
+                  "external_effect_inventory_sha256": "984bb21b195867960a7fa6fb274efb6d4aa65f65d36ca6556d5629adc4340201",
+                  "feature_id": "fixture-entity",
+                  "feature_state": "awaiting_plan_review",
+                  "feature_version": 7,
+                  "last_verified_sha": null,
+                  "plan_version": 1,
+                  "policy_version": "dal-policy/1.0",
+                  "reason_code": null,
+                  "repository_id": "repo-0001",
+                  "result_sha": null,
+                  "schema_version": "dal.state-binding/1.0"
+                },
+                "observed_binding_sha256": "6c9ee3569b00a14e6363e804b4f97f44d876807e3e6d7d6c0d09a41a831d4419",
+                "protected_binding": {
+                  "artifact_sha256": null,
+                  "base_sha": "1111111111111111111111111111111111111111",
+                  "capability_epoch": 1,
+                  "checkpoint_state": "coding",
+                  "decision_frontier_version": 3,
+                  "external_effect_inventory_sha256": "984bb21b195867960a7fa6fb274efb6d4aa65f65d36ca6556d5629adc4340201",
+                  "feature_id": "fixture-entity",
+                  "feature_state": "awaiting_plan_review",
+                  "feature_version": 7,
+                  "last_verified_sha": null,
+                  "plan_version": 1,
+                  "policy_version": "dal-policy/1.0",
+                  "reason_code": null,
+                  "repository_id": "repo-0001",
+                  "result_sha": null,
+                  "schema_version": "dal.state-binding/1.0"
+                },
+                "protected_binding_sha256": "6c9ee3569b00a14e6363e804b4f97f44d876807e3e6d7d6c0d09a41a831d4419"
               },
               "injected_results": [],
               "schema_version": "dal.operation-input/1.0",
@@ -11289,7 +11436,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-0da268899a5ec19a18179012",
+            "operation_id": "op-54757ccde265d125289edace",
             "operation_spec_id": "OP-STATEHASH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -11298,7 +11445,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-5d5569f056a5fc6bbffbe6f5",
+            "idempotency_key": "idem-a82b82e934769684ea1b06a1",
             "input": {
               "action_sequence": [
                 {
@@ -11307,35 +11454,45 @@
                 }
               ],
               "authoritative_facts": {
-                "canonicalizer": "rfc8785-jcs",
-                "protected_binding": {
-                  "aggregate_version": 7,
-                  "base_sha": "1111111111111111111111111111111111111111",
-                  "effect_inventory": [
-                    "effect-a",
-                    "effect-b"
-                  ],
-                  "ordered_steps": [
-                    "plan",
-                    "approve"
-                  ],
-                  "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
-                },
-                "protected_binding_sha256": "ad5996c26f274cf39760e56e6410034c2e6481a643470395efeb4b5eecb9d241",
-                "submitted_binding": {
-                  "aggregate_version": 7,
+                "current_binding": {
+                  "artifact_sha256": null,
                   "base_sha": "1111111111111111111111111111111111111111",
                   "binding_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-                  "effect_inventory": [
-                    "effect-a",
-                    "effect-b"
-                  ],
-                  "ordered_steps": [
-                    "plan",
-                    "approve"
-                  ],
-                  "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
-                }
+                  "capability_epoch": 1,
+                  "checkpoint_state": "coding",
+                  "decision_frontier_version": 3,
+                  "external_effect_inventory_sha256": "984bb21b195867960a7fa6fb274efb6d4aa65f65d36ca6556d5629adc4340201",
+                  "feature_id": "fixture-entity",
+                  "feature_state": "awaiting_plan_review",
+                  "feature_version": 7,
+                  "last_verified_sha": null,
+                  "plan_version": 1,
+                  "policy_version": "dal-policy/1.0",
+                  "reason_code": null,
+                  "repository_id": "repo-0001",
+                  "result_sha": null,
+                  "schema_version": "dal.state-binding/1.0"
+                },
+                "observed_binding_sha256": "6c9ee3569b00a14e6363e804b4f97f44d876807e3e6d7d6c0d09a41a831d4419",
+                "protected_binding": {
+                  "artifact_sha256": null,
+                  "base_sha": "1111111111111111111111111111111111111111",
+                  "capability_epoch": 1,
+                  "checkpoint_state": "coding",
+                  "decision_frontier_version": 3,
+                  "external_effect_inventory_sha256": "984bb21b195867960a7fa6fb274efb6d4aa65f65d36ca6556d5629adc4340201",
+                  "feature_id": "fixture-entity",
+                  "feature_state": "awaiting_plan_review",
+                  "feature_version": 7,
+                  "last_verified_sha": null,
+                  "plan_version": 1,
+                  "policy_version": "dal-policy/1.0",
+                  "reason_code": null,
+                  "repository_id": "repo-0001",
+                  "result_sha": null,
+                  "schema_version": "dal.state-binding/1.0"
+                },
+                "protected_binding_sha256": "6c9ee3569b00a14e6363e804b4f97f44d876807e3e6d7d6c0d09a41a831d4419"
               },
               "injected_results": [],
               "schema_version": "dal.operation-input/1.0",
@@ -11346,7 +11503,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-46f75240dcfa8930546b4f9f",
+            "operation_id": "op-95f6176fa9e173492e3d4828",
             "operation_spec_id": "OP-STATEHASH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -11355,7 +11512,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-feb9fde790d48ffbca1b0561",
+            "idempotency_key": "idem-5341a7cfa610ebf99a308fae",
             "input": {
               "action_sequence": [
                 {
@@ -11364,34 +11521,44 @@
                 }
               ],
               "authoritative_facts": {
-                "canonicalizer": "rfc8785-jcs",
-                "protected_binding": {
-                  "aggregate_version": 7,
-                  "base_sha": "1111111111111111111111111111111111111111",
-                  "effect_inventory": [
-                    "effect-a",
-                    "effect-b"
-                  ],
-                  "ordered_steps": [
-                    "plan",
-                    "approve"
-                  ],
-                  "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
-                },
-                "protected_binding_sha256": "ad5996c26f274cf39760e56e6410034c2e6481a643470395efeb4b5eecb9d241",
-                "submitted_binding": {
-                  "aggregate_version": 7,
+                "current_binding": {
+                  "artifact_sha256": null,
                   "base_sha": null,
-                  "effect_inventory": [
-                    "effect-a",
-                    "effect-b"
-                  ],
-                  "ordered_steps": [
-                    "plan",
-                    "approve"
-                  ],
-                  "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
-                }
+                  "capability_epoch": 1,
+                  "checkpoint_state": "coding",
+                  "decision_frontier_version": 3,
+                  "external_effect_inventory_sha256": "984bb21b195867960a7fa6fb274efb6d4aa65f65d36ca6556d5629adc4340201",
+                  "feature_id": "fixture-entity",
+                  "feature_state": "awaiting_plan_review",
+                  "feature_version": 7,
+                  "last_verified_sha": null,
+                  "plan_version": 1,
+                  "policy_version": "dal-policy/1.0",
+                  "reason_code": null,
+                  "repository_id": "repo-0001",
+                  "result_sha": null,
+                  "schema_version": "dal.state-binding/1.0"
+                },
+                "observed_binding_sha256": "6c9ee3569b00a14e6363e804b4f97f44d876807e3e6d7d6c0d09a41a831d4419",
+                "protected_binding": {
+                  "artifact_sha256": null,
+                  "base_sha": "1111111111111111111111111111111111111111",
+                  "capability_epoch": 1,
+                  "checkpoint_state": "coding",
+                  "decision_frontier_version": 3,
+                  "external_effect_inventory_sha256": "984bb21b195867960a7fa6fb274efb6d4aa65f65d36ca6556d5629adc4340201",
+                  "feature_id": "fixture-entity",
+                  "feature_state": "awaiting_plan_review",
+                  "feature_version": 7,
+                  "last_verified_sha": null,
+                  "plan_version": 1,
+                  "policy_version": "dal-policy/1.0",
+                  "reason_code": null,
+                  "repository_id": "repo-0001",
+                  "result_sha": null,
+                  "schema_version": "dal.state-binding/1.0"
+                },
+                "protected_binding_sha256": "6c9ee3569b00a14e6363e804b4f97f44d876807e3e6d7d6c0d09a41a831d4419"
               },
               "injected_results": [],
               "schema_version": "dal.operation-input/1.0",
@@ -11402,7 +11569,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-81cbfd8fb550745038830d70",
+            "operation_id": "op-cc270736e81d15e16aa25fda",
             "operation_spec_id": "OP-STATEHASH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -11411,7 +11578,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-74dabb50e679a72cd02ba315",
+            "idempotency_key": "idem-f6886bf8a43bb14bc80fd14a",
             "input": {
               "action_sequence": [
                 {
@@ -11420,34 +11587,44 @@
                 }
               ],
               "authoritative_facts": {
-                "canonicalizer": "rfc8785-jcs",
-                "protected_binding": {
-                  "aggregate_version": 7,
+                "current_binding": {
+                  "artifact_sha256": null,
                   "base_sha": "1111111111111111111111111111111111111111",
-                  "effect_inventory": [
-                    "effect-a",
-                    "effect-b"
-                  ],
-                  "ordered_steps": [
-                    "plan",
-                    "approve"
-                  ],
-                  "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+                  "capability_epoch": 1,
+                  "checkpoint_state": "coding",
+                  "decision_frontier_version": 3,
+                  "external_effect_inventory_sha256": "a3377edaa348fad15628a462a9a22d771b9459f5a67baceff71e7bd745530298",
+                  "feature_id": "fixture-entity",
+                  "feature_state": "awaiting_plan_review",
+                  "feature_version": 7,
+                  "last_verified_sha": null,
+                  "plan_version": 1,
+                  "policy_version": "dal-policy/1.0",
+                  "reason_code": null,
+                  "repository_id": "repo-0001",
+                  "result_sha": null,
+                  "schema_version": "dal.state-binding/1.0"
                 },
-                "protected_binding_sha256": "ad5996c26f274cf39760e56e6410034c2e6481a643470395efeb4b5eecb9d241",
-                "submitted_binding": {
-                  "aggregate_version": 7,
+                "observed_binding_sha256": "6c9ee3569b00a14e6363e804b4f97f44d876807e3e6d7d6c0d09a41a831d4419",
+                "protected_binding": {
+                  "artifact_sha256": null,
                   "base_sha": "1111111111111111111111111111111111111111",
-                  "effect_inventory": [
-                    "effect-a",
-                    "effect-b"
-                  ],
-                  "ordered_steps": [
-                    "approve",
-                    "plan"
-                  ],
-                  "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
-                }
+                  "capability_epoch": 1,
+                  "checkpoint_state": "coding",
+                  "decision_frontier_version": 3,
+                  "external_effect_inventory_sha256": "984bb21b195867960a7fa6fb274efb6d4aa65f65d36ca6556d5629adc4340201",
+                  "feature_id": "fixture-entity",
+                  "feature_state": "awaiting_plan_review",
+                  "feature_version": 7,
+                  "last_verified_sha": null,
+                  "plan_version": 1,
+                  "policy_version": "dal-policy/1.0",
+                  "reason_code": null,
+                  "repository_id": "repo-0001",
+                  "result_sha": null,
+                  "schema_version": "dal.state-binding/1.0"
+                },
+                "protected_binding_sha256": "6c9ee3569b00a14e6363e804b4f97f44d876807e3e6d7d6c0d09a41a831d4419"
               },
               "injected_results": [],
               "schema_version": "dal.operation-input/1.0",
@@ -11458,7 +11635,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-9374cc5e4ae20c74f03bb22f",
+            "operation_id": "op-40541178f79e395b92c01d75",
             "operation_spec_id": "OP-STATEHASH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -11467,7 +11644,7 @@
           {
             "actor_type": "human",
             "evidence_source_type": "registered-device",
-            "idempotency_key": "idem-e1eaeea81abc5bf697d7e5ba",
+            "idempotency_key": "idem-dd9c595d30e4da476e8dd94d",
             "input": {
               "action_sequence": [
                 {
@@ -11476,34 +11653,44 @@
                 }
               ],
               "authoritative_facts": {
-                "canonicalizer": "rfc8785-jcs",
-                "protected_binding": {
-                  "aggregate_version": 7,
+                "current_binding": {
+                  "artifact_sha256": null,
                   "base_sha": "1111111111111111111111111111111111111111",
-                  "effect_inventory": [
-                    "effect-a",
-                    "effect-b"
-                  ],
-                  "ordered_steps": [
-                    "plan",
-                    "approve"
-                  ],
-                  "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+                  "capability_epoch": 1,
+                  "checkpoint_state": "coding",
+                  "decision_frontier_version": 3,
+                  "external_effect_inventory_sha256": "984bb21b195867960a7fa6fb274efb6d4aa65f65d36ca6556d5629adc4340201",
+                  "feature_id": "fixture-entity",
+                  "feature_state": "awaiting_plan_review",
+                  "feature_version": 6,
+                  "last_verified_sha": null,
+                  "plan_version": 1,
+                  "policy_version": "dal-policy/1.0",
+                  "reason_code": null,
+                  "repository_id": "repo-0001",
+                  "result_sha": null,
+                  "schema_version": "dal.state-binding/1.0"
                 },
-                "protected_binding_sha256": "ad5996c26f274cf39760e56e6410034c2e6481a643470395efeb4b5eecb9d241",
-                "submitted_binding": {
-                  "aggregate_version": 6,
+                "observed_binding_sha256": "6c9ee3569b00a14e6363e804b4f97f44d876807e3e6d7d6c0d09a41a831d4419",
+                "protected_binding": {
+                  "artifact_sha256": null,
                   "base_sha": "1111111111111111111111111111111111111111",
-                  "effect_inventory": [
-                    "effect-a",
-                    "effect-b"
-                  ],
-                  "ordered_steps": [
-                    "plan",
-                    "approve"
-                  ],
-                  "plan_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
-                }
+                  "capability_epoch": 1,
+                  "checkpoint_state": "coding",
+                  "decision_frontier_version": 3,
+                  "external_effect_inventory_sha256": "984bb21b195867960a7fa6fb274efb6d4aa65f65d36ca6556d5629adc4340201",
+                  "feature_id": "fixture-entity",
+                  "feature_state": "awaiting_plan_review",
+                  "feature_version": 7,
+                  "last_verified_sha": null,
+                  "plan_version": 1,
+                  "policy_version": "dal-policy/1.0",
+                  "reason_code": null,
+                  "repository_id": "repo-0001",
+                  "result_sha": null,
+                  "schema_version": "dal.state-binding/1.0"
+                },
+                "protected_binding_sha256": "6c9ee3569b00a14e6363e804b4f97f44d876807e3e6d7d6c0d09a41a831d4419"
               },
               "injected_results": [],
               "schema_version": "dal.operation-input/1.0",
@@ -11514,7 +11701,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-55ea9b31be2a0ea3b52e969a",
+            "operation_id": "op-aef363a380289c32521e31f7",
             "operation_spec_id": "OP-STATEHASH-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -11890,7 +12077,7 @@
       }
     }
   ],
-  "registry_sha256": "52f97aeca9e5445bbc0e8b60127f04c682c2b2b60e4ad0fc66bcc105321df33d",
+  "registry_sha256": "759ac3047dec9716eb436d54568e5eb5b92dd94de1bca6d7a31de31a35fb73b7",
   "resolver_input_contract": {
     "allowed_expected_comparison_fields": [
       "expected_head_sha",

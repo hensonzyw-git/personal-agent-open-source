@@ -130,6 +130,7 @@ OPERATION_EVENT_TYPES: Final[tuple[str, ...]] = (
     "database.migrated",
     "database.retention_applied",
     "database.encrypted_roundtrip",
+    "decision.created",
 )
 
 

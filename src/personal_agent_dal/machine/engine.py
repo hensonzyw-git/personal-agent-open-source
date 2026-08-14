@@ -27,6 +27,7 @@ Four properties are load-bearing:
 from __future__ import annotations
 
 import hashlib
+import hmac
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable, Final
@@ -39,12 +40,20 @@ from personal_agent_core.manifest import canonical_json
 from personal_agent_core.timeutil import utc_now
 
 from personal_agent_dal.errors import DalError, DalErrorCode
+from personal_agent_dal.machine.binding import (
+    ArtifactReader,
+    build_state_binding,
+    validate_artifact_binding,
+    validate_state_binding,
+)
 from personal_agent_dal.machine.guards import GuardFacts, evaluate_guard
 from personal_agent_dal.machine.registry import (
     ResolutionKey,
     guard_registry,
+    jcs_sha256,
     transition_registry,
 )
+from personal_agent_dal.machine.transition_types import ReceiptCodes, TransitionRefused
 from personal_agent_dal.storage.audit import append_audit_event
 from personal_agent_dal.storage.engine import session_factory
 from personal_agent_dal.storage.machine_models import (
@@ -97,26 +106,6 @@ _AGGREGATE_PK: Final[dict[str, str]] = {
     "recovery_case": "recovery_case_id",
     "external_effect": "effect_id",
 }
-
-
-class ReceiptCodes:
-    """Transition receipt codes. Only `APPLIED` is ever persisted."""
-
-    APPLIED: Final[str] = "APPLIED"
-    POLICY_DENIED: Final[str] = "POLICY_DENIED"
-    ILLEGAL_TRANSITION: Final[str] = "ILLEGAL_TRANSITION"
-    TERMINAL_STATE: Final[str] = "TERMINAL_STATE"
-    VERSION_CONFLICT: Final[str] = "VERSION_CONFLICT"
-    IDEMPOTENCY_CONFLICT: Final[str] = "IDEMPOTENCY_CONFLICT"
-    #: An approval is invalid for consumption: already consumed, revoked, or
-    #: expired. Distinct from POLICY_DENIED (an actor/evidence refusal) so a
-    #: replay or audit can tell "the approval was bad" from "the caller was
-    #: not allowed to ask".
-    APPROVAL_INVALID: Final[str] = "APPROVAL_INVALID"
-    #: The decision the command names is stale: its version does not match
-    #: the server's current version, or it has expired. The approval may be
-    #: valid, but acting on a stale decision would bind the wrong state.
-    DECISION_STALE: Final[str] = "DECISION_STALE"
 
 
 @dataclass(frozen=True)
@@ -179,15 +168,6 @@ class TransitionOutcome:
     duplicate: bool = False
 
 
-class TransitionRefused(Exception):
-    """A refusal carrying the receipt code to report. Never partially applied."""
-
-    def __init__(self, code: str, detail: str) -> None:
-        self.code = code
-        self.detail = detail
-        super().__init__(f"{code}: {detail}")
-
-
 @dataclass
 class ApplyContext:
     """Everything a write-set applier may touch."""
@@ -201,6 +181,7 @@ class ApplyContext:
     aggregate_version: int
     now: datetime
     request_payload_sha256: str
+    artifact_reader: ArtifactReader | None = None
     event_id: str = field(default_factory=new_id)
     scratch: dict[str, Any] = field(default_factory=dict)
 
@@ -413,17 +394,28 @@ def _w_notification_outbox(ctx: ApplyContext) -> None:
 
 
 def _new_decision(ctx: ApplyContext, *, incident: bool) -> Decision:
+    decision_id = new_id()
+    feature = ctx.session.execute(
+        select(Feature).where(Feature.feature_id == _owner_feature_id(ctx))
+    ).scalar_one()
+    state_sha256 = jcs_sha256(build_state_binding(feature))
     decision = Decision(
-        decision_id=new_id(),
+        decision_id=decision_id,
         feature_id=_owner_feature_id(ctx),
         decision_version=1,
         action=ctx.spec["requires_decision_action"],
         reason_code=ctx.spec["result_reason_code"],
         status="open",
         priority=0 if incident else 4,
-        artifact_sha256=None,
-        state_sha256=None,
+        artifact_sha256=feature.artifact_sha256,
+        state_sha256=state_sha256,
         is_incident=incident,
+        root_id=decision_id,
+        safety_or_irreversible=incident,
+        blocking_scope="global" if incident else "none",
+        depends_on_json="[]",
+        expires_at=ctx.now + timedelta(minutes=15),
+        superseded_by=None,
         created_at=ctx.now,
         updated_at=ctx.now,
     )
@@ -462,6 +454,40 @@ def _open_decision(ctx: ApplyContext) -> Decision:
     return ctx.session.get(Decision, decision_id)
 
 
+def _decision_for_action(ctx: ApplyContext) -> Decision:
+    """Resolve the exact client-observed decision, never an arbitrary open row."""
+
+    decision_id = ctx.command.command_parameters.get("decision_id")
+    submitted_version = ctx.command.command_parameters.get(
+        "submitted_decision_version"
+    )
+    if not isinstance(decision_id, str) or not decision_id:
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE, "decision identity is required"
+        )
+    if not isinstance(submitted_version, int) or isinstance(submitted_version, bool):
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE, "decision version is required"
+        )
+    decision = ctx.session.execute(
+        select(Decision).where(
+            Decision.decision_id == decision_id,
+            Decision.feature_id == _owner_feature_id(ctx),
+        )
+    ).scalar_one_or_none()
+    if decision is None or decision.status != "open":
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE, "decision is not the current open decision"
+        )
+    if decision.decision_version != submitted_version:
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE,
+            f"decision version {decision.decision_version} != "
+            f"submitted {submitted_version}",
+        )
+    return decision
+
+
 def _set_decision_status(ctx: ApplyContext, status: str) -> None:
     decision = _open_decision(ctx)
     decision.status = status
@@ -471,33 +497,13 @@ def _set_decision_status(ctx: ApplyContext, status: str) -> None:
 
 
 def _w_decision_resolve(ctx: ApplyContext) -> None:
-    # §3.3: a decision whose version does not match the server's current
-    # version is stale — acting on it would bind the wrong state. The command
-    # may carry `submitted_decision_version` in its parameters; if it does
-    # not match the open decision's version, refuse before writing.
-    submitted_version = ctx.command.command_parameters.get("submitted_decision_version")
-    if submitted_version is not None:
-        decision = _open_decision(ctx)
-        if decision.decision_version != submitted_version:
-            raise TransitionRefused(
-                ReceiptCodes.DECISION_STALE,
-                f"decision version {decision.decision_version} != "
-                f"submitted {submitted_version}",
-            )
-    # A decision whose expiry has passed is also stale. The Decision row has
-    # no expires_at column (expiry is a server-held fact the trusted resolver
-    # carries), so the command may carry `decision_expires_at`; if the
-    # operation's `now` is past it, refuse before writing.
-    decision_expires = ctx.command.command_parameters.get("decision_expires_at")
-    if decision_expires is not None:
-        from personal_agent_core.timeutil import parse_rfc3339
-        expires_at = parse_rfc3339(decision_expires)
-        if ctx.now > expires_at:
-            raise TransitionRefused(
-                ReceiptCodes.DECISION_STALE,
-                "decision has expired",
-            )
-    _set_decision_status(ctx, "resolved")
+    decision = _decision_for_action(ctx)
+    if decision.expires_at is not None and ctx.now >= decision.expires_at:
+        raise TransitionRefused(ReceiptCodes.DECISION_STALE, "decision has expired")
+    decision.status = "resolved"
+    decision.updated_at = ctx.now
+    ctx.scratch["decision_id"] = decision.decision_id
+    ctx.session.flush()
 
 
 def _w_decision_consume(ctx: ApplyContext) -> None:
@@ -512,17 +518,32 @@ def _w_decision_projection(ctx: ApplyContext) -> None:
     decision_id = ctx.scratch.get("decision_id")
     if decision_id is None:
         decision_id = _open_decision(ctx).decision_id
-    ctx.session.add(
-        DecisionCardProjection(
-            projection_id=new_id(),
-            decision_id=decision_id,
-            decision_version=1,
-            actionable=ctx.spec["requires_decision_action"] is not None,
-            display_state=ctx.to_state,
-            dock_rank=4,
-            created_at=ctx.now,
+    decision = ctx.session.get(Decision, decision_id)
+    projection = ctx.session.execute(
+        select(DecisionCardProjection).where(
+            DecisionCardProjection.decision_id == decision_id,
+            DecisionCardProjection.decision_version == decision.decision_version,
         )
-    )
+    ).scalar_one_or_none()
+    actionable = decision.status == "open"
+    if projection is None:
+        ctx.session.add(
+            DecisionCardProjection(
+                projection_id=new_id(),
+                decision_id=decision_id,
+                decision_version=decision.decision_version,
+                projection_version=1,
+                actionable=actionable,
+                display_state=ctx.to_state,
+                dock_rank=4,
+                created_at=ctx.now,
+            )
+        )
+        return
+    projection.projection_version += 1
+    projection.actionable = actionable
+    projection.display_state = ctx.to_state
+    ctx.session.flush()
 
 
 def _w_decision_action_receipt(ctx: ApplyContext) -> None:
@@ -552,16 +573,17 @@ def _w_approval_record(ctx: ApplyContext) -> None:
     if named is not None:
         ctx.scratch["approval_id"] = named
         return
+    decision = ctx.session.get(Decision, ctx.scratch.get("decision_id"))
     approval = Approval(
         approval_id=new_id(),
         action=ctx.spec["requires_decision_action"] or ctx.command.command_type,
         feature_id=_owner_feature_id(ctx),
-        decision_id=ctx.scratch.get("decision_id"),
-        decision_version=1,
+        decision_id=decision.decision_id if decision is not None else None,
+        decision_version=decision.decision_version if decision is not None else None,
         expected_feature_version=ctx.command.expected_version,
         expected_state=ctx.from_state,
-        state_sha256=None,
-        artifact_sha256=None,
+        state_sha256=ctx.scratch["bound_state_sha256"],
+        artifact_sha256=ctx.scratch.get("bound_artifact_sha256"),
         device_id="registered-device",
         subject_id="single-user",
         valid_from=ctx.now,
@@ -628,7 +650,6 @@ def _w_approval_consume(ctx: ApplyContext) -> None:
             raise TransitionRefused(
                 ReceiptCodes.APPROVAL_INVALID, "approval was already consumed"
             )
-
     result = ctx.session.execute(
         update(table)
         .where(table.c.approval_id == approval_id)
@@ -642,6 +663,120 @@ def _w_approval_consume(ctx: ApplyContext) -> None:
             ReceiptCodes.APPROVAL_INVALID, "approval was already consumed"
         )
     ctx.scratch["approval_id"] = approval_id
+
+
+def _approval_for_binding(ctx: ApplyContext) -> Approval:
+    """Resolve the approval that will be consumed, without mutating it."""
+
+    table = Approval.__table__
+    approval_id = ctx.command.command_parameters.get("approval_id")
+    query = select(Approval).where(
+        table.c.feature_id == _owner_feature_id(ctx),
+        table.c.consumed_by_command_id.is_(None),
+    )
+    if approval_id is not None:
+        query = query.where(table.c.approval_id == approval_id)
+    else:
+        query = query.order_by(table.c.recorded_at).limit(1)
+    approval = ctx.session.execute(query).scalar_one_or_none()
+    if approval is None:
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID, "no unconsumed approval to validate"
+        )
+    return approval
+
+
+def _validate_bound_authority(ctx: ApplyContext, declared: set[str]) -> None:
+    """Recompute state/artifact authority before any transition write occurs."""
+
+    if not declared.intersection({"decision_resolve", "approval_consume"}):
+        return
+
+    feature = ctx.session.execute(
+        select(Feature).where(Feature.feature_id == _owner_feature_id(ctx))
+    ).scalar_one()
+    current_state_binding = build_state_binding(feature)
+    current_state_sha256 = jcs_sha256(current_state_binding)
+    ctx.scratch["bound_state_sha256"] = current_state_sha256
+    ctx.scratch["bound_artifact_sha256"] = feature.artifact_sha256
+    observed_state_sha256 = ctx.command.command_parameters.get(
+        "observed_state_sha256"
+    )
+
+    if "decision_resolve" in declared:
+        decision = _decision_for_action(ctx)
+        if decision.state_sha256 is None:
+            raise TransitionRefused(
+                ReceiptCodes.DECISION_STALE,
+                "decision has no protected state binding",
+            )
+        validate_state_binding(
+            current_binding=current_state_binding,
+            protected_binding_sha256=decision.state_sha256,
+            observed_binding_sha256=observed_state_sha256,
+        )
+
+    if "approval_consume" not in declared:
+        return
+    approval_id = ctx.command.command_parameters.get("approval_id")
+    approval = _approval_for_binding(ctx) if approval_id is not None else None
+    if approval is None:
+        # This command carries the human approval that will be recorded and
+        # consumed in the same transaction. Bind that new row to the exact
+        # pre-transition state the device observed.
+        validate_state_binding(
+            current_binding=current_state_binding,
+            protected_binding_sha256=current_state_sha256,
+            observed_binding_sha256=observed_state_sha256,
+        )
+    else:
+        if approval.state_sha256 is None:
+            raise TransitionRefused(
+                ReceiptCodes.APPROVAL_INVALID,
+                "approval has no protected state binding",
+            )
+        validate_state_binding(
+            current_binding=current_state_binding,
+            protected_binding_sha256=approval.state_sha256,
+            observed_binding_sha256=observed_state_sha256,
+        )
+
+    current_artifact_sha256 = feature.artifact_sha256
+    protected_artifact_sha256 = (
+        approval.artifact_sha256 if approval is not None else current_artifact_sha256
+    )
+    if current_artifact_sha256 is None and protected_artifact_sha256 is None:
+        return
+    if (
+        current_artifact_sha256 is None
+        or protected_artifact_sha256 is None
+        or not hmac.compare_digest(
+            current_artifact_sha256, protected_artifact_sha256
+        )
+    ):
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID,
+            "approval artifact digest is not current",
+        )
+    if ctx.artifact_reader is None:
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID,
+            "protected artifact reader is unavailable",
+        )
+    try:
+        artifact = ctx.artifact_reader(protected_artifact_sha256)
+    except Exception as error:
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID,
+            f"protected artifact read failed: {type(error).__name__}",
+        ) from None
+    validate_artifact_binding(
+        current_artifact=artifact,
+        protected_binding_sha256=protected_artifact_sha256,
+        observed_binding_sha256=ctx.command.command_parameters.get(
+            "observed_artifact_sha256"
+        ),
+    )
 
 
 def _w_approval_action_receipt(ctx: ApplyContext) -> None:
@@ -1515,6 +1650,7 @@ def apply_transition(
     *,
     facts: GuardFacts | None = None,
     now: datetime | None = None,
+    artifact_reader: ArtifactReader | None = None,
 ) -> TransitionOutcome:
     """Resolve, validate and apply one transition, or refuse without writing."""
     now = now or utc_now()
@@ -1630,6 +1766,7 @@ def apply_transition(
                 aggregate_version=current_version,
                 now=now,
                 request_payload_sha256=request_digest,
+                artifact_reader=artifact_reader,
             )
             ctx.scratch["existing_checkpoint"] = checkpoint
 
@@ -1643,6 +1780,7 @@ def apply_transition(
                     DalErrorCode.INTERNAL_ERROR,
                     internal_detail=f"no applier for write-set members {sorted(unknown)}",
                 )
+            _validate_bound_authority(ctx, declared)
             for member in _APPLY_ORDER:
                 if member in declared:
                     WRITE_SET_APPLIERS[member](ctx)

@@ -144,11 +144,23 @@ class Decision(Base):
     artifact_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
     state_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_incident: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    root_id: Mapped[str] = mapped_column(Text, nullable=False)
+    safety_or_irreversible: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    blocking_scope: Mapped[str] = mapped_column(Text, nullable=False)
+    depends_on_json: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
+    superseded_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
 
     __table_args__ = (
         CheckConstraint(_in_set("status", DECISION_STATUSES), name="status"),
+        CheckConstraint(
+            "blocking_scope IN ('global', 'local', 'none')",
+            name="blocking_scope",
+        ),
         Index("ix_decisions_feature_id", "feature_id"),
     )
 
@@ -168,6 +180,7 @@ class DecisionCardProjection(Base):
         ForeignKey("decisions.decision_id"), nullable=False
     )
     decision_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    projection_version: Mapped[int] = mapped_column(Integer, nullable=False)
     actionable: Mapped[bool] = mapped_column(Boolean, nullable=False)
     display_state: Mapped[str] = mapped_column(Text, nullable=False)
     dock_rank: Mapped[int] = mapped_column(Integer, nullable=False)
