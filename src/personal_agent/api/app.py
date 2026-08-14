@@ -112,6 +112,8 @@ from personal_agent.runtime.bookkeeping_intent import (
     is_bookkeeping_write_request,
     is_finance_retry_request,
 )
+from personal_agent.diagnostics import transcript
+from personal_agent.diagnostics.transcript import NullRecorder, Recorder, TurnIdentity
 from personal_agent.storage.models import (
     REVIEW_STATUSES,
     TERMINAL_OPERATION_STATES,
@@ -219,6 +221,10 @@ class AgentApiDeps:
     #: a placeholder. It is a resource identifier, not a secret: it comes from
     #: local configuration and travels only to enrolled devices.
     ledger_url: str | None = None
+    #: The full-fidelity turn transcript. The default records nothing, so a
+    #: composition that does not configure a transcript directory -- and every
+    #: offline test -- behaves exactly as before.
+    recorder: Recorder = field(default_factory=NullRecorder)
 
     def __post_init__(self) -> None:
         if self.sync_wait_seconds <= 0 or self.sync_wait_seconds > 30.0:
@@ -353,9 +359,14 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                     exc_info=(type(error), error, error.__traceback__),
                 )
 
-    def schedule_compaction(session_id: str) -> None:
+    def schedule_compaction(session_id: str, operation_id: str) -> None:
         task = asyncio.create_task(
-            asyncio.to_thread(_compact_session_in_background, deps, session_id)
+            asyncio.to_thread(
+                _compact_session_in_background,
+                deps,
+                session_id,
+                operation_id,
+            )
         )
         compaction_tasks.add(task)
         task.add_done_callback(finish_compaction)
@@ -373,7 +384,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             else:
                 session_id = done.result().compact_session_id
                 if session_id is not None:
-                    schedule_compaction(session_id)
+                    schedule_compaction(session_id, operation_id)
 
     def authenticate(request: Request, session) -> AuthContext:
         raw = request.headers.get("authorization", "")
@@ -525,6 +536,8 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 resolved_classification = await asyncio.to_thread(
                     _classify_chat_boundary,
                     deps,
+                    auth,
+                    key,
                     conversation_id,
                     text,
                     clarification_of,
@@ -541,11 +554,19 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 resolved_classification,
             )
         if anchored.state != "accepted":
-            return await asyncio.to_thread(
+            response = await asyncio.to_thread(
                 _load_operation_response,
                 deps,
                 anchored.operation_id,
                 auth.device_id,
+            )
+            return await asyncio.to_thread(
+                _record_operation_http_response,
+                deps,
+                anchored.operation_id,
+                auth.device_id,
+                response,
+                delivery="chat_replay",
             )
 
         task = operation_tasks.get(anchored.operation_id)
@@ -568,11 +589,18 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             processed = await asyncio.wait_for(
                 asyncio.shield(task), timeout=deps.sync_wait_seconds
             )
-            return processed.response
+            return await asyncio.to_thread(
+                _record_operation_http_response,
+                deps,
+                anchored.operation_id,
+                auth.device_id,
+                processed.response,
+                delivery="chat_sync",
+            )
         except TimeoutError:
             # The worker owns its session and continues. The client polls this
             # durable operation id; timeout never means the write was cancelled.
-            return JSONResponse(
+            response = JSONResponse(
                 {
                     "operation_id": anchored.operation_id,
                     "state": "accepted",
@@ -584,6 +612,14 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                     "duplicate_check_id": None,
                 },
                 status_code=202,
+            )
+            return await asyncio.to_thread(
+                _record_operation_http_response,
+                deps,
+                anchored.operation_id,
+                auth.device_id,
+                response,
+                delivery="chat_detached",
             )
         except Exception:
             # The worker died without producing a projection. The operation is
@@ -602,35 +638,64 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             logger.exception(
                 "the chat worker failed; returning the durable operation state"
             )
-            return await asyncio.to_thread(
+            response = await asyncio.to_thread(
                 _load_operation_response,
                 deps,
                 anchored.operation_id,
                 auth.device_id,
             )
+            return await asyncio.to_thread(
+                _record_operation_http_response,
+                deps,
+                anchored.operation_id,
+                auth.device_id,
+                response,
+                delivery="chat_worker_failed",
+            )
 
     @app.get("/v1/operations/{operation_id}")
     async def get_operation_status(operation_id: str, request: Request):
+        authenticated_device_id: str | None = None
         with deps.session_factory() as session:
             def work():
+                nonlocal authenticated_device_id
                 auth = authenticate(request, session)
+                authenticated_device_id = auth.device_id
                 operation = _owned_operation(
                     session, operation_id, device_id=auth.device_id
                 )
                 return _operation_response(operation)
 
-            return _commit(session, work)
+            response = _commit(session, work)
+        return _record_operation_http_response(
+            deps,
+            operation_id,
+            _authenticated_device(authenticated_device_id),
+            response,
+            delivery="operation_poll",
+        )
 
     @app.delete("/v1/operations/{operation_id}")
     async def cancel_operation(operation_id: str, request: Request):
+        authenticated_device_id: str | None = None
         with deps.session_factory() as session:
             def work():
+                nonlocal authenticated_device_id
                 auth = authenticate(request, session)
+                authenticated_device_id = auth.device_id
                 _owned_operation(session, operation_id, device_id=auth.device_id)
                 request_cancel(session, operation_id=operation_id, now=deps.now())
-                return _operation_response(get_operation(session, operation_id))
+                operation = get_operation(session, operation_id)
+                return _operation_response(operation)
 
-            return _commit(session, work)
+            response = _commit(session, work)
+        return _record_operation_http_response(
+            deps,
+            operation_id,
+            _authenticated_device(authenticated_device_id),
+            response,
+            delivery="operation_cancel",
+        )
 
     @app.get("/v1/conversations/{conversation_id}/events")
     async def get_events(conversation_id: str, request: Request):
@@ -994,6 +1059,8 @@ def _preflight_chat_replay(
 
 def _classify_chat_boundary(
     deps: AgentApiDeps,
+    auth: AuthContext,
+    client_request_id: str,
     conversation_id: str,
     text: str,
     clarification_of: str | None,
@@ -1029,7 +1096,14 @@ def _classify_chat_boundary(
         except Exception:
             session.rollback()
             raise
-    return deps.session_manager.resolve_classification(prepared)
+    with deps.recorder.turn(
+        TurnIdentity(
+            client_request_id=client_request_id,
+            conversation_id=timeline_id,
+            device_id=auth.device_id,
+        )
+    ):
+        return deps.session_manager.resolve_classification(prepared)
 
 
 def _anchor_chat(
@@ -1327,67 +1401,13 @@ def _process_chat(
                 envelope=operation.api_request.encrypted_request_payload,
             )
             anchor = _anchor_event(session, operation.operation_id)
-            turn_context = _context_factory(
-                deps,
-                auth,
-                session,
-                payload=payload,
-                anchor=anchor,
-            )
-            result = run_operation(
-                session,
-                operation,
-                build_context=turn_context,
-                interpreter=deps.build_interpreter(auth),
-                dispatcher=deps.build_dispatcher(auth, operation.trace_id),
-                authorize=deps.build_authorizer(auth),
-                keyring=deps.keyring,
-                now=deps.now,
-            )
-            if result.state == "waiting_for_clarification":
-                question = result.clarification
-                if not isinstance(question, str) or not question.strip():
-                    raise AppError(
-                        ErrorCode.INTERNAL_ERROR,
-                        internal_detail="parked clarification has no question",
-                    )
-                operation.api_request.encrypted_request_payload = seal_chat_request(
-                    deps.keyring,
-                    request_id=operation.request_id,
-                    payload=with_clarification_question(payload, question),
+            # Every record this worker writes from here on belongs to this one
+            # message. The scope is opened after the anchor because the Session
+            # and turn ids are part of the correlation keys.
+            with deps.recorder.turn(_turn_identity(operation, anchor)):
+                return _run_chat_turn(
+                    deps, auth, session, operation, payload=payload, anchor=anchor
                 )
-            # The result joins the user message's own turn and Session; a
-            # Session decision is made once per message, at anchoring time.
-            events.append_event(
-                session,
-                deps.keyring,
-                conversation_id=payload.conversation_id,
-                session_id=anchor.session_id,
-                turn_id=anchor.turn_id,
-                event_type=events.OPERATION_RESULT,
-                content=_operation_event_content(operation),
-                operation_id=operation.operation_id,
-                now=deps.now(),
-            )
-            session.commit()
-            session.refresh(operation)
-            compact_session_id = (
-                anchor.session_id
-                if (
-                    deps.compact_session is not None
-                    and turn_context.envelope is not None
-                    and turn_context.envelope.compaction_requested
-                    and (
-                        not turn_context.envelope.checkpoint_rebuild_required
-                        or is_terminal(operation.state)
-                    )
-                )
-                else None
-            )
-            return _ProcessedChat(
-                _operation_response(operation, extra=_transient(result)),
-                compact_session_id=compact_session_id,
-            )
         except StaleOperationVersionError:
             session.rollback()
             operation = _owned_operation(
@@ -1399,6 +1419,180 @@ def _process_chat(
             raise
 
 
+def _run_chat_turn(
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    session,
+    operation: Operation,
+    *,
+    payload: ChatRequestPayload,
+    anchor: _Anchor,
+) -> _ProcessedChat:
+    """One accepted operation, inside its transcript scope."""
+
+    deps.recorder.record(
+        transcript.USER_MESSAGE,
+        {
+            "text": payload.text,
+            "clarification_of": payload.clarification_of,
+            "clarification_question": payload.clarification_question,
+            "clarification_context": payload.clarification_context,
+            "finance_retry_context": payload.finance_retry_context,
+            "start_new_session": payload.start_new_session,
+        },
+    )
+    turn_context = _context_factory(
+        deps,
+        auth,
+        session,
+        payload=payload,
+        anchor=anchor,
+    )
+    result = run_operation(
+        session,
+        operation,
+        build_context=turn_context,
+        interpreter=deps.build_interpreter(auth),
+        dispatcher=deps.build_dispatcher(auth, operation.trace_id),
+        authorize=deps.build_authorizer(auth),
+        keyring=deps.keyring,
+        now=deps.now,
+        recorder=deps.recorder,
+    )
+    if result.state == "waiting_for_clarification":
+        question = result.clarification
+        if not isinstance(question, str) or not question.strip():
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="parked clarification has no question",
+            )
+        operation.api_request.encrypted_request_payload = seal_chat_request(
+            deps.keyring,
+            request_id=operation.request_id,
+            payload=with_clarification_question(payload, question),
+        )
+    # The result joins the user message's own turn and Session; a
+    # Session decision is made once per message, at anchoring time.
+    events.append_event(
+        session,
+        deps.keyring,
+        conversation_id=payload.conversation_id,
+        session_id=anchor.session_id,
+        turn_id=anchor.turn_id,
+        event_type=events.OPERATION_RESULT,
+        content=_operation_event_content(operation),
+        operation_id=operation.operation_id,
+        now=deps.now(),
+    )
+    session.commit()
+    session.refresh(operation)
+    compact_session_id = (
+        anchor.session_id
+        if (
+            deps.compact_session is not None
+            and turn_context.envelope is not None
+            and turn_context.envelope.compaction_requested
+            and (
+                not turn_context.envelope.checkpoint_rebuild_required
+                or is_terminal(operation.state)
+            )
+        )
+        else None
+    )
+    processed = _ProcessedChat(
+        _operation_response(operation, extra=_transient(result)),
+        compact_session_id=compact_session_id,
+    )
+    return processed
+
+
+def _authenticated_device(device_id: str | None) -> str:
+    """The device the handler authenticated, as a proven non-`None` value.
+
+    `_commit` raises before returning when authentication fails, so this cannot
+    trigger -- but an `assert` would vanish under `python -O` and leave a `None`
+    travelling into an ownership check as a device id.
+    """
+    if device_id is None:  # pragma: no cover - _commit raises first
+        raise AppError(
+            ErrorCode.INTERNAL_ERROR,
+            internal_detail="a committed handler left no authenticated device",
+        )
+    return device_id
+
+
+def _record_operation_http_response(
+    deps: AgentApiDeps,
+    operation_id: str,
+    device_id: str,
+    response: JSONResponse,
+    *,
+    delivery: str,
+) -> JSONResponse:
+    """Record the body chosen by the route, without changing that response."""
+    if not deps.recorder.enabled:
+        # A disabled transcript costs nothing. Assembling the identity means a
+        # second database session and two reads per polled response, and every
+        # default deployment would pay them to feed a sink that discards them.
+        return response
+    try:
+        with deps.session_factory() as session:
+            operation = _owned_operation(session, operation_id, device_id=device_id)
+            _record_http_response(
+                deps, session, operation, response, delivery=delivery
+            )
+    except Exception:  # noqa: BLE001 - diagnostics never change API behaviour
+        logger.warning(
+            "operation HTTP response transcript dropped operation_id=%s",
+            operation_id,
+            exc_info=True,
+        )
+    return response
+
+
+def _record_http_response(
+    deps: AgentApiDeps,
+    session,
+    operation: Operation,
+    response: JSONResponse,
+    *,
+    delivery: str,
+) -> None:
+    """Record one actual HTTP response under its durable turn identity."""
+    try:
+        identity = _turn_identity(
+            operation, _anchor_event(session, operation.operation_id)
+        )
+        with deps.recorder.turn(identity):
+            deps.recorder.record(
+                transcript.API_RESPONSE,
+                {
+                    "delivery": delivery,
+                    "status_code": response.status_code,
+                    "body": _decoded_body(response),
+                },
+            )
+    except Exception:  # noqa: BLE001 - diagnostics never change API behaviour
+        logger.warning(
+            "operation HTTP response transcript dropped operation_id=%s",
+            operation.operation_id,
+            exc_info=True,
+        )
+
+
+def _decoded_body(response: JSONResponse) -> Any:
+    """The rendered response body as data, for the transcript only.
+
+    Decoding what was actually serialised -- rather than re-projecting the
+    operation -- is the point: a field lost during rendering is invisible to any
+    record built from the inputs.
+    """
+    try:
+        return json.loads(response.body)
+    except (TypeError, ValueError):
+        return {"__undecodable_body__": len(response.body)}
+
+
 @dataclass(frozen=True)
 class _Anchor:
     """The persisted user message this operation belongs to."""
@@ -1407,6 +1601,18 @@ class _Anchor:
     session_id: str
     turn_id: str
     event_id: str
+
+
+def _turn_identity(operation: Operation, anchor: _Anchor) -> TurnIdentity:
+    return TurnIdentity(
+        operation_id=operation.operation_id,
+        client_request_id=operation.api_request.client_request_id,
+        trace_id=operation.trace_id,
+        turn_id=anchor.turn_id,
+        session_id=anchor.session_id,
+        conversation_id=anchor.conversation_id,
+        device_id=operation.api_request.device_id,
+    )
 
 
 def _anchor_event(session, operation_id: str) -> _Anchor:
@@ -1453,6 +1659,7 @@ class _TurnContext:
 def _compact_session_in_background(
     deps: AgentApiDeps,
     session_id: str,
+    operation_id: str,
 ) -> None:
     """Run post-response compaction in a worker-owned database session."""
 
@@ -1460,7 +1667,10 @@ def _compact_session_in_background(
         return
     with deps.session_factory() as session:
         try:
-            deps.compact_session(session, session_id)
+            operation = get_operation(session, operation_id)
+            anchor = _anchor_event(session, operation_id)
+            with deps.recorder.turn(_turn_identity(operation, anchor)):
+                deps.compact_session(session, session_id)
         except Exception:
             session.rollback()
             raise
@@ -1689,18 +1899,27 @@ def _process_duplicate_decision(
             anchor = _anchor_event(session, source.operation_id)
             new_op = outcome.new_operation
             if new_op is not None and new_op.state == "accepted":
-                run_operation(
-                    session,
-                    new_op,
-                    # A `write anyway` operation carries its resolved intent and
-                    # never reaches the model, so it assembles no context.
-                    build_context=None,
-                    interpreter=deps.build_interpreter(auth),
-                    dispatcher=deps.build_dispatcher(auth, new_op.trace_id),
-                    authorize=deps.build_authorizer(auth),
-                    keyring=deps.keyring,
-                    now=deps.now,
-                )
+                # The override joins the source message's turn, and its own
+                # Timeline event is appended only after this write, so the
+                # identity is built from the source's anchor. Without this scope
+                # the confirmed duplicate write -- the highest-risk operation
+                # class there is -- would record no result at all, and the tool
+                # call the wrapped dispatcher still writes would land with no
+                # operation to group it under.
+                with deps.recorder.turn(_turn_identity(new_op, anchor)):
+                    run_operation(
+                        session,
+                        new_op,
+                        # A `write anyway` operation carries its resolved intent
+                        # and never reaches the model, so it assembles no context.
+                        build_context=None,
+                        interpreter=deps.build_interpreter(auth),
+                        dispatcher=deps.build_dispatcher(auth, new_op.trace_id),
+                        authorize=deps.build_authorizer(auth),
+                        keyring=deps.keyring,
+                        now=deps.now,
+                        recorder=deps.recorder,
+                    )
             target = new_op if new_op is not None else _find_by_check(
                 session, duplicate_check_id, auth.device_id
             )

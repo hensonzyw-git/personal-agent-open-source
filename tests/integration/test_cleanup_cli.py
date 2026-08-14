@@ -315,6 +315,35 @@ def test_an_invalid_now_is_refused(database: Path) -> None:
         run(database, "--now", "not-a-timestamp")
 
 
+def test_transcript_retention_runs_without_a_new_message(database: Path, tmp_path: Path) -> None:
+    directory = tmp_path / "transcripts"
+    directory.mkdir()
+    stale = directory / "api-2026-08-12.jsonl"
+    current = directory / "api-2026-08-13.jsonl"
+    foreign = directory / "notes.txt"
+    for path in (stale, current, foreign):
+        path.write_text("{}\n")
+
+    run(
+        database,
+        "--now",
+        "2026-08-14T00:00:00Z",
+        "--transcript-directory",
+        str(directory),
+        "--transcript-retention-days",
+        "2",
+    )
+
+    assert not stale.exists()
+    assert current.exists()
+    assert foreign.exists()
+
+
+def test_transcript_cleanup_arguments_are_atomic(database: Path, tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        run(database, "--transcript-directory", str(tmp_path))
+
+
 def test_entrypoint_is_installed() -> None:
     # The console script must resolve, so a systemd unit that names it cannot
     # fail at exec time with a command-not-found.

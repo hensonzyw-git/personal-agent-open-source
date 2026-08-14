@@ -64,6 +64,17 @@ def test_cleanup_unit_has_no_api_environment_or_key_access() -> None:
     )
 
 
+def test_cleanup_timer_enforces_transcript_retention_independently() -> None:
+    cleanup = _read("deploy/systemd/personal-agent-cleanup.service")
+    api = _read("deploy/systemd/personal-agent-api.service")
+    install = _read("deploy/install.sh")
+
+    assert "--transcript-directory /var/lib/personal-agent-api/transcripts" in cleanup
+    assert "--transcript-retention-days 14" in cleanup
+    assert "PERSONAL_AGENT_TRANSCRIPT_RETENTION_DAYS=14" in api
+    assert "/var/lib/personal-agent-api/transcripts" in install
+
+
 def test_verify_requires_real_oneshot_runs_and_fresh_marker() -> None:
     verify = _read("deploy/verify.sh")
 

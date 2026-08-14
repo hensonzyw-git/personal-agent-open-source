@@ -46,6 +46,9 @@ from personal_agent.api.composition import (
     recover_at_startup,
 )
 from personal_agent.api.control_client import ControlPlaneError
+from personal_agent.diagnostics.transcript import (
+    DIRECTORY_ENV as TRANSCRIPT_DIRECTORY_ENV,
+)
 from personal_agent.api.intent import WriteIntent
 from personal_agent.api.orchestrator import CommitFailedSafe, ResolveFailedSafe
 from personal_agent.api.operation_store import open_operation, transition_operation
@@ -524,6 +527,85 @@ def test_a_read_tool_call_runs_through_the_real_governed_path(
     assert gateway.calls[0]["envelope"].tool_aliases == ("meta.capabilities",)
 
 
+def test_a_configured_transcript_captures_the_whole_turn(
+    keys, agent_db, finance, tmp_path, monkeypatch
+) -> None:
+    """The transcript is composed for real, not wired only in its own tests.
+
+    A seam that exists only where a unit test constructs it is not wiring
+    (AGENTS.md §7). This runs the production composition root with the switch
+    set, and asserts that one message leaves a reassemblable turn on disk: the
+    input the device sent, the tool call as dispatched, its outcome before any
+    projection, the orchestrator's result, and the body the device got back.
+    """
+    directory = tmp_path / "transcripts"
+    monkeypatch.setenv(TRANSCRIPT_DIRECTORY_ENV, str(directory))
+    gateway = FakeGateway(ProposedToolCall(tool="meta.capabilities", arguments={}))
+
+    async def scenario():
+        async with agent_service(
+            config_for(agent_db, finance), build_gateway=lambda: gateway,
+            write_switch=shared_enabled_write_switch(),
+        ) as composed:
+            async with http_for(composed.deps) as client:
+                return await client.post(
+                    "/v1/chat/messages",
+                    json={"conversation_id": "c1", "text": "我有哪些能力？"},
+                    headers=chat_headers(),
+                )
+
+    response = asyncio.run(scenario())
+    assert response.status_code == 200, response.text
+
+    records = [
+        json.loads(line)
+        for path in sorted(directory.glob("*.jsonl"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    by_kind = {record["kind"]: record for record in records}
+    assert set(by_kind) == {
+        "user_message",
+        "tool_call",
+        "tool_result",
+        "turn_result",
+        "api_response",
+    }
+    assert by_kind["user_message"]["payload"]["text"] == "我有哪些能力？"
+    assert by_kind["tool_call"]["payload"]["tool"] == "meta.capabilities"
+    assert by_kind["turn_result"]["payload"]["state"] == "succeeded"
+    assert by_kind["api_response"]["payload"]["status_code"] == 200
+    assert by_kind["api_response"]["payload"]["body"]["state"] == "succeeded"
+    # One operation id joins every line of the turn. Without it the file is a
+    # pile of fragments rather than a transcript.
+    operation_ids = {record["turn"]["operation_id"] for record in records}
+    assert len(operation_ids) == 1
+    assert operation_ids != {None}
+
+
+def test_no_transcript_directory_writes_nothing(
+    keys, agent_db, finance, tmp_path, monkeypatch
+) -> None:
+    """The default deployment records nothing at all."""
+    monkeypatch.delenv(TRANSCRIPT_DIRECTORY_ENV, raising=False)
+    directory = tmp_path / "transcripts"
+
+    async def scenario():
+        async with agent_service(
+            config_for(agent_db, finance),
+            build_gateway=lambda: FakeGateway(ProposedAnswer(text="你好")),
+            write_switch=shared_enabled_write_switch(),
+        ) as composed:
+            async with http_for(composed.deps) as client:
+                return await client.post(
+                    "/v1/chat/messages",
+                    json={"conversation_id": "c1", "text": "在吗"},
+                    headers=chat_headers(),
+                )
+
+    assert asyncio.run(scenario()).json()["state"] == "succeeded"
+    assert not directory.exists()
+
+
 def test_a_second_message_reaches_the_model_with_the_first_turn_in_context(
     keys, agent_db, finance
 ) -> None:
@@ -688,6 +770,9 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
             api_base="https://open.bigmodel.cn/api/paas/v4/",
             generate=generate,
             input_budget_tokens=input_budget_tokens,
+            timeout=overrides.get("timeout", 20.0),
+            recorder=overrides.get("recorder"),
+            purpose=overrides.get("purpose", "structured"),
         )
 
     async def scenario():

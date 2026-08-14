@@ -44,6 +44,24 @@ UMask=0077
 # path is a safety control and belongs in version-controlled configuration. The
 # service refuses to start if it is unset, so the setting cannot be lost quietly.
 Environment=PERSONAL_AGENT_WRITE_SWITCH_FILE=/etc/personal-agent/write-switch.json
+# The full-fidelity turn transcript (2026-08-14). Every message's model input,
+# raw model output, dispatched tool call, tool outcome and returned body land
+# in this directory as plaintext JSONL, mode 0600 -- unlike `conversation_events`,
+# which are sealed. Henson chose plaintext deliberately so a turn can be grepped
+# and replayed into an eval set without a key, and bounded the exposure with
+# this switch plus retention instead of encryption.
+#
+# It lives in the unit rather than in api.env for the same reason as the write
+# switch above: it is a privacy control, so turning it on or off must be a
+# visible, version-controlled act. Comment the directory line out and restart
+# to stop recording; the independent daily personal-agent-cleanup timer keeps
+# deleting files past the retention window even while capture is off.
+#
+# The path must stay under ReadWritePaths below, and is deliberately NOT one of
+# deploy/backup.sh's inputs: a transcript is disposable diagnostic material and
+# has no place in an off-machine snapshot.
+Environment=PERSONAL_AGENT_TRANSCRIPT_DIR=/var/lib/personal-agent-api/transcripts
+Environment=PERSONAL_AGENT_TRANSCRIPT_RETENTION_DAYS=14
 EnvironmentFile=/etc/personal-agent/api.env
 ExecStart=/opt/personal-agent/.venv/bin/personal-agent-api \
     --database /var/lib/personal-agent-api/agent.sqlite \

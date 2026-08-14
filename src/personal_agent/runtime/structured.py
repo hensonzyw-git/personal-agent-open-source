@@ -21,11 +21,14 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Final
 
 from personal_agent.context.budget import HeuristicTokenEstimator
+from personal_agent.diagnostics import transcript
+from personal_agent.diagnostics.transcript import NullRecorder, Recorder
 from personal_agent.runtime.glm_gateway import (
     ZHIPU_API_BASE,
     Generate,
@@ -81,6 +84,8 @@ class StructuredModelClient:
         generate: Generate | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         deadline_grace_seconds: float = DEADLINE_GRACE_SECONDS,
+        recorder: Recorder | None = None,
+        purpose: str = "structured",
     ) -> None:
         if deadline_grace_seconds <= 0:
             raise StructuredCallError("deadline grace must be positive")
@@ -102,6 +107,8 @@ class StructuredModelClient:
         self._timeout = timeout
         self._input_budget_tokens = input_budget_tokens
         self._generate = generate or generate_with_adk
+        self._recorder = recorder or NullRecorder()
+        self._purpose = purpose
         # Python cannot kill a thread whose provider ignored its own timeout, so
         # this bounds the *wait*, not the call, and keeps at most one abandoned
         # worker per client. The classifier runs in the request path before the
@@ -144,9 +151,56 @@ class StructuredModelClient:
             raise StructuredCallError(
                 "structured model input exceeded the configured budget"
             )
-        return _parse(
-            self._generate_bounded(request, declaration),
-            expected=request.function_name,
+        self._recorder.record(
+            transcript.MODEL_REQUEST,
+            {
+                "purpose": self._purpose,
+                "model": self._model,
+                "api_base": self._api_base,
+                "temperature": request.temperature,
+                "max_tokens": request.max_tokens,
+                "timeout_seconds": self._timeout,
+                "system_instruction": request.system,
+                "messages": [{"role": "user", "content": request.user_content}],
+                "declarations": [declaration],
+                "allowed_function_names": [request.function_name],
+                "estimated_input_tokens": estimated_input_tokens,
+            },
+        )
+        started = time.monotonic()
+        try:
+            response = self._generate_bounded(request, declaration)
+        except StructuredCallError as exc:
+            self._record_failure("provider_call", exc, started)
+            raise
+        self._recorder.record(
+            transcript.MODEL_RESPONSE,
+            {
+                "purpose": self._purpose,
+                "model": self._model,
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "raw": response,
+            },
+        )
+        try:
+            return _parse(response, expected=request.function_name)
+        except StructuredCallError as exc:
+            self._record_failure("response_validation", exc, started)
+            raise
+
+    def _record_failure(
+        self, phase: str, error: StructuredCallError, started: float
+    ) -> None:
+        self._recorder.record(
+            transcript.MODEL_FAILURE,
+            {
+                "purpose": self._purpose,
+                "phase": phase,
+                "model": self._model,
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "error_type": type(error).__name__,
+                "message": str(error),
+            },
         )
 
     def _generate_bounded(
@@ -246,6 +300,8 @@ def structured_client_from_env(
     generate: Generate | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     model_env: str = "GLM_MODEL",
+    recorder: Recorder | None = None,
+    purpose: str = "structured",
 ) -> StructuredModelClient:
     """Build the production client from an already-loaded environment.
 
@@ -262,6 +318,8 @@ def structured_client_from_env(
         api_base=os.environ.get("GLM_OPENAI_BASE_URL", ZHIPU_API_BASE),
         generate=generate,
         timeout=timeout,
+        recorder=recorder,
+        purpose=purpose,
     )
 
 
