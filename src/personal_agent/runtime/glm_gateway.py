@@ -27,6 +27,8 @@ from urllib.parse import urlsplit
 from personal_agent.context.budget import ComponentKind
 from personal_agent.context.builder import ContextEnvelope
 from personal_agent.context.continuation import MAX_CLARIFICATION_QUESTION_CHARS
+from personal_agent.diagnostics import transcript
+from personal_agent.diagnostics.transcript import NullRecorder, Recorder
 from personal_agent.runtime.model_gateway import (
     ModelGatewayError,
     ModelProposal,
@@ -74,6 +76,7 @@ class GlmGateway:
         timeout: float = 25.0,
         max_tokens: int = 512,
         temperature: float = 0.1,
+        recorder: Recorder | None = None,
     ) -> None:
         if timeout <= 0 or timeout > 25.0:
             raise ModelGatewayError("GLM timeout must be within the 25-second budget")
@@ -84,6 +87,7 @@ class GlmGateway:
         self._max_tokens = max_tokens
         self._temperature = temperature
         self._generate = generate or generate_with_adk
+        self._recorder = recorder or NullRecorder()
 
     def propose(
         self,
@@ -92,6 +96,26 @@ class GlmGateway:
     ) -> ModelProposal:
         messages = _messages(envelope)
         declarations = _declarations(envelope) + _internal_declarations()
+        allowed_function_names = _required_function_names(envelope, declarations)
+        # Exactly what the provider is about to be sent, recorded before it is
+        # sent: a request that never returns is the case that most needs its
+        # input on disk. The credential is not part of the request record and
+        # never travels anywhere but the pinned endpoint.
+        self._recorder.record(
+            transcript.MODEL_REQUEST,
+            {
+                "model": self._model,
+                "api_base": self._api_base,
+                "temperature": self._temperature,
+                "max_tokens": self._max_tokens,
+                "timeout_seconds": self._timeout,
+                "system_instruction": envelope.system_instruction,
+                "messages": messages,
+                "declarations": declarations,
+                "allowed_function_names": allowed_function_names,
+                "context": _recorded_context(envelope),
+            },
+        )
         started = time.monotonic()
         try:
             response = self._generate(
@@ -104,11 +128,10 @@ class GlmGateway:
                 temperature=self._temperature,
                 max_tokens=self._max_tokens,
                 timeout=self._timeout,
-                allowed_function_names=_required_function_names(
-                    envelope, declarations
-                ),
+                allowed_function_names=allowed_function_names,
             )
         except ModelGatewayError as exc:
+            self._record_failure("provider_call", exc, started)
             _log_model_failure(
                 phase="provider_call",
                 model=self._model,
@@ -118,6 +141,7 @@ class GlmGateway:
             raise
         except Exception as exc:  # noqa: BLE001 - all provider failures fail closed
             failure = _provider_failure(exc)
+            self._record_failure("provider_call", failure, started)
             _log_model_failure(
                 phase="provider_call",
                 model=self._model,
@@ -125,9 +149,21 @@ class GlmGateway:
                 elapsed_ms=_elapsed_ms(started),
             )
             raise failure from exc
+        # The unparsed response, recorded before validation can reject it. A
+        # rejected response is the one whose exact shape has to be inspectable;
+        # recording only what parsed would erase every interesting case.
+        self._recorder.record(
+            transcript.MODEL_RESPONSE,
+            {
+                "model": self._model,
+                "elapsed_ms": _elapsed_ms(started),
+                "raw": response,
+            },
+        )
         try:
             return _parse_adk_proposal(response)
         except ModelGatewayError as exc:
+            self._record_failure("response_validation", exc, started)
             _log_model_failure(
                 phase="response_validation",
                 model=self._model,
@@ -136,8 +172,58 @@ class GlmGateway:
             )
             raise
 
+    def _record_failure(
+        self, phase: str, error: ModelGatewayError, started: float
+    ) -> None:
+        self._recorder.record(
+            transcript.MODEL_FAILURE,
+            {
+                "phase": phase,
+                "model": self._model,
+                "elapsed_ms": _elapsed_ms(started),
+                "reason": error.reason,
+                "provider_status": error.provider_status,
+                "provider_code": error.provider_code,
+                "provider_request_id": error.provider_request_id,
+                "exception_type": error.exception_type,
+                "response_shape": error.response_shape,
+                "message": str(error),
+            },
+        )
 
-def glm_gateway_from_env(*, generate: Generate | None = None) -> GlmGateway:
+
+def _recorded_context(envelope: ContextEnvelope) -> dict[str, Any]:
+    """The assembly provenance of one turn's input.
+
+    These are the fields that explain *why* the request above looks the way it
+    does -- which Session and checkpoint it came from, what the budget did to
+    it, and which trusted constraints the builder derived. Without them a
+    transcript shows a strange prompt with no way to tell whether the model or
+    the assembly produced it.
+    """
+    return {
+        "schema_version": envelope.schema_version,
+        "timeline_id": envelope.timeline_id,
+        "session_id": envelope.session_id,
+        "checkpoint_id": envelope.checkpoint_id,
+        "estimated_input_tokens": envelope.estimated_input_tokens,
+        "soft_limit": envelope.soft_limit,
+        "hard_limit": envelope.hard_limit,
+        "component_tokens": envelope.component_tokens,
+        "trimmed": envelope.trimmed,
+        "dropped_counts": envelope.dropped_counts,
+        "compaction_requested": envelope.compaction_requested,
+        "source_fingerprint": envelope.source_fingerprint,
+        "finance_intent_required": envelope.finance_intent_required,
+        "finance_required_tool": envelope.finance_required_tool,
+        "finance_date_default_eligible": envelope.finance_date_default_eligible,
+        "finance_date_default_retry": envelope.finance_date_default_retry,
+    }
+
+
+def glm_gateway_from_env(
+    *, generate: Generate | None = None, recorder: Recorder | None = None
+) -> GlmGateway:
     """Build the production gateway from an already-loaded environment.
 
     A model credential may only be sent to Zhipu's pinned HTTPS API path. The
@@ -153,6 +239,7 @@ def glm_gateway_from_env(*, generate: Generate | None = None) -> GlmGateway:
         api_key=api_key,
         api_base=api_base,
         generate=generate,
+        recorder=recorder,
     )
 
 

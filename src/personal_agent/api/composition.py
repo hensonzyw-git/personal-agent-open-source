@@ -89,6 +89,11 @@ from personal_agent.runtime.glm_gateway import (
     declared_context_limit,
     glm_gateway_from_env,
 )
+from personal_agent.diagnostics.recording_dispatcher import RecordingDispatcher
+from personal_agent.diagnostics.transcript import (
+    TranscriptRecorder,
+    recorder_from_env,
+)
 from personal_agent.context.compact_state import CheckpointCompactStateProvider
 from personal_agent.context.session_manager import SessionManager
 from personal_agent.runtime.compactor_provider import GlmCompactorProvider
@@ -518,7 +523,11 @@ async def agent_service(
     *,
     write_switch: WriteSwitch,
     now: Callable[[], datetime] = utc_now,
-    build_gateway: Callable[[], Any] = glm_gateway_from_env,
+    #: `None` builds the production GLM gateway bound to this composition's
+    #: transcript recorder. Tests inject their own zero-argument builder, whose
+    #: gateway records nothing -- the fake is the thing under test, not the
+    #: provider boundary the transcript exists to explain.
+    build_gateway: Callable[[], Any] | None = None,
     build_structured_client: Callable[..., Any] = structured_client_from_env,
     context_config: ContextConfig | None = None,
     recovery_interval_seconds: float = RECOVERY_INTERVAL_SECONDS,
@@ -557,8 +566,20 @@ async def agent_service(
     # The budget is checked against what the adapter says it can accept, so a
     # ceiling larger than the model's window fails at startup, not mid-turn.
     context_config.require_within_model_limit(declared_context_limit())
+    # The transcript sink, before the gateway that writes to it. A malformed
+    # transcript configuration is a deployment error and fails here; once
+    # running, recording never fails a turn.
     try:
-        gateway = build_gateway()
+        recorder = recorder_from_env(service="api")
+    except (OSError, ValueError) as exc:
+        raise CompositionError(f"the transcript sink could not be built: {exc}") from exc
+    if isinstance(recorder, TranscriptRecorder):
+        # Names the directory, never a record. An operator has to be able to see
+        # that full-fidelity capture is on without reading the files.
+        logger.info("turn transcript enabled dir=%s", recorder.directory)
+    build = build_gateway or (lambda: glm_gateway_from_env(recorder=recorder))
+    try:
+        gateway = build()
         # `CAP-001`. The auxiliary structured model path: the same pinned
         # endpoint as Chat, one declared function per call. Built here beside
         # the gateway so a deployment that cannot reach the model fails at
@@ -569,12 +590,16 @@ async def agent_service(
         # They also run on different models and deadlines: classification is in
         # the request path, compaction is not.
         compactor_client = build_structured_client(
-            input_budget_tokens=context_config.hard_limit_tokens
+            input_budget_tokens=context_config.hard_limit_tokens,
+            recorder=recorder,
+            purpose="compactor",
         )
         classifier_client = build_structured_client(
             input_budget_tokens=context_config.hard_limit_tokens,
             timeout=CLASSIFIER_TIMEOUT_SECONDS,
             model_env=CLASSIFIER_MODEL_ENV,
+            recorder=recorder,
+            purpose="session_classifier",
         )
     except (ModelGatewayError, StructuredCallError) as exc:
         # A missing model credential or a tampered endpoint is a deployment
@@ -695,7 +720,7 @@ async def agent_service(
                 return authorize
 
             def build_dispatcher(auth: AuthContext, trace_id: str) -> Dispatcher:
-                return DeviceBoundDispatcher(
+                dispatcher = DeviceBoundDispatcher(
                     device_id=auth.device_id,
                     sessions=sessions,
                     bridge=bridge,
@@ -707,6 +732,10 @@ async def agent_service(
                     enabled_tools=enabled,
                     manifest_version=manifest_version,
                 )
+                # Always wrapped, on every composition. A recorder that is
+                # disabled records nothing; a conditional wrap would be one more
+                # path that only production exercises.
+                return RecordingDispatcher(dispatcher, recorder)
 
             def capabilities(auth: AuthContext) -> list[dict[str, Any]]:
                 device = device_for(auth)
@@ -754,6 +783,7 @@ async def agent_service(
                     enrollment_manifest_version=manifest_version,
                     sync_wait_seconds=config.sync_wait_seconds,
                     ledger_url=ledger_url,
+                    recorder=recorder,
                 ),
                 bridge=bridge,
                 catalog_aliases=aliases,

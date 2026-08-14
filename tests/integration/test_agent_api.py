@@ -47,6 +47,8 @@ from personal_agent.auth.tokens import (
     issue_access_token,
 )
 from personal_agent.context.budget import ComponentKind
+from personal_agent.diagnostics.recording_dispatcher import RecordingDispatcher
+from personal_agent.diagnostics.transcript import TranscriptRecorder
 from personal_agent.storage.engine import (
     create_all,
     create_database_engine,
@@ -203,6 +205,7 @@ def _client(
     sync_wait_seconds=30.0,
     ledger_url=None,
     compact_session=None,
+    recorder=None,
 ) -> TestClient:
     def build_dispatcher(auth, trace_id):
         if dispatcher_traces is not None:
@@ -224,6 +227,7 @@ def _client(
         sync_wait_seconds=sync_wait_seconds,
         ledger_url=ledger_url,
         compact_session=compact_session,
+        **({"recorder": recorder} if recorder is not None else {}),
     )
     return TestClient(build_app(deps))
 
@@ -1006,13 +1010,16 @@ def test_a_clarification_naming_an_unknown_timeline_is_refused(
 
 
 def test_slow_model_returns_202_and_finishes_in_the_worker(
-    engine, token_ring, keyring
+    engine, token_ring, keyring, tmp_path
 ) -> None:
     class SlowInterpreter:
         def interpret(self, *, envelope):
             time.sleep(0.1)
             return DirectAnswer("完成")
 
+    recorder = TranscriptRecorder(
+        tmp_path / "transcripts", service="api", now=lambda: NOW
+    )
     client = _client(
         engine,
         token_ring,
@@ -1020,6 +1027,7 @@ def test_slow_model_returns_202_and_finishes_in_the_worker(
         interpreter=SlowInterpreter(),
         dispatcher=FakeDispatcher(),
         sync_wait_seconds=0.01,
+        recorder=recorder,
     )
     with client:
         started = time.monotonic()
@@ -1042,6 +1050,26 @@ def test_slow_model_returns_202_and_finishes_in_the_worker(
             time.sleep(0.01)
         assert polled.status_code == 200
         assert polled.json()["answer"] == "完成"
+
+    responses = [
+        json.loads(line)
+        for path in recorder.directory.glob("*.jsonl")
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["kind"] == "api_response"
+    ]
+    assert any(
+        item["payload"]["delivery"] == "chat_detached"
+        and item["payload"]["status_code"] == 202
+        for item in responses
+    )
+    assert any(
+        item["payload"]["delivery"] == "operation_poll"
+        and item["payload"]["body"]["state"] == "succeeded"
+        for item in responses
+    )
+    assert not any(
+        item["payload"]["delivery"] == "chat_sync" for item in responses
+    )
 
 
 # --- poll, cancel, capabilities, events --------------------------------------
@@ -1274,6 +1302,79 @@ def test_duplicate_then_write_anyway_carries_the_override(engine, token_ring, ke
     }
     assert projected[3]["content"]["state"] == "succeeded"
     assert projected[3]["content"]["record_id"] == "recDUP"
+
+
+def test_a_write_anyway_override_is_recorded_under_its_own_operation(
+    engine, token_ring, keyring, tmp_path
+) -> None:
+    """The confirmed duplicate write is a real ledger write, and is recorded.
+
+    It reaches `run_operation` from the decision endpoint rather than from the
+    chat worker, so it is the one write that can miss the transcript scope
+    entirely -- leaving the tool records the wrapped dispatcher still writes
+    with no operation to group them under.
+    """
+    recorder = TranscriptRecorder(
+        tmp_path / "transcripts", service="api", now=lambda: NOW
+    )
+    intent = WriteIntent("finance.log_expense", {"name": "午饭", "amount": "45"})
+    # Wrapped exactly as `agent_service` wraps every dispatcher it composes.
+    dispatcher = RecordingDispatcher(
+        FakeDispatcher(
+            resolve=PossibleDuplicate("dup-1", intent, "午饭 ¥45 餐饮"),
+            commit=Written("recDUP"),
+        ),
+        recorder,
+    )
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(ToolCall("finance.log_expense", {"name": "午饭"})),
+        dispatcher=dispatcher,
+        recorder=recorder,
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    assert parked.json()["state"] == "waiting_for_duplicate_decision"
+
+    decision = client.post(
+        "/v1/duplicate-checks/dup-1/decision",
+        json={"decision": "write_anyway"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert decision.status_code == 200
+    override_id = decision.json()["operation_id"]
+
+    records = [
+        json.loads(line)
+        for path in sorted(recorder.directory.glob("*.jsonl"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    # No orphans anywhere in the file: every record belongs to some message.
+    assert all(record["turn"] is not None for record in records)
+    override = [
+        record
+        for record in records
+        if record["turn"]["operation_id"] == override_id
+    ]
+    kinds = {record["kind"] for record in override}
+    assert {"tool_call", "tool_result", "turn_result"} <= kinds
+    (result,) = [
+        record for record in override if record["kind"] == "turn_result"
+    ]
+    assert result["payload"]["state"] == "succeeded"
+    assert result["payload"]["result"]["record_id"] == "recDUP"
+    # The override joins the source message's turn, so both operations share
+    # one Timeline turn while keeping separate operation ids.
+    source_id = parked.json()["operation_id"]
+    turns = {record["turn"]["turn_id"] for record in records}
+    assert len(turns) == 1
+    assert {record["turn"]["operation_id"] for record in records} == {
+        source_id,
+        override_id,
+    }
 
 
 def test_dismiss_decision_replays_and_rejects_a_different_check(

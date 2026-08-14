@@ -58,6 +58,8 @@ done
 # --- directories --------------------------------------------------------------
 # Data: reachable only by the owning service user.
 install -d -m 0700 -o "$API_USER" -g "$API_USER" /var/lib/personal-agent-api
+install -d -m 0700 -o "$API_USER" -g "$API_USER" \
+  /var/lib/personal-agent-api/transcripts
 install -d -m 0700 -o "$MCP_USER" -g "$MCP_USER" /var/lib/personal-data-mcp
 
 # Environment and key material: root-owned, group-readable by exactly one

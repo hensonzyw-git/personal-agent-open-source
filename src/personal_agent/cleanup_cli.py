@@ -12,7 +12,9 @@ DEV-036 acceptance rule "永久 conversation 不被清理" holds structurally ra
 than by the job's discretion. Adding a table is a code change in this file, not
 a flag.
 
-Today the whitelist has one entry: expired enrollment codes. A code past
+Today the whitelist has two entries: expired enrollment codes and diagnostic
+turn-transcript files outside their configured calendar-day retention window.
+A code past
 `expires_at` can never enrol a device (the consume path refuses on
 `expires_at <= now`), so the row is dead the moment it expires, whether or not
 it was used. It has no foreign keys pointing at it, so removing it cannot
@@ -34,6 +36,7 @@ from pathlib import Path
 
 from sqlalchemy import delete, select
 
+from personal_agent.diagnostics.transcript import purge_expired_transcripts
 from personal_agent.storage.engine import (
     check_integrity,
     create_database_engine,
@@ -69,6 +72,8 @@ def main() -> None:
         )
     )
     parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument("--transcript-directory", type=Path, default=None)
+    parser.add_argument("--transcript-retention-days", type=int, default=None)
     parser.add_argument(
         "--now",
         default=None,
@@ -78,6 +83,18 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+
+    if (args.transcript_directory is None) != (
+        args.transcript_retention_days is None
+    ):
+        raise SystemExit(
+            "--transcript-directory and --transcript-retention-days must be set together"
+        )
+    if (
+        args.transcript_retention_days is not None
+        and args.transcript_retention_days <= 0
+    ):
+        raise SystemExit("--transcript-retention-days must be positive")
 
     now = utc_now()
     if args.now is not None:
@@ -106,7 +123,17 @@ def main() -> None:
     finally:
         engine.dispose()
 
+    transcript_deleted = 0
+    if args.transcript_directory is not None:
+        assert args.transcript_retention_days is not None
+        transcript_deleted = purge_expired_transcripts(
+            args.transcript_directory,
+            retention_days=args.transcript_retention_days,
+            now=now,
+        )
+
     print(f"expired enrollment codes deleted: {deleted}")
+    print(f"expired turn transcripts deleted: {transcript_deleted}")
 
 
 if __name__ == "__main__":  # pragma: no cover

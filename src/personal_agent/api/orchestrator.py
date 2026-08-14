@@ -38,6 +38,8 @@ from personal_agent.api.finance_query_projection import FinanceQueryProjection
 from personal_agent.api.intent import WriteIntent, open_intent
 from personal_agent.api.operation_store import transition_operation
 from personal_agent.context.builder import ContextEnvelope
+from personal_agent.diagnostics import transcript
+from personal_agent.diagnostics.transcript import NullRecorder, Recorder
 from personal_agent.storage.models import Operation
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import (
@@ -314,13 +316,55 @@ def run_operation(
     authorize: Authorizer,
     keyring: KeyRing,
     now: Clock,
+    recorder: Recorder | None = None,
 ) -> RunResult:
     """Drive one freshly-accepted operation to its outcome.
 
     Production passes a clock callable so each durable transition records when
     that transition actually happened. Tests may pass one fixed instant when
     elapsed time is irrelevant.
+
+    The transcript record is written here, around every exit path at once,
+    because this function returns a safe result from a dozen places and raises
+    from more. One wrapper cannot miss a path the way a dozen call sites could.
     """
+    sink = recorder or NullRecorder()
+    try:
+        result = _run_operation(
+            session,
+            operation,
+            build_context=build_context,
+            interpreter=interpreter,
+            dispatcher=dispatcher,
+            authorize=authorize,
+            keyring=keyring,
+            now=now,
+        )
+    except Exception as exc:
+        sink.record(
+            transcript.TURN_RESULT,
+            {
+                "state": "raised",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
+        raise
+    sink.record(transcript.TURN_RESULT, {"state": result.state, "result": result})
+    return result
+
+
+def _run_operation(
+    session,
+    operation: Operation,
+    *,
+    build_context: ContextFactory | None = None,
+    interpreter: Interpreter,
+    dispatcher: Dispatcher,
+    authorize: Authorizer,
+    keyring: KeyRing,
+    now: Clock,
+) -> RunResult:
     # A `write anyway` operation carries a resolved intent and an override; it
     # skips interpretation entirely.
     if _is_override_operation(operation):
