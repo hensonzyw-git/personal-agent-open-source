@@ -73,6 +73,11 @@ def _require_sha(value: Any, *, length: int, field: str) -> str:
 
 def _manifest_row(receipt: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     manifest = _load(MANIFESTS / "test-manifest_v1.2.json")
+    declared_manifest_sha = manifest.get("manifest_sha256")
+    manifest_body = dict(manifest)
+    manifest_body.pop("manifest_sha256", None)
+    if _sha256(manifest_body) != declared_manifest_sha:
+        raise ValueError("frozen manifest content does not match manifest_sha256")
     matches = [
         row
         for row in manifest["test_variants"]
@@ -82,7 +87,17 @@ def _manifest_row(receipt: dict[str, Any]) -> tuple[dict[str, Any], dict[str, An
     ]
     if len(matches) != 1:
         raise ValueError(f"expected one frozen manifest row, found {len(matches)}")
-    return manifest, matches[0]
+    row = matches[0]
+
+    fixtures = _load(MANIFESTS / "test-fixtures_v1.0.json")["fixtures"]
+    fixture = fixtures.get(row["fixture_ref"])
+    if not isinstance(fixture, dict) or _sha256(fixture) != row["fixture_sha256"]:
+        raise ValueError("fixture content does not match frozen fixture_sha256")
+    oracles = _load(MANIFESTS / "test-oracles_v1.0.json")["oracles"]
+    oracle = oracles.get(row["oracle_id"])
+    if not isinstance(oracle, dict) or _sha256(oracle) != row["oracle_sha256"]:
+        raise ValueError("oracle content does not match frozen oracle_sha256")
+    return manifest, row
 
 
 def verify(receipt_path: Path) -> None:
