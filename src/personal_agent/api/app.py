@@ -1664,12 +1664,10 @@ class _Anchor:
 def _turn_identity(operation: Operation, anchor: _Anchor | None) -> TurnIdentity:
     """Correlation identity for the transcript.
 
-    `anchor` is `None` for an operation that belongs to no conversation turn:
-    the receipt card's category correction is a direct action on a ledger row,
-    not a message, so there is no user message to anchor it to. The operation,
-    trace and device ids still identify it completely; inventing a Session or
-    turn id to fill the shape would put a fabricated correlation key into the
-    transcript, which is worse than an absent one.
+    `anchor` is `None` only when the caller genuinely has no Timeline owner. The
+    operation, trace and device ids still identify that record completely;
+    inventing a Session or turn id to fill the shape would put a fabricated
+    correlation key into the transcript, which is worse than an absent one.
     """
     return TurnIdentity(
         operation_id=operation.operation_id,
@@ -1702,6 +1700,93 @@ def _anchor_event(session, operation_id: str) -> _Anchor:
         session_id=row[1],
         turn_id=row[2],
         event_id=row[3],
+    )
+
+
+def _expense_record_anchor(session, record_id: str) -> _Anchor:
+    """Return the original Timeline turn whose expense receipt names a row.
+
+    The correction route is addressed by ledger row, not operation id, so the
+    server resolves the presentation owner from its own durable facts. Only an
+    anchored ``finance.log_expense`` result qualifies: another R2 tool can have
+    an equal-looking external id in a different table, and a prior correction
+    may itself name this row after the first edit.
+    """
+    row = session.execute(
+        text_clause(
+            "SELECT ce.conversation_id, ce.session_id, ce.turn_id, ce.event_id "
+            "FROM conversation_events AS ce "
+            "JOIN operations AS o ON o.operation_id = ce.operation_id "
+            "WHERE o.tool = 'finance.log_expense' "
+            "AND o.safe_result = :record_id "
+            "ORDER BY ce.timeline_sequence LIMIT 1"
+        ),
+        {"record_id": record_id},
+    ).one_or_none()
+    if row is None:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail="expense record has no anchoring Timeline receipt",
+        )
+    return _Anchor(
+        conversation_id=row[0],
+        session_id=row[1],
+        turn_id=row[2],
+        event_id=row[3],
+    )
+
+
+def _append_expense_category_corrected(
+    session,
+    keyring: KeyRing,
+    *,
+    operation: Operation,
+    anchor: _Anchor,
+    record_id: str,
+    now: datetime,
+) -> str | None:
+    """Append one durable current-value marker after a verified correction.
+
+    The original operation remains sealed and immutable. The new correction
+    operation owns this marker, and replaying its idempotency key sees the
+    existing marker instead of appending a duplicate.
+    """
+    if (
+        operation.state != "succeeded"
+        or operation.tool != "finance.update_expense_category"
+        or operation.safe_result != record_id
+        or operation.encrypted_result_record is None
+    ):
+        return None
+    existing = (
+        session.query(ConversationEvent)
+        .filter(
+            ConversationEvent.operation_id == operation.operation_id,
+            ConversationEvent.event_type == events.EXPENSE_CATEGORY_CORRECTED,
+        )
+        .first()
+    )
+    if existing is not None:
+        return None
+    record = open_expense_record(
+        keyring,
+        operation_id=operation.operation_id,
+        envelope=operation.encrypted_result_record,
+    )
+    if record is None or record.category_updated_at is None:
+        # The operation still proves the governed write with its record id, but
+        # an unreadable presentation payload cannot repaint an older card.
+        return None
+    return events.append_event(
+        session,
+        keyring,
+        conversation_id=anchor.conversation_id,
+        session_id=anchor.session_id,
+        turn_id=anchor.turn_id,
+        event_type=events.EXPENSE_CATEGORY_CORRECTED,
+        content={"record_id": record_id, "record": record.to_dict()},
+        operation_id=operation.operation_id,
+        now=now,
     )
 
 
@@ -1986,6 +2071,11 @@ def _process_category_correction(
     )
     with deps.session_factory() as session:
         def work():
+            # Resolve the receipt's Timeline ownership before opening an
+            # operation or contacting Finance. Otherwise a guessed record id
+            # could mutate the ledger and leave no durable correction fact for
+            # an app restart to replay.
+            anchor = _expense_record_anchor(session, record_id)
             opened = open_operation(
                 session,
                 device_id=auth.device_id,
@@ -2004,7 +2094,7 @@ def _process_category_correction(
                 )
                 session.flush()
             if operation.state == "accepted":
-                with deps.recorder.turn(_turn_identity(operation, None)):
+                with deps.recorder.turn(_turn_identity(operation, anchor)):
                     run_operation(
                         session,
                         operation,
@@ -2019,6 +2109,14 @@ def _process_category_correction(
                         pre_resolved=True,
                         recorder=deps.recorder,
                     )
+            _append_expense_category_corrected(
+                session,
+                deps.keyring,
+                operation=operation,
+                anchor=anchor,
+                record_id=record_id,
+                now=deps.now(),
+            )
             return _operation_response(deps.keyring, operation)
 
         return _commit(session, work, retry=False)

@@ -527,15 +527,19 @@ final class ChatModel {
                let operationID = event.operationID {
                 resolvedManualReviews[operationID] = resolution
             }
+            if case .expenseCategoryCorrected(let recordID, let record) = event.kind {
+                currentRecords[recordID] = record
+            }
             // `G1`. The newest row wins, and `events` is in Timeline order, so a
             // later category correction overwrites the original write's row.
             // This is how the *original* receipt, scrolled back to, shows the
             // corrected category: the two operations are different, the ledger
             // row is the same, and the card follows the row.
             //
-            // A correction that is not itself a proven write never lands here,
-            // because `.recorded` is the only outcome that carries a record at
-            // all — so a failed edit cannot repaint a card as though it took.
+            // A correction that is not itself a proven write never lands in
+            // either projection: an operation result must be `.recorded`, and a
+            // category marker is emitted only after the verified row is sealed.
+            // A failed edit therefore cannot repaint a card as though it took.
             if case .operationResult(let outcome, _, _) = event.kind,
                case .recorded(let recordID, _, let record) = outcome,
                let record {

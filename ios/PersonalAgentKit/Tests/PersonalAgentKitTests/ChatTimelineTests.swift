@@ -938,6 +938,58 @@ struct TimelineEventTests {
         #expect(parsed.kind == .unrecognised(eventType: "duplicate_decision"))
     }
 
+    @Test("a category correction marker carries the verified current row")
+    func categoryCorrectionMarker() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-category",
+                type: "expense_category_corrected",
+                content: [
+                    "record_id": "rec-42",
+                    "record": [
+                        "name": "午饭",
+                        "amount_cny": "38.50",
+                        "occurred_on": "2026-08-15",
+                        "is_family_expense": false,
+                        "category": "购物",
+                        "category_updated_at": "2026-08-15T02:31:00Z",
+                    ],
+                ]
+            )
+        )
+        guard case .expenseCategoryCorrected(let recordID, let record) = parsed.kind else {
+            Issue.record("expected a category correction, got \(parsed.kind)")
+            return
+        }
+        #expect(recordID == "rec-42")
+        #expect(record.category == "购物")
+        #expect(record.categoryUpdatedAt == "2026-08-15T02:31:00Z")
+    }
+
+    @Test("a category marker without a verified edit timestamp is unreadable")
+    func categoryCorrectionNeedsTimestamp() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-category-bad",
+                type: "expense_category_corrected",
+                content: [
+                    "record_id": "rec-42",
+                    "record": [
+                        "name": "午饭",
+                        "amount_cny": "38.50",
+                        "occurred_on": "2026-08-15",
+                        "is_family_expense": false,
+                        "category": "购物",
+                    ],
+                ]
+            )
+        )
+        #expect(
+            parsed.kind
+                == .unrecognised(eventType: "expense_category_corrected")
+        )
+    }
+
     @Test("an unknown chatEvent type stays visible instead of vanishing")
     func unknownEventType() throws {
         let parsed = try decode(chatEvent("ev-6", type: "teleport", content: [:]))

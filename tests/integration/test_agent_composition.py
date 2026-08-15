@@ -1011,6 +1011,116 @@ def test_an_expense_write_crosses_both_composition_roots_offline(
     finance_engine.dispose()
 
 
+def test_category_picker_is_governed_but_not_model_visible_and_replays_in_timeline(
+    keys, agent_db, tmp_path: Path
+) -> None:
+    """The production composition keeps execution and model visibility separate.
+
+    This is the seam fake API authorizers cannot prove: the direct picker must
+    cross both real policy/transport roots, while the same tool stays absent
+    from model context and `/v1/capabilities`. Its verified row is then an
+    append-only Timeline marker a fresh app launch can replay.
+    """
+    finance_db = tmp_path / "finance-category.sqlite"
+    service = LoopbackFinanceService(
+        {
+            MCP_KID_ENV: "svc-test",
+            MCP_PEM_ENV: str(keys.service_public_pem),
+        },
+        database=finance_db,
+        write_fixture=True,
+    )
+    update_device(
+        agent_db,
+        scopes=json.dumps([CAPABILITY_SCOPE, EXPENSE_SCOPE]),
+    )
+    gateway = FakeGateway(
+        ProposedToolCall(
+            tool="finance.log_expense",
+            arguments={
+                "name": "午饭",
+                "input_amount": "20.00",
+                "input_currency": "CNY",
+                "occurred_on": "2026-07-25",
+                "is_family_expense": False,
+                "entry_kind": "expense",
+                "category": "餐饮",
+            },
+        )
+    )
+    create_key = str(uuid.uuid4())
+    correction_key = str(uuid.uuid4())
+    try:
+
+        async def scenario():
+            async with agent_service(
+                config_for(agent_db, service),
+                build_gateway=lambda: gateway,
+                write_switch=shared_enabled_write_switch(),
+            ) as composed:
+                async with http_for(composed.deps) as client:
+                    token = access_token(scopes=(CAPABILITY_SCOPE, EXPENSE_SCOPE))
+                    auth = {"Authorization": f"Bearer {token}"}
+                    created = await client.post(
+                        "/v1/chat/messages",
+                        json={
+                            "conversation_id": "c1",
+                            "text": "午饭 20，个人支出",
+                        },
+                        headers={
+                            **auth,
+                            "Idempotency-Key": create_key,
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    corrected = await client.post(
+                        "/v1/expense-records/rec000001/category",
+                        json={
+                            "category": "购物",
+                            "expected_current_category": "餐饮",
+                        },
+                        headers={
+                            **auth,
+                            "Idempotency-Key": correction_key,
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    timeline = await client.get(
+                        "/v1/conversations/c1/events", headers=auth
+                    )
+                    capabilities = await client.get("/v1/capabilities", headers=auth)
+                    return created, corrected, timeline, capabilities
+
+        created, corrected, timeline, capabilities = asyncio.run(scenario())
+    finally:
+        service.stop()
+
+    assert created.status_code == 200, created.text
+    assert corrected.status_code == 200, corrected.text
+    assert corrected.json()["record"]["category"] == "购物"
+    markers = [
+        event
+        for event in timeline.json()["events"]
+        if event["event_type"] == "expense_category_corrected"
+    ]
+    assert len(markers) == 1
+    assert markers[0]["content"]["record_id"] == "rec000001"
+    assert markers[0]["content"]["record"]["category"] == "购物"
+    assert gateway.calls[0]["envelope"].tool_aliases
+    assert "finance.update_expense_category" not in (
+        gateway.calls[0]["envelope"].tool_aliases
+    )
+    assert "finance.update_expense_category" not in {
+        tool["alias"] for tool in capabilities.json()["tools"]
+    }
+
+    finance_engine = create_finance_engine(finance_db)
+    with finance_session_factory(finance_engine)() as session:
+        assert session.get(ToolExecution, create_key).state == "succeeded"
+        assert session.get(ToolExecution, correction_key).state == "succeeded"
+    finance_engine.dispose()
+
+
 def test_a_host_context_the_server_cannot_verify_fails_safe(
     keys, agent_db, tmp_path: Path
 ) -> None:

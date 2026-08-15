@@ -897,6 +897,10 @@ public enum TimelineEntryKind: Sendable, Equatable {
     /// `DEV-031`. The permanent marker that closes an earlier duplicate prompt.
     /// It is presentation state and never model dialogue.
     case duplicateDecision(checkID: String, decision: String)
+    /// `G1`. A verified current-value revision for one expense row. It is a
+    /// separate append-only Timeline fact; the original write receipt remains
+    /// sealed and is never rewritten.
+    case expenseCategoryCorrected(recordID: String, record: FinanceExpenseRecord)
     /// `DEV-040`. The permanent marker recording what a person found in the
     /// ledger for an operation parked at `needs_manual_review`. Presentation
     /// state, never dialogue — and never evidence that a write happened.
@@ -1008,6 +1012,22 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                 return .unrecognised(eventType: eventType)
             }
             return .duplicateDecision(checkID: checkID, decision: decision)
+        case "expense_category_corrected":
+            guard
+                let recordID = content["record_id"]?.stringValue,
+                !recordID.isEmpty,
+                let object = content["record"]?.objectValue,
+                let data = try? JSONEncoder().encode(object),
+                let record = try? JSONDecoder().decode(
+                    FinanceExpenseRecord.self, from: data
+                ),
+                record.categoryUpdatedAt != nil
+            else {
+                return .unrecognised(eventType: eventType)
+            }
+            return .expenseCategoryCorrected(
+                recordID: recordID, record: record
+            )
         case "manual_review_resolved":
             guard
                 let resolution = content["resolution"]?.stringValue,

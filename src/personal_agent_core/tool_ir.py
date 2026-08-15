@@ -496,12 +496,10 @@ _CATEGORY_UPDATE_OUTPUT: Final[dict[str, Any]] = {
 
 #: Correcting the 分类 of an expense that is already in the ledger.
 #:
-#: `R2` like every other governed write, and `enabled=False` until Henson opens
-#: the gate: it is the first tool in this system that *modifies* committed
-#: ledger content rather than appending to it, and that is a product decision,
-#: not an implementation detail. The contract is frozen here so the client, the
-#: policy layer and the audit envelope can be built and tested against it in the
-#: meantime; nothing dispatches while `enabled` is false.
+#: `R2` like every other governed write. Henson opened this deterministic
+#: receipt-card action on 2026-08-15; it is enabled for that route while remaining
+#: unavailable to the model, because modifying committed ledger content requires
+#: the explicit picker tap rather than a model inference.
 #:
 #: `confirmation="never"` is not a relaxation. The confirmation *is* the tap:
 #: this tool exists to serve a deterministic user action on the receipt card,

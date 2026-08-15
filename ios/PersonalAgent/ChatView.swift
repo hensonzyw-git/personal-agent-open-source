@@ -315,6 +315,14 @@ struct ChatView: View {
             .foregroundStyle(.secondary)
             .accessibilityHint("duplicate_check_id \(checkID)")
 
+        case .expenseCategoryCorrected(_, let record):
+            Label(
+                "分类已修改为 \(record.category ?? "未分类")",
+                systemImage: "tag.circle"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
         case .manualReviewResolved(let resolution):
             Label(
                 "已人工核对：\(manualResolutionText(resolution))",
