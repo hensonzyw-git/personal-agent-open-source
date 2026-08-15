@@ -29,8 +29,10 @@ from personal_agent.api.finance_query_projection import (
     decode_finance_query_projection,
     summarise_query_projection,
 )
+from personal_agent.api.finance_record_projection import FinanceExpenseRecord
 from personal_agent.api.orchestrator import (
     Clarification,
+    CommitFailedSafe,
     DirectAnswer,
     InterpreterError,
     PossibleDuplicate,
@@ -123,7 +125,14 @@ class FakeDispatcher:
 
     def commit(self, *, intent, idempotency_key, duplicate_override):
         self.commit_calls.append(
-            {"idempotency_key": idempotency_key, "override": duplicate_override}
+            {
+                "idempotency_key": idempotency_key,
+                "override": duplicate_override,
+                # Recorded so a route that resolves its own intent -- the
+                # category correction -- can be checked on what it actually
+                # dispatched rather than only on what it answered.
+                "intent": intent,
+            }
         )
         return self._commit
 
@@ -1750,3 +1759,212 @@ def test_the_resolution_lands_on_the_timeline_exactly_once(
     ]
     assert len(markers) == 1
     assert markers[0]["content"]["resolution"] == "confirmed_not_written"
+
+
+# --- `G1`: the category correction route -------------------------------------
+
+
+def _corrected(category: str = "购物") -> FinanceExpenseRecord:
+    return FinanceExpenseRecord(
+        name="午饭",
+        amount_cny="38.50",
+        occurred_on="2026-07-24",
+        is_family_expense=False,
+        category=category,
+        personal_spend_cny=None,
+        category_updated_at="2026-07-24T07:00:00Z",
+    )
+
+
+class _RefusingInterpreter:
+    """Fails the test if a model turn is attempted."""
+
+    def interpret(self, *, envelope):
+        raise AssertionError("the category correction must never ask a model")
+
+
+def test_a_category_correction_never_reaches_the_model(
+    engine, token_ring, keyring
+) -> None:
+    """The picker's tap is the decision; there is nothing to interpret.
+
+    The interpreter here raises if it is consulted, which is the point: this
+    route resolves its own intent, and the tool it dispatches is
+    `model_callable=False` in the IR precisely so no model turn can produce it.
+    """
+    dispatcher = FakeDispatcher(commit=Written("rec-1", record=_corrected()))
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=_RefusingInterpreter(),
+        dispatcher=dispatcher,
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert reply.status_code == 200
+    body = reply.json()
+    assert body["state"] == "succeeded"
+    assert body["record_id"] == "rec-1"
+    assert body["record"]["category"] == "购物"
+    assert body["record"]["category_updated_at"] == "2026-07-24T07:00:00Z"
+    # Dispatched exactly the correction, under the client's own key.
+    assert len(dispatcher.commit_calls) == 1
+    call = dispatcher.commit_calls[0]
+    assert call["idempotency_key"] == REQUEST_ID_1
+    assert call["override"] is None
+    assert call["intent"].tool == "finance.update_expense_category"
+    assert call["intent"].model_args == {
+        "record_id": "rec-1",
+        "category": "购物",
+        "expected_current_category": "餐饮",
+    }
+
+
+def test_a_correction_without_its_expectation_is_refused(
+    engine, token_ring, keyring
+) -> None:
+    """Omitting the compare-and-swap is not a request for a blind overwrite.
+
+    It is an out-of-date client, and reading the omission as "expect nothing"
+    would silently turn every stale card into an overwrite of someone else's
+    edit.
+    """
+    dispatcher = FakeDispatcher(commit=Written("rec-1"))
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=_RefusingInterpreter(),
+        dispatcher=dispatcher,
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert reply.status_code == 400
+    assert reply.json()["error"]["code"] == "INVALID_ARGUMENT"
+    assert dispatcher.commit_calls == []
+
+
+def test_a_null_expectation_is_a_value_not_an_omission(
+    engine, token_ring, keyring
+) -> None:
+    """A refund legitimately has no category, and saying so must be possible."""
+    dispatcher = FakeDispatcher(commit=Written("rec-1"))
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=_RefusingInterpreter(),
+        dispatcher=dispatcher,
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": None},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert reply.status_code == 200
+    assert (
+        dispatcher.commit_calls[0]["intent"].model_args[
+            "expected_current_category"
+        ]
+        is None
+    )
+
+
+def test_replaying_a_correction_key_dispatches_once(
+    engine, token_ring, keyring
+) -> None:
+    dispatcher = FakeDispatcher(commit=Written("rec-1"))
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=_RefusingInterpreter(),
+        dispatcher=dispatcher,
+    )
+    body = {"category": "购物", "expected_current_category": "餐饮"}
+
+    first = client.post(
+        "/v1/expense-records/rec-1/category",
+        json=body,
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    second = client.post(
+        "/v1/expense-records/rec-1/category",
+        json=body,
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert first.json()["operation_id"] == second.json()["operation_id"]
+    assert len(dispatcher.commit_calls) == 1
+
+
+def test_the_same_key_under_a_different_correction_is_a_conflict(
+    engine, token_ring, keyring
+) -> None:
+    """Two corrections of the same row from different believed starting points
+    are different requests: one is working from a stale view, and sharing a key
+    would let the stale one replay as the fresh one's success."""
+    dispatcher = FakeDispatcher(commit=Written("rec-1"))
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=_RefusingInterpreter(),
+        dispatcher=dispatcher,
+    )
+
+    client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    clash = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "旅行"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert clash.status_code == 409
+    assert len(dispatcher.commit_calls) == 1
+
+
+def test_a_failed_correction_carries_no_business_fields(
+    engine, token_ring, keyring
+) -> None:
+    """A correction that did not reach the ledger must not repaint the card.
+
+    `record` travels only with a proven write, so a safe failure leaves the
+    client with nothing to overlay and the row keeps the ledger's value.
+    """
+    dispatcher = FakeDispatcher(commit=CommitFailedSafe("SCOPE_DENIED"))
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=_RefusingInterpreter(),
+        dispatcher=dispatcher,
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    body = reply.json()
+    assert body["state"] == "failed_safe"
+    assert body["record_id"] is None
+    assert "record" not in body

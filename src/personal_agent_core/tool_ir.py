@@ -102,6 +102,24 @@ class ToolContract(BaseModel):
     effect: Effect
     risk_level: RiskLevel
     enabled: bool
+    #: Whether the model may be offered this tool at all.
+    #:
+    #: Separate from `enabled` because "this capability is live" and "a language
+    #: model may decide to invoke it" are two different permissions, and the
+    #: system has now grown a tool where they diverge:
+    #: `finance.update_expense_category` exists to serve a deterministic tap on
+    #: the receipt card, and the model has no business rewriting the category of
+    #: an already-committed ledger row on its own inference.
+    #:
+    #: This is a field rather than an exclusion list in the composition layer for
+    #: the reason this codebase has already been bitten by twice (see
+    #: `_RECORD_ID_RESULT_TOOLS`): a hand-maintained set beside the IR drifts
+    #: silently, and the drift is only discovered when it has already granted
+    #: something. Here the default is permissive, so the risk is a *new* tool
+    #: being model-callable when it should not be -- which is why the contract
+    #: suite asserts the model-facing set explicitly rather than deriving it
+    #: from the same expression twice.
+    model_callable: bool = True
     disabled_reason: str | None = None
     summary: str
     model_input_schema: dict[str, Any]
@@ -431,6 +449,129 @@ LOG_EXPENSE = ToolContract(
         ErrorCode.CATEGORY_NOT_ALLOWED,
         ErrorCode.POSSIBLE_DUPLICATE,
         ErrorCode.FX_RATE_UNAVAILABLE,
+        *_SOURCE_ERRORS,
+    ),
+)
+
+
+#: What a category correction returns. Deliberately *not* `_EXPENSE_RECORD_OUTPUT`:
+#: an update is not a create, and reusing the create's schema would make
+#: `status: "created"` a legal value for a call that never creates anything.
+_CATEGORY_UPDATE_OUTPUT: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "status",
+        "record_id",
+        "source_system",
+        "table",
+        "category",
+        "updated_at",
+        "record",
+        "evidence",
+    ],
+    "properties": {
+        # `already_current` is a success with no request sent: the row was
+        # found at the requested value, which is what a replay after a lost
+        # response looks like.
+        "status": {"enum": ["updated", "already_current"]},
+        "record_id": {"type": "string", "minLength": 1},
+        "source_system": {"const": "feishu_bitable"},
+        "table": {"const": "expense"},
+        "category": {"enum": list(ALLOWED_EXPENSE_CATEGORIES)},
+        "updated_at": {"type": "string", "format": "date-time"},
+        "record": {"type": "object"},
+        "evidence": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["kind", "external_id"],
+            "properties": {
+                "kind": {"const": "feishu_record"},
+                "external_id": {"type": "string", "minLength": 1},
+            },
+        },
+    },
+}
+
+
+#: Correcting the 分类 of an expense that is already in the ledger.
+#:
+#: `R2` like every other governed write, and `enabled=False` until Henson opens
+#: the gate: it is the first tool in this system that *modifies* committed
+#: ledger content rather than appending to it, and that is a product decision,
+#: not an implementation detail. The contract is frozen here so the client, the
+#: policy layer and the audit envelope can be built and tested against it in the
+#: meantime; nothing dispatches while `enabled` is false.
+#:
+#: `confirmation="never"` is not a relaxation. The confirmation *is* the tap:
+#: this tool exists to serve a deterministic user action on the receipt card,
+#: not a model inference, and the API route that reaches it is not on the
+#: model-facing channel at all. Adding a second confirmation to a button press
+#: would be theatre.
+UPDATE_EXPENSE_CATEGORY = ToolContract(
+    name="finance.update_expense_category",
+    version="1.0.0",
+    domain="finance",
+    effect="update",
+    risk_level="R2",
+    enabled=True,
+    # The model never sees this tool. It is reached only by the device-authenticated
+    # route behind the receipt card's picker, where the user's tap *is* the
+    # decision. A model that could call it could re-categorise committed ledger
+    # rows from inference alone, which is a strictly larger authority than
+    # anything else in the Finance surface grants.
+    model_callable=False,
+    summary="把一条已入账支出的分类改成账本已有的另一个选项，不改动其他任何字段。",
+    model_input_schema={
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "FinanceUpdateExpenseCategoryInput",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["record_id", "category", "expected_current_category"],
+        "properties": {
+            "record_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "要修改的支出记录 ID，来自该笔的写入回执。",
+            },
+            "category": {
+                "enum": list(ALLOWED_EXPENSE_CATEGORIES),
+                "description": (
+                    "新的分类，必须是账本单选字段已有的选项；连接器从不新建选项。"
+                ),
+            },
+            "expected_current_category": {
+                "enum": [*ALLOWED_EXPENSE_CATEGORIES, None],
+                "description": (
+                    "调用方认为这条记录当前的分类，用于 compare-and-swap。与账本"
+                    "实际不符时拒绝写入并回报账本当前值，绝不覆盖他处的改动。"
+                    "null 表示调用方认为该笔当前没有分类（退款/AA 收款）。"
+                ),
+            },
+        },
+    },
+    output_schema=_CATEGORY_UPDATE_OUTPUT,
+    required_scopes=(SCOPE_EXPENSE_WRITE,),
+    confirmation="never",
+    idempotency=Idempotency(
+        key_source="host_injected_uuid4",
+        replay_result=(
+            "重放时先读回该记录：已是目标分类则返回 already_current 且不发送任何"
+            "请求；已被改成第三个值则拒绝，绝不二次覆盖。"
+        ),
+    ),
+    retry=Retry(retryable_errors=(ErrorCode.SOURCE_UNAVAILABLE,)),
+    audit=_WRITE_AUDIT,
+    errors=(
+        *_GOVERNANCE_ERRORS,
+        ErrorCode.CATEGORY_NOT_ALLOWED,
+        ErrorCode.CATEGORY_CHANGED_ELSEWHERE,
+        # There is deliberately no distinct "record not found" code. The adapter
+        # maps every non-zero Feishu code to `SOURCE_UNAVAILABLE`
+        # (`_parse_envelope`), so an unknown record id arrives as exactly that
+        # today. Listing a code the tool cannot actually emit would make this
+        # contract describe a system that does not exist; narrowing the map is
+        # its own change, in the adapter, with its own evidence.
         *_SOURCE_ERRORS,
     ),
 )
@@ -918,6 +1059,7 @@ META_CAPABILITIES = ToolContract(
 TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
     LOG_EXPENSE,
     LOG_EXPENSE_BATCH,
+    UPDATE_EXPENSE_CATEGORY,
     LOG_INCOME,
     UPDATE_FAMILY_FUND,
     QUERY_EXPENSES,

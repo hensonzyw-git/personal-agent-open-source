@@ -54,12 +54,21 @@ from sqlalchemy.orm import Session, sessionmaker
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.fault_breakpoint import FaultBreakpoint
+from personal_agent_core.money import format_cny
 from personal_agent_core.timeutil import parse_ledger_date, to_rfc3339, utc_now
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
 from personal_data_mcp.finance.duplicate_check import (
     DuplicateFinding,
     OverrideRefused,
+)
+from personal_data_mcp.finance.category_update import update_expense_category
+from personal_data_mcp.finance.expense_record import (
+    as_checkbox,
+    as_decimal,
+    as_ledger_date,
+    as_personal_spend_formula,
+    as_text,
 )
 from personal_data_mcp.finance.expense_policy import (
     Clarification,
@@ -178,6 +187,33 @@ def _record_receipt(
         "record": {} if outcome.status == "idempotent_replay" else record,
         "evidence": {"kind": "feishu_record", "external_id": outcome.record_id},
     }
+
+
+def _personal_spend_of(
+    outcome: WriteOutcome, *, config: LedgerConfig
+) -> dict[str, Any]:
+    """个人支出 as the ledger computed it, or nothing at all.
+
+    `G1` puts the business fields on the iOS receipt card, and this is the one
+    field the write side does not know. 个人支出 is a Base *formula* the config
+    freezes as read-only precisely so family sharing and refunds are never
+    reconstructed here; the only honest source is the read-back this write
+    already performed and verified.
+
+    Three cases resolve to absence rather than to a number: an
+    `idempotent_replay` (whose `stored_fields` is empty by contract, since a
+    replay knows its receipt and not this call's fields), a formula Feishu had
+    not evaluated yet, and a formula envelope in a shape this build does not
+    recognise. The card then simply omits the row. That is deliberate -- a
+    receipt missing one row is a smaller error than a receipt asserting a
+    personal-spend figure the ledger never produced.
+    """
+    spend = as_personal_spend_formula(
+        outcome.stored_fields.get(
+            config.tables["expense"].fields["personal_spend"].expected_name
+        )
+    )
+    return {} if spend is None else {"personal_spend_cny": format_cny(spend)}
 
 
 def _fx_recorder(
@@ -302,10 +338,11 @@ def build_expense_handler(
             table="expense",
             record={
                 "name": entry.name,
-                "amount_cny": str(entry.amount_cny),
+                "amount_cny": format_cny(entry.amount_cny),
                 "occurred_on": entry.occurred_on.isoformat(),
                 "is_family_expense": entry.is_family_expense,
                 "category": entry.category,
+                **_personal_spend_of(outcome, config=dependencies.config),
             },
         )
 
@@ -418,3 +455,105 @@ def build_family_fund_handler(
         }
 
     return handler
+
+
+# --- finance.update_expense_category -----------------------------------------
+
+
+def build_category_update_handler(
+    dependencies: FinanceWriteDependencies,
+) -> ToolHandler:
+    """The only handler allowed to expose `finance.update_expense_category`.
+
+    Composition only, like the handlers above: the compare-and-swap, the
+    single-field payload and the read-back verification all live in
+    `finance.category_update`, and nothing new is decided here.
+
+    The receipt is deliberately not an `_EXPENSE_RECORD_OUTPUT`. An update is
+    not a create, and borrowing the create's schema would make
+    `status: "created"` a legal answer for a call that creates nothing. The
+    `record` it carries is the row *as it now stands*, rebuilt from the
+    read-back rather than from the request, so the card that drew the change
+    shows what the ledger holds and not what the caller hoped for.
+    """
+
+    async def handler(invocation: ToolInvocation) -> dict[str, Any]:
+        arguments = invocation.arguments
+        call = invocation.verified_call
+        validation = await fresh_validation(dependencies)
+
+        outcome = await update_expense_category(
+            record_id=arguments["record_id"],
+            category=arguments["category"],
+            expected_current_category=arguments.get("expected_current_category"),
+            sessions=dependencies.sessions,
+            adapter=dependencies.adapter,
+            config=dependencies.config,
+            validation=validation,
+            source=dependencies.source,
+            idempotency_key=call.idempotency_key,
+            request_fingerprint=call.request_fingerprint,
+            trace_id=call.trace_id,
+            now=dependencies.now,
+        )
+        return {
+            "status": outcome.status,
+            "record_id": outcome.record_id,
+            "source_system": SOURCE_SYSTEM,
+            "table": "expense",
+            "category": outcome.category,
+            "updated_at": to_rfc3339(outcome.updated_at),
+            "record": _record_from_stored(
+                outcome.stored_fields,
+                config=dependencies.config,
+                category_updated_at=to_rfc3339(outcome.updated_at),
+            ),
+            "evidence": {
+                "kind": "feishu_record",
+                "external_id": outcome.record_id,
+            },
+        }
+
+    return handler
+
+
+def _record_from_stored(
+    stored: dict[str, Any],
+    *,
+    config: LedgerConfig,
+    category_updated_at: str,
+) -> dict[str, Any]:
+    """The receipt-card row, rebuilt from what the ledger actually holds.
+
+    Every value here came back from Feishu in the verifying read, so this is the
+    one place in the system where a receipt's business fields are pure read-back
+    with nothing carried over from the request. A cell that will not normalise
+    is omitted rather than guessed: the card drops that row, which is visibly
+    incomplete, instead of showing a value nobody stated.
+
+    `个人支出` is deliberately absent even when the read-back carried it. The
+    formula may depend on 分类, and Feishu may not have re-evaluated it by the
+    time of a read taken moments after the update, so the number in hand is as
+    likely to be the pre-edit one as the post-edit one. An absent row is honest;
+    a stale one is not -- and it is precisely the field a person would use to
+    check the edit did what they wanted.
+    """
+    fields = config.tables["expense"].fields
+    record: dict[str, Any] = {"category_updated_at": category_updated_at}
+
+    name = as_text(stored.get(fields["name"].expected_name))
+    if name:
+        record["name"] = name
+    amount = as_decimal(stored.get(fields["amount"].expected_name))
+    if amount is not None:
+        record["amount_cny"] = format_cny(amount)
+    occurred_on = as_ledger_date(stored.get(fields["occurred_on"].expected_name))
+    if occurred_on is not None:
+        record["occurred_on"] = occurred_on.isoformat()
+    family = as_checkbox(stored.get(fields["is_family_expense"].expected_name))
+    if isinstance(family, bool):
+        record["is_family_expense"] = family
+    category = as_text(stored.get(fields["category"].expected_name))
+    if category:
+        record["category"] = category
+    return record

@@ -146,6 +146,104 @@ def test_downgrade_returns_to_an_empty_database(tmp_path: Path) -> None:
     engine.dispose()
 
 
+def test_receipt_record_migration_round_trips_a_populated_database(
+    tmp_path: Path,
+) -> None:
+    """`0006` adds the `G1` business fields to a database that already has rows.
+
+    Two things are proven here that the model alone cannot: that the SQLite
+    batch copy keeps existing operations, and that the check constraint really
+    exists in the database rather than only in `__table_args__`. A constraint
+    that lives only in the model is not a constraint -- recovery, the reconciler
+    and a migration all write through raw SQL.
+    """
+    path = tmp_path / "receipt-record-migration.sqlite"
+    engine = create_database_engine(path)
+    db.upgrade(engine, "0005_finance_safe_retry")
+    timestamp = "2026-08-15T00:00:00Z"
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO devices (device_id, display_name, public_key, "
+                "device_key_thumbprint, status, scopes, allowed_tools_version, "
+                "created_at) VALUES ('dev', 'phone', 'key', 'thumb', 'active', "
+                "'[]', 'v1', :timestamp)"
+            ),
+            {"timestamp": timestamp},
+        )
+        for suffix in ("written", "refused"):
+            connection.execute(
+                text(
+                    "INSERT INTO api_requests (request_id, device_id, "
+                    "client_request_id, request_fingerprint, received_at) "
+                    "VALUES (:request_id, 'dev', :client_id, :fingerprint, "
+                    ":timestamp)"
+                ),
+                {
+                    "request_id": f"req-{suffix}",
+                    "client_id": f"client-{suffix}",
+                    "fingerprint": f"fp-{suffix}",
+                    "timestamp": timestamp,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO operations (operation_id, request_id, trace_id, "
+                    "idempotency_key, state, state_version, cancel_requested, "
+                    "client_detached, created_at, updated_at) VALUES "
+                    "(:operation_id, :request_id, :trace_id, :key, :state, 1, "
+                    "0, 0, :timestamp, :timestamp)"
+                ),
+                {
+                    "operation_id": f"op-{suffix}",
+                    "request_id": f"req-{suffix}",
+                    "trace_id": f"trace-{suffix}",
+                    "key": f"key-{suffix}",
+                    "state": "succeeded" if suffix == "written" else "failed_safe",
+                    "timestamp": timestamp,
+                },
+            )
+
+    db.upgrade(engine)
+    envelope = '{"v": 1, "ct": "x"}'
+    with engine.begin() as connection:
+        # No backfill: a write that predates `G1` says so by holding NULL.
+        assert connection.execute(
+            text("SELECT encrypted_result_record FROM operations")
+        ).scalars().all() == [None, None]
+        connection.execute(
+            text(
+                "UPDATE operations SET encrypted_result_record = :envelope "
+                "WHERE operation_id = 'op-written'"
+            ),
+            {"envelope": envelope},
+        )
+
+    with engine.begin() as connection:
+        # A `failed_safe` row carrying a name and an amount would render as a
+        # receipt for a write that never happened.
+        with pytest.raises(IntegrityError):
+            connection.execute(
+                text(
+                    "UPDATE operations SET encrypted_result_record = :envelope "
+                    "WHERE operation_id = 'op-refused'"
+                ),
+                {"envelope": envelope},
+            )
+
+    db.downgrade(engine, "0005_finance_safe_retry")
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT operation_id FROM operations ORDER BY operation_id")
+        ).scalars().all() == ["op-refused", "op-written"]
+        assert "encrypted_result_record" not in {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(operations)"))
+        }
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    engine.dispose()
+
+
 def test_finance_retry_migration_round_trips_a_populated_database(
     tmp_path: Path,
 ) -> None:

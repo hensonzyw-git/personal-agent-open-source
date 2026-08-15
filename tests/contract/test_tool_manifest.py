@@ -124,18 +124,51 @@ def test_check_mode_rejects_a_tampered_artifact(
 # --- enablement ------------------------------------------------------------
 
 
-def test_five_finance_tools_with_only_batch_disabled() -> None:
+def test_six_finance_tools_with_only_batch_disabled() -> None:
     document = load_manifest()
     finance = [t for t in document["tools"] if t["domain"] == "finance"]
-    assert len(finance) == 5
+    assert len(finance) == 6
     assert document["disabled_tools"] == ["finance.log_expense_batch"]
     assert set(document["enabled_tools"]) == {
+        "finance.log_expense",
+        "finance.log_income",
+        "finance.update_family_fund",
+        "finance.update_expense_category",
+        "finance.query_expenses",
+        "meta.capabilities",
+    }
+
+
+def test_the_model_is_never_offered_the_category_update() -> None:
+    """Enabled is not the same permission as model-callable.
+
+    `finance.update_expense_category` rewrites a field on an already-committed
+    ledger row. That authority belongs to Henson tapping a picker, and the route
+    that carries it is device-authenticated and off the model channel entirely.
+    A model able to call it could re-categorise history from inference alone.
+
+    Asserted as a literal set rather than re-derived from `model_callable`: a
+    test that recomputes the production expression passes by construction and
+    would have said nothing the day a new write tool defaulted into the model's
+    reach.
+    """
+    document = load_manifest()
+    assert set(document["model_callable_tools"]) == {
         "finance.log_expense",
         "finance.log_income",
         "finance.update_family_fund",
         "finance.query_expenses",
         "meta.capabilities",
     }
+    assert "finance.update_expense_category" not in document["model_callable_tools"]
+    # And it really is live -- this is a narrowing of who may call it, not a
+    # disabled tool wearing a different label.
+    assert "finance.update_expense_category" in document["enabled_tools"]
+
+
+def test_every_model_callable_tool_is_enabled() -> None:
+    document = load_manifest()
+    assert set(document["model_callable_tools"]) <= set(document["enabled_tools"])
 
 
 def test_finance_tool_effect_partition_matches_the_manifest() -> None:

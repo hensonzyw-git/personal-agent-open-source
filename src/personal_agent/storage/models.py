@@ -573,6 +573,24 @@ class Operation(Base):
     )
     duplicate_check_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     safe_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: `G1`: the written ledger row the iOS receipt card draws its fields from.
+    #:
+    #: Deliberately a second column rather than more content inside
+    #: `safe_result`. For a governed write `safe_result` *is* the external record
+    #: id, and the whole receipt projection turns on that: overloading it would
+    #: make the strongest claim this system makes -- "this row exists in the
+    #: ledger" -- depend on parsing. The two facts are also not equally certain.
+    #: The record id is proof; these fields are presentation, and an
+    #: `idempotent_replay` legitimately has the first without the second.
+    #:
+    #: Sealed, because it is the first place ledger content -- a name and an
+    #: exact amount -- would otherwise sit in this database as plaintext. The
+    #: Timeline's own copy already travels inside `encrypted_content`, and the
+    #: write audit forbids `exact_amount` outright; a clear column here would be
+    #: the one exposure the rest of the design took care to avoid.
+    encrypted_result_record: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
     #: What a human concluded after looking at the ledger, for an operation that
     #: ended at `needs_manual_review`. A *flag*, not a state, for the same reason
     #: `cancel_requested` is one: the accounting outcome belongs to the state
@@ -597,6 +615,17 @@ class Operation(Base):
         UniqueConstraint(
             "retry_of_operation_id",
             name="retry_source_consumed_once",
+        ),
+        # Business fields may only accompany a state that could have reached the
+        # ledger. Not a general annotation slot: a `failed_safe` row carrying a
+        # name and an amount would render as a receipt for a write that never
+        # happened. `needs_manual_review` qualifies because it can hold a record
+        # id too -- the write may well have landed, which is why someone is
+        # being asked to look.
+        CheckConstraint(
+            "encrypted_result_record IS NULL"
+            " OR state IN ('succeeded', 'needs_manual_review')",
+            name="result_record_only_where_written",
         ),
         CheckConstraint(
             _in_set("manual_resolution", MANUAL_RESOLUTIONS)

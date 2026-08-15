@@ -546,9 +546,10 @@ async def agent_service(
 
     manifest = load_manifest()
     manifest_version = manifest["allowed_tools_version"]
-    enabled = frozenset(
-        tool["name"] for tool in manifest["tools"] if tool["enabled"]
-    )
+    # What the *model* may be offered, which is narrower than what is enabled:
+    # `finance.update_expense_category` is live but reachable only by the
+    # device-authenticated route behind the receipt card's picker.
+    enabled = frozenset(manifest["model_callable_tools"])
     allowlist = _allowlist(config, enabled)
 
     # Keys and the model gateway come first: a service that cannot sign, cannot

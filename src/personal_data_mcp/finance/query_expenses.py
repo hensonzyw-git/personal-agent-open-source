@@ -42,7 +42,12 @@ from personal_agent_core.timeutil import (
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
 from personal_data_mcp.feishu.endpoints import SEARCH_RECORDS
-from personal_data_mcp.finance.expense_record import as_decimal, as_ledger_date, as_text
+from personal_data_mcp.finance.expense_record import (
+    as_decimal,
+    as_ledger_date,
+    as_personal_spend_formula,
+    as_text,
+)
 from personal_data_mcp.finance.ledger_config import LedgerConfig
 from personal_data_mcp.finance.schema_validator import SchemaValidation
 from personal_data_mcp.finance.source_guard import require_validated_source
@@ -339,26 +344,6 @@ def _matches(row: QueryExpense, filters: QueryFilters) -> bool:
     return True
 
 
-def _as_personal_spend_formula(value: Any) -> Decimal | None:
-    """Normalise the documented Bitable formula-cell envelope.
-
-    ``search_records`` returns ordinary number cells directly, but the live
-    expense formula is an envelope such as ``{"type": 2, "value": [20]}``.
-    ``2`` is the formula result's number-cell type, not the schema field type;
-    the latter has already been proven to be ``formula`` by the protected
-    config and fresh validator. The one-element value list is a provider
-    representation, not a collection of components to sum. Accept only that
-    exact numeric shape; a changed formula response is unavailable, never
-    silently interpreted as zero.
-    """
-    if not isinstance(value, dict) or value.get("type") != 2:
-        return None
-    raw = value.get("value")
-    if not isinstance(raw, list) or len(raw) != 1:
-        return None
-    return as_decimal(raw[0])
-
-
 async def _read_all_matching_source_rows(
     adapter: FeishuAdapter,
     *,
@@ -418,7 +403,7 @@ async def _read_all_matching_source_rows(
                     ErrorCode.SOURCE_UNAVAILABLE,
                     internal_detail="expense query returned a malformed record",
                 )
-            personal_spend = _as_personal_spend_formula(
+            personal_spend = as_personal_spend_formula(
                 cells.get(fields["personal_spend"].expected_name)
             )
             if personal_spend is None:

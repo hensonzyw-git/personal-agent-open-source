@@ -40,9 +40,19 @@ from personal_agent.api.app import (
 from personal_agent.api.finance_dispatcher import (
     _QUERY_RESULT_TOOLS as DISPATCHER_QUERY_RESULT_TOOLS,
 )
+from personal_agent.api.finance_record_projection import (
+    decode_finance_expense_record,
+    seal_expense_record,
+)
 from personal_agent.api.operation_state import is_terminal
 from personal_agent.storage.models import OPERATION_STATES, Operation
-from personal_agent_core.tool_ir import TOOL_CONTRACTS
+from personal_agent_core.crypto import KeyRing, generate_key
+from personal_agent_core.tool_ir import ALLOWED_EXPENSE_CATEGORIES, TOOL_CONTRACTS
+
+#: One ring for the whole module. These vectors never leave the process, and
+#: the projection has to open what the write path sealed -- the point of the
+#: file is that both halves are the server's own code.
+RING = KeyRing([generate_key("receipt-vectors")], service="personal-agent-api")
 
 VECTORS_PATH = (
     Path(__file__).parents[2]
@@ -90,8 +100,10 @@ def _operation_for(case: dict) -> Operation:
             ),
             None,
         )
+    operation_id = receipt["operation_id"]
+    record = receipt.get("record")
     return Operation(
-        operation_id=receipt["operation_id"],
+        operation_id=operation_id,
         state=receipt["state"],
         cancel_requested=receipt["cancel_requested"],
         client_detached=receipt["client_detached"],
@@ -99,11 +111,24 @@ def _operation_for(case: dict) -> Operation:
         failure_reason=receipt["failure_reason"],
         duplicate_check_id=receipt["duplicate_check_id"],
         safe_result=safe_result,
+        # `G1`'s business fields are their own sealed column, not more content
+        # in `safe_result`. Sealing them here with the same helper the write
+        # path uses is what makes these vectors the server's real output rather
+        # than a hand-written approximation of it.
+        encrypted_result_record=(
+            None
+            if record is None
+            else seal_expense_record(
+                RING,
+                operation_id=operation_id,
+                record=decode_finance_expense_record(record),
+            )
+        ),
     )
 
 
 def test_contract_version_is_pinned() -> None:
-    assert V["contract"] == "chat_receipt_projection_v4"
+    assert V["contract"] == "chat_receipt_projection_v5"
     assert V["cases"], "an empty vector file would pass every check vacuously"
 
 
@@ -181,12 +206,12 @@ def test_manual_review_preserves_a_known_record_id() -> None:
             "duplicate_check_id": None,
         }
     }
-    assert _operation_projection(_operation_for(case))["record_id"] == "rec123"
+    assert _operation_projection(RING, _operation_for(case))["record_id"] == "rec123"
 
 
 @pytest.mark.parametrize("case", V["cases"], ids=lambda case: case["name"])
 def test_each_receipt_is_what_the_projection_emits(case: dict) -> None:
-    assert _operation_projection(_operation_for(case)) == case["receipt"]
+    assert _operation_projection(RING, _operation_for(case)) == case["receipt"]
 
 
 @pytest.mark.parametrize("case", V["cases"], ids=lambda case: case["name"])
@@ -206,6 +231,7 @@ def test_receipt_fields_are_closed(case: dict) -> None:
         "duplicate_existing",
         "answer",
         "query_result",
+        "record",
     }
     assert set(case["receipt"]) <= allowed
 
@@ -221,6 +247,70 @@ def test_only_a_governed_write_carries_record_evidence(case: dict) -> None:
     if case["expected_proves_write"]:
         assert receipt["state"] == "succeeded"
         assert receipt["record_id"]
+
+
+@pytest.mark.parametrize("case", V["cases"], ids=lambda case: case["name"])
+def test_business_fields_never_travel_without_the_write_they_describe(
+    case: dict,
+) -> None:
+    """`G1`'s one safety rule.
+
+    A card showing 名称 / 金额 / 分类 reads as "this is in your ledger". If a
+    body could carry those fields without a `record_id`, the card would make
+    that claim for a write nothing proved -- which is the exact failure the
+    whole receipt projection exists to prevent, arrived at from the other side.
+    """
+    receipt = case["receipt"]
+    if receipt.get("record") is not None:
+        assert receipt["record_id"], "business fields with no proven write"
+        assert receipt["state"] == "succeeded"
+        assert receipt["tool"] in _RECORD_ID_RESULT_TOOLS
+
+
+@pytest.mark.parametrize("case", V["cases"], ids=lambda case: case["name"])
+def test_a_receipt_record_carries_only_ledger_fields(case: dict) -> None:
+    record = case["receipt"].get("record")
+    if record is None:
+        return
+    assert set(record) <= {
+        "name",
+        "amount_cny",
+        "occurred_on",
+        "is_family_expense",
+        "category",
+        "personal_spend_cny",
+        "category_updated_at",
+    }
+    # Money stays a decimal string on the wire in both languages. A float here
+    # would be a float in Swift too, and ¥0.10 would stop being ¥0.10.
+    for field in ("amount_cny", "personal_spend_cny"):
+        if field in record:
+            assert isinstance(record[field], str)
+    assert isinstance(record["is_family_expense"], bool)
+    if record.get("category") is not None:
+        assert record["category"] in ALLOWED_EXPENSE_CATEGORIES
+
+
+def test_the_editable_category_set_is_the_ledgers_own_options() -> None:
+    """What the client may offer in the 分类 picker.
+
+    The connector never creates a select option, so an option the client
+    invents is a refused write at best. Pinning the set here means the picker
+    and the ledger's single-select cannot drift apart silently.
+    """
+    assert V["expense_categories"] == list(ALLOWED_EXPENSE_CATEGORIES)
+
+
+def test_an_edited_category_drops_the_stale_formula_value() -> None:
+    """个人支出 may depend on 分类, and this side does not know whether it does.
+
+    Carrying the pre-edit number forward would put a figure on the card that
+    the ledger may no longer agree with; recomputing it here would rebuild the
+    formula the config freezes read-only. Absence is the honest third option.
+    """
+    record = _case("expense_category_edited")["receipt"]["record"]
+    assert record["category_updated_at"]
+    assert "personal_spend_cny" not in record
 
 
 @pytest.mark.parametrize("case", V["cases"], ids=lambda case: case["name"])
@@ -267,8 +357,8 @@ def test_query_receipt_and_timeline_event_carry_the_same_facts() -> None:
     """The immediate projection and the Timeline event must never disagree."""
     for name in ("query_total", "query_by_category", "query_records"):
         operation = _operation_for(_case(name))
-        receipt = _operation_projection(operation)
-        event = _operation_event_content(operation)
+        receipt = _operation_projection(RING, operation)
+        event = _operation_event_content(RING, operation)
         assert event["tool"] == receipt["tool"] == "finance.query_expenses"
         assert event["query_result"] == receipt["query_result"]
         assert event["answer"] == receipt["answer"]
@@ -290,12 +380,12 @@ def test_a_query_safe_result_that_does_not_decode_fails_closed() -> None:
         }
     )
     operation.safe_result = "not a query projection"
-    receipt = _operation_projection(operation)
+    receipt = _operation_projection(RING, operation)
     # A result that cannot be projected is never shown as an answer and never
     # becomes a card; it stays silently unknown until recovery.
     assert "query_result" not in receipt
     assert "answer" not in receipt
-    event = _operation_event_content(operation)
+    event = _operation_event_content(RING, operation)
     assert "query_result" not in event
     assert "answer" not in event
 
@@ -305,7 +395,7 @@ def test_query_result_is_only_projected_for_the_query_tool() -> None:
     for case in V["cases"]:
         operation = _operation_for(case)
         if case["receipt"]["tool"] != "finance.query_expenses":
-            assert "query_result" not in _operation_projection(operation)
+            assert "query_result" not in _operation_projection(RING, operation)
 
 
 def test_new_events_carry_tool_explicitly_even_when_null() -> None:
@@ -325,6 +415,6 @@ def test_new_events_carry_tool_explicitly_even_when_null() -> None:
             }
         }
     )
-    event = _operation_event_content(operation)
+    event = _operation_event_content(RING, operation)
     assert "tool" in event
     assert event["tool"] is None

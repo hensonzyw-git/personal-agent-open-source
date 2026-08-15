@@ -114,6 +114,129 @@ public enum OperationState: Sendable, Equatable {
 
 // --- the Finance query result ------------------------------------------------
 
+/// The ledger's 分类 single-select options, as the picker may offer them.
+///
+/// Hard-coded here and held against the server by
+/// `chat_receipt_vectors.json`'s `expense_categories`, exactly as the query and
+/// record evidence tool sets are. The connector never *creates* a select option
+/// (design 9.2), so an option this client invented would not appear in the
+/// ledger -- it would be a refused write. Reading them from the server at
+/// runtime instead would mean a picker that is empty until some other request
+/// succeeds, and this list changes about once a year.
+public enum ExpenseCategory {
+    public static let all: [String] = [
+        "出行", "餐饮", "游戏", "日常生活", "玩乐", "购物", "旅行", "房租",
+    ]
+
+    /// Whether a value is one this build may send. Used to refuse before the
+    /// network rather than to let the server refuse -- the round trip would be
+    /// a governed write attempt for a value that was never valid.
+    public static func isKnown(_ value: String) -> Bool {
+        all.contains(value)
+    }
+}
+
+/// The written ledger row a governed write's receipt carries (`G1`).
+///
+/// Until `chat_receipt_projection_v5` the receipt carried a `record_id` and no
+/// business fields at all, which is why `ChatView.receiptFields` returned an
+/// empty array and every write rendered as the lightest status row. This is the
+/// object that fills it.
+///
+/// Two rules the decoder enforces rather than trusts:
+///
+/// - **money stays a string.** `amount` and `personalSpend` are the decimal text
+///   the ledger stated. Decoding them as `Double` would make ¥0.10 render as
+///   ¥0.10000000000000001 on a receipt whose entire job is to be checkable.
+/// - **the family flag has no default.** A missing `is_family_expense` refuses
+///   the whole record instead of defaulting to `false`, because that default
+///   would quietly turn a family expense into a personal one on screen -- the
+///   one field where a wrong default is a wrong accounting fact.
+///
+/// `category` is optional because the write contract allows it: a refund or AA
+/// reimbursement may carry none. `personalSpend` is optional because 个人支出 is
+/// a Base formula, so it exists only when the ledger had evaluated it.
+public struct FinanceExpenseRecord: Sendable, Equatable {
+    public let name: String
+    /// 原始金额, as the ledger's own decimal string. Negative for a refund.
+    public let amount: String
+    /// The ledger day, `yyyy-MM-dd`.
+    public let occurredOn: String
+    public let isFamilyExpense: Bool
+    public let category: String?
+    /// 个人支出: the Base formula's answer, never computed on this side.
+    public let personalSpend: String?
+    /// Set once a category correction has been verified against the ledger.
+    ///
+    /// This is what keeps the card honest under Henson's 2026-08-15 decision
+    /// that the card follows the ledger's *current* value: past this point the
+    /// card is no longer literally the write receipt, and this timestamp says
+    /// so on the card instead of hiding it.
+    public let categoryUpdatedAt: String?
+
+    public init(
+        name: String,
+        amount: String,
+        occurredOn: String,
+        isFamilyExpense: Bool,
+        category: String?,
+        personalSpend: String?,
+        categoryUpdatedAt: String?
+    ) {
+        self.name = name
+        self.amount = amount
+        self.occurredOn = occurredOn
+        self.isFamilyExpense = isFamilyExpense
+        self.category = category
+        self.personalSpend = personalSpend
+        self.categoryUpdatedAt = categoryUpdatedAt
+    }
+}
+
+extension FinanceExpenseRecord: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case amount = "amount_cny"
+        case occurredOn = "occurred_on"
+        case isFamilyExpense = "is_family_expense"
+        case category
+        case personalSpend = "personal_spend_cny"
+        case categoryUpdatedAt = "category_updated_at"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        amount = try container.decode(String.self, forKey: .amount)
+        occurredOn = try container.decode(String.self, forKey: .occurredOn)
+        // No `decodeIfPresent ?? false` here, deliberately. See the type's note.
+        isFamilyExpense = try container.decode(Bool.self, forKey: .isFamilyExpense)
+        category = try container.decodeIfPresent(String.self, forKey: .category)
+        personalSpend = try container.decodeIfPresent(
+            String.self, forKey: .personalSpend
+        )
+        categoryUpdatedAt = try container.decodeIfPresent(
+            String.self, forKey: .categoryUpdatedAt
+        )
+        if name.isEmpty || amount.isEmpty || occurredOn.isEmpty {
+            throw DecodingError.dataCorruptedError(
+                forKey: .name,
+                in: container,
+                debugDescription: "a receipt record needs a name, amount and date"
+            )
+        }
+        if let category, category.isEmpty {
+            // Null means "this row legitimately has no category"; empty string
+            // is a server that lost one. They must not collapse.
+            throw DecodingError.dataCorruptedError(
+                forKey: .category,
+                in: container,
+                debugDescription: "category is null or a non-empty string"
+            )
+        }
+    }
+}
+
 /// The structured `finance.query_expenses` projection, decoded strictly.
 ///
 /// The server projects exactly the whitelisted fields of its query contract
@@ -253,7 +376,13 @@ public enum OperationOutcome: Sendable, Equatable {
     /// Parked on a possible duplicate. The decision surface is `DEV-031`.
     case needsDuplicateDecision(checkID: String, existing: String?)
     /// A ledger row exists, and this is its external evidence.
-    case recorded(recordID: String, tool: String?)
+    ///
+    /// `record` is the row's business fields when the server projected them
+    /// (`G1`), and `nil` when it could not -- an `idempotent_replay`, an older
+    /// receipt, or a payload that failed projection. The card degrades to its
+    /// status row in that case; the write is still proven by `recordID`, which
+    /// is why the fields are allowed to be absent at all.
+    case recorded(recordID: String, tool: String?, record: FinanceExpenseRecord?)
     /// A no-side-effect answer.
     case answered(String)
     /// A structured Finance query result, read-only, rendered as a card rather
@@ -330,6 +459,9 @@ public struct OperationReceipt: Sendable, Equatable {
     /// The structured `finance.query_expenses` projection, when the tool was a
     /// query and the result decoded. `nil` for every other tool.
     public let queryResult: FinanceQueryResult?
+    /// The written ledger row, when this was a governed write the server could
+    /// project (`G1`). `nil` for every other tool and for a replay.
+    public let record: FinanceExpenseRecord?
 
     public init(
         operationID: String,
@@ -343,7 +475,8 @@ public struct OperationReceipt: Sendable, Equatable {
         clarification: String?,
         duplicateExisting: String?,
         answer: String?,
-        queryResult: FinanceQueryResult? = nil
+        queryResult: FinanceQueryResult? = nil,
+        record: FinanceExpenseRecord? = nil
     ) {
         self.operationID = operationID
         self.state = state
@@ -357,6 +490,7 @@ public struct OperationReceipt: Sendable, Equatable {
         self.duplicateExisting = duplicateExisting
         self.answer = answer
         self.queryResult = queryResult
+        self.record = record
     }
 
     /// The tools whose success is a ledger row. Kept here so `succeeded` for one
@@ -375,6 +509,12 @@ public struct OperationReceipt: Sendable, Equatable {
         "finance.log_expense_batch",
         "finance.log_income",
         "finance.update_family_fund",
+        // `G1`. A category correction is an R2 write like the rest, so a
+        // `succeeded` for it without a `record_id` is refused here too. It
+        // matters more than for a create, not less: the row it claims to have
+        // changed already existed, so "succeeded" with no evidence would read as
+        // a correction that landed on a row nobody can point at.
+        "finance.update_expense_category",
     ]
 
     /// The governed read tools whose success is a structured query card, never a
@@ -397,7 +537,8 @@ public struct OperationReceipt: Sendable, Equatable {
             clarification: clarification,
             duplicateExisting: duplicateExisting,
             answer: answer,
-            queryResult: queryResult
+            queryResult: queryResult,
+            record: record
         )
     }
 
@@ -426,7 +567,8 @@ public struct OperationReceipt: Sendable, Equatable {
         clarification: String?,
         duplicateExisting: String?,
         answer: String?,
-        queryResult: FinanceQueryResult? = nil
+        queryResult: FinanceQueryResult? = nil,
+        record: FinanceExpenseRecord? = nil
     ) -> OperationOutcome {
         let tool: String?
         if case .known(let value) = toolEvidence { tool = value } else { tool = nil }
@@ -446,7 +588,7 @@ public struct OperationReceipt: Sendable, Equatable {
             )
         case .succeeded:
             if let recordID, !recordID.isEmpty {
-                return .recorded(recordID: recordID, tool: tool)
+                return .recorded(recordID: recordID, tool: tool, record: record)
             }
             if let tool, Self.recordEvidenceTools.contains(tool) {
                 // A governed write that succeeded must carry its external
@@ -498,6 +640,7 @@ extension OperationReceipt: Decodable {
         case duplicateExisting = "duplicate_existing"
         case answer
         case queryResult = "query_result"
+        case record
     }
 
     public init(from decoder: Decoder) throws {
@@ -529,6 +672,13 @@ extension OperationReceipt: Decodable {
         // fails closed on the query card while everything else still works.
         queryResult = try? container.decodeIfPresent(
             FinanceQueryResult.self, forKey: .queryResult
+        )
+        // Same fail-closed shape as `query_result`, and for a stronger reason: a
+        // malformed record is a card this build cannot draw, never a reason to
+        // lose the receipt that proves the write. It decodes to `nil` and the
+        // card falls back to the status row.
+        record = try? container.decodeIfPresent(
+            FinanceExpenseRecord.self, forKey: .record
         )
     }
 }
@@ -820,6 +970,18 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
             } else {
                 queryResult = nil
             }
+            // `G1`'s business fields, read the same way and for the same
+            // reason: scrolling back must draw the same card the live receipt
+            // drew, not a demoted one.
+            let record: FinanceExpenseRecord?
+            if let object = content["record"]?.objectValue,
+               let data = try? JSONEncoder().encode(object) {
+                record = try? JSONDecoder().decode(
+                    FinanceExpenseRecord.self, from: data
+                )
+            } else {
+                record = nil
+            }
             return .operationResult(
                 outcome: OperationReceipt.project(
                     state: state,
@@ -830,7 +992,8 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                     clarification: content["clarification"]?.stringValue,
                     duplicateExisting: content["duplicate_existing"]?.stringValue,
                     answer: content["answer"]?.stringValue,
-                    queryResult: queryResult
+                    queryResult: queryResult,
+                    record: record
                 ),
                 state: state,
                 toolEvidence: toolEvidence

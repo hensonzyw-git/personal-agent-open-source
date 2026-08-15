@@ -68,6 +68,22 @@ final class ChatModel {
     /// own accepted call, and from the permanent Timeline marker once it is inside
     /// the loaded window.
     var resolvedManualReviews: [String: String] = [:]
+    /// `G1`. The newest ledger row this session has seen for each `record_id`.
+    ///
+    /// This is what makes Henson's 2026-08-15 decision true: the card follows
+    /// the ledger's current value rather than freezing at what was first
+    /// written. A category correction is a *new* operation describing the *same*
+    /// ledger row, so keying by `record_id` — not by operation — lets the
+    /// original receipt, scrolled back to weeks later, show the corrected
+    /// category rather than the one the model first guessed.
+    ///
+    /// Storage stays honest underneath: the server never rewrites the original
+    /// operation's sealed record, and the Timeline stays append-only. Only the
+    /// *display* resolves to the newest, which is the only layer where "current"
+    /// is the right answer.
+    var currentRecords: [String: FinanceExpenseRecord] = [:]
+    /// In-flight and failed category corrections, keyed by `record_id`.
+    var categoryEdits: [String: CategoryEditState] = [:]
     var lastError: String?
     var busy = false
     var loadingOlder = false
@@ -89,6 +105,10 @@ final class ChatModel {
         // is allowed to forget.
         resolvedDuplicateDecisions = [:]
         resolvedManualReviews = [:]
+        // Same rule: `mirror()` merges, and this is the one place allowed to
+        // forget. A row corrected in another Timeline is not this one's fact.
+        currentRecords = [:]
+        categoryEdits = [:]
         busy = true
         defer { busy = false }
         do {
@@ -298,6 +318,115 @@ final class ChatModel {
         await decideDuplicate(checkID: pending.checkID, decision: pending.decision)
     }
 
+    // --- the category correction (`G1`) ----------------------------------------
+
+    /// What a card should show while its 分类 is being corrected.
+    enum CategoryEditState: Equatable {
+        /// A correction is in flight; `target` is what was asked for, not what
+        /// the ledger holds. The row shows it greyed beside a spinner, never as
+        /// the value.
+        case inFlight(target: String)
+        /// The correction did not happen. The row still shows the ledger's
+        /// value; this message says why the tap did not take.
+        case failed(message: String)
+    }
+
+    func currentRecord(forRecordID recordID: String) -> FinanceExpenseRecord? {
+        currentRecords[recordID]
+    }
+
+    func categoryEdit(forRecordID recordID: String) -> CategoryEditState? {
+        categoryEdits[recordID]
+    }
+
+    /// Correct one recorded expense's 分类.
+    ///
+    /// Three properties, all of them deliberate:
+    ///
+    /// - **nothing is optimistic.** `currentRecords` is written only from a
+    ///   receipt the server settled as `recorded`, which the server only issues
+    ///   after reading the row back from the ledger. Showing the new category on
+    ///   tap would make the receipt card assert an unverified write — the one
+    ///   thing the whole projection exists to prevent, on the one screen that
+    ///   exists to be checkable.
+    /// - **a no-op is not a request.** Choosing the category the row already has
+    ///   sends nothing. The server would answer `already_current` and it would
+    ///   be harmless, but spending a governed write and an idempotency slot on a
+    ///   tap that changes nothing is not harmless.
+    /// - **the idempotency key is the Kit's to mint.** This screen never makes
+    ///   one: `IdempotencyKey.mint` is the single place this client spells a key,
+    ///   and a screen minting its own is how an upper-case UUID reached
+    ///   production and had every write refused.
+    func changeCategory(
+        recordID: String, from current: String?, to target: String
+    ) async {
+        guard target != current else { return }
+        guard ExpenseCategory.isKnown(target) else {
+            // Unreachable from the picker, which is built from the same list.
+            // Kept because "unreachable" is a claim about today's UI, and the
+            // ledger refuses an unknown option rather than creating it.
+            categoryEdits[recordID] = .failed(message: "「\(target)」不是账本里的分类")
+            return
+        }
+        categoryEdits[recordID] = .inFlight(target: target)
+        defer { busy = false }
+        busy = true
+        do {
+            let receipt = try await timeline.updateExpenseCategory(
+                recordID: recordID,
+                category: target,
+                expectedCurrentCategory: current
+            )
+            liveReceipt = receipt
+            if case .recorded(_, _, let record) = receipt.outcome, let record {
+                // Verified against the ledger by the server. Only now.
+                currentRecords[recordID] = record
+                categoryEdits[recordID] = nil
+            } else {
+                // Settled as something other than a proven write — parked,
+                // indeterminate, failed safe. The row keeps the ledger's value
+                // and the card says the correction did not take.
+                categoryEdits[recordID] = .failed(
+                    message: "分类未修改：\(Self.categoryEditReason(receipt.outcome))"
+                )
+            }
+            try await timeline.syncNewer()
+            await mirror()
+            lastError = nil
+        } catch {
+            categoryEdits[recordID] = .failed(message: describe(error))
+            lastError = describe(error)
+        }
+        await mirrorPendingSlots()
+    }
+
+    /// Why a settled correction did not become a proven change.
+    ///
+    /// Derived from the structured outcome, never from prose: this string sits
+    /// directly under a ledger value, and a model sentence has no business
+    /// explaining what did or did not reach the ledger.
+    private static func categoryEditReason(_ outcome: OperationOutcome) -> String {
+        switch outcome {
+        case .failedSafe(let reason):
+            return reason ?? "服务端安全拒绝，账本未改动"
+        case .needsManualReview:
+            return "结果待人工核对，请打开账本确认"
+        case .indeterminate:
+            return "本客户端无法判定结果，请打开账本确认"
+        case .cancelledBeforeSubmit:
+            return "已取消，账本未改动"
+        case .running:
+            return "服务端仍在处理"
+        case .needsClarification, .needsDuplicateDecision, .answered,
+             .answeredWithQuery, .recorded:
+            // None of these are reachable for this route — it dispatches one
+            // governed update and never a model turn — but the switch stays
+            // exhaustive so a new outcome fails to compile here rather than
+            // silently rendering as an empty explanation.
+            return "服务端未确认这次修改"
+        }
+    }
+
     // --- the manual-review resolution (`DEV-040`) ------------------------------
 
     /// Report what the user found in the ledger for a parked
@@ -397,6 +526,20 @@ final class ChatModel {
             if case .manualReviewResolved(let resolution) = event.kind,
                let operationID = event.operationID {
                 resolvedManualReviews[operationID] = resolution
+            }
+            // `G1`. The newest row wins, and `events` is in Timeline order, so a
+            // later category correction overwrites the original write's row.
+            // This is how the *original* receipt, scrolled back to, shows the
+            // corrected category: the two operations are different, the ledger
+            // row is the same, and the card follows the row.
+            //
+            // A correction that is not itself a proven write never lands here,
+            // because `.recorded` is the only outcome that carries a record at
+            // all — so a failed edit cannot repaint a card as though it took.
+            if case .operationResult(let outcome, _, _) = event.kind,
+               case .recorded(let recordID, _, let record) = outcome,
+               let record {
+                currentRecords[recordID] = record
             }
         }
     }

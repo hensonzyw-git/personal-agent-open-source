@@ -372,6 +372,102 @@ func makeChat(
     return (chat, session, store)
 }
 
+// --- `G1`: the business fields, and what must never reach the card ---------------
+
+@Suite("The G1 receipt record")
+struct ReceiptRecordTests {
+    private func receipt(record: Any?) throws -> OperationReceipt {
+        var body = chatReceipt(
+            "succeeded", tool: "finance.log_expense", recordID: "rec-1"
+        )
+        if let record { body["record"] = record }
+        return try JSONDecoder().decode(
+            OperationReceipt.self, from: chatJSON(body)
+        )
+    }
+
+    private func aRecord(_ overrides: [String: Any] = [:]) -> [String: Any] {
+        var record: [String: Any] = [
+            "name": "午饭",
+            "amount_cny": "38.50",
+            "occurred_on": "2026-08-15",
+            "is_family_expense": false,
+            "category": "餐饮",
+        ]
+        for (key, value) in overrides { record[key] = value }
+        return record
+    }
+
+    @Test("a receipt with no record is still a proven write")
+    func noRecordIsStillRecorded() throws {
+        // The `idempotent_replay` shape, and every receipt written before `G1`.
+        // The card falls back to its status row; the write is still proven.
+        let parsed = try receipt(record: nil)
+        #expect(parsed.record == nil)
+        #expect(parsed.outcome.provesWrite)
+    }
+
+    @Test("a malformed record costs the card its fields, never the receipt")
+    func malformedRecordFailsClosedOnFieldsOnly() throws {
+        // The asymmetry that matters: a bad *presentation* payload must not turn
+        // a committed ledger write into a failure the user is invited to retry.
+        for broken in [
+            aRecord(["amount_cny": 38.5]),          // money as a float
+            aRecord(["is_family_expense": "true"]), // the flag as a string
+            aRecord(["name": ""]),                  // an empty required field
+            aRecord(["category": ""]),              // empty is not the same as null
+        ] {
+            let parsed = try receipt(record: broken)
+            #expect(parsed.record == nil)
+            #expect(parsed.outcome.provesWrite, "the write is proven by record_id")
+        }
+    }
+
+    @Test("a missing family flag is refused, never defaulted to personal")
+    func missingFamilyFlagIsRefused() throws {
+        var record = aRecord()
+        record.removeValue(forKey: "is_family_expense")
+        // Defaulting to `false` would silently redraw a family expense as a
+        // personal one -- the single field where a wrong default states a wrong
+        // accounting fact rather than an incomplete one.
+        #expect(try receipt(record: record).record == nil)
+    }
+
+    @Test("money is never parsed, so it is never re-rendered")
+    func moneyStaysTheLedgersOwnText() throws {
+        let record = try #require(
+            try receipt(record: aRecord(["amount_cny": "0.10"])).record
+        )
+        // Not 0.1, and not 0.10000000000000001.
+        #expect(record.amount == "0.10")
+    }
+
+    @Test("a record on a receipt that proves nothing never reaches the card")
+    func recordWithoutEvidenceIsNotShown() throws {
+        // A `succeeded` for a governed write with no `record_id` is already
+        // `.indeterminate`. Business fields alongside it must not create a
+        // second route by which the card claims a write.
+        var body = chatReceipt("succeeded", tool: "finance.log_expense")
+        body["record"] = aRecord()
+        let parsed = try JSONDecoder().decode(
+            OperationReceipt.self, from: chatJSON(body)
+        )
+        #expect(!parsed.outcome.provesWrite)
+        if case .recorded = parsed.outcome {
+            Issue.record("fields promoted an unproven write to a receipt")
+        }
+    }
+
+    @Test("a category outside the ledger's options is never sent")
+    func unknownCategoryIsRefusedBeforeTheNetwork() {
+        #expect(ExpenseCategory.isKnown("餐饮"))
+        // The connector creates no select option, so this would be a refused
+        // write; refusing locally keeps a governed write from being spent on it.
+        #expect(!ExpenseCategory.isKnown("咖啡"))
+        #expect(!ExpenseCategory.isKnown(""))
+    }
+}
+
 // --- the chatReceipt projection: no success from prose ---------------------------
 
 @Suite("The DEV-030 chatReceipt projection")
@@ -387,7 +483,7 @@ struct OperationReceiptTests {
                 "succeeded", tool: "finance.log_expense", recordID: "rec-42"
             )
         )
-        #expect(parsed.outcome == .recorded(recordID: "rec-42", tool: "finance.log_expense"))
+        #expect(parsed.outcome == .recorded(recordID: "rec-42", tool: "finance.log_expense", record: nil))
         #expect(parsed.outcome.provesWrite)
     }
 
@@ -667,7 +763,7 @@ struct TimelineEventTests {
         #expect(
             parsed.kind
                 == .operationResult(
-                    outcome: .recorded(recordID: "rec-42", tool: nil),
+                    outcome: .recorded(recordID: "rec-42", tool: nil, record: nil),
                     state: .succeeded,
                     toolEvidence: .unknown
                 )
@@ -886,7 +982,7 @@ struct ChatSendTests {
 
         let final = try await chat.send(text: "咖啡 18 个人支出")
 
-        #expect(final.outcome == .recorded(recordID: "rec-42", tool: "finance.log_expense"))
+        #expect(final.outcome == .recorded(recordID: "rec-42", tool: "finance.log_expense", record: nil))
         #expect(service.chatPosts.count == 1)
         #expect(service.chatPosts.first?.idempotencyKey?.isEmpty == false)
         #expect(service.chatPosts.first?.string("conversation_id") == chatTimelineID)
@@ -944,7 +1040,7 @@ struct ChatSendTests {
         }
 
         let resumed = try await chat.resume()
-        #expect(resumed?.outcome == .recorded(recordID: "rec-42", tool: "finance.log_expense"))
+        #expect(resumed?.outcome == .recorded(recordID: "rec-42", tool: "finance.log_expense", record: nil))
 
         let keys = Set(service.chatPosts.compactMap(\.idempotencyKey))
         #expect(service.chatPosts.count == 2)
@@ -1155,7 +1251,7 @@ struct ChatSendTests {
         #expect(try store.read(CredentialKey.pendingChatSend) == nil)
 
         let answered = try await chat.send(text: "个人", clarificationOf: "op-1")
-        #expect(answered.outcome == .recorded(recordID: "rec-43", tool: "finance.log_expense"))
+        #expect(answered.outcome == .recorded(recordID: "rec-43", tool: "finance.log_expense", record: nil))
         #expect(service.chatPosts.count == 2)
         #expect(service.chatPosts[1].string("clarification_of") == "op-1")
         #expect(
@@ -1463,6 +1559,7 @@ private struct ReceiptVectors {
     let operationStates: [String]
     let recordEvidenceTools: [String]
     let queryEvidenceTools: [String]
+    let expenseCategories: [String]
     let cases: [Case]
 
     static func load() -> ReceiptVectors? {
@@ -1508,6 +1605,7 @@ private struct ReceiptVectors {
             operationStates: root["operation_states"] as? [String] ?? [],
             recordEvidenceTools: root["record_evidence_tools"] as? [String] ?? [],
             queryEvidenceTools: root["query_evidence_tools"] as? [String] ?? [],
+            expenseCategories: root["expense_categories"] as? [String] ?? [],
             cases: cases
         )
     }
@@ -1545,7 +1643,7 @@ struct ReceiptContractTests {
     @Test("the vector file is the one this build was written against")
     func contractVersion() throws {
         let vectors = try #require(vectors)
-        #expect(vectors.contract == "chat_receipt_projection_v4")
+        #expect(vectors.contract == "chat_receipt_projection_v5")
         #expect(!vectors.cases.isEmpty)
     }
 
@@ -1568,6 +1666,88 @@ struct ReceiptContractTests {
     func evidenceToolsMatch() throws {
         let vectors = try #require(vectors)
         #expect(Set(vectors.recordEvidenceTools) == OperationReceipt.recordEvidenceTools)
+    }
+
+    @Test("the 分类 picker offers exactly the ledger's own options")
+    func expenseCategoriesMatch() throws {
+        // The connector never creates a select option, so an option this client
+        // invented would be a refused write rather than a new category. The
+        // vector is what holds the picker and the ledger equal.
+        let vectors = try #require(vectors)
+        #expect(vectors.expenseCategories == ExpenseCategory.all)
+    }
+
+    @Test("every business field the server sends decodes onto the card")
+    func recordFieldsDecode() throws {
+        let vectors = try #require(vectors)
+        let entry = try #require(
+            vectors.cases.first { $0.name == "expense_recorded_with_fields" }
+        )
+        let receipt = try JSONDecoder().decode(
+            OperationReceipt.self, from: entry.chatReceipt
+        )
+        let record = try #require(receipt.record)
+        #expect(record.name == "午饭")
+        #expect(record.amount == "38.50")
+        #expect(record.occurredOn == "2026-08-15")
+        #expect(record.isFamilyExpense == false)
+        #expect(record.category == "餐饮")
+        #expect(record.personalSpend == "38.50")
+        // And it reaches the card through the outcome, not only the receipt.
+        #expect(
+            receipt.outcome
+                == .recorded(
+                    recordID: "recXXXXXXXXXXXX",
+                    tool: "finance.log_expense",
+                    record: record
+                )
+        )
+    }
+
+    @Test("a family expense keeps 原始金额 and 个人支出 apart")
+    func familyRecordKeepsBothAmounts() throws {
+        let vectors = try #require(vectors)
+        let entry = try #require(
+            vectors.cases.first { $0.name == "family_expense_recorded_with_fields" }
+        )
+        let record = try #require(
+            try JSONDecoder()
+                .decode(OperationReceipt.self, from: entry.chatReceipt).record
+        )
+        #expect(record.isFamilyExpense)
+        #expect(record.amount == "2000.00")
+        // The Base formula's answer, never re-derived on this side.
+        #expect(record.personalSpend == "1000.00")
+    }
+
+    @Test("an edited category is marked and drops the stale formula value")
+    func editedRecordIsMarked() throws {
+        let vectors = try #require(vectors)
+        let entry = try #require(
+            vectors.cases.first { $0.name == "expense_category_edited" }
+        )
+        let record = try #require(
+            try JSONDecoder()
+                .decode(OperationReceipt.self, from: entry.chatReceipt).record
+        )
+        #expect(record.categoryUpdatedAt != nil)
+        // 个人支出 may depend on 分类; a carried-over value would put a number on
+        // the card the ledger may no longer agree with.
+        #expect(record.personalSpend == nil)
+    }
+
+    @Test("a refund carries no category and keeps its negative amount")
+    func refundRecordHasNoCategory() throws {
+        let vectors = try #require(vectors)
+        let entry = try #require(
+            vectors.cases.first { $0.name == "refund_recorded_without_category" }
+        )
+        let record = try #require(
+            try JSONDecoder()
+                .decode(OperationReceipt.self, from: entry.chatReceipt).record
+        )
+        #expect(record.category == nil)
+        #expect(record.amount == "-880.00")
     }
 
     @Test("the query-evidence tool set matches the server's")

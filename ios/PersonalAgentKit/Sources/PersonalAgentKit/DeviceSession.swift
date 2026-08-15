@@ -307,6 +307,26 @@ public actor DeviceSession {
         }
     }
 
+    /// `G1`. Safe under the one-retry refresh policy because the client key is
+    /// carried: a refresh-and-retry presents the same key and the server replays
+    /// the same operation rather than issuing a second correction.
+    public func updateExpenseCategory(
+        recordID: String,
+        category: String,
+        expectedCurrentCategory: String?,
+        idempotencyKey: String
+    ) async throws -> OperationReceipt {
+        try await authorized {
+            try await self.client.updateExpenseCategory(
+                recordID: recordID,
+                category: category,
+                expectedCurrentCategory: expectedCurrentCategory,
+                idempotencyKey: idempotencyKey,
+                token: $0
+            )
+        }
+    }
+
     // --- `DEV-031` daily review ------------------------------------------------
     //
     // All four are safe under the one-retry policy without any client key: the

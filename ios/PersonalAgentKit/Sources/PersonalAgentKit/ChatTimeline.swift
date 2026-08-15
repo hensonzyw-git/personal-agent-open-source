@@ -406,6 +406,42 @@ public actor ChatTimeline {
         return receipt
     }
 
+    /// `G1`. Correct one recorded expense's 分类, and wait for the real outcome.
+    ///
+    /// The reply to the correction route may be a `202` — the server accepted it
+    /// and the governed update is still running — so this polls to a settled
+    /// receipt the same way a `write anyway` override does. Returning the
+    /// acceptance would hand the card a `.running` outcome, and the card would
+    /// have to say "分类未修改：服务端仍在处理" for a change that was about to
+    /// succeed.
+    ///
+    /// No durable pending slot, unlike a chat send or a duplicate decision, and
+    /// the key is minted here rather than by the caller. The correction is a
+    /// compare-and-swap: a replay after a lost reply finds the row already at
+    /// the target value and is answered `already_current` without a second
+    /// write. That is a stronger guarantee than a slot, and it needs no local
+    /// state to survive an app restart -- which is also why a fresh key per tap
+    /// is safe here where it would not be for a create.
+    ///
+    /// Minting inside the Kit is not incidental: `IdempotencyKey.mint` is the
+    /// one place this client makes a key, in the canonical lower-case spelling
+    /// the server actually parses. Letting a screen supply its own is how the
+    /// upper-case-UUID bug reached production once already.
+    public func updateExpenseCategory(
+        recordID: String,
+        category: String,
+        expectedCurrentCategory: String?
+    ) async throws -> OperationReceipt {
+        let receipt = try await backend.updateExpenseCategory(
+            recordID: recordID,
+            category: category,
+            expectedCurrentCategory: expectedCurrentCategory,
+            idempotencyKey: IdempotencyKey.mint()
+        )
+        guard !receipt.outcome.isSettled else { return receipt }
+        return try await settleDecision(receipt)
+    }
+
     /// Send one decision and clear its slot once the server's answer is known.
     private func sendDecision(
         _ record: PendingDuplicateDecision
@@ -599,4 +635,16 @@ public protocol ChatBackend: Sendable {
         operationID: String,
         resolution: ManualResolution
     ) async throws -> ManualResolutionReceipt
+
+    /// `G1`. Correct one recorded expense's 分类 from the receipt card.
+    ///
+    /// Carries a client key, unlike `resolveManualReview`: this one really does
+    /// write to the ledger, so a retry has to land on the same idempotency slot
+    /// rather than being re-decided.
+    func updateExpenseCategory(
+        recordID: String,
+        category: String,
+        expectedCurrentCategory: String?,
+        idempotencyKey: String
+    ) async throws -> OperationReceipt
 }

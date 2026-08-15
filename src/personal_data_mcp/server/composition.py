@@ -60,6 +60,7 @@ from personal_data_mcp.server.control import RecordReader
 from personal_data_mcp.server.finance_write import (
     FinanceWriteDependencies,
     build_expense_handler,
+    build_category_update_handler,
     build_family_fund_handler,
     build_income_handler,
     fresh_validation,
@@ -262,6 +263,7 @@ async def finance_tools(
             expense_write_handler=build_expense_handler(dependencies),
             income_write_handler=build_income_handler(dependencies),
             family_fund_handler=build_family_fund_handler(dependencies),
+            category_update_handler=build_category_update_handler(dependencies),
         )
         recovery_owner = f"finance-recovery-{uuid.uuid4()}"
         recovery_stop = asyncio.Event()

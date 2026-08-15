@@ -66,6 +66,7 @@
   },
   "enabled_tools": [
     "finance.log_expense",
+    "finance.update_expense_category",
     "finance.log_income",
     "finance.update_family_fund",
     "finance.query_expenses",
@@ -74,7 +75,14 @@
   "disabled_tools": [
     "finance.log_expense_batch"
   ],
-  "allowed_tools_version": "6575dd69b74e4f6be38bbdc2dfea3c65e55aa8c38d56c2f21bea1c811ec1b1bf",
+  "model_callable_tools": [
+    "finance.log_expense",
+    "finance.log_income",
+    "finance.update_family_fund",
+    "finance.query_expenses",
+    "meta.capabilities"
+  ],
+  "allowed_tools_version": "a8f0d559da1d5139e6cfd18da265f60fc8b67dc1ba382be853d288b1860a7bee",
   "tools": [
     {
       "name": "finance.log_expense",
@@ -83,6 +91,7 @@
       "effect": "create",
       "risk_level": "R2",
       "enabled": true,
+      "model_callable": true,
       "disabled_reason": null,
       "summary": "新增单笔支出、退款或 AA 收款到年度支出记录表。",
       "model_input_schema": {
@@ -337,7 +346,7 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "f300a6f42f89d8db35ff566e5288d369287ea8f9cb4828438023921c53591a0c",
-      "contract_hash": "57c9b3f884774077cbaf99248b97032643b94ffc8781a621470512a42f3ff134"
+      "contract_hash": "356f4c6f409dae0f37095f735d4489be0c93d455dc378ca97a8ea43b97a75d40"
     },
     {
       "name": "finance.log_expense_batch",
@@ -346,6 +355,7 @@
       "effect": "create",
       "risk_level": "R2",
       "enabled": false,
+      "model_callable": true,
       "disabled_reason": "飞书批量新增接口有 client_token，但官方文档未声明事务级全成全败语义。在非生产测试表证明原子性之前保持关闭，且不得退化为逐笔顺序写入。",
       "summary": "一条消息中两笔及以上完全解析的支出，全成功或一笔也不写。",
       "model_input_schema": {
@@ -637,7 +647,188 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "7dcd88bfc3436d877016cdd50904fe2de778f8c73c65b412fdca770603dfec63",
-      "contract_hash": "8dd6a4626cc35656b24d94195eda50c314d25fe71ae82615ecfac8fb39138e0b"
+      "contract_hash": "830fb3f6e481eb930e25278ff7ee2de4b77b4468611ef534ae078340768a451c"
+    },
+    {
+      "name": "finance.update_expense_category",
+      "version": "1.0.0",
+      "domain": "finance",
+      "effect": "update",
+      "risk_level": "R2",
+      "enabled": true,
+      "model_callable": false,
+      "disabled_reason": null,
+      "summary": "把一条已入账支出的分类改成账本已有的另一个选项，不改动其他任何字段。",
+      "model_input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "FinanceUpdateExpenseCategoryInput",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "record_id",
+          "category",
+          "expected_current_category"
+        ],
+        "properties": {
+          "record_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "要修改的支出记录 ID，来自该笔的写入回执。"
+          },
+          "category": {
+            "enum": [
+              "出行",
+              "餐饮",
+              "游戏",
+              "日常生活",
+              "玩乐",
+              "购物",
+              "旅行",
+              "房租"
+            ],
+            "description": "新的分类，必须是账本单选字段已有的选项；连接器从不新建选项。"
+          },
+          "expected_current_category": {
+            "enum": [
+              "出行",
+              "餐饮",
+              "游戏",
+              "日常生活",
+              "玩乐",
+              "购物",
+              "旅行",
+              "房租",
+              null
+            ],
+            "description": "调用方认为这条记录当前的分类，用于 compare-and-swap。与账本实际不符时拒绝写入并回报账本当前值，绝不覆盖他处的改动。null 表示调用方认为该笔当前没有分类（退款/AA 收款）。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "record_id",
+          "source_system",
+          "table",
+          "category",
+          "updated_at",
+          "record",
+          "evidence"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "updated",
+              "already_current"
+            ]
+          },
+          "record_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_system": {
+            "const": "feishu_bitable"
+          },
+          "table": {
+            "const": "expense"
+          },
+          "category": {
+            "enum": [
+              "出行",
+              "餐饮",
+              "游戏",
+              "日常生活",
+              "玩乐",
+              "购物",
+              "旅行",
+              "房租"
+            ]
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "record": {
+            "type": "object"
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "external_id"
+            ],
+            "properties": {
+              "kind": {
+                "const": "feishu_record"
+              },
+              "external_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      },
+      "required_scopes": [
+        "finance.expense.write"
+      ],
+      "confirmation": "never",
+      "idempotency": {
+        "key_source": "host_injected_uuid4",
+        "replay_result": "重放时先读回该记录：已是目标分类则返回 already_current 且不发送任何请求；已被改成第三个值则拒绝，绝不二次覆盖。"
+      },
+      "retry": {
+        "retryable_errors": [
+          "SOURCE_UNAVAILABLE"
+        ],
+        "reuse_idempotency_key": true
+      },
+      "audit": {
+        "recorded": [
+          "trace_id",
+          "device_id",
+          "tool",
+          "contract_version",
+          "risk_level",
+          "policy_outcome",
+          "argument_field_names",
+          "category",
+          "entry_kind",
+          "request_fingerprint",
+          "source_status",
+          "latency_ms",
+          "record_id",
+          "schema_snapshot_version"
+        ],
+        "never_recorded": [
+          "raw_user_text",
+          "model_reasoning",
+          "exact_amount",
+          "feishu_base_table_field_ids",
+          "access_token",
+          "app_secret",
+          "provider_response_body"
+        ]
+      },
+      "errors": [
+        "INVALID_ARGUMENT",
+        "SCOPE_DENIED",
+        "TOOL_NOT_ALLOWLISTED",
+        "HOST_CONTEXT_MISMATCH",
+        "IDEMPOTENCY_CONFLICT",
+        "CATEGORY_NOT_ALLOWED",
+        "CATEGORY_CHANGED_ELSEWHERE",
+        "SOURCE_SCHEMA_CHANGED",
+        "SOURCE_UNAVAILABLE",
+        "SOURCE_TIMEOUT_UNKNOWN",
+        "SOURCE_COMMIT_UNKNOWN",
+        "SOURCE_COMMITTED_MISMATCH"
+      ],
+      "input_schema_hash": "2bd43204a58afad8976940ae2d910acc42f035d2bb25bc1b1f023e9647266382",
+      "contract_hash": "5e7030c83814a5d89005652aef5650591ce88180adb97fbb5be7ebbde63177d6"
     },
     {
       "name": "finance.log_income",
@@ -646,6 +837,7 @@
       "effect": "create",
       "risk_level": "R2",
       "enabled": true,
+      "model_callable": true,
       "disabled_reason": null,
       "summary": "新增单笔收入到年度收入记录表；分类由封闭 Income Policy 决定。",
       "model_input_schema": {
@@ -820,7 +1012,7 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "eeb791038e6547dde489cab4bcecfe7454b3fbff4dfd717fb44133b95bd76f0a",
-      "contract_hash": "83bf20e51e88e08decc6ca6888daa1be6af26ea88ccad1f7591818385f8a752e"
+      "contract_hash": "bd745a7e92fb90a76b25ca9f13c9e6095d2f6e0b815f67ea9815a2c449fc1c6a"
     },
     {
       "name": "finance.update_family_fund",
@@ -829,6 +1021,7 @@
       "effect": "update",
       "risk_level": "R2",
       "enabled": true,
+      "model_callable": true,
       "disabled_reason": null,
       "summary": "家庭基金充值，或按目标余额补齐利息；只记账本变动，不执行资金划转。",
       "model_input_schema": {
@@ -1071,7 +1264,7 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "d2067ac7ebc9cc96cdc64a52e4b079079405a249603dc8ce02e2710697e3e7df",
-      "contract_hash": "9093fa711ba35aedc8b12c1a25e573d67542767979a3cbbcd505ecbc034ba657"
+      "contract_hash": "da01ae19a4865f1b8d307f333fbebd6607228839298e7917650f06825cae0200"
     },
     {
       "name": "finance.query_expenses",
@@ -1080,6 +1273,7 @@
       "effect": "read",
       "risk_level": "R1",
       "enabled": true,
+      "model_callable": true,
       "disabled_reason": null,
       "summary": "支出明细、总额和分类统计；金额口径固定为飞书“个人支出”公式的有符号值。",
       "model_input_schema": {
@@ -1352,7 +1546,7 @@
         "SOURCE_TIMEOUT_UNKNOWN"
       ],
       "input_schema_hash": "24e4b58fa1180ed23cbce2c3c6ba06ce733aec235aacf351db9abb61cb4c753b",
-      "contract_hash": "20be6a0712c26103fcea10d44e51b9d58a99c5f4271f5bbd440a0720315b1495"
+      "contract_hash": "f9ef3f78b8a83203bd29b5397d12b99e46a3c16a8bf54b758f928c0c3d93afa4"
     },
     {
       "name": "meta.capabilities",
@@ -1361,6 +1555,7 @@
       "effect": "read",
       "risk_level": "R0",
       "enabled": true,
+      "model_callable": true,
       "disabled_reason": null,
       "summary": "返回当前设备实际可用的工具，用于渐进披露能力。",
       "model_input_schema": {
@@ -1430,7 +1625,7 @@
         "SCOPE_DENIED"
       ],
       "input_schema_hash": "3389f18f3a0992d9511246cd730ff47998266119f91c5c685dab194aeb55a4bf",
-      "contract_hash": "998ce06d9b9470da2049c534c281e624d8c7cf9f340f872e4d76d0f943f04c31"
+      "contract_hash": "8c2d7ac2532781abb92f921f0602c7d6a68fe2af5478ed681eb82574901b6b6c"
     }
   ]
 }

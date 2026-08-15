@@ -23,6 +23,7 @@ Four invariants live here rather than in a handler's good intentions:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -43,6 +44,7 @@ from personal_agent.api.finance_query_projection import (
     decode_finance_query_projection,
     summarise_query_projection,
 )
+from personal_agent.api.finance_record_projection import open_expense_record
 from personal_agent.api.manual_review import (
     append_resolution_event,
     resolve_manual_review,
@@ -71,6 +73,7 @@ from personal_agent.api.operation_state import (
     can_cancel_pre_submit,
     is_terminal,
 )
+from personal_agent.api.intent import WriteIntent, seal_intent
 from personal_agent.api.orchestrator import (
     Authorizer,
     Dispatcher,
@@ -128,6 +131,7 @@ from personal_agent_core.errors import (
     AppError,
     ErrorCode,
 )
+from personal_agent_core.manifest import canonical_json
 from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.tool_ir import TOOL_CONTRACTS
 
@@ -664,7 +668,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 operation = _owned_operation(
                     session, operation_id, device_id=auth.device_id
                 )
-                return _operation_response(operation)
+                return _operation_response(deps.keyring, operation)
 
             response = _commit(session, work)
         return _record_operation_http_response(
@@ -686,7 +690,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 _owned_operation(session, operation_id, device_id=auth.device_id)
                 request_cancel(session, operation_id=operation_id, now=deps.now())
                 operation = get_operation(session, operation_id)
-                return _operation_response(operation)
+                return _operation_response(deps.keyring, operation)
 
             response = _commit(session, work)
         return _record_operation_http_response(
@@ -836,6 +840,60 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         resolution = _required(body, "resolution")
         return await asyncio.to_thread(
             _process_manual_resolution, deps, auth, operation_id, resolution
+        )
+
+    @app.post("/v1/expense-records/{record_id}/category")
+    async def post_category_correction(record_id: str, request: Request):
+        """Correct one already-recorded expense's 分类 from the receipt card.
+
+        Keyed by `record_id` rather than by operation: Henson's 2026-08-15
+        decision is that any expense row is correctable, including one found by
+        scrolling back through history, so the address is the ledger row and not
+        the conversation turn that happened to create it.
+
+        This route is deliberately **off the model channel**. The picker's tap is
+        the decision; there is nothing to interpret and nothing to infer, so the
+        operation is created with its intent already resolved and never reaches
+        a model. `finance.update_expense_category` is `model_callable=False` in
+        the IR for the same reason, which means this is not merely the path the
+        model does not take -- it is the only path there is.
+
+        It still goes through a full `Operation`: device identity, the client's
+        idempotency key, policy, the audit envelope, an external receipt and a
+        Timeline event. An edit to a committed ledger row is a governed write,
+        and the fact that a person pressed a button does not make it less so.
+        """
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        body = await _json_body(request)
+        key = idempotency_key(request)
+        category = _required(body, "category")
+        # Absent and null are different: null states "I believe this row has no
+        # category", which is a real state for a refund. `_required` would
+        # collapse them, so this one is read directly.
+        expected = body.get("expected_current_category")
+        if expected is not None and not isinstance(expected, str):
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail="expected_current_category must be a string or null",
+            )
+        if "expected_current_category" not in body:
+            # The compare-and-swap is the whole safety story of this route. A
+            # caller that omits it is not requesting a blind overwrite -- it is
+            # a caller that has not been updated, and treating the omission as
+            # "expect nothing" would silently turn every stale card into a
+            # successful overwrite of someone else's edit.
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail="expected_current_category is required",
+            )
+        return await asyncio.to_thread(
+            _process_category_correction,
+            deps,
+            auth,
+            record_id,
+            category,
+            expected,
+            key,
         )
 
     @app.post("/v1/duplicate-checks/{duplicate_check_id}/decision")
@@ -1394,7 +1452,7 @@ def _process_chat(
                 session, operation_id, device_id=auth.device_id
             )
             if operation.state != "accepted":
-                return _ProcessedChat(_operation_response(operation))
+                return _ProcessedChat(_operation_response(deps.keyring, operation))
             payload = open_chat_request(
                 deps.keyring,
                 request_id=operation.request_id,
@@ -1413,7 +1471,7 @@ def _process_chat(
             operation = _owned_operation(
                 session, operation_id, device_id=auth.device_id
             )
-            return _ProcessedChat(_operation_response(operation))
+            return _ProcessedChat(_operation_response(deps.keyring, operation))
         except Exception:
             session.rollback()
             raise
@@ -1480,7 +1538,7 @@ def _run_chat_turn(
         session_id=anchor.session_id,
         turn_id=anchor.turn_id,
         event_type=events.OPERATION_RESULT,
-        content=_operation_event_content(operation),
+        content=_operation_event_content(deps.keyring, operation),
         operation_id=operation.operation_id,
         now=deps.now(),
     )
@@ -1500,7 +1558,7 @@ def _run_chat_turn(
         else None
     )
     processed = _ProcessedChat(
-        _operation_response(operation, extra=_transient(result)),
+        _operation_response(deps.keyring, operation, extra=_transient(result)),
         compact_session_id=compact_session_id,
     )
     return processed
@@ -1603,14 +1661,23 @@ class _Anchor:
     event_id: str
 
 
-def _turn_identity(operation: Operation, anchor: _Anchor) -> TurnIdentity:
+def _turn_identity(operation: Operation, anchor: _Anchor | None) -> TurnIdentity:
+    """Correlation identity for the transcript.
+
+    `anchor` is `None` for an operation that belongs to no conversation turn:
+    the receipt card's category correction is a direct action on a ledger row,
+    not a message, so there is no user message to anchor it to. The operation,
+    trace and device ids still identify it completely; inventing a Session or
+    turn id to fill the shape would put a fabricated correlation key into the
+    transcript, which is worse than an absent one.
+    """
     return TurnIdentity(
         operation_id=operation.operation_id,
         client_request_id=operation.api_request.client_request_id,
         trace_id=operation.trace_id,
-        turn_id=anchor.turn_id,
-        session_id=anchor.session_id,
-        conversation_id=anchor.conversation_id,
+        turn_id=anchor.turn_id if anchor is not None else None,
+        session_id=anchor.session_id if anchor is not None else None,
+        conversation_id=anchor.conversation_id if anchor is not None else None,
         device_id=operation.api_request.device_id,
     )
 
@@ -1819,7 +1886,7 @@ def _load_operation_response(
 ) -> JSONResponse:
     with deps.session_factory() as session:
         operation = _owned_operation(session, operation_id, device_id=device_id)
-        return _operation_response(operation)
+        return _operation_response(deps.keyring, operation)
 
 
 def _process_manual_resolution(
@@ -1869,6 +1936,92 @@ def _process_manual_resolution(
             )
 
         return _commit(session, work)
+
+
+def _category_correction_fingerprint(
+    record_id: str, category: str, expected: str | None
+) -> str:
+    """Bind an idempotency key to this exact correction.
+
+    All three values are in it, `expected_current_category` included. Two
+    corrections of the same row to the same category from *different* believed
+    starting points are different requests: one of them is working from a stale
+    view, and letting them share a key would let the stale one replay as the
+    fresh one's success.
+    """
+    return hashlib.sha256(
+        canonical_json(
+            {
+                "route": "expense_category_correction",
+                "record_id": record_id,
+                "category": category,
+                "expected_current_category": expected,
+            }
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _process_category_correction(
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    record_id: str,
+    category: str,
+    expected: str | None,
+    key: str,
+) -> JSONResponse:
+    """Run one category correction as a pre-resolved operation.
+
+    `retry=False`, like the duplicate-decision route beside it and for the same
+    reason (§5.2): this unit dispatches outside the database. Re-running it
+    against fresh state would re-send the correction, and a governed write is
+    never something to replay because a local transaction lost a race.
+    """
+    intent = WriteIntent(
+        tool="finance.update_expense_category",
+        model_args={
+            "record_id": record_id,
+            "category": category,
+            "expected_current_category": expected,
+        },
+    )
+    with deps.session_factory() as session:
+        def work():
+            opened = open_operation(
+                session,
+                device_id=auth.device_id,
+                client_request_id=key,
+                request_fingerprint=_category_correction_fingerprint(
+                    record_id, category, expected
+                ),
+                now=deps.now(),
+            )
+            operation = opened.operation
+            if opened.created:
+                operation.api_request.encrypted_request_payload = seal_intent(
+                    deps.keyring,
+                    request_id=operation.request_id,
+                    intent=intent,
+                )
+                session.flush()
+            if operation.state == "accepted":
+                with deps.recorder.turn(_turn_identity(operation, None)):
+                    run_operation(
+                        session,
+                        operation,
+                        # Nothing to assemble: the picker's tap is the whole
+                        # instruction, and no model is consulted.
+                        build_context=None,
+                        interpreter=deps.build_interpreter(auth),
+                        dispatcher=deps.build_dispatcher(auth, operation.trace_id),
+                        authorize=deps.build_authorizer(auth),
+                        keyring=deps.keyring,
+                        now=deps.now,
+                        pre_resolved=True,
+                        recorder=deps.recorder,
+                    )
+            return _operation_response(deps.keyring, operation)
+
+        return _commit(session, work, retry=False)
 
 
 def _process_duplicate_decision(
@@ -1933,7 +2086,7 @@ def _process_duplicate_decision(
                 decision=decision,
                 now=deps.now(),
             )
-            return _operation_response(target)
+            return _operation_response(deps.keyring, target)
 
         # `write anyway` dispatches a real Finance write inside `work`.
         return _commit(session, work, retry=False)
@@ -2144,13 +2297,15 @@ def _append_duplicate_decision_events(
         session_id=anchor.session_id,
         turn_id=anchor.turn_id,
         event_type=events.OPERATION_RESULT,
-        content=_operation_event_content(target),
+        content=_operation_event_content(keyring, target),
         operation_id=target.operation_id,
         now=now,
     )
 
 
-def _operation_event_content(operation: Operation) -> dict[str, Any]:
+def _operation_event_content(
+    keyring: KeyRing, operation: Operation
+) -> dict[str, Any]:
     """The Timeline fact projection of one operation result.
 
     `tool` is included even when null, so a new event carries the server's
@@ -2159,13 +2314,19 @@ def _operation_event_content(operation: Operation) -> dict[str, Any]:
     only for a `finance.query_expenses` result that decoded; anything else fails
     closed to an absent field rather than a raw dump.
     """
-    projection = _operation_projection(operation)
+    projection = _operation_projection(keyring, operation)
     content: dict[str, Any] = {
         "state": projection["state"],
         "tool": projection["tool"],
     }
     for name in (
         "record_id",
+        # `G1`. History and the live receipt draw the same card, so the fields
+        # travel on the event too -- otherwise scrolling back would silently
+        # demote a full card to a bare status row. The event's own column is
+        # already sealed (`conversation_events.encrypted_content`), so this
+        # copy is no more exposed than the dialogue beside it.
+        "record",
         "query_result",
         "answer",
         "clarification",
@@ -2230,7 +2391,10 @@ def _optional_operation_id(body: dict[str, Any], field: str) -> str | None:
 
 
 def _operation_response(
-    operation: Operation, *, extra: dict[str, Any] | None = None
+    keyring: KeyRing,
+    operation: Operation,
+    *,
+    extra: dict[str, Any] | None = None,
 ) -> JSONResponse:
     # A parked or in-flight operation is 202; a resolved one is 200. The client
     # polls the same projection either way. `extra` carries transient fields that
@@ -2238,7 +2402,7 @@ def _operation_response(
     # duplicate record), returned on the immediate reply only.
     from personal_agent.api.operation_state import is_terminal
 
-    projection = _operation_projection(operation)
+    projection = _operation_projection(keyring, operation)
     if extra:
         projection.update(extra)
     return JSONResponse(
@@ -2256,7 +2420,9 @@ def _transient(result) -> dict[str, Any]:
     return fields
 
 
-def _operation_projection(operation: Operation) -> dict[str, Any]:
+def _operation_projection(
+    keyring: KeyRing, operation: Operation
+) -> dict[str, Any]:
     projection = {
         "operation_id": operation.operation_id,
         "state": operation.state,
@@ -2293,6 +2459,21 @@ def _operation_projection(operation: Operation) -> dict[str, Any]:
                     projection["answer"] = summarise_query_projection(query)
             else:
                 projection["answer"] = operation.safe_result
+
+    # `G1`: the business fields the receipt card draws. Strictly subordinate to
+    # `record_id` -- it is emitted only where a record id is, so a card can
+    # never show a name and an amount for a write this projection did not also
+    # state as recorded. An envelope that will not open resolves to absent
+    # (`open_expense_record` fails closed), which costs the card its rows and
+    # never the receipt itself.
+    if projection["record_id"] and operation.encrypted_result_record is not None:
+        record = open_expense_record(
+            keyring,
+            operation_id=operation.operation_id,
+            envelope=operation.encrypted_result_record,
+        )
+        if record is not None:
+            projection["record"] = record.to_dict()
     return projection
 
 

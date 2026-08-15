@@ -168,6 +168,42 @@ public struct AgentClient: Sendable {
         )
     }
 
+    /// Correct one recorded expense's 分类, from the receipt card's picker.
+    ///
+    /// `expectedCurrentCategory` is the compare-and-swap and is **not**
+    /// optional in the JSON sense: `nil` is sent as an explicit `null`, meaning
+    /// "I believe this row currently has no category", which is a real state for
+    /// a refund. Omitting the key entirely is refused by the server, precisely
+    /// so a client that has not been updated cannot be read as requesting a
+    /// blind overwrite of whatever the row now holds.
+    ///
+    /// The reply is a normal `OperationReceipt`, so a category correction is
+    /// polled, cancelled and rendered by exactly the machinery every other
+    /// governed write already goes through.
+    public func updateExpenseCategory(
+        recordID: String,
+        category: String,
+        expectedCurrentCategory: String?,
+        idempotencyKey: String,
+        token: String
+    ) async throws -> OperationReceipt {
+        try await send(
+            method: "POST",
+            path: "/v1/expense-records/\(recordID)/category",
+            body: [
+                "category": category,
+                // `send` encodes a nil value as an explicit JSON `null` rather
+                // than dropping the key, which is exactly what this contract
+                // needs: the server refuses a body with the key absent.
+                "expected_current_category": expectedCurrentCategory,
+            ],
+            token: token,
+            headers: ["Idempotency-Key": idempotencyKey],
+            accepting: [200, 202],
+            as: OperationReceipt.self
+        )
+    }
+
     public func operation(
         operationID: String, token: String
     ) async throws -> OperationReceipt {
