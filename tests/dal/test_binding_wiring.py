@@ -104,6 +104,10 @@ def _seed(
         session.add(dec)
         if seed_approval:
             ap = approval_row(feature_id=FEATURE_ID, approval_id=APPROVAL_ID)
+            ap.decision_id = DECISION_ID
+            ap.decision_version = 1
+            ap.expected_feature_version = 7
+            ap.expected_state = "awaiting_plan_review"
             ap.state_sha256 = approval_state_sha256
             ap.artifact_sha256 = approval_artifact_sha256
             session.add(ap)
@@ -256,6 +260,204 @@ def test_matching_bindings_do_not_refuse(tmp_path: Path) -> None:
 
     assert outcome.receipt_code == ReceiptCodes.APPLIED
     assert _feature_state(database) == ("approved", 8)
+
+
+def test_non_approval_transition_cannot_consume_injected_approval_id(
+    tmp_path: Path,
+) -> None:
+    """An extra parameter must not turn an ordinary spec into an approval use."""
+    database = tmp_path / "injected-approval-id.db"
+    engine = create_database_engine(database)
+    db.upgrade(engine)
+    sessions = session_factory(engine)
+    with sessions() as session, session.begin():
+        feature = feature_row(feature_id=FEATURE_ID, version=7, state="coding")
+        session.add(feature)
+        session.add(
+            approval_row(
+                feature_id=FEATURE_ID,
+                approval_id=APPROVAL_ID,
+                action="approve_plan",
+                expected_feature_version=7,
+                expected_state="coding",
+                state_sha256=jcs_sha256(build_state_binding(feature)),
+            )
+        )
+
+    command = TransitionCommand(
+        aggregate_type="feature",
+        aggregate_id=FEATURE_ID,
+        command_type="block_feature",
+        command_parameters={
+            "target_state": "blocked_auth",
+            "effect_outcome": None,
+            "approval_id": APPROVAL_ID,
+        },
+        actor_type="service",
+        evidence_source_types=("provider-adapter",),
+        evidence_schema_versions=("dal.evidence.provider-failure/1.0",),
+        decision_action=None,
+        reason_code="AUTH_REQUIRED",
+        expected_version=7,
+        idempotency_key="idem-injected-approval",
+    )
+    outcome = apply_transition(engine, command, facts=GuardFacts({}))
+    with engine.connect() as connection:
+        consumed_by = connection.execute(
+            text(
+                "SELECT consumed_by_command_id FROM approvals "
+                "WHERE approval_id = :approval_id"
+            ).bindparams(approval_id=APPROVAL_ID)
+        ).scalar_one()
+    engine.dispose()
+
+    assert outcome.receipt_code == ReceiptCodes.APPROVAL_INVALID
+    assert _feature_state(database) == ("coding", 7)
+    assert consumed_by is None
+
+
+def test_approval_action_must_match_command_authority(tmp_path: Path) -> None:
+    database = tmp_path / "approval-action-mismatch.db"
+    state_sha256 = jcs_sha256(_state_binding())
+    _seed(
+        database,
+        decision_state_sha256=state_sha256,
+        approval_state_sha256=state_sha256,
+    )
+    engine = create_database_engine(database)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE approvals SET action = 'execute_merge' "
+                "WHERE approval_id = :approval_id"
+            ).bindparams(approval_id=APPROVAL_ID)
+        )
+
+    outcome = apply_transition(
+        engine,
+        _approve_command(observed_state_sha256=state_sha256),
+        facts=GuardFacts({}),
+    )
+    with engine.connect() as connection:
+        consumed_by = connection.execute(
+            text(
+                "SELECT consumed_by_command_id FROM approvals "
+                "WHERE approval_id = :approval_id"
+            ).bindparams(approval_id=APPROVAL_ID)
+        ).scalar_one()
+    engine.dispose()
+
+    assert outcome.receipt_code == ReceiptCodes.APPROVAL_INVALID
+    assert consumed_by is None
+
+
+def test_approval_decision_binding_must_match_submitted_card(tmp_path: Path) -> None:
+    database = tmp_path / "approval-decision-mismatch.db"
+    state_sha256 = jcs_sha256(_state_binding())
+    _seed(
+        database,
+        decision_state_sha256=state_sha256,
+        approval_state_sha256=state_sha256,
+    )
+    engine = create_database_engine(database)
+    sessions = session_factory(engine)
+    with sessions() as session, session.begin():
+        session.add(
+            decision_row(
+                feature_id=FEATURE_ID,
+                decision_id="decision-other",
+                state_sha256=state_sha256,
+            )
+        )
+
+    base = _approve_command(observed_state_sha256=state_sha256)
+    command = replace(
+        base,
+        command_parameters={
+            **base.command_parameters,
+            "decision_id": "decision-other",
+        },
+    )
+    outcome = apply_transition(engine, command, facts=GuardFacts({}))
+    with engine.connect() as connection:
+        consumed_by = connection.execute(
+            text(
+                "SELECT consumed_by_command_id FROM approvals "
+                "WHERE approval_id = :approval_id"
+            ).bindparams(approval_id=APPROVAL_ID)
+        ).scalar_one()
+    engine.dispose()
+
+    assert outcome.receipt_code == ReceiptCodes.DECISION_STALE
+    assert consumed_by is None
+
+
+def test_different_approval_loser_is_version_conflict(tmp_path: Path) -> None:
+    """Different approvals competing for one version stay on version CAS."""
+    database = tmp_path / "different-approval-version-race.db"
+    engine = create_database_engine(database)
+    db.upgrade(engine)
+    sessions = session_factory(engine)
+    state_sha256 = jcs_sha256(_state_binding())
+    with sessions() as session, session.begin():
+        session.add(
+            feature_row(
+                feature_id=FEATURE_ID, version=7, state="awaiting_plan_review"
+            )
+        )
+        for suffix in ("one", "two"):
+            decision_id = f"decision-{suffix}"
+            approval_id = f"approval-{suffix}"
+            session.add(
+                decision_row(
+                    feature_id=FEATURE_ID,
+                    decision_id=decision_id,
+                    state_sha256=state_sha256,
+                )
+            )
+            session.add(
+                approval_row(
+                    feature_id=FEATURE_ID,
+                    approval_id=approval_id,
+                    action="approve_plan",
+                    decision_id=decision_id,
+                    decision_version=1,
+                    expected_feature_version=7,
+                    expected_state="awaiting_plan_review",
+                    state_sha256=state_sha256,
+                )
+            )
+
+    base = _approve_command(observed_state_sha256=state_sha256)
+    commands = []
+    for suffix in ("one", "two"):
+        commands.append(
+            replace(
+                base,
+                command_parameters={
+                    **base.command_parameters,
+                    "approval_id": f"approval-{suffix}",
+                    "decision_id": f"decision-{suffix}",
+                },
+                idempotency_key=f"idem-{suffix}",
+            )
+        )
+
+    first = apply_transition(engine, commands[0], facts=GuardFacts({}))
+    second = apply_transition(engine, commands[1], facts=GuardFacts({}))
+    with engine.connect() as connection:
+        second_consumed_by = connection.execute(
+            text(
+                "SELECT consumed_by_command_id FROM approvals "
+                "WHERE approval_id = 'approval-two'"
+            )
+        ).scalar_one()
+    engine.dispose()
+
+    assert first.receipt_code == ReceiptCodes.APPLIED
+    assert second.receipt_code == ReceiptCodes.VERSION_CONFLICT
+    assert _feature_state(database) == ("approved", 8)
+    assert second_consumed_by is None
 
 
 def test_new_approval_is_server_bound_before_same_transaction_consume(

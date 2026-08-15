@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from personal_agent_core.ids import new_id
 from personal_agent_core.manifest import canonical_json
+from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import utc_now
 
 from personal_agent_dal.errors import DalError, DalErrorCode
@@ -49,6 +50,7 @@ from personal_agent_dal.machine.binding import (
 from personal_agent_dal.machine.guards import GuardFacts, evaluate_guard
 from personal_agent_dal.machine.registry import (
     ResolutionKey,
+    TransitionRegistry,
     guard_registry,
     jcs_sha256,
     transition_registry,
@@ -268,12 +270,12 @@ def _owner_feature_id(ctx: ApplyContext) -> str:
     up by the recovery case's id would find nothing and refuse a legitimate
     command.
     """
-    if ctx.spec["aggregate_type"] == "feature":
+    if ctx.command.aggregate_type == "feature":
         return ctx.aggregate_id
     cached = ctx.scratch.get("owner_feature_id")
     if cached is not None:
         return cached
-    if ctx.spec["aggregate_type"] == "recovery_case":
+    if ctx.command.aggregate_type == "recovery_case":
         table = RecoveryCase.__table__
         owner = ctx.session.execute(
             select(table.c.feature_id).where(
@@ -492,6 +494,50 @@ def _decision_for_action(ctx: ApplyContext) -> Decision:
     return decision
 
 
+def _decision_for_token_gate(ctx: ApplyContext) -> Decision:
+    """Validate the named decision's identity, version and expiry for the
+    approval token gate — without the open-status check.
+
+    The status check is deferred to `_w_decision_resolve`: in a same-approval
+    race the winner resolves the decision, so a loser that checked status here
+    would surface as ``DECISION_STALE`` instead of the ``APPROVAL_INVALID`` the
+    approval CAS must report (§3.3). Version and expiry are content- and
+    time-bound, not lifecycle-bound, so they stay ahead of the approval CAS:
+    a stale or expired decision is refused before the approval is consumed.
+    """
+    decision_id = ctx.command.command_parameters.get("decision_id")
+    submitted_version = ctx.command.command_parameters.get(
+        "submitted_decision_version"
+    )
+    if not isinstance(decision_id, str) or not decision_id:
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE, "decision identity is required"
+        )
+    if not isinstance(submitted_version, int) or isinstance(submitted_version, bool):
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE, "decision version is required"
+        )
+    decision = ctx.session.execute(
+        select(Decision).where(
+            Decision.decision_id == decision_id,
+            Decision.feature_id == _owner_feature_id(ctx),
+        )
+    ).scalar_one_or_none()
+    if decision is None:
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE, "decision not found for this feature"
+        )
+    if decision.decision_version != submitted_version:
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE,
+            f"decision version {decision.decision_version} != "
+            f"submitted {submitted_version}",
+        )
+    if decision.expires_at is not None and ctx.now >= decision.expires_at:
+        raise TransitionRefused(ReceiptCodes.DECISION_STALE, "decision has expired")
+    return decision
+
+
 def _set_decision_status(ctx: ApplyContext, status: str) -> None:
     decision = _open_decision(ctx)
     decision.status = status
@@ -612,6 +658,11 @@ def _w_approval_consume(ctx: ApplyContext) -> None:
     is bad. An already-consumed approval is the same — a concurrent consumer
     won the race.
     """
+    if ctx.scratch.get("_approval_consumed"):
+        # The approval token gate already consumed the named approval before
+        # the write set ran (§3.3). Re-running this CAS would find the row's
+        # `consumed_by_command_id` set and refuse the winner.
+        return
     table = Approval.__table__
     approval_id = ctx.scratch.get("approval_id")
     # The command may name a specific approval to consume; otherwise the
@@ -670,24 +721,149 @@ def _w_approval_consume(ctx: ApplyContext) -> None:
 
 
 def _approval_for_binding(ctx: ApplyContext) -> Approval:
-    """Resolve the approval that will be consumed, without mutating it."""
+    """Resolve the named approval whose binding must be validated, by id only.
 
+    Deliberately does *not* filter on ``consumed_by_command_id IS NULL``: the
+    approval token gate consumes the approval before the write set runs, so by
+    the time the bound-authority check reads it the row is already consumed.
+    Consumption is arbitrated by the approval CAS, not by this lookup; the
+    fields this check reads (``state_sha256``, ``artifact_sha256``) are
+    immutable, so reading a just-consumed row is correct.
+    """
     table = Approval.__table__
     approval_id = ctx.command.command_parameters.get("approval_id")
-    query = select(Approval).where(
-        table.c.feature_id == _owner_feature_id(ctx),
-        table.c.consumed_by_command_id.is_(None),
-    )
+    query = select(Approval).where(table.c.feature_id == _owner_feature_id(ctx))
     if approval_id is not None:
         query = query.where(table.c.approval_id == approval_id)
     else:
-        query = query.order_by(table.c.recorded_at).limit(1)
+        query = query.where(
+            table.c.consumed_by_command_id.is_(None)
+        ).order_by(table.c.recorded_at).limit(1)
     approval = ctx.session.execute(query).scalar_one_or_none()
     if approval is None:
         raise TransitionRefused(
-            ReceiptCodes.APPROVAL_INVALID, "no unconsumed approval to validate"
+            ReceiptCodes.APPROVAL_INVALID, "no approval to validate"
         )
     return approval
+
+
+def _resolution_key(command: TransitionCommand, from_state: str | None) -> ResolutionKey:
+    parameters = command.command_parameters
+    return ResolutionKey(
+        aggregate_type=command.aggregate_type,
+        from_state=from_state,
+        command_type=command.command_type,
+        target_state=parameters.get("target_state"),
+        effect_outcome=parameters.get("effect_outcome"),
+        owner_aggregate_type=parameters.get("owner_aggregate_type"),
+        decision_action=command.decision_action,
+        reason_code=command.reason_code,
+    )
+
+
+def _apply_approval_token_gate(
+    ctx: ApplyContext, registry: TransitionRegistry
+) -> None:
+    """Validate and consume a named approval before version arbitration.
+
+    This is the §3.3 same-approval arbitration point. The approval consume CAS
+    runs before the aggregate version check, so a same-approval loser reaches
+    this CAS even after the winner moved the aggregate. The command shape is
+    first checked against the frozen registry *without* using current state:
+    arbitrary commands carrying an extra approval id may not consume it.
+    Different-approval competition proceeds past this gate and is then refused
+    by the version check before exact current-state spec resolution (§2.6).
+
+    The decision is validated first (version and expiry, not lifecycle): a
+    stale or expired decision is refused with ``DECISION_STALE`` before the
+    approval is consumed, so a refused command leaves the approval untouched.
+    """
+    approval_id = ctx.command.command_parameters.get("approval_id")
+    if approval_id is None:
+        # No named approval to arbitrate. Unnamed approvals are created and
+        # consumed inside the write set, where the token gate does not apply.
+        return
+
+    candidates = registry.resolve_command_shape(_resolution_key(ctx.command, None))
+    if not candidates or any(
+        "approval_consume" not in set(candidate["atomic_write_set"])
+        for candidate in candidates
+    ):
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID,
+            "the submitted command shape is not approval-consuming",
+        )
+
+    expected_actions = {
+        candidate["requires_decision_action"] or candidate["command_type"]
+        for candidate in candidates
+    }
+    if len(expected_actions) != 1:
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID,
+            "the submitted command shape has ambiguous approval authority",
+        )
+
+    approval = ctx.session.execute(
+        select(Approval).where(
+            Approval.approval_id == approval_id,
+            Approval.feature_id == _owner_feature_id(ctx),
+        )
+    ).scalar_one_or_none()
+    if approval is None:
+        raise TransitionRefused(ReceiptCodes.APPROVAL_INVALID, "approval not found")
+    if approval.action != next(iter(expected_actions)):
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID,
+            "approval action does not match the submitted command",
+        )
+    if approval.policy_version != POLICY_VERSION:
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID, "approval policy version is stale"
+        )
+    if ctx.now < approval.valid_from or ctx.now >= approval.expires_at:
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID, "approval is not currently valid"
+        )
+
+    decision_id = ctx.command.command_parameters.get("decision_id")
+    if decision_id is not None:
+        decision = _decision_for_token_gate(ctx)
+        if (
+            approval.decision_id != decision.decision_id
+            or approval.decision_version != decision.decision_version
+        ):
+            raise TransitionRefused(
+                ReceiptCodes.DECISION_STALE,
+                "approval is not bound to the submitted decision version",
+            )
+    elif approval.decision_id is not None:
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE,
+            "approval requires its bound decision identity",
+        )
+
+    table = Approval.__table__
+    result = ctx.session.execute(
+        update(table)
+        .where(table.c.approval_id == approval_id)
+        .where(table.c.feature_id == _owner_feature_id(ctx))
+        .where(table.c.consumed_by_command_id.is_(None))
+        .where(table.c.valid_from <= ctx.now)
+        .where(table.c.expires_at > ctx.now)
+        .where(table.c.policy_version == POLICY_VERSION)
+        .values(
+            consumed_by_command_id=ctx.command.idempotency_key,
+            consumed_at=ctx.now,
+        )
+    )
+    if result.rowcount != 1:
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID,
+            "approval was already consumed or has expired",
+        )
+    ctx.scratch["approval_id"] = approval_id
+    ctx.scratch["_approval_consumed"] = True
 
 
 def _validate_bound_authority(ctx: ApplyContext, declared: set[str]) -> None:
@@ -1676,125 +1852,150 @@ def apply_transition(
     sessions = session_factory(engine)
     spec: dict[str, Any] | None = None
     from_state = ""
+
+    def _apply_body(session: Session) -> TransitionOutcome:
+        nonlocal spec, from_state
+
+        current = _read_aggregate(
+            session, command.aggregate_type, command.aggregate_id
+        )
+        if current is None:
+            # No row yet. That is the `none` pseudo-state the registry
+            # spells as `from_state: null`, and only a creation spec can
+            # match it -- anything else falls through to
+            # ILLEGAL_TRANSITION when resolution fails.
+            from_state, current_version, checkpoint = None, None, None
+        else:
+            from_state, current_version, checkpoint = current
+
+        # Terminal first: no spec may provide an exit, so the registry is
+        # not even consulted.
+        if from_state in TERMINAL_STATES.get(command.aggregate_type, frozenset()):
+            raise TransitionRefused(
+                ReceiptCodes.TERMINAL_STATE,
+                f"{command.aggregate_type} is {from_state}",
+            )
+
+        replayed = session.execute(
+            select(
+                TransitionReceipt.__table__.c.request_payload_sha256,
+                TransitionReceipt.__table__.c.from_state,
+                TransitionReceipt.__table__.c.to_state,
+                TransitionReceipt.__table__.c.spec_id,
+                TransitionReceipt.__table__.c.receipt_schema_version,
+            ).where(
+                TransitionReceipt.__table__.c.idempotency_key
+                == command.idempotency_key
+            )
+        ).first()
+        if replayed is not None:
+            if replayed[0] != request_digest:
+                raise TransitionRefused(
+                    ReceiptCodes.IDEMPOTENCY_CONFLICT,
+                    "command key reused with different content",
+                )
+            # §2.6: a replay returns the *original* receipt, not the
+            # aggregate's current state -- a later transition may have
+            # moved it, and answering with "now" would erase what this
+            # command actually did.
+            raise _Replay(
+                from_state=replayed[1],
+                to_state=replayed[2],
+                spec_id=replayed[3],
+                receipt_schema=replayed[4],
+            )
+
+        # The approval token gate runs before spec resolution and the version
+        # check: a same-approval race is arbitrated by the approval CAS, which
+        # must stay reachable on a snapshot-conflict retry even after the
+        # winner has moved the aggregate's state (§3.3). It touches only
+        # `command`, `session` and `scratch`, so it needs no resolved spec.
+        ctx = ApplyContext(
+            session=session,
+            spec={},
+            command=command,
+            aggregate_id=command.aggregate_id,
+            from_state=from_state,
+            to_state="",
+            aggregate_version=current_version,
+            now=now,
+            request_payload_sha256=request_digest,
+            artifact_reader=artifact_reader,
+        )
+        ctx.scratch["existing_checkpoint"] = checkpoint
+        _apply_approval_token_gate(ctx, registry)
+
+        # Same approval loses at the token CAS above. A different approval can
+        # pass that gate, so its stale aggregate snapshot must be classified by
+        # version before current-state spec resolution can turn it into a false
+        # ILLEGAL_TRANSITION (§2.6/§3.3).
+        if command.expected_version != current_version:
+            raise TransitionRefused(
+                ReceiptCodes.VERSION_CONFLICT, "stale expected version"
+            )
+
+        spec = registry.resolve(_resolution_key(command, from_state))
+        if spec is None:
+            raise TransitionRefused(
+                ReceiptCodes.ILLEGAL_TRANSITION,
+                "no registry spec matches this exact command",
+            )
+
+        if (from_state is None) != (spec["from_state"] is None):
+            raise TransitionRefused(
+                ReceiptCodes.ILLEGAL_TRANSITION,
+                "creation spec matched an existing aggregate, or the reverse",
+            )
+
+        _check_actor_and_evidence(spec, command)
+        _validate_evidence_documents(command)
+        _check_guard(spec, facts)
+
+        ctx.spec = spec
+        ctx.to_state = spec["to_state"]
+
+        declared = set(spec["atomic_write_set"])
+        unknown = declared - set(WRITE_SET_APPLIERS)
+        if unknown:
+            # Never apply a partial atomic set. If the service cannot
+            # perform every member the spec names, the transition does not
+            # happen at all.
+            raise DalError(
+                DalErrorCode.INTERNAL_ERROR,
+                internal_detail=f"no applier for write-set members {sorted(unknown)}",
+            )
+        _validate_bound_authority(ctx, declared)
+        for member in _APPLY_ORDER:
+            if member not in declared:
+                continue
+            WRITE_SET_APPLIERS[member](ctx)
+
+        # Companions are part of the same atomic unit, not a second
+        # dispatchable command (§2.3.1). Their write-set members are
+        # already folded into the root's set; what remains is their own
+        # event, which the oracle asserts alongside the root's.
+        _emit_companion_events(ctx)
+
+        assert spec is not None
+        return TransitionOutcome(
+            receipt_code=ReceiptCodes.APPLIED,
+            receipt_schema=spec["success_receipt_schema"],
+            writes=tuple(m for m in _APPLY_ORDER if m in set(spec["atomic_write_set"])),
+            events=(spec["event_type"],)
+            + tuple(
+                companion["event_type"]
+                for companion in spec["atomic_companion_transitions"]
+            ),
+            from_state=from_state,
+            to_state=spec["to_state"],
+            reason_code=spec["result_reason_code"],
+            reason_owner=spec["result_reason_owner"],
+            spec_id=spec["spec_id"],
+        )
+
     try:
-        with sessions() as session, session.begin():
-            current = _read_aggregate(
-                session, command.aggregate_type, command.aggregate_id
-            )
-            if current is None:
-                # No row yet. That is the `none` pseudo-state the registry
-                # spells as `from_state: null`, and only a creation spec can
-                # match it -- anything else falls through to
-                # ILLEGAL_TRANSITION when resolution fails.
-                from_state, current_version, checkpoint = None, None, None
-            else:
-                from_state, current_version, checkpoint = current
-
-            # Terminal first: no spec may provide an exit, so the registry is
-            # not even consulted.
-            if from_state in TERMINAL_STATES.get(command.aggregate_type, frozenset()):
-                raise TransitionRefused(
-                    ReceiptCodes.TERMINAL_STATE,
-                    f"{command.aggregate_type} is {from_state}",
-                )
-
-            replayed = session.execute(
-                select(
-                    TransitionReceipt.__table__.c.request_payload_sha256,
-                    TransitionReceipt.__table__.c.from_state,
-                    TransitionReceipt.__table__.c.to_state,
-                    TransitionReceipt.__table__.c.spec_id,
-                    TransitionReceipt.__table__.c.receipt_schema_version,
-                ).where(
-                    TransitionReceipt.__table__.c.idempotency_key
-                    == command.idempotency_key
-                )
-            ).first()
-            if replayed is not None:
-                if replayed[0] != request_digest:
-                    raise TransitionRefused(
-                        ReceiptCodes.IDEMPOTENCY_CONFLICT,
-                        "command key reused with different content",
-                    )
-                # §2.6: a replay returns the *original* receipt, not the
-                # aggregate's current state -- a later transition may have
-                # moved it, and answering with "now" would erase what this
-                # command actually did.
-                raise _Replay(
-                    from_state=replayed[1],
-                    to_state=replayed[2],
-                    spec_id=replayed[3],
-                    receipt_schema=replayed[4],
-                )
-
-            parameters = command.command_parameters
-            spec = registry.resolve(
-                ResolutionKey(
-                    aggregate_type=command.aggregate_type,
-                    from_state=from_state,
-                    command_type=command.command_type,
-                    target_state=parameters.get("target_state"),
-                    effect_outcome=parameters.get("effect_outcome"),
-                    owner_aggregate_type=parameters.get("owner_aggregate_type"),
-                    decision_action=command.decision_action,
-                    reason_code=command.reason_code,
-                )
-            )
-            if spec is None:
-                raise TransitionRefused(
-                    ReceiptCodes.ILLEGAL_TRANSITION,
-                    "no registry spec matches this exact command",
-                )
-
-            if command.expected_version != current_version:
-                raise TransitionRefused(
-                    ReceiptCodes.VERSION_CONFLICT, "stale expected version"
-                )
-            if (from_state is None) != (spec["from_state"] is None):
-                raise TransitionRefused(
-                    ReceiptCodes.ILLEGAL_TRANSITION,
-                    "creation spec matched an existing aggregate, or the reverse",
-                )
-
-            _check_actor_and_evidence(spec, command)
-            _validate_evidence_documents(command)
-            _check_guard(spec, facts)
-
-            ctx = ApplyContext(
-                session=session,
-                spec=spec,
-                command=command,
-                aggregate_id=command.aggregate_id,
-                from_state=from_state,
-                to_state=spec["to_state"],
-                aggregate_version=current_version,
-                now=now,
-                request_payload_sha256=request_digest,
-                artifact_reader=artifact_reader,
-            )
-            ctx.scratch["existing_checkpoint"] = checkpoint
-
-            declared = set(spec["atomic_write_set"])
-            unknown = declared - set(WRITE_SET_APPLIERS)
-            if unknown:
-                # Never apply a partial atomic set. If the service cannot
-                # perform every member the spec names, the transition does not
-                # happen at all.
-                raise DalError(
-                    DalErrorCode.INTERNAL_ERROR,
-                    internal_detail=f"no applier for write-set members {sorted(unknown)}",
-                )
-            _validate_bound_authority(ctx, declared)
-            for member in _APPLY_ORDER:
-                if member in declared:
-                    WRITE_SET_APPLIERS[member](ctx)
-
-            # Companions are part of the same atomic unit, not a second
-            # dispatchable command (§2.3.1). Their write-set members are
-            # already folded into the root's set; what remains is their own
-            # event, which the oracle asserts alongside the root's.
-            _emit_companion_events(ctx)
-
+        with sessions() as session:
+            return run_write_transaction(session, lambda: _apply_body(session))
     except _Replay as replay:
         return TransitionOutcome(
             receipt_code=ReceiptCodes.APPLIED,
@@ -1826,23 +2027,6 @@ def apply_transition(
             reason_owner=None,
             spec_id=spec["spec_id"] if spec else None,
         )
-
-    assert spec is not None
-    return TransitionOutcome(
-        receipt_code=ReceiptCodes.APPLIED,
-        receipt_schema=spec["success_receipt_schema"],
-        writes=tuple(m for m in _APPLY_ORDER if m in set(spec["atomic_write_set"])),
-        events=(spec["event_type"],)
-        + tuple(
-            companion["event_type"]
-            for companion in spec["atomic_companion_transitions"]
-        ),
-        from_state=from_state,
-        to_state=spec["to_state"],
-        reason_code=spec["result_reason_code"],
-        reason_owner=spec["result_reason_owner"],
-        spec_id=spec["spec_id"],
-    )
 
 
 def _emit_companion_events(ctx: ApplyContext) -> None:

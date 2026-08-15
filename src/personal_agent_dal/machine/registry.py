@@ -183,6 +183,30 @@ class TransitionRegistry:
         """The spec for this exact key, or `None`. Never a fuzzy match."""
         return self._by_key.get(key)
 
+    def resolve_command_shape(
+        self, key: ResolutionKey
+    ) -> tuple[dict[str, Any], ...]:
+        """Specs matching every command discriminator except current state.
+
+        Approval consumption has to be arbitrated before the aggregate version
+        check, including after another command has already moved the aggregate.
+        This projection lets that gate prove the submitted command shape is
+        approval-consuming without pretending the post-race current state is
+        still the state the approval was issued against. Exact dispatch still
+        uses :meth:`resolve` after version arbitration.
+        """
+        return tuple(
+            spec
+            for candidate, spec in self._by_key.items()
+            if candidate.aggregate_type == key.aggregate_type
+            and candidate.command_type == key.command_type
+            and candidate.target_state == key.target_state
+            and candidate.effect_outcome == key.effect_outcome
+            and candidate.owner_aggregate_type == key.owner_aggregate_type
+            and candidate.decision_action == key.decision_action
+            and candidate.reason_code == key.reason_code
+        )
+
     def specs_for(
         self, aggregate_type: str, from_state: str
     ) -> tuple[dict[str, Any], ...]:

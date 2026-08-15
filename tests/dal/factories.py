@@ -148,20 +148,29 @@ def decision_row(*, feature_id: str, decision_id: str = "decision-seeded",
     )
 
 
-def approval_row(*, feature_id: str, approval_id: str = "approval-seeded",
-                 now: datetime | None = None,
-                 state_sha256: str | None = None):
+def approval_row(
+    *,
+    feature_id: str,
+    approval_id: str = "approval-seeded",
+    action: str = "approve_plan",
+    decision_id: str | None = None,
+    decision_version: int | None = None,
+    expected_feature_version: int = 1,
+    expected_state: str = "awaiting_plan_review",
+    now: datetime | None = None,
+    state_sha256: str | None = None,
+):
     from personal_agent_dal.storage.machine_models import Approval
 
     now = now or utc_now()
     return Approval(
         approval_id=approval_id,
-        action="approve_plan",
+        action=action,
         feature_id=feature_id,
-        decision_id=None,
-        decision_version=None,
-        expected_feature_version=1,
-        expected_state="awaiting_plan_review",
+        decision_id=decision_id,
+        decision_version=decision_version,
+        expected_feature_version=expected_feature_version,
+        expected_state=expected_state,
         state_sha256=state_sha256,
         artifact_sha256=None,
         device_id="registered-device",

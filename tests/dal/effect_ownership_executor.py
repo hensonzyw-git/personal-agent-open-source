@@ -164,9 +164,19 @@ def _seed(engine: Any, fixture_body: dict[str, Any], spec: dict[str, Any] | None
                 )
             )
         if "approval_consume" in writes:
+            decision_id = (
+                "decision-seeded-0-decision_resolve"
+                if "decision_resolve" in decision_members
+                else None
+            )
             session.add(
                 approval_row(
                     feature_id=root_id if root_type == "feature" else "feat-owner",
+                    action=spec["requires_decision_action"] or spec["command_type"],
+                    decision_id=decision_id,
+                    decision_version=1 if decision_id is not None else None,
+                    expected_feature_version=feature.version,
+                    expected_state=feature.state,
                     state_sha256=protected_state_sha256,
                 )
             )

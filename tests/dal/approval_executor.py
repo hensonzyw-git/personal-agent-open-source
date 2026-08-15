@@ -88,7 +88,13 @@ def _seed(engine: Any, fixture_body: dict[str, Any]) -> datetime:
         ap = approval_row(
             feature_id=target["entity_id"],
             approval_id=ap_facts["approval_id"],
+            action=action["command"],
+            decision_id=dec["decision_id"],
+            decision_version=dec["version"],
+            expected_feature_version=target["version"],
+            expected_state=target["state"],
         )
+        ap.valid_from = server_now
         ap.expires_at = parse_rfc3339(ap_facts["expires_at"])
         ap.state_sha256 = state_sha256
         if ap_facts["status"] in ("consumed", "revoked"):
@@ -170,18 +176,11 @@ def execute_approval_fixture(
     before = _state_snapshot(engine)
     for op in fixture_body["operation_sequence"]:
         command = _build_command(op, target)
-        # The fixture snapshots every operation's target at the pre-state
-        # version. In a multi-operation sequence the first APPLIED op bumps
-        # the feature version, so a later op's `expected_version` must track
-        # the current row: the oracle expects the racing op to reach the
-        # approval CAS and lose there (APPROVAL_INVALID), not to be refused
-        # earlier on a stale version (VERSION_CONFLICT).
-        if command.expected_version is not None:
-            current = _state_snapshot(engine)["feature"]
-            if current is not None and current["version"] != command.expected_version:
-                command = TransitionCommand(
-                    **{**command.__dict__, "expected_version": current["version"]}
-                )
+        # Each operation carries the fixture's frozen `expected_version`
+        # verbatim. The approval token gate consumes the approval (and reports
+        # APPROVAL_INVALID on a lost race) *before* the aggregate version CAS,
+        # so a later op reaching the approval CAS still loses there rather
+        # than being refused earlier on a stale version (VERSION_CONFLICT).
         outcome = apply_transition(engine, command, facts=GuardFacts({}), now=server_now)
         merged.receipts.append(
             ReceiptRecord(code=outcome.receipt_code, schema_version=outcome.receipt_schema)

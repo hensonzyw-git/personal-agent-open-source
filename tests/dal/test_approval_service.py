@@ -46,19 +46,14 @@ G1_SCENARIOS: dict[str, set[str]] = {
     },
 }
 
-#: Variants that are known-blocked pending DAL-013 (batch/absorption semantics
-#: land there and force a real concurrent-consume model). The set is closed
-#: against the manifest, so any variant listed here still has to exist in the
-#: frozen contracts — drift surfaces in the closed-set test, not by silently
-#: skipping. Reason is recorded in the DAL-011 evidence doc.
+#: Variants that are known-blocked. The set is closed against the manifest, so
+#: any variant listed here still has to exist in the frozen contracts — drift
+#: surfaces in the closed-set test, not by silently skipping. The only blocked
+#: variant (``concurrent_consume``) was unblocked by the approval token gate
+#: (engine runs the approval CAS before the aggregate version CAS); the reason
+#: is recorded in the DAL-011 evidence doc.
 KNOWN_BLOCKED: dict[str, dict[str, str]] = {
-    APP_TEST_ID: {
-        "concurrent_consume": (
-            "requires an engine-level fallback or registry amendment to let the "
-            "second op reach the approval CAS; deferred to DAL-013 per Henson's "
-            "2026-08-12 decision"
-        ),
-    },
+    APP_TEST_ID: {},
     APP_EXP_TEST_ID: {},
 }
 
