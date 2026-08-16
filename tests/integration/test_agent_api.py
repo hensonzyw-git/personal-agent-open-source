@@ -29,8 +29,10 @@ from personal_agent.api.finance_query_projection import (
     decode_finance_query_projection,
     summarise_query_projection,
 )
+from personal_agent.api.finance_record_projection import FinanceExpenseRecord
 from personal_agent.api.orchestrator import (
     Clarification,
+    CommitFailedSafe,
     DirectAnswer,
     InterpreterError,
     PossibleDuplicate,
@@ -47,6 +49,7 @@ from personal_agent.auth.tokens import (
     issue_access_token,
 )
 from personal_agent.context.budget import ComponentKind
+from personal_agent.diagnostics import transcript
 from personal_agent.diagnostics.recording_dispatcher import RecordingDispatcher
 from personal_agent.diagnostics.transcript import TranscriptRecorder
 from personal_agent.storage.engine import (
@@ -123,7 +126,14 @@ class FakeDispatcher:
 
     def commit(self, *, intent, idempotency_key, duplicate_override):
         self.commit_calls.append(
-            {"idempotency_key": idempotency_key, "override": duplicate_override}
+            {
+                "idempotency_key": idempotency_key,
+                "override": duplicate_override,
+                # Recorded so a route that resolves its own intent -- the
+                # category correction -- can be checked on what it actually
+                # dispatched rather than only on what it answered.
+                "intent": intent,
+            }
         )
         return self._commit
 
@@ -1750,3 +1760,402 @@ def test_the_resolution_lands_on_the_timeline_exactly_once(
     ]
     assert len(markers) == 1
     assert markers[0]["content"]["resolution"] == "confirmed_not_written"
+
+
+# --- `G1`: the category correction route -------------------------------------
+
+
+def _corrected(category: str = "购物") -> FinanceExpenseRecord:
+    return FinanceExpenseRecord(
+        name="午饭",
+        amount_cny="38.50",
+        occurred_on="2026-07-24",
+        is_family_expense=False,
+        category=category,
+        personal_spend_cny=None,
+        category_updated_at="2026-07-24T07:00:00Z",
+    )
+
+
+class _ReceiptThenRefusingInterpreter:
+    """Create the source receipt once; any second model call fails the test."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def interpret(self, *, envelope):
+        self.calls += 1
+        if self.calls > 1:
+            raise AssertionError("the category correction must never ask a model")
+        return ToolCall("finance.log_expense", {"name": "午饭"})
+
+
+def _client_with_expense_receipt(
+    engine,
+    token_ring,
+    keyring,
+    *,
+    correction,
+    original_category: str | None = "餐饮",
+    recorder=None,
+):
+    """Build the real Timeline owner a receipt-card correction requires."""
+    interpreter = _ReceiptThenRefusingInterpreter()
+    intent = WriteIntent("finance.log_expense", {"name": "午饭"})
+    original = FinanceExpenseRecord(
+        name="午饭",
+        amount_cny="38.50",
+        occurred_on="2026-07-24",
+        is_family_expense=False,
+        category=original_category,
+        personal_spend_cny="38.50",
+    )
+    dispatcher = FakeDispatcher(
+        resolve=Resolved(intent),
+        commit=Written("rec-1", record=original),
+    )
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=interpreter,
+        dispatcher=dispatcher,
+        **({} if recorder is None else {"recorder": recorder}),
+    )
+    seeded = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 38.50 个人支出"},
+        headers=_auth(token_ring, key=REQUEST_ID_4),
+    )
+    assert seeded.status_code == 200
+    assert seeded.json()["record_id"] == "rec-1"
+    dispatcher._commit = correction
+    dispatcher.commit_calls.clear()
+    return client, dispatcher, interpreter
+
+
+def test_a_category_correction_never_reaches_the_model(
+    engine, token_ring, keyring
+) -> None:
+    """The picker's tap is the decision; there is nothing to interpret.
+
+    The interpreter here raises if it is consulted, which is the point: this
+    route resolves its own intent, and the tool it dispatches is
+    `model_callable=False` in the IR precisely so no model turn can produce it.
+    """
+    client, dispatcher, interpreter = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=Written("rec-1", record=_corrected()),
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert reply.status_code == 200
+    body = reply.json()
+    assert body["state"] == "succeeded"
+    assert body["record_id"] == "rec-1"
+    assert body["record"]["category"] == "购物"
+    assert body["record"]["category_updated_at"] == "2026-07-24T07:00:00Z"
+    # Dispatched exactly the correction, under the client's own key.
+    assert len(dispatcher.commit_calls) == 1
+    call = dispatcher.commit_calls[0]
+    assert call["idempotency_key"] == REQUEST_ID_1
+    assert call["override"] is None
+    assert call["intent"].tool == "finance.update_expense_category"
+    assert call["intent"].model_args == {
+        "record_id": "rec-1",
+        "category": "购物",
+        "expected_current_category": "餐饮",
+    }
+    assert interpreter.calls == 1
+    timeline = client.get(
+        "/v1/conversations/c1/events",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    ).json()["events"]
+    marker = [
+        event
+        for event in timeline
+        if event["event_type"] == "expense_category_corrected"
+    ]
+    assert len(marker) == 1
+    assert marker[0]["operation_id"] == body["operation_id"]
+    assert marker[0]["content"]["record_id"] == "rec-1"
+    assert marker[0]["content"]["record"]["category"] == "购物"
+
+
+def test_a_category_correction_requires_an_anchored_expense_receipt(
+    engine, token_ring, keyring
+) -> None:
+    """A guessed ledger id cannot create an unowned, unreplayable correction."""
+    interpreter = _ReceiptThenRefusingInterpreter()
+    dispatcher = FakeDispatcher(commit=Written("rec-1", record=_corrected()))
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=interpreter,
+        dispatcher=dispatcher,
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert reply.status_code == 400
+    assert reply.json()["error"]["code"] == "INVALID_ARGUMENT"
+    assert dispatcher.commit_calls == []
+    assert interpreter.calls == 0
+
+
+def test_polling_a_correction_records_its_transcript_without_an_anchor(
+    engine, token_ring, keyring, tmp_path: Path
+) -> None:
+    """A card action has no user message, and that is not a wiring error.
+
+    Specifically a **failed** one. A correction that succeeds writes its
+    `expense_category_corrected` marker, and that marker is itself an anchoring
+    event — which is why this went unnoticed until the 2026-08-16 acceptance
+    run, where Feishu refused the update and the marker was therefore never
+    written. Every poll of that operation then raised inside the transcript
+    recorder and dropped the record. Nothing broke — the recorder never changes
+    API behaviour — but a transcript that logs a traceback instead of the
+    response is the opposite of a transcript, and the failing path is exactly
+    the one whose transcript is worth having.
+    """
+    recorder = TranscriptRecorder(
+        tmp_path / "transcripts", service="api", now=lambda: NOW
+    )
+    client, _dispatcher, _interpreter = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=CommitFailedSafe("SOURCE_UNAVAILABLE"),
+        recorder=recorder,
+    )
+    created = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    assert created.status_code == 200
+    operation_id = created.json()["operation_id"]
+
+    polled = client.get(
+        f"/v1/operations/{operation_id}", headers=_auth(token_ring)
+    )
+
+    assert polled.status_code == 200
+    # The response was recorded, under an identity that names the operation
+    # even though it names no turn.
+    records = [
+        json.loads(line)
+        for path in sorted(recorder.directory.glob("*.jsonl"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    responses = [
+        record
+        for record in records
+        if record.get("kind") == transcript.API_RESPONSE
+        and record.get("turn", {}).get("operation_id") == operation_id
+    ]
+    assert responses, "the poll's transcript was dropped"
+    # Identified by the operation, anchored to no turn — which is the honest
+    # shape for an action that was never a conversation turn.
+    assert responses[-1]["turn"]["turn_id"] is None
+    assert responses[-1]["turn"]["conversation_id"] is None
+    assert responses[-1]["turn"]["device_id"]
+
+
+def test_a_lost_correction_marker_never_fails_a_completed_write(
+    engine, token_ring, keyring, monkeypatch
+) -> None:
+    """The marker is presentation; the ledger row is the fact.
+
+    Raising here would report a governed write that already happened as a 500
+    and invite a retry for it.
+    """
+    client, dispatcher, _interpreter = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=Written("rec-1", record=_corrected()),
+    )
+    import personal_agent.api.app as app_module
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("timeline append failed")
+
+    monkeypatch.setattr(
+        app_module, "_append_expense_category_corrected", explode
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert reply.status_code == 200
+    assert reply.json()["state"] == "succeeded"
+    assert reply.json()["record"]["category"] == "购物"
+    assert len(dispatcher.commit_calls) == 1
+
+
+def test_a_correction_without_its_expectation_is_refused(
+    engine, token_ring, keyring
+) -> None:
+    """Omitting the compare-and-swap is not a request for a blind overwrite.
+
+    It is an out-of-date client, and reading the omission as "expect nothing"
+    would silently turn every stale card into an overwrite of someone else's
+    edit.
+    """
+    client, dispatcher, _ = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=Written("rec-1"),
+        original_category=None,
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert reply.status_code == 400
+    assert reply.json()["error"]["code"] == "INVALID_ARGUMENT"
+    assert dispatcher.commit_calls == []
+
+
+def test_a_null_expectation_is_a_value_not_an_omission(
+    engine, token_ring, keyring
+) -> None:
+    """A refund legitimately has no category, and saying so must be possible."""
+    client, dispatcher, _ = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=Written("rec-1", record=_corrected()),
+        original_category=None,
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": None},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert reply.status_code == 200
+    assert (
+        dispatcher.commit_calls[0]["intent"].model_args[
+            "expected_current_category"
+        ]
+        is None
+    )
+
+
+def test_replaying_a_correction_key_dispatches_once(
+    engine, token_ring, keyring
+) -> None:
+    client, dispatcher, _ = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=Written("rec-1", record=_corrected()),
+    )
+    body = {"category": "购物", "expected_current_category": "餐饮"}
+
+    first = client.post(
+        "/v1/expense-records/rec-1/category",
+        json=body,
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    second = client.post(
+        "/v1/expense-records/rec-1/category",
+        json=body,
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert first.json()["operation_id"] == second.json()["operation_id"]
+    assert len(dispatcher.commit_calls) == 1
+    timeline = client.get(
+        "/v1/conversations/c1/events",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    ).json()["events"]
+    assert sum(
+        event["event_type"] == "expense_category_corrected"
+        for event in timeline
+    ) == 1
+
+
+def test_the_same_key_under_a_different_correction_is_a_conflict(
+    engine, token_ring, keyring
+) -> None:
+    """Two corrections of the same row from different believed starting points
+    are different requests: one is working from a stale view, and sharing a key
+    would let the stale one replay as the fresh one's success."""
+    client, dispatcher, _ = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=Written("rec-1", record=_corrected()),
+    )
+
+    client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    clash = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "旅行"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert clash.status_code == 409
+    assert len(dispatcher.commit_calls) == 1
+
+
+def test_a_failed_correction_carries_no_business_fields(
+    engine, token_ring, keyring
+) -> None:
+    """A correction that did not reach the ledger must not repaint the card.
+
+    `record` travels only with a proven write, so a safe failure leaves the
+    client with nothing to overlay and the row keeps the ledger's value.
+    """
+    client, dispatcher, _ = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=CommitFailedSafe("SCOPE_DENIED"),
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    body = reply.json()
+    assert body["state"] == "failed_safe"
+    assert body["record_id"] is None
+    assert "record" not in body
+    timeline = client.get(
+        "/v1/conversations/c1/events",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    ).json()["events"]
+    assert not any(
+        event["event_type"] == "expense_category_corrected"
+        for event in timeline
+    )

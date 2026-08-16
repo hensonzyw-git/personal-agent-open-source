@@ -28,6 +28,14 @@ FINANCE_WRITE_TOOLS: frozenset[str] = frozenset(
         "finance.log_expense_batch",
         "finance.log_income",
         "finance.update_family_fund",
+        # A category correction is a write like any other here. It is listed
+        # even though the model never calls it -- the route that reaches it is
+        # a deterministic tap on the receipt card, not a model decision --
+        # because this partition's job is to stop a *write* being satisfied by
+        # a read. Omitting a write because "the model cannot reach it today"
+        # would make that guarantee depend on a routing detail rather than on
+        # what the tool does.
+        "finance.update_expense_category",
     }
 )
 

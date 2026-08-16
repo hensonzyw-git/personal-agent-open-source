@@ -69,6 +69,24 @@ CREATE_RECORD = Endpoint(
     "/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records",
     OperationClass.WRITE,
 )
+#: The one *mutating* endpoint, added for `finance.update_expense_category`.
+#:
+#: Bitable's update is a partial `PUT`: only the fields named in the body are
+#: touched and the rest of the row is left alone. That is what makes a one-field
+#: correction possible without re-sending -- and therefore without being able to
+#: silently rewrite -- 名称, 金额, 日期 or 是否家庭支出. The single-field payload
+#: is enforced by the update path, not by hope; this note records why the shape
+#: of the endpoint is load-bearing rather than incidental.
+#:
+#: Still no delete endpoint. A category correction is the only mutation this
+#: connector may perform, and removing a ledger row remains something no code
+#: here can do at all.
+UPDATE_RECORD = Endpoint(
+    "update_record",
+    "PUT",
+    "/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/{record_id}",
+    OperationClass.WRITE,
+)
 
 ALLOWLIST: Final[tuple[Endpoint, ...]] = (
     TENANT_TOKEN,
@@ -76,6 +94,7 @@ ALLOWLIST: Final[tuple[Endpoint, ...]] = (
     GET_RECORD,
     SEARCH_RECORDS,
     CREATE_RECORD,
+    UPDATE_RECORD,
 )
 
 

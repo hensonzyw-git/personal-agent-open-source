@@ -35,6 +35,10 @@ from typing import Any, Protocol
 
 from personal_agent.api.duplicate_flow import record_possible_duplicate
 from personal_agent.api.finance_query_projection import FinanceQueryProjection
+from personal_agent.api.finance_record_projection import (
+    FinanceExpenseRecord,
+    seal_expense_record,
+)
 from personal_agent.api.intent import WriteIntent, open_intent
 from personal_agent.api.operation_store import transition_operation
 from personal_agent.context.builder import ContextEnvelope
@@ -215,6 +219,12 @@ ResolveOutcome = (
 @dataclass(frozen=True)
 class Written:
     record_id: str
+    #: The written row, strictly projected, for the `G1` receipt card. Optional
+    #: and *subordinate to* `record_id`: the record id is the write's proof,
+    #: this is only what the card draws. An `idempotent_replay` legitimately has
+    #: none, and an unprojectable one is downgraded to none rather than being
+    #: allowed to turn a proven write into a failure.
+    record: FinanceExpenseRecord | None = None
 
 
 @dataclass(frozen=True)
@@ -316,6 +326,7 @@ def run_operation(
     authorize: Authorizer,
     keyring: KeyRing,
     now: Clock,
+    pre_resolved: bool = False,
     recorder: Recorder | None = None,
 ) -> RunResult:
     """Drive one freshly-accepted operation to its outcome.
@@ -339,6 +350,7 @@ def run_operation(
             authorize=authorize,
             keyring=keyring,
             now=now,
+            pre_resolved=pre_resolved,
         )
     except Exception as exc:
         sink.record(
@@ -364,10 +376,12 @@ def _run_operation(
     authorize: Authorizer,
     keyring: KeyRing,
     now: Clock,
+    pre_resolved: bool = False,
 ) -> RunResult:
-    # A `write anyway` operation carries a resolved intent and an override; it
-    # skips interpretation entirely.
-    if _is_override_operation(operation):
+    # An operation that already knows its write skips interpretation entirely:
+    # a `write anyway` override, or a deterministic user action such as the
+    # receipt card's category picker. Neither has anything to ask a model.
+    if _is_pre_resolved(operation, declared=pre_resolved):
         return _run_override(
             session, operation, dispatcher=dispatcher, keyring=keyring, now=now
         )
@@ -796,7 +810,26 @@ def _commit(
                 state="needs_manual_review", failure_reason=reason
             )
         _step(session, operation, "verifying", now)
-        _step(session, operation, "succeeded", now, safe_result=record_id)
+        _step(
+            session,
+            operation,
+            "succeeded",
+            now,
+            safe_result=record_id,
+            # `G1`. Sealed here rather than in the dispatcher so the key never
+            # travels to the MCP layer, and written in the same transition as
+            # the record id so a card can never show fields for a write whose
+            # id was not committed.
+            encrypted_result_record=(
+                seal_expense_record(
+                    keyring,
+                    operation_id=operation.operation_id,
+                    record=outcome.record,
+                )
+                if outcome.record is not None
+                else None
+            ),
+        )
         return RunResult(state="succeeded", record_id=record_id)
     if isinstance(outcome, CommitUnknown):
         # An unknown commit is *not* an outcome. It is the absence of one, and
@@ -870,6 +903,27 @@ def _is_override_operation(operation: Operation) -> bool:
     )
 
 
+def _is_pre_resolved(operation: Operation, *, declared: bool) -> bool:
+    """Whether this operation already knows its write and must skip the model.
+
+    Two shapes qualify, and they are kept distinguishable on purpose:
+
+    - a `write anyway` override, recognised by its `duplicate_check_id`. The id
+      is both the marker and the authorisation, so inferring it is safe;
+    - a caller that *declares* the operation pre-resolved, which is how the
+      category-correction route arrives. It carries no duplicate check and there
+      is nothing on the row to infer from, so the caller states it and the
+      sealed intent still has to be there.
+
+    The `declared` route deliberately does not widen the first: an operation is
+    not treated as an override just because someone said "pre-resolved", so it
+    cannot acquire duplicate-override authority it was never granted.
+    """
+    if _is_override_operation(operation):
+        return True
+    return declared and operation.api_request.encrypted_request_payload is not None
+
+
 def _policy_reason(error: AppError) -> str:
     # design 5.2: policy_denied is a stable reason on failed_safe, not a state.
     if error.code in {ErrorCode.SCOPE_DENIED, ErrorCode.TOOL_NOT_ALLOWLISTED}:
@@ -885,6 +939,7 @@ def _step(
     *,
     tool: str | None = None,
     safe_result: str | None = None,
+    encrypted_result_record: dict[str, Any] | None = None,
     failure_reason: str | None = None,
     zero_write_proven: bool = False,
 ) -> None:
@@ -898,6 +953,7 @@ def _step(
         now=_moment(now),
         tool=tool,
         safe_result=safe_result,
+        encrypted_result_record=encrypted_result_record,
         failure_reason=failure_reason,
         zero_write_proven=zero_write_proven,
     )

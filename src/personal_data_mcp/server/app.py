@@ -225,6 +225,7 @@ def build_registry(
     expense_write_handler=None,
     income_write_handler=None,
     family_fund_handler=None,
+    category_update_handler=None,
 ) -> ToolRegistry:
     """The production tool set for this build.
 
@@ -242,6 +243,10 @@ def build_registry(
         ("finance.log_expense", expense_write_handler),
         ("finance.log_income", income_write_handler),
         ("finance.update_family_fund", family_fund_handler),
+        # Enabled, and reachable only from the device-authenticated category
+        # route: `model_callable=False` keeps it out of the Agent's allowlist,
+        # so registering it here does not put it in front of the model.
+        ("finance.update_expense_category", category_update_handler),
     ):
         if handler is not None:
             registry.register(name, handler)

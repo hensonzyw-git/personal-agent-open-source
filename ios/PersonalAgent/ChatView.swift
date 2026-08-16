@@ -315,6 +315,14 @@ struct ChatView: View {
             .foregroundStyle(.secondary)
             .accessibilityHint("duplicate_check_id \(checkID)")
 
+        case .expenseCategoryCorrected(_, let record):
+            Label(
+                "分类已修改为 \(record.category ?? "未分类")",
+                systemImage: "tag.circle"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
         case .manualReviewResolved(let resolution):
             Label(
                 "已人工核对：\(manualResolutionText(resolution))",
@@ -359,8 +367,13 @@ struct ChatView: View {
         // §1i's non-recorded states are plain label-and-body cards and do not take
         // part in the tiers at all. A query result is its own card too: structured
         // data is never flattened into a prose answer (§1i).
-        if case .recorded(let recordID, let tool) = outcome {
-            recordedReceipt(recordID: recordID, tool: tool, operationID: operationID)
+        if case .recorded(let recordID, let tool, let record) = outcome {
+            recordedReceipt(
+                recordID: recordID,
+                tool: tool,
+                record: record,
+                operationID: operationID
+            )
         } else if case .answeredWithQuery(let result, let tool) = outcome {
             queryReceiptCard(result: result, tool: tool, operationID: operationID)
         } else {
@@ -385,20 +398,70 @@ struct ChatView: View {
         var id: String { label }
     }
 
-    /// The fields the server actually returned. `G1` is not done, so this is
-    /// empty today; the tier rules live against this array so that when the
-    /// projection starts carrying 名称/金额/分类/日期/归属 the receipt promotes
-    /// itself on the same code path.
-    private func receiptFields(for tool: String?) -> [ReceiptField] {
-        // G1: the projection carries no business fields yet.
-        []
+    /// The fields the server actually returned.
+    ///
+    /// `G1` landed in `chat_receipt_projection_v5`, and the tier rules were
+    /// already written against this array, so a receipt that carries the row
+    /// promotes itself to 档三 on the same code path that used to draw 档一.
+    /// A receipt without one -- an `idempotent_replay`, an older event, a
+    /// payload that failed projection -- returns `[]` and still gets the honest
+    /// status row.
+    ///
+    /// Order is 日期 → 名称 → 分类 → 金额 → 是否家庭支出 → 个人支出: what the
+    /// entry *is* before what it *cost*, which is the order Henson asked for and
+    /// the order the ledger's own columns read in.
+    private func receiptFields(for record: FinanceExpenseRecord?) -> [ReceiptField] {
+        guard let record else { return [] }
+        var fields: [ReceiptField] = [
+            ReceiptField(label: "日期", value: record.occurredOn),
+            ReceiptField(label: "名称", value: record.name),
+            // Null category is a real state for a refund or AA receipt, so it
+            // is shown as absent rather than omitted: a missing row would read
+            // as "the server did not say", and this row is about to become
+            // editable, so which one it is matters.
+            ReceiptField(label: "分类", value: record.category ?? "未分类"),
+            ReceiptField(label: "金额", value: yuan(record.amount)),
+            ReceiptField(
+                label: "是否家庭支出", value: record.isFamilyExpense ? "是" : "否"
+            ),
+        ]
+        // 个人支出 is a Base formula. Absent means the ledger had not evaluated
+        // it (or had just been asked to re-evaluate it after a category edit),
+        // and an absent row is honest where a stale number would not be.
+        if let personalSpend = record.personalSpend {
+            fields.append(
+                ReceiptField(label: "个人支出", value: yuan(personalSpend))
+            )
+        }
+        return fields
+    }
+
+    /// Render a ledger amount without ever parsing it.
+    ///
+    /// The server sends decimal *text* precisely so no float ever touches a
+    /// money value; turning it into a `Double` here to format it would undo
+    /// that at the last step, on the one screen whose job is to be checkable.
+    /// A negative amount keeps its sign ahead of the symbol -- `-¥880.00` --
+    /// because a refund reads as a refund, not as a smaller expense.
+    private func yuan(_ amount: String) -> String {
+        amount.hasPrefix("-") ? "-¥" + amount.dropFirst() : "¥" + amount
     }
 
     @ViewBuilder
     private func recordedReceipt(
-        recordID: String, tool: String?, operationID: String?
+        recordID: String,
+        tool: String?,
+        record: FinanceExpenseRecord?,
+        operationID: String?
     ) -> some View {
-        let fields = receiptFields(for: tool)
+        // `G1` shipped, so the current ledger row is what the card draws. The
+        // overlay is what makes Henson's 2026-08-15 decision true: after a
+        // category correction the *same* ledger row is described by a newer
+        // operation, and every card for that row -- including the original
+        // receipt, scrolled back to -- follows the ledger rather than freezing
+        // at what was first written.
+        let current = model.currentRecord(forRecordID: recordID) ?? record
+        let fields = receiptFields(for: current)
         switch fields.count {
         case 0, 1, 2:
             // §3a/§3b 档一/档二: a status row. No container, no border, no action
@@ -408,13 +471,23 @@ struct ChatView: View {
             // lightest form -- a card would imply a structured record to check,
             // and today there is none to check.
             recordedStatusRow(
-                recordID: recordID, tool: tool, operationID: operationID, fields: fields
+                recordID: recordID,
+                tool: tool,
+                record: current,
+                operationID: operationID,
+                fields: fields
             )
         default:
             // §3a/§3b 档三: the composed card, kept for when ≥3 fields exist.
             // Its 副标带 is already gone (§2.2): identifiers live behind the
             // long-press menu, so the band has nothing to carry.
-            recordedCard(recordID: recordID, tool: tool, operationID: operationID, fields: fields)
+            recordedCard(
+                recordID: recordID,
+                tool: tool,
+                record: current,
+                operationID: operationID,
+                fields: fields
+            )
         }
     }
 
@@ -427,6 +500,7 @@ struct ChatView: View {
     private func recordedStatusRow(
         recordID: String,
         tool: String?,
+        record: FinanceExpenseRecord?,
         operationID: String?,
         fields: [ReceiptField]
     ) -> some View {
@@ -435,7 +509,7 @@ struct ChatView: View {
             // a leading chip rather than the header's 12pt capsule. Same colour
             // semantics, different chrome.
             terminalChip(
-                for: .recorded(recordID: recordID, tool: tool),
+                for: .recorded(recordID: recordID, tool: tool, record: record),
                 toolEvidence: .known(tool)
             )
 
@@ -479,6 +553,7 @@ struct ChatView: View {
     private func recordedCard(
         recordID: String,
         tool: String?,
+        record: FinanceExpenseRecord?,
         operationID: String?,
         fields: [ReceiptField]
     ) -> some View {
@@ -487,7 +562,7 @@ struct ChatView: View {
                 Text("记账回执").font(.callout.weight(.medium))
                 Spacer(minLength: 8)
                 terminalCapsule(
-                    for: .recorded(recordID: recordID, tool: tool),
+                    for: .recorded(recordID: recordID, tool: tool, record: record),
                     toolEvidence: .known(tool)
                 )
             }
@@ -504,7 +579,18 @@ struct ChatView: View {
             VStack(spacing: 0) {
                 if let tool { fieldRow("工具", Capabilities.displayName(forAlias: tool, tools: model.tools)) }
                 ForEach(fields) { field in
-                    fieldRow(field.label, field.value)
+                    if field.label == "分类", let record {
+                        categoryRow(recordID: recordID, record: record)
+                    } else {
+                        fieldRow(field.label, field.value)
+                    }
+                }
+                if let editedAt = record?.categoryUpdatedAt {
+                    // The card follows the ledger's current value rather than
+                    // freezing at what was written (Henson, 2026-08-15), which
+                    // means it is no longer literally the write receipt. This
+                    // line is that difference stated rather than hidden.
+                    categoryEditNote(editedAt)
                 }
             }
             .padding(.horizontal, Metric.cardInset)
@@ -617,6 +703,117 @@ struct ChatView: View {
     }
 
     /// A field row carries its own top rule, so rows stack without a trailing one.
+    /// 分类, as a picker over the ledger's own option set.
+    ///
+    /// The one editable row on the card. It is a `Menu` rather than a sheet
+    /// because the whole point is that correcting a mis-categorised expense
+    /// costs one tap and one choice -- re-describing the entry to the Agent was
+    /// always possible and was always the wrong repair.
+    ///
+    /// The options come from `ExpenseCategory.all`, which is pinned to the
+    /// ledger's single-select options by the cross-language vector file. The
+    /// connector never creates a select option, so an option this client
+    /// invented would be a refused write, not a new category.
+    ///
+    /// Nothing here is optimistic. The row shows the ledger's value until the
+    /// server has verified the change against the ledger; while the write is in
+    /// flight it shows the target with a progress indicator, and a failure
+    /// leaves the *old* value on screen with the reason beneath. Showing the new
+    /// category before it was proven would be the receipt card telling the same
+    /// kind of lie the whole projection exists to prevent.
+    @ViewBuilder
+    private func categoryRow(
+        recordID: String, record: FinanceExpenseRecord
+    ) -> some View {
+        let edit = model.categoryEdit(forRecordID: recordID)
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text("分类").font(.footnote).foregroundStyle(.secondary)
+            Spacer(minLength: 12)
+            if case .inFlight(let target) = edit {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text(target)
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Menu {
+                    ForEach(ExpenseCategory.all, id: \.self) { option in
+                        Button {
+                            Task {
+                                await model.changeCategory(
+                                    recordID: recordID,
+                                    from: record.category,
+                                    to: option
+                                )
+                            }
+                        } label: {
+                            if option == record.category {
+                                Label(option, systemImage: "checkmark")
+                            } else {
+                                Text(option)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(record.category ?? "未分类")
+                            .font(.footnote.monospaced())
+                            .lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.accentText)
+                }
+            }
+        }
+        .padding(.vertical, Metric.fieldRowPadding)
+        .overlay(alignment: .top) { hairline }
+
+        if case .failed(let message) = edit {
+            // Deliberately below the row, with the old value still shown above
+            // it: the ledger did not change, and the card must not imply it did.
+            Text(message)
+                .font(.caption)
+                // `pending`, not `danger`: nothing was written and nothing is
+                // broken. The ledger simply does not hold what this card
+                // assumed, and the next move is Henson's.
+                .foregroundStyle(.pending)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, Metric.fieldRowPadding)
+        }
+    }
+
+    private func categoryEditNote(_ editedAt: String) -> some View {
+        Text("分类已于 \(ChatView.editStamp(editedAt)) 修改")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, Metric.fieldRowPadding)
+            .overlay(alignment: .top) { hairline }
+    }
+
+    /// Render the server's RFC 3339 stamp in the ledger's own timezone.
+    ///
+    /// Falls back to the raw string rather than to "just now" or an empty label:
+    /// a timestamp this build cannot parse is still evidence that an edit
+    /// happened, and dropping it would erase the one thing this line exists for.
+    static func editStamp(_ value: String) -> String {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let moment = parser.date(from: value) ?? {
+            let plain = ISO8601DateFormatter()
+            plain.formatOptions = [.withInternetDateTime]
+            return plain.date(from: value)
+        }()
+        guard let moment else { return value }
+        let display = DateFormatter()
+        display.locale = Locale(identifier: "zh_Hans_CN")
+        display.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        display.dateFormat = "M月d日 HH:mm"
+        return display.string(from: moment)
+    }
+
     private func fieldRow(_ label: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(label).font(.footnote).foregroundStyle(.secondary)

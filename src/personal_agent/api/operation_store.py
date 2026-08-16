@@ -223,6 +223,7 @@ def transition_operation(
     tool: str | None = None,
     duplicate_check_id: str | None = None,
     safe_result: str | None = None,
+    encrypted_result_record: dict[str, Any] | None = None,
     zero_write_proven: bool = False,
 ) -> int:
     """Move one operation forward, returning its new `state_version`.
@@ -252,6 +253,8 @@ def transition_operation(
         values["duplicate_check_id"] = duplicate_check_id
     if safe_result is not None:
         values["safe_result"] = safe_result
+    if encrypted_result_record is not None:
+        values["encrypted_result_record"] = encrypted_result_record
 
     result = session.execute(
         update(Operation)

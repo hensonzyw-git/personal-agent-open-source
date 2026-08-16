@@ -1,6 +1,6 @@
 {
-  "contract": "chat_receipt_projection_v4",
-  "note": "DEV-030. Generated from the server's own _operation_projection; the iOS client reads this file rather than a copy. Both sides must agree case by case, because the client's only reason to say 已写入 is a record_id in one of these bodies, and an indeterminate/manual-review result must not release the durable idempotency slot. v3 adds query_result: a succeeded finance.query_expenses receipt carries the whitelisted projection plus a deterministic answer fallback, and the client renders it as a structured card rather than prose. v4 pins query_evidence_tools: the server derives it from the IR (governed read whose output contract is the expense query projection), and the client holds its hard-coded `tool == \"finance.query_expenses\"` check against it, so a rename or a second governed query fails both suites before it reaches a user.",
+  "contract": "chat_receipt_projection_v5",
+  "note": "DEV-030. Generated from the server's own _operation_projection; the iOS client reads this file rather than a copy. Both sides must agree case by case, because the client's only reason to say 已写入 is a record_id in one of these bodies, and an indeterminate/manual-review result must not release the durable idempotency slot. v3 adds query_result: a succeeded finance.query_expenses receipt carries the whitelisted projection plus a deterministic answer fallback, and the client renders it as a structured card rather than prose. v4 pins query_evidence_tools: the server derives it from the IR (governed read whose output contract is the expense query projection), and the client holds its hard-coded `tool == \"finance.query_expenses\"` check against it, so a rename or a second governed query fails both suites before it reaches a user. v5 adds `record` (G1): a governed write's receipt now carries the written ledger row -- 名称/原始金额/日期/是否家庭支出/分类, plus 个人支出 when the Base formula had been evaluated at read-back. It is strictly subordinate to record_id and is emitted only alongside one, so a card can never show an amount for a write the same body did not state as recorded; an idempotent_replay and an envelope that will not open both resolve to an absent record, and the client falls back to the status row rather than inventing fields. expense_categories pins the single-select option set a client may offer when editing 分类, so the picker cannot drift from the ledger's own options -- the connector never creates one.",
   "operation_states": [
     "accepted",
     "interpreting",
@@ -18,6 +18,7 @@
     "finance.log_expense",
     "finance.log_expense_batch",
     "finance.log_income",
+    "finance.update_expense_category",
     "finance.update_family_fund"
   ],
   "query_evidence_tools": [
@@ -35,6 +36,110 @@
         "record_id": "recXXXXXXXXXXXX",
         "failure_reason": null,
         "duplicate_check_id": null
+      },
+      "expected_outcome": "recorded",
+      "expected_proves_write": true,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "expense_recorded_with_fields",
+      "receipt": {
+        "operation_id": "op_expense_recorded_with_fields",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "finance.log_expense",
+        "record_id": "recXXXXXXXXXXXX",
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "record": {
+          "name": "午饭",
+          "amount_cny": "38.50",
+          "occurred_on": "2026-08-15",
+          "is_family_expense": false,
+          "category": "餐饮",
+          "personal_spend_cny": "38.50"
+        }
+      },
+      "expected_outcome": "recorded",
+      "expected_proves_write": true,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "family_expense_recorded_with_fields",
+      "receipt": {
+        "operation_id": "op_family_expense_recorded_with_fields",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "finance.log_expense",
+        "record_id": "recXXXXXXXXXXXX",
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "record": {
+          "name": "东京机票 #东京",
+          "amount_cny": "2000.00",
+          "occurred_on": "2026-08-10",
+          "is_family_expense": true,
+          "category": "旅行",
+          "personal_spend_cny": "1000.00"
+        }
+      },
+      "expected_outcome": "recorded",
+      "expected_proves_write": true,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "expense_category_edited",
+      "receipt": {
+        "operation_id": "op_expense_category_edited",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "finance.log_expense",
+        "record_id": "recXXXXXXXXXXXX",
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "record": {
+          "name": "买菜",
+          "amount_cny": "126.00",
+          "occurred_on": "2026-08-14",
+          "is_family_expense": true,
+          "category": "日常生活",
+          "category_updated_at": "2026-08-15T02:31:00Z"
+        }
+      },
+      "expected_outcome": "recorded",
+      "expected_proves_write": true,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "refund_recorded_without_category",
+      "receipt": {
+        "operation_id": "op_refund_recorded_without_category",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "finance.log_expense",
+        "record_id": "recXXXXXXXXXXXX",
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "record": {
+          "name": "退款 演唱会门票",
+          "amount_cny": "-880.00",
+          "occurred_on": "2026-08-13",
+          "is_family_expense": false,
+          "category": null,
+          "personal_spend_cny": "-880.00"
+        }
       },
       "expected_outcome": "recorded",
       "expected_proves_write": true,
@@ -78,8 +183,13 @@
           "metric": "personal_spend_total_cny",
           "record_count": 3,
           "filters_applied": {
-            "date_range": {"start": "2026-01-01", "end": "2026-12-31"},
-            "categories": ["网球"],
+            "date_range": {
+              "start": "2026-01-01",
+              "end": "2026-12-31"
+            },
+            "categories": [
+              "网球"
+            ],
             "name_contains": [],
             "is_family_expense": "all",
             "personal_amount_cny": null
@@ -122,9 +232,14 @@
           "metric": "personal_spend_total_cny",
           "record_count": 3,
           "filters_applied": {
-            "date_range": {"start": "2026-01-01", "end": "2026-12-31"},
+            "date_range": {
+              "start": "2026-01-01",
+              "end": "2026-12-31"
+            },
             "categories": [],
-            "name_contains": ["旅行"],
+            "name_contains": [
+              "旅行"
+            ],
             "is_family_expense": "all",
             "personal_amount_cny": null
           },
@@ -180,8 +295,13 @@
           "metric": "personal_spend_total_cny",
           "record_count": 5,
           "filters_applied": {
-            "date_range": {"start": "2026-01-01", "end": "2026-12-31"},
-            "categories": ["运动"],
+            "date_range": {
+              "start": "2026-01-01",
+              "end": "2026-12-31"
+            },
+            "categories": [
+              "运动"
+            ],
             "name_contains": [],
             "is_family_expense": "all",
             "personal_amount_cny": null
@@ -363,5 +483,15 @@
       "expected_releases_pending": false,
       "expected_cancellation": "none"
     }
+  ],
+  "expense_categories": [
+    "出行",
+    "餐饮",
+    "游戏",
+    "日常生活",
+    "玩乐",
+    "购物",
+    "旅行",
+    "房租"
   ]
 }

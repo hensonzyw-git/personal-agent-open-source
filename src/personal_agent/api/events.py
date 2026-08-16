@@ -59,6 +59,13 @@ OPERATION_RESULT = "operation_result"
 #: from the operation result it caused. It is presentation state, not dialogue,
 #: and therefore deliberately absent from `MODEL_VISIBLE_EVENT_TYPES`.
 DUPLICATE_DECISION = "duplicate_decision"
+#: `G1`. A verified category correction for an existing expense row. This is a
+#: presentation fact, like `DUPLICATE_DECISION`: it lets every client resolve an
+#: old receipt to the ledger row's newer category without rewriting the sealed
+#: original operation. It is deliberately absent from
+#: `MODEL_VISIBLE_EVENT_TYPES`; tapping a picker is not new dialogue or an
+#: instruction for a later model turn.
+EXPENSE_CATEGORY_CORRECTED = "expense_category_corrected"
 #: `CAP-001` design 6.1: a boundary is a persisted, displayable Timeline fact,
 #: so every device shows the same divider. Neither divider event is ever fed to
 #: the model as an instruction.

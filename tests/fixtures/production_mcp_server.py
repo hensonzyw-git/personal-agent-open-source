@@ -32,6 +32,7 @@ from personal_data_mcp.server.app import build_app, build_registry
 from personal_data_mcp.server.config import ServerConfig
 from personal_data_mcp.server.finance_write import (
     FinanceWriteDependencies,
+    build_category_update_handler,
     build_expense_handler,
 )
 
@@ -100,6 +101,22 @@ class SyntheticBitable:
                     },
                 },
             )
+        if request.method == "PUT" and "/records/" in path:
+            record_id = path.rsplit("/", 1)[1]
+            fields = copy.deepcopy(json.loads(request.content)["fields"])
+            self.rows[kind][record_id].update(fields)
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "record": {
+                            "record_id": record_id,
+                            "fields": self.rows[kind][record_id],
+                        }
+                    },
+                },
+            )
         if request.method == "GET" and "/records/" in path:
             record_id = path.rsplit("/", 1)[1]
             return httpx.Response(
@@ -161,7 +178,8 @@ def write_fixture_registry(sessions):
         now=lambda: datetime(2026, 7, 25, tzinfo=timezone.utc),
     )
     return build_registry(
-        expense_write_handler=build_expense_handler(dependencies)
+        expense_write_handler=build_expense_handler(dependencies),
+        category_update_handler=build_category_update_handler(dependencies),
     )
 
 

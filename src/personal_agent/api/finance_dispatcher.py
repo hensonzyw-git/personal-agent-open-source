@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -57,6 +58,11 @@ from personal_agent.api.finance_query_projection import (
     canonical_projection_json,
     decode_finance_query_projection,
     summarise_query_projection,
+)
+from personal_agent.api.finance_record_projection import (
+    FinanceExpenseRecord,
+    FinanceRecordProjectionError,
+    decode_finance_expense_record,
 )
 from personal_agent.api.intent import WriteIntent
 from personal_agent.api.orchestrator import (
@@ -86,6 +92,9 @@ from personal_agent_core.finance_tools import FINANCE_READ_TOOLS
 from personal_agent_core.host_context import HostContext, ServiceKeyRing
 from personal_agent_core.manifest import canonical_json
 from personal_agent_core.tool_ir import TOOL_CONTRACTS
+
+
+_log = logging.getLogger(__name__)
 
 
 #: Tools with no side effect, which `resolve` may therefore execute outright.
@@ -266,7 +275,35 @@ class McpFinanceDispatcher:
             # The output schema requires one, so this is a contract violation
             # rather than a business outcome -- and it may still have written.
             return CommitUnknown(reason="missing_verified_record_id")
-        return Written(record_id=record_id)
+        return Written(
+            record_id=record_id, record=self._projected_record(result)
+        )
+
+    @staticmethod
+    def _projected_record(result: dict[str, Any]) -> FinanceExpenseRecord | None:
+        """The written row for the `G1` receipt card, or nothing.
+
+        This is where the fields used to be thrown away. They are let through
+        the strict projection only, for the same reason a query result is: what
+        the connector may return and what a card may render are two different
+        contracts, and the narrower one has to fail closed.
+
+        The failure is deliberately asymmetric with the query path. An
+        unprojectable *query* result is a safe failure, because there the result
+        **is** the answer -- there is nothing else to show. Here the write is
+        already proven by its `record_id`, so an unreadable record costs the
+        card its rows and nothing more. Turning a committed ledger write into a
+        failure because its presentation payload was malformed would be strictly
+        worse than a plain receipt, and it would do it *after* the money moved.
+        """
+        try:
+            return decode_finance_expense_record(result.get("record"))
+        except FinanceRecordProjectionError:
+            _log.warning(
+                "write receipt record failed projection; "
+                "the card falls back to the status row"
+            )
+            return None
 
     def _commit_error(
         self, error: AppError, *, idempotency_key: str

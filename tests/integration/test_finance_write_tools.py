@@ -24,7 +24,8 @@ import asyncio
 import copy
 import json
 import uuid
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from sqlalchemy import select
 from fixtures.service_keys import SignedCaller
 from personal_agent_core.crypto import KeyRing, generate_key
 from personal_agent_core.errors import ErrorCode
+from personal_agent_core.timeutil import ledger_day_epoch_millis
 from personal_agent_core.manifest import load_manifest
 from personal_data_mcp.feishu.adapter import FeishuAdapter
 from personal_data_mcp.feishu.base_source import BaseSource
@@ -45,6 +47,7 @@ from personal_data_mcp.finance.ledger_config import load_ledger_config
 from personal_data_mcp.server.app import dispatch
 from personal_data_mcp.server.finance_write import (
     FinanceWriteDependencies,
+    build_category_update_handler,
     build_expense_handler,
     build_family_fund_handler,
     build_income_handler,
@@ -117,8 +120,19 @@ class FakeBitable:
             kind: {} for kind in SOURCE.tables
         }
         self.creates: list[httpx.Request] = []
+        self.updates: list[httpx.Request] = []
+        #: Injected side effect on the stored row *after* an update lands. This
+        #: is how a concurrent Base automation, or a provider that touched more
+        #: than it was asked to, is exercised against the read-back verifier.
+        self.on_update: Callable[[dict], None] | None = None
         self.next_id = 1
         self.fields = copy.deepcopy(SNAPSHOT)
+        #: How this Base answers the 个人支出 formula on read-back, as the raw
+        #: cell. Overridable so a test can supply an envelope shape this build
+        #: does not recognise, or no formula cell at all.
+        self.personal_spend_formula: Callable[[Decimal], object] | None = (
+            lambda amount: {"type": 2, "value": [float(amount - Decimal("1.11"))]}
+        )
 
     def add_row(self, kind: str, fields: dict) -> str:
         record_id = f"rec{self.next_id:06d}"
@@ -160,6 +174,20 @@ class FakeBitable:
             self.creates.append(request)
             fields = json.loads(request.content)["fields"]
             stored = copy.deepcopy(fields)
+            if kind == "expense" and self.personal_spend_formula is not None:
+                # 个人支出 is a Base formula, so the connector never sends it and
+                # only ever reads it back. A fake that stored just what was sent
+                # would let the `G1` receipt field pass vacuously.
+                #
+                # The arithmetic here is deliberately *not* the real ledger's
+                # sharing rule -- this side does not know it, and inventing one
+                # in a test is how an invented rule later reads as documented.
+                # It is an offset no local computation would arrive at, so a
+                # test asserting this number proves the value was carried
+                # through from the read-back rather than recomputed.
+                stored["个人支出"] = self.personal_spend_formula(
+                    Decimal(str(fields["原始金额"]))
+                )
             if kind == "family_fund":
                 # The real table's balance is a formula that doubles the
                 # recharge; a fake that stored only what was sent would make the
@@ -184,8 +212,37 @@ class FakeBitable:
                     },
                 },
             )
+        if request.method == "PUT" and "/records/" in path:
+            record_id = path.rsplit("/", 1)[1]
+            self.updates.append(request)
+            if record_id not in self.rows[kind]:
+                # Bitable answers a non-zero code for an unknown record, and the
+                # adapter maps every non-zero code to SOURCE_UNAVAILABLE.
+                return httpx.Response(200, json={"code": 1254043, "msg": "x"})
+            sent = json.loads(request.content)["fields"]
+            # Bitable's update is *partial*: named fields change, the rest of
+            # the row is untouched. A fake that replaced the row would make the
+            # single-field payload look load-bearing when it was not, and the
+            # "an amount cannot be rewritten" property would pass vacuously.
+            self.rows[kind][record_id].update(copy.deepcopy(sent))
+            if self.on_update is not None:
+                self.on_update(self.rows[kind][record_id])
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "record": {
+                            "record_id": record_id,
+                            "fields": self.rows[kind][record_id],
+                        }
+                    },
+                },
+            )
         if request.method == "GET" and "/records/" in path:
             record_id = path.rsplit("/", 1)[1]
+            if record_id not in self.rows[kind]:
+                return httpx.Response(200, json={"code": 1254043, "msg": "x"})
             return httpx.Response(
                 200,
                 json={
@@ -271,6 +328,9 @@ def registry_for(deps) -> ToolRegistry:
     registry.register("finance.log_income", build_income_handler(deps))
     registry.register(
         "finance.update_family_fund", build_family_fund_handler(deps)
+    )
+    registry.register(
+        "finance.update_expense_category", build_category_update_handler(deps)
     )
     return registry
 
@@ -419,6 +479,83 @@ def test_replaying_the_same_key_writes_nothing_further(
     # A replay reports the receipt, not what this call happened to resolve.
     assert payload(second)["record"] == {}
     assert len(fake.creates) == 1
+
+
+# --- `G1`: the business fields the receipt card draws ------------------------
+
+
+def test_the_receipt_carries_every_field_the_card_shows(
+    sessions, keyring, caller
+) -> None:
+    fake = FakeBitable()
+    result, _ = run(call(fake, sessions, keyring, caller))
+
+    record = payload(result)["record"]
+    assert record["name"] == "午饭"
+    assert record["amount_cny"] == "20.00"
+    assert record["occurred_on"] == "2026-07-24"
+    assert record["is_family_expense"] is False
+    assert record["category"] == "餐饮"
+
+
+def test_personal_spend_comes_from_the_read_back_not_from_the_amount(
+    sessions, keyring, caller
+) -> None:
+    """The one receipt field this side must never compute.
+
+    个人支出 is a Base formula the config freezes read-only precisely so family
+    sharing and refunds are the ledger's arithmetic, not ours. The fake answers
+    with a number no local rule would produce, so this assertion fails the day
+    someone "helpfully" derives the field from `amount_cny`.
+    """
+    fake = FakeBitable()
+    result, _ = run(call(fake, sessions, keyring, caller))
+
+    body = payload(result)
+    assert body["record"]["amount_cny"] == "20.00"
+    assert body["record"]["personal_spend_cny"] == "18.89"
+
+
+def test_an_unevaluated_formula_omits_the_row_and_still_succeeds(
+    sessions, keyring, caller
+) -> None:
+    """Feishu had not computed the formula yet. One missing card row is a much
+    smaller error than a personal-spend figure the ledger never produced."""
+    fake = FakeBitable()
+    fake.personal_spend_formula = None
+    result, _ = run(call(fake, sessions, keyring, caller))
+
+    body = payload(result)
+    assert body["status"] == "created"
+    assert "personal_spend_cny" not in body["record"]
+
+
+def test_an_unrecognised_formula_envelope_omits_the_row_rather_than_guessing(
+    sessions, keyring, caller
+) -> None:
+    fake = FakeBitable()
+    # A shape change on Feishu's side: not the documented `{"type": 2, ...}`
+    # envelope. Reading `value[0]` out of it anyway would put an arbitrary
+    # number on the receipt card.
+    fake.personal_spend_formula = lambda amount: {
+        "type": 19,
+        "value": [{"text": str(amount)}],
+    }
+    result, _ = run(call(fake, sessions, keyring, caller))
+
+    body = payload(result)
+    assert body["status"] == "created"
+    assert "personal_spend_cny" not in body["record"]
+
+
+def test_a_bare_number_formula_cell_is_not_read_as_the_envelope(
+    sessions, keyring, caller
+) -> None:
+    fake = FakeBitable()
+    fake.personal_spend_formula = lambda amount: float(amount)
+    result, _ = run(call(fake, sessions, keyring, caller))
+
+    assert "personal_spend_cny" not in payload(result)["record"]
 
 
 # --- the duplicate gate, and the channel the id travels on -------------------
@@ -974,3 +1111,307 @@ class _NoopClient:
 
     async def aclose(self) -> None:
         return None
+
+
+# --- `finance.update_expense_category`: correcting 分类 and nothing else ------
+#
+# Written as failure cases first, per `AGENTS.md` §5.1. This is the first tool
+# that *modifies* committed ledger content, so the interesting question is never
+# "does the happy path work" -- it is what the row looks like after every way
+# the call can go wrong.
+
+
+#: The ledger day the correction fixtures sit on, and its stored representation.
+#: Derived rather than hard-coded so the date the test asserts and the cell the
+#: fake holds cannot disagree -- an epoch literal copied from another fixture is
+#: how this test first claimed 2026 for a 2025 timestamp.
+CORRECTION_DAY = date(2026, 7, 24)
+CORRECTION_DAY_MILLIS = ledger_day_epoch_millis(CORRECTION_DAY)
+
+
+def a_recorded_expense(
+    fake: FakeBitable,
+    *,
+    category: str | None = "餐饮",
+    name: str = "午饭",
+    amount: float = 20.0,
+) -> str:
+    fields = {
+        "名称": name,
+        "原始金额": amount,
+        "日期": CORRECTION_DAY_MILLIS,
+        "是否家庭支出": False,
+    }
+    if category is not None:
+        fields["分类"] = category
+    return fake.add_row("expense", fields)
+
+
+def correct(
+    fake: FakeBitable,
+    sessions,
+    keyring,
+    caller,
+    *,
+    record_id: str,
+    category: str,
+    expected: str | None = "餐饮",
+    idempotency_key: str | None = None,
+):
+    return run(
+        call(
+            fake,
+            sessions,
+            keyring,
+            caller,
+            tool="finance.update_expense_category",
+            arguments={
+                "record_id": record_id,
+                "category": category,
+                "expected_current_category": expected,
+            },
+            idempotency_key=idempotency_key,
+        )
+    )
+
+
+def test_a_correction_changes_the_category_and_verifies_the_rest(
+    sessions, keyring, caller
+) -> None:
+    fake = FakeBitable()
+    record_id = a_recorded_expense(fake)
+
+    result, _ = correct(
+        fake, sessions, keyring, caller, record_id=record_id, category="购物"
+    )
+
+    body = payload(result)
+    assert body["status"] == "updated"
+    assert body["category"] == "购物"
+    assert body["record_id"] == record_id
+    assert body["evidence"] == {
+        "kind": "feishu_record",
+        "external_id": record_id,
+    }
+    assert fake.rows["expense"][record_id]["分类"] == "购物"
+    assert [e.state for e in executions(sessions)] == ["succeeded"]
+
+
+def test_the_request_body_can_only_address_the_category(
+    sessions, keyring, caller
+) -> None:
+    """The primary safety property, asserted on the wire.
+
+    Bitable's update is partial, so a body naming only 分类 cannot rewrite 名称,
+    金额, 日期 or 是否家庭支出 -- not "does not", *cannot*. A correction that is
+    wrong about the row still leaves the money alone.
+    """
+    fake = FakeBitable()
+    record_id = a_recorded_expense(fake, amount=1234.56, name="重要的一笔")
+
+    correct(fake, sessions, keyring, caller, record_id=record_id, category="购物")
+
+    assert len(fake.updates) == 1
+    sent = json.loads(fake.updates[0].content)["fields"]
+    assert set(sent) == {"分类"}
+    stored = fake.rows["expense"][record_id]
+    assert stored["名称"] == "重要的一笔"
+    assert Decimal(str(stored["原始金额"])) == Decimal("1234.56")
+
+
+def test_the_receipt_row_is_read_back_not_echoed(
+    sessions, keyring, caller
+) -> None:
+    fake = FakeBitable()
+    record_id = a_recorded_expense(fake, name="午饭", amount=20.0)
+
+    result, _ = correct(
+        fake, sessions, keyring, caller, record_id=record_id, category="购物"
+    )
+
+    record = payload(result)["record"]
+    assert record["category"] == "购物"
+    assert record["name"] == "午饭"
+    assert record["amount_cny"] == "20.00"
+    assert record["occurred_on"] == CORRECTION_DAY.isoformat()
+    assert record["is_family_expense"] is False
+    assert record["category_updated_at"]
+    # 个人支出 may depend on 分类 and Feishu may not have re-evaluated it yet, so
+    # the card drops the row rather than showing a possibly pre-edit number.
+    assert "personal_spend_cny" not in record
+
+
+def test_a_stale_expectation_refuses_and_writes_nothing(
+    sessions, keyring, caller
+) -> None:
+    """Someone changed 分类 elsewhere since the card was drawn.
+
+    Overwriting would discard a decision this process cannot see, so the write
+    is refused and the ledger is left exactly as it was.
+    """
+    fake = FakeBitable()
+    record_id = a_recorded_expense(fake, category="旅行")
+
+    result, _ = correct(
+        fake,
+        sessions,
+        keyring,
+        caller,
+        record_id=record_id,
+        category="购物",
+        expected="餐饮",
+    )
+
+    assert error_code(result) == ErrorCode.CATEGORY_CHANGED_ELSEWHERE.value
+    assert fake.updates == []
+    assert fake.rows["expense"][record_id]["分类"] == "旅行"
+    # Refused before any execution row exists: nothing to reconcile.
+    assert executions(sessions) == []
+
+
+def test_a_row_already_at_the_target_succeeds_without_sending_anything(
+    sessions, keyring, caller
+) -> None:
+    """The replay-after-a-lost-reply case, and why no durable slot is needed.
+
+    Reporting a failure here would push Henson to press the button again, which
+    is exactly the loop idempotency exists to prevent.
+    """
+    fake = FakeBitable()
+    record_id = a_recorded_expense(fake, category="购物")
+
+    result, _ = correct(
+        fake,
+        sessions,
+        keyring,
+        caller,
+        record_id=record_id,
+        category="购物",
+        expected="餐饮",
+    )
+
+    assert payload(result)["status"] == "already_current"
+    assert fake.updates == []
+
+
+def test_replaying_the_same_key_does_not_send_a_second_update(
+    sessions, keyring, caller
+) -> None:
+    fake = FakeBitable()
+    record_id = a_recorded_expense(fake)
+
+    _, key = correct(
+        fake, sessions, keyring, caller, record_id=record_id, category="购物"
+    )
+    second, _ = correct(
+        fake,
+        sessions,
+        keyring,
+        caller,
+        record_id=record_id,
+        category="购物",
+        idempotency_key=key,
+    )
+
+    assert payload(second)["status"] == "already_current"
+    assert len(fake.updates) == 1
+
+
+def test_a_category_the_ledger_does_not_have_is_refused_before_any_call(
+    sessions, keyring, caller
+) -> None:
+    """The connector never creates a select option, so this is a refusal."""
+    fake = FakeBitable()
+    record_id = a_recorded_expense(fake)
+
+    result, _ = correct(
+        fake, sessions, keyring, caller, record_id=record_id, category="咖啡"
+    )
+
+    assert error_code(result) in {
+        ErrorCode.CATEGORY_NOT_ALLOWED.value,
+        # The frozen input schema enumerates the options, so the dispatcher's
+        # own validation may refuse it one layer earlier. Either is a refusal
+        # with zero calls, which is what this test is about.
+        ErrorCode.INVALID_ARGUMENT.value,
+    }
+    assert fake.updates == []
+    assert executions(sessions) == []
+
+
+def test_an_unknown_record_writes_nothing(sessions, keyring, caller) -> None:
+    fake = FakeBitable()
+    a_recorded_expense(fake)
+
+    result, _ = correct(
+        fake, sessions, keyring, caller, record_id="recNOPE", category="购物"
+    )
+
+    assert error_code(result) == ErrorCode.SOURCE_UNAVAILABLE.value
+    assert fake.updates == []
+    assert executions(sessions) == []
+
+
+def test_another_field_moving_during_the_update_is_manual_review(
+    sessions, keyring, caller
+) -> None:
+    """Verifying only the changed field would accept this silently.
+
+    A Base automation, a concurrent edit or a provider that touched more than it
+    was asked to all look identical from here, and none of them may resolve to
+    a clean success on a receipt whose job is to be checkable.
+    """
+    fake = FakeBitable()
+    record_id = a_recorded_expense(fake, amount=20.0)
+
+    def also_change_the_amount(row: dict) -> None:
+        row["原始金额"] = 999.0
+
+    fake.on_update = also_change_the_amount
+
+    result, _ = correct(
+        fake, sessions, keyring, caller, record_id=record_id, category="购物"
+    )
+
+    assert error_code(result) == ErrorCode.SOURCE_COMMITTED_MISMATCH.value
+    assert [e.state for e in executions(sessions)] == ["needs_manual_review"]
+
+
+def test_an_update_that_did_not_take_is_manual_review_not_success(
+    sessions, keyring, caller
+) -> None:
+    fake = FakeBitable()
+    record_id = a_recorded_expense(fake)
+
+    def revert_the_category(row: dict) -> None:
+        row["分类"] = "餐饮"
+
+    fake.on_update = revert_the_category
+
+    result, _ = correct(
+        fake, sessions, keyring, caller, record_id=record_id, category="购物"
+    )
+
+    assert error_code(result) == ErrorCode.SOURCE_COMMITTED_MISMATCH.value
+    assert [e.state for e in executions(sessions)] == ["needs_manual_review"]
+
+
+def test_a_refund_with_no_category_can_be_given_one(
+    sessions, keyring, caller
+) -> None:
+    """`expected_current_category: null` is a real state, not a missing value."""
+    fake = FakeBitable()
+    record_id = a_recorded_expense(fake, category=None)
+
+    result, _ = correct(
+        fake,
+        sessions,
+        keyring,
+        caller,
+        record_id=record_id,
+        category="购物",
+        expected=None,
+    )
+
+    assert payload(result)["status"] == "updated"
+    assert fake.rows["expense"][record_id]["分类"] == "购物"

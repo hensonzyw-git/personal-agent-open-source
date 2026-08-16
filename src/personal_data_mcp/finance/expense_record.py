@@ -183,6 +183,31 @@ def as_decimal(value: Any) -> Decimal | None:
     return None
 
 
+def as_personal_spend_formula(value: Any) -> Decimal | None:
+    """Normalise the documented Bitable formula-cell envelope.
+
+    ``search_records`` returns ordinary number cells directly, but the live
+    expense formula is an envelope such as ``{"type": 2, "value": [20]}``.
+    ``2`` is the formula result's number-cell type, not the schema field type;
+    the latter has already been proven to be ``formula`` by the protected
+    config and fresh validator. The one-element value list is a provider
+    representation, not a collection of components to sum. Accept only that
+    exact numeric shape; a changed formula response is unavailable, never
+    silently interpreted as zero.
+
+    It lives here, beside the other cell normalisers, because both the query
+    path and the write receipt read 个人支出 out of a Feishu record. Two copies
+    of this envelope rule would be two chances to disagree about what the
+    ledger's own number is.
+    """
+    if not isinstance(value, dict) or value.get("type") != 2:
+        return None
+    raw = value.get("value")
+    if not isinstance(raw, list) or len(raw) != 1:
+        return None
+    return as_decimal(raw[0])
+
+
 def as_ledger_date(value: Any) -> date | None:
     """Read a datetime cell back as the ledger day it represents.
 
@@ -246,7 +271,7 @@ def verify_expense_record(
     return mismatches
 
 
-def _as_checkbox(value: Any) -> bool | object:
+def as_checkbox(value: Any) -> bool | object:
     """Normalise a checkbox cell: absent is false; a non-bool stays itself.
 
     Returning the raw non-bool value (rather than coercing) keeps a garbage
@@ -293,7 +318,7 @@ def verify_stored_against_sent(
         elif spec.type is FieldType.DATETIME:
             ok = as_ledger_date(sent) == as_ledger_date(stored)
         elif spec.type is FieldType.CHECKBOX:
-            ok = _as_checkbox(sent) == _as_checkbox(stored)
+            ok = as_checkbox(sent) == as_checkbox(stored)
         else:  # TEXT and SINGLE_SELECT compare as exact text
             ok = as_text(sent) == as_text(stored)
         if not ok:

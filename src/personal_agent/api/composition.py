@@ -546,10 +546,14 @@ async def agent_service(
 
     manifest = load_manifest()
     manifest_version = manifest["allowed_tools_version"]
-    enabled = frozenset(
-        tool["name"] for tool in manifest["tools"] if tool["enabled"]
-    )
-    allowlist = _allowlist(config, enabled)
+    # "The service may execute it" and "the model may be offered it" are two
+    # different permissions. The receipt-card category update is enabled for a
+    # deterministic device action and explicitly absent from model context.
+    # Using the model subset for bridge/device policy would make that route
+    # fail in production even though fake-authorizer API tests stayed green.
+    enabled_tools = frozenset(manifest["enabled_tools"])
+    model_callable_tools = frozenset(manifest["model_callable_tools"])
+    allowlist = _allowlist(config, enabled_tools)
 
     # Keys and the model gateway come first: a service that cannot sign, cannot
     # seal or cannot reach the model must fail before it opens a connection.
@@ -651,7 +655,7 @@ async def agent_service(
                     return device_authorization(
                         session,
                         auth.device_id,
-                        enabled_tools=enabled,
+                        enabled_tools=enabled_tools,
                         manifest_version=manifest_version,
                     )
 
@@ -678,7 +682,15 @@ async def agent_service(
                 earlier -- and the write would still be refused downstream.
                 """
                 device = device_for(auth)
-                tools = [] if device is None else bridge.visible_tools(device)
+                tools = (
+                    []
+                    if device is None
+                    else [
+                        tool
+                        for tool in bridge.visible_tools(device)
+                        if tool.alias in model_callable_tools
+                    ]
+                )
                 return context_builder.build(
                     session,
                     keyring,
@@ -729,7 +741,7 @@ async def agent_service(
                     user_id=config.user_id,
                     agent_id=config.agent_id,
                     trace_id=trace_id,
-                    enabled_tools=enabled,
+                    enabled_tools=enabled_tools,
                     manifest_version=manifest_version,
                 )
                 # Always wrapped, on every composition. A recorder that is
@@ -749,6 +761,7 @@ async def agent_service(
                         "required_scopes": list(tool.required_scopes),
                     }
                     for tool in bridge.visible_tools(device)
+                    if tool.alias in model_callable_tools
                 ]
 
             yield ComposedAgentService(

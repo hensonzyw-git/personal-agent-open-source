@@ -39,6 +39,11 @@ class ErrorCode(StrEnum):
     # Finance semantics
     CLARIFICATION_REQUIRED = "CLARIFICATION_REQUIRED"
     CATEGORY_NOT_ALLOWED = "CATEGORY_NOT_ALLOWED"
+    #: A category correction was refused because the row no longer holds the
+    #: category the caller believed it held. Deliberately distinct from a plain
+    #: conflict: nothing was written, and the caller is expected to show the
+    #: value the ledger actually has rather than retry blindly.
+    CATEGORY_CHANGED_ELSEWHERE = "CATEGORY_CHANGED_ELSEWHERE"
     POSSIBLE_DUPLICATE = "POSSIBLE_DUPLICATE"
     FX_RATE_UNAVAILABLE = "FX_RATE_UNAVAILABLE"
     NO_CHANGE_REQUIRED = "NO_CHANGE_REQUIRED"
@@ -120,6 +125,9 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ),
     ErrorCode.CLARIFICATION_REQUIRED: "信息不完整，需要先确认后才能记账",
     ErrorCode.CATEGORY_NOT_ALLOWED: "分类不在账本的合法选项内",
+    ErrorCode.CATEGORY_CHANGED_ELSEWHERE: (
+        "这笔的分类已被其他地方改过，未覆盖；请确认账本当前的分类后再决定"
+    ),
     ErrorCode.POSSIBLE_DUPLICATE: "发现同日完全相同的记录，请确认是否仍然记录",
     ErrorCode.FX_RATE_UNAVAILABLE: "暂时无法取得参考汇率，未写入任何记录",
     ErrorCode.NO_CHANGE_REQUIRED: "目标余额与当前余额相同，无需写入",
