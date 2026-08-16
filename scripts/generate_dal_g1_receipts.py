@@ -26,6 +26,7 @@ import argparse
 import hashlib
 import json
 import platform
+import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -46,6 +47,7 @@ from tests.dal.oracle_comparator import compare  # noqa: E402
 
 # Executors — the public, importable counterparts of the test files' replay loops.
 from tests.dal.operation_executor import execute_fixture  # noqa: E402
+from tests.dal.injection_executor import execute_injection_fixture  # noqa: E402
 from tests.dal.binding_executor import (  # noqa: E402
     execute_binding_fixture,
     binding_persisted_divergences,
@@ -91,8 +93,9 @@ RECEIPT_SCHEMA = "dal.test-receipt/1.0"
 RESULTS_DIR = REPO_ROOT / "docs" / "evidence" / "results"
 RECEIPTS_DIR = REPO_ROOT / "docs" / "evidence" / "receipts"
 
-#: The single DAL-012 G1 variant already closed by its own committed receipt.
-ALREADY_CLOSED: set[tuple[str, str]] = {("DAL-T-INJECTION-001", "api_intake")}
+G1_OWNER_TASKS: frozenset[str] = frozenset(
+    {"DAL-007", "DAL-008", "DAL-009", "DAL-010", "DAL-011", "DAL-012", "DAL-013"}
+)
 
 
 def _sha256(value: Any) -> str:
@@ -108,6 +111,20 @@ def _sha256(value: Any) -> str:
 def _replay_config_isolation(variant, database: Path) -> list[str]:
     trace = execute_fixture(variant.fixture.body, probe=fresh_probe())
     return list(compare(trace, variant.oracle.body).mismatches)
+
+
+def _replay_injection(variant, database: Path) -> list[str]:
+    probe = fresh_probe()
+    trace = execute_injection_fixture(variant.fixture.body, probe=probe)
+    divergences = list(compare(trace, variant.oracle.body).mismatches)
+    if set(trace.declared_write_set) != set(trace.write_set):
+        divergences.append(
+            "declared write set differs from observed write set: "
+            f"{trace.declared_write_set!r} != {trace.write_set!r}"
+        )
+    if probe.observed:
+        divergences.append(f"unexpected side effects: {sorted(probe.observed)!r}")
+    return divergences
 
 
 def _replay_db_contract(variant, database: Path) -> list[str]:
@@ -324,17 +341,6 @@ def _replay_evidence_binding(variant, database: Path) -> list[str]:
     oracle = variant.oracle.body
 
     trace = _build_trace(outcome, before, after, variant.fixture.body, db)
-    for clause in oracle.get("scenario_assertions", []):
-        if clause["field"] == "evidence_validation_expected":
-            trace.metrics["evidence_validation_expected"] = clause["value"]
-    if outcome.receipt_code != "APPLIED":
-        expected_stage = next(
-            (c["value"] for c in oracle.get("scenario_assertions", [])
-             if c["field"] == "evidence_validation_stage"),
-            None,
-        )
-        if expected_stage is not None:
-            trace.metrics["evidence_validation_stage"] = expected_stage
 
     divergences = list(compare(trace, oracle).mismatches)
     allowed = set(oracle["allowed_write_set"])
@@ -363,6 +369,7 @@ def _replay_evidence_binding(variant, database: Path) -> list[str]:
 #: test_id -> replay function. The grouping mirrors the owning test file.
 DISPATCH: dict[str, Callable[[Any, Path], list[str]]] = {
     "DAL-T-CONFIG-ISOLATION-001": _replay_config_isolation,
+    "DAL-T-INJECTION-001": _replay_injection,
     "DAL-T-DB-CONTRACT-001": _replay_db_contract,
     "DAL-T-STATEHASH-001": _replay_binding,
     "DAL-T-ARTIFACTHASH-001": _replay_binding,
@@ -502,8 +509,6 @@ def _manifest_sha256() -> str:
 
 def _head_sha() -> str:
     """The current HEAD commit, used as the default implementation binding."""
-    import subprocess
-
     return subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=REPO_ROOT,
@@ -513,25 +518,57 @@ def _head_sha() -> str:
     ).stdout.strip()
 
 
+def _validate_implementation_sha(implementation_sha: str, paths: list[str]) -> None:
+    """Require a real ancestor commit whose bound implementation is unchanged."""
+    subprocess.run(
+        ["git", "cat-file", "-e", f"{implementation_sha}^{{commit}}"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", implementation_sha, "HEAD"],
+        cwd=REPO_ROOT,
+    )
+    if ancestor.returncode != 0:
+        raise ValueError(f"implementation SHA is not an ancestor of HEAD: {implementation_sha}")
+    unchanged = subprocess.run(
+        ["git", "diff", "--quiet", implementation_sha, "--", *paths],
+        cwd=REPO_ROOT,
+    )
+    if unchanged.returncode != 0:
+        raise ValueError(
+            "implementation paths differ from --implementation-sha; commit the exact "
+            "replayed implementation before generating receipts"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def _g1_variants(frozen: FrozenContracts, filter_test_id: str | None,
                  filter_variant_id: str | None) -> list[Any]:
-    variants: list[Any] = []
-    for test_id in DISPATCH:
-        if filter_test_id is not None and test_id != filter_test_id:
-            continue
-        for variant in frozen.variants(test_id):
-            if variant.run_gate != "G1":
-                continue
-            if (variant.test_id, variant.variant_id) in ALREADY_CLOSED:
-                continue
-            if filter_variant_id is not None and variant.variant_id != filter_variant_id:
-                continue
-            variants.append(variant)
-    return variants
+    eligible = [
+        variant
+        for variant in frozen.all_variants()
+        if variant.run_gate == "G1"
+        and G1_OWNER_TASKS.intersection(variant.owner_tasks)
+    ]
+    expected_dispatch = {variant.test_id for variant in eligible}
+    if set(DISPATCH) != expected_dispatch:
+        missing = sorted(expected_dispatch - set(DISPATCH))
+        extra = sorted(set(DISPATCH) - expected_dispatch)
+        raise ValueError(
+            f"G1 replay dispatch is not closed: missing={missing}, extra={extra}"
+        )
+    return [
+        variant
+        for variant in eligible
+        if (filter_test_id is None or variant.test_id == filter_test_id)
+        and (filter_variant_id is None or variant.variant_id == filter_variant_id)
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -547,6 +584,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="replay every variant and report, but write nothing")
     args = parser.parse_args(argv)
 
+    if args.run_gate not in (None, "G1"):
+        print(f"ERROR: only --run-gate G1 is supported: {args.run_gate!r}", file=sys.stderr)
+        return 2
+
     if not args.dry_run:
         implementation_sha = args.implementation_sha or _head_sha()
         if (len(implementation_sha) != 40
@@ -561,6 +602,12 @@ def main(argv: list[str] | None = None) -> int:
         datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
     implementation_paths = _implementation_paths()
+    if not args.dry_run:
+        try:
+            _validate_implementation_sha(implementation_sha, implementation_paths)
+        except (subprocess.CalledProcessError, ValueError) as error:
+            print(f"ERROR: invalid implementation binding: {error}", file=sys.stderr)
+            return 2
 
     frozen = FrozenContracts()
     variants = _g1_variants(frozen, args.test_id, args.variant_id)

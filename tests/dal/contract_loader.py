@@ -125,6 +125,10 @@ class FrozenContracts:
             raise ContractBindingError(f"no manifest rows for test id: {test_id}")
         return [self._bind(row) for row in rows]
 
+    def all_variants(self) -> list[TestVariant]:
+        """Every hash-bound manifest row, preserving manifest order."""
+        return [self._bind(row) for row in self._manifest["test_variants"]]
+
     def _bind(self, row: dict[str, Any]) -> TestVariant:
         fixture = self._bind_fixture(row)
         oracle = self._bind_oracle(row)

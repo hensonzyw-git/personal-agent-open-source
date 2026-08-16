@@ -145,8 +145,33 @@ def _build_trace(
     )
     trace.metrics["evidence_binding_valid"] = outcome.receipt_code == "APPLIED"
 
-    if outcome.receipt_code == "APPLIED":
-        trace.metrics["evidence_validation_stage"] = "applied"
+    if outcome.evidence_validation_stage is not None:
+        trace.metrics["evidence_validation_stage"] = outcome.evidence_validation_stage
+
+    command = fixture_body["transition_command"]
+    required = (
+        "payload_sha256",
+        "impact_sha256",
+        "semantic_binding_sha256",
+        "authoritative_readback_sha256",
+    )
+    schema_valid = True
+    for document in command.get("evidence_documents") or []:
+        for field in required:
+            value = document.get(field)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                schema_valid = False
+        if command.get("command_parameters", {}).get("effect_outcome") == "confirmed_completed":
+            receipt_id = document.get("authoritative_receipt_id")
+            if (
+                not isinstance(receipt_id, str)
+                or not receipt_id.strip()
+                or receipt_id != receipt_id.strip()
+            ):
+                schema_valid = False
+    trace.metrics["evidence_validation_expected"] = (
+        "valid" if schema_valid else "invalid"
+    )
 
     return trace
 
@@ -166,27 +191,10 @@ def test_every_scenario_variant_matches_its_oracle(
         )
         oracle = variant.oracle.body
 
-        # Build the trace and populate metrics.
+        # Build the trace and populate independently measured metrics. Oracle
+        # values are comparison inputs only; copying one into the trace would
+        # make a wrong implementation pass by construction.
         trace = _build_trace(outcome, before, after, variant.fixture.body, database)
-
-        # Fill evidence_validation_expected from the oracle's own assertion.
-        for clause in oracle.get("scenario_assertions", []):
-            if clause["field"] == "evidence_validation_expected":
-                trace.metrics["evidence_validation_expected"] = clause["value"]
-
-        # Determine the actual validation stage more precisely for the
-        # scenario_assertion check. The oracle declares the expected stage;
-        # we set the trace's stage to match what the engine actually did.
-        # For POLICY_DENIED, infer from the oracle's expected stage (the
-        # fixture was designed to test a specific stage).
-        if outcome.receipt_code != "APPLIED":
-            expected_stage = next(
-                (c["value"] for c in oracle.get("scenario_assertions", [])
-                 if c["field"] == "evidence_validation_stage"),
-                None,
-            )
-            if expected_stage is not None:
-                trace.metrics["evidence_validation_stage"] = expected_stage
 
         result = compare(trace, oracle)
         divergences = list(result.mismatches)

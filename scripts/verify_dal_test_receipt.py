@@ -165,6 +165,11 @@ def verify(receipt_path: Path) -> None:
         cwd=REPO_ROOT,
         check=True,
     )
+    subprocess.run(
+        ["git", "merge-base", "--is-ancestor", implementation_sha, "HEAD"],
+        cwd=REPO_ROOT,
+        check=True,
+    )
     unchanged = subprocess.run(
         ["git", "diff", "--quiet", implementation_sha, "HEAD", "--", *paths],
         cwd=REPO_ROOT,

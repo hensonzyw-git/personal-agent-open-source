@@ -165,6 +165,9 @@ class TransitionOutcome:
     reason_code: str | None
     reason_owner: str | None
     spec_id: str | None
+    #: Which evidence-validation boundary produced this outcome. This is a
+    #: closed diagnostic label, never free-form provider or evidence content.
+    evidence_validation_stage: str | None = None
     #: True when nothing was applied because this exact command was already
     #: applied before (§2.6): the receipt is the original one.
     duplicate: bool = False
@@ -1790,6 +1793,7 @@ def _validate_evidence_documents(command: TransitionCommand) -> None:
                     ReceiptCodes.POLICY_DENIED,
                     f"evidence schema validation failed: "
                     f"{field} is null/empty/whitespace",
+                    validation_stage="schema",
                 )
         if effect_outcome == "confirmed_completed":
             receipt_id = doc.get("authoritative_receipt_id")
@@ -1798,29 +1802,43 @@ def _validate_evidence_documents(command: TransitionCommand) -> None:
                     ReceiptCodes.POLICY_DENIED,
                     "evidence schema validation failed: "
                     "authoritative_receipt_id is null for confirmed_completed",
+                    validation_stage="schema",
                 )
             if not receipt_id.strip():
                 raise TransitionRefused(
                     ReceiptCodes.POLICY_DENIED,
                     "evidence schema validation failed: "
                     "authoritative_receipt_id is empty/whitespace",
+                    validation_stage="schema",
                 )
             if receipt_id != receipt_id.strip():
                 raise TransitionRefused(
                     ReceiptCodes.POLICY_DENIED,
                     "evidence schema validation failed: "
                     "authoritative_receipt_id has leading/trailing whitespace",
+                    validation_stage="schema",
                 )
 
 
-def _check_guard(spec: dict[str, Any], facts: GuardFacts) -> None:
+def _check_guard(
+    spec: dict[str, Any], facts: GuardFacts, *, evidence_validation: bool
+) -> None:
     guard_id = spec["guard_id"]
     if guard_id is None:
         return
     outcome = evaluate_guard(guard_registry().by_id(guard_id), facts)
     if not outcome.passed:
+        stage = None
+        if evidence_validation:
+            stage = (
+                "cross_source_consistency"
+                if (outcome.failed_clause or "").startswith("evidence_set.")
+                else "semantic_guard"
+            )
         raise TransitionRefused(
-            ReceiptCodes.POLICY_DENIED, f"guard {guard_id}: {outcome.failed_clause}"
+            ReceiptCodes.POLICY_DENIED,
+            f"guard {guard_id}: {outcome.failed_clause}",
+            validation_stage=stage,
         )
 
 
@@ -1949,7 +1967,9 @@ def apply_transition(
 
         _check_actor_and_evidence(spec, command)
         _validate_evidence_documents(command)
-        _check_guard(spec, facts)
+        _check_guard(
+            spec, facts, evidence_validation=bool(command.evidence_documents)
+        )
 
         ctx.spec = spec
         ctx.to_state = spec["to_state"]
@@ -1991,6 +2011,9 @@ def apply_transition(
             reason_code=spec["result_reason_code"],
             reason_owner=spec["result_reason_owner"],
             spec_id=spec["spec_id"],
+            evidence_validation_stage=(
+                "applied" if command.evidence_documents else None
+            ),
         )
 
     try:
@@ -2026,6 +2049,7 @@ def apply_transition(
             reason_code=None,
             reason_owner=None,
             spec_id=spec["spec_id"] if spec else None,
+            evidence_validation_stage=refusal.validation_stage,
         )
 
 

@@ -42,8 +42,10 @@ class TransitionRefused(Exception):
         detail: str,
         *,
         latest_projection: dict[str, Any] | None = None,
+        validation_stage: str | None = None,
     ) -> None:
         self.code = code
         self.detail = detail
         self.latest_projection = latest_projection
+        self.validation_stage = validation_stage
         super().__init__(f"{code}: {detail}")
