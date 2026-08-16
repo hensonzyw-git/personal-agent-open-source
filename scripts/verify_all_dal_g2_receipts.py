@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Verify every committed ``dal.test-receipt/1.0`` for the combined DAL-G1 + G2 gate.
+"""Verify G1 receipts plus the frozen G2 policy-receipt sub-gate.
 
 The G1 batch verifier (`verify_all_dal_receipts.py`) is itself bound by the G1
 receipts' ``implementation_paths`` and must stay byte-identical, so the combined
-gate lives in its own script rather than modifying it. This script adds a G2
+    batch lives in its own script rather than modifying it. This script adds a G2
 completeness check (exact 47-variant denominator, missing/duplicate rejected) on
 top of the per-receipt verification both gates share.
 
@@ -134,7 +134,8 @@ def main() -> int:
         return 1
     print(
         f"PASS: {len(receipts)} receipts verified; "
-        f"G1 {g1_count}/{g1_count} + G2 {g2_count}/{g2_count}"
+        f"G1 {g1_count}/{g1_count} + G2-policy {g2_count}/{g2_count}; "
+        "full DAL-G2 acceptance not evaluated"
     )
     return 0
 

@@ -2,12 +2,14 @@
 """Generate per-variant ``dal.test-receipt/1.0`` + ``dal.test-result/1.0`` for
 every DAL-G2 variant owned by DAL-014..020.
 
-The Development Agent Loop's G2 gate closes only when each frozen G2 variant is
-bound by a receipt proving *that exact variant* was executed and its oracle
-fully satisfied (threat model §6.1). This generator replays and signs the exact
-47-variant denominator owned by DAL-014..020 — the Home Mac Worker's GitHub
-intake, git facts, durable jobs/lease/heartbeat, and the four worker-isolation
-guards — so one closed dispatch and one naming convention cover the whole gate.
+This generator closes only the frozen **G2 policy-receipt sub-gate**: each
+manifest variant must be bound by a receipt proving that exact pure-policy
+scenario executed and satisfied its oracle (threat model §6.1). It replays the
+exact 47-variant denominator owned by DAL-014..020 — GitHub intake judgement,
+git facts, lease/epoch decisions, and worker-isolation guards. These receipts do
+not prove the executable DAL-G2 acceptance gate, which separately requires a
+credential-free real-project branch-only run, launchd composition and restart
+recovery evidence.
 
 For each variant it replays the variant through the **same** executor, oracle
 comparator and persisted-divergence checks its owning test file uses — it does

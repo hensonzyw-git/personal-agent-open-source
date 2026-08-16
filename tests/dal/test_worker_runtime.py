@@ -1,0 +1,864 @@
+"""DAL-016/017/019/020: the runnable Home Mac Worker runtime.
+
+The G2 frozen gate closed on the *pure policy* half (the four worker-isolation
+guards and the lease/epoch decisions). This suite exercises the execution half
+the policy governs, against a real SQLite database built by the migration chain
+(so migration `0005` is exercised, not just `create_all`) and a real synthetic
+git repository (so `worktree add` / toolchain / checkpoint / receipt are real,
+not faked):
+
+- the durable queue primitives — CAS claim, heartbeat, expiry reclaim with an
+  attempt budget, and idempotent result receipts;
+- the deterministic toolchain registry and executor — closed schema, bounded
+  timeout, commands only from the pinned manifest;
+- the checkpoint/handoff bundle — atomic write and lossless load;
+- the full `run_poll_once` cycle — success, toolchain failure, and an
+  allowlist refusal, each with the terminal state and receipt it must leave.
+"""
+
+from __future__ import annotations
+
+import json
+import plistlib
+import subprocess
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
+from sqlalchemy import inspect, text
+
+from personal_agent_core.timeutil import utc_now
+from personal_agent_dal.storage import db
+from personal_agent_dal.storage.engine import create_database_engine
+from personal_agent_dal.worker import checkpoint as checkpoint_mod
+from personal_agent_dal.worker import queue
+from personal_agent_dal.worker.checkpoint import CheckpointBundle
+from personal_agent_dal.worker.config import RepoAllowlistEntry, WorkerConfig
+from personal_agent_dal.worker.poll_once import run_poll_once
+from personal_agent_dal.worker.toolchain import (
+    TIMEOUT_RETURNCODE,
+    load_toolchain_manifest,
+    execute_toolchain,
+)
+
+BASE_SHA = "0" * 40
+
+
+@pytest.fixture()
+def engine(tmp_path: Path):
+    eng = create_database_engine(tmp_path / "worker.db")
+    db.upgrade(eng)
+    yield eng
+    eng.dispose()
+
+
+@pytest.fixture()
+def config(tmp_path: Path) -> WorkerConfig:
+    return WorkerConfig(
+        worker_id="test-worker",
+        database_path=tmp_path / "worker.db",
+        worktree_root=tmp_path / "worktrees",
+        checkpoint_root=tmp_path / "checkpoints",
+        kill_switch_path=tmp_path / "worker.disabled",
+        lease_ttl_seconds=60,
+        max_attempts=3,
+        repos={
+            "synthetic": RepoAllowlistEntry(
+                repository_id="synthetic", local_path=str(tmp_path / "repo")
+            )
+        },
+    )
+
+
+def _enqueue(engine, *, feature_id="feat-1", repository_id="synthetic", now=None) -> str:
+    return queue.enqueue_job(
+        engine,
+        feature_id=feature_id,
+        repository_id=repository_id,
+        base_sha=BASE_SHA,
+        branch_name=f"codex/feature-{feature_id}",
+        toolchain_ref=".personal-agent/toolchain.json",
+        now=now,
+    )
+
+
+def _count(engine, table: str) -> int:
+    with engine.connect() as connection:
+        return connection.execute(text(f"SELECT count(*) FROM {table}")).scalar_one()
+
+
+# --- queue primitives -------------------------------------------------------
+
+
+def test_claim_is_cas_two_workers_one_winner(engine) -> None:
+    now = utc_now()
+    job_id = _enqueue(engine, now=now)
+    barrier = threading.Barrier(2)
+
+    def claim(worker_id: str):
+        barrier.wait()
+        return queue.claim_job(
+            engine, worker_id=worker_id, lease_ttl_seconds=60, now=now
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(claim, ("w1", "w2")))
+
+    assert sorted(result is None for result in results) == [False, True]
+    assert job_id in results
+    record = queue.get_job(engine, job_id=job_id)
+    assert record.state == "leased"
+    assert record.worker_id in ("w1", "w2")
+    assert record.lease_epoch == 1
+
+
+def test_worker_queue_migration_downgrade_and_upgrade(engine) -> None:
+    assert inspect(engine).has_table("worker_jobs")
+    assert inspect(engine).has_table("worker_result_receipts")
+
+    db.downgrade(engine, "0004")
+    assert not inspect(engine).has_table("worker_jobs")
+    assert not inspect(engine).has_table("worker_result_receipts")
+
+    db.upgrade(engine)
+    assert inspect(engine).has_table("worker_jobs")
+    assert inspect(engine).has_table("worker_result_receipts")
+
+
+def test_claim_orders_oldest_pending_first(engine) -> None:
+    now = utc_now()
+    older = _enqueue(engine, feature_id="feat-older", now=now)
+    newer = _enqueue(engine, feature_id="feat-newer", now=now + timedelta(seconds=1))
+
+    first = queue.claim_job(engine, worker_id="w1", lease_ttl_seconds=60, now=now)
+    second = queue.claim_job(engine, worker_id="w1", lease_ttl_seconds=60, now=now)
+
+    assert first == older
+    assert second == newer
+
+
+def test_heartbeat_refreshes_lease(engine) -> None:
+    now = utc_now()
+    job_id = _enqueue(engine, now=now)
+    queue.claim_job(engine, worker_id="w1", lease_ttl_seconds=60, now=now)
+
+    before = queue.get_job(engine, job_id=job_id).lease_expires_at
+    epoch = queue.get_job(engine, job_id=job_id).lease_epoch
+    ok = queue.heartbeat(
+        engine,
+        job_id=job_id,
+        worker_id="w1",
+        lease_epoch=epoch,
+        lease_ttl_seconds=60,
+        now=now + timedelta(seconds=30),
+    )
+    after = queue.get_job(engine, job_id=job_id).lease_expires_at
+
+    assert ok
+    assert after > before
+
+
+def test_heartbeat_rejected_after_losing_lease(engine) -> None:
+    now = utc_now()
+    job_id = _enqueue(engine, now=now)
+    queue.claim_job(engine, worker_id="w1", lease_ttl_seconds=10, now=now)
+    old_epoch = queue.get_job(engine, job_id=job_id).lease_epoch
+    queue.reclaim_expired(engine, max_attempts=3, now=now + timedelta(seconds=30))
+    queue.claim_job(engine, worker_id="w2", lease_ttl_seconds=60, now=now + timedelta(seconds=30))
+
+    ok = queue.heartbeat(
+        engine,
+        job_id=job_id,
+        worker_id="w1",
+        lease_epoch=old_epoch,
+        lease_ttl_seconds=60,
+        now=now,
+    )
+    assert not ok
+
+
+def test_reclaim_expired_requeues_then_expires(engine) -> None:
+    now = utc_now()
+    job_id = _enqueue(engine, now=now)
+    queue.claim_job(engine, worker_id="w1", lease_ttl_seconds=10, now=now)
+
+    # attempt 1 expired -> back to pending, attempt_count becomes 1
+    reclaimed = queue.reclaim_expired(engine, max_attempts=3, now=now + timedelta(seconds=20))
+    assert reclaimed == [job_id]
+    record = queue.get_job(engine, job_id=job_id)
+    assert record.state == "pending"
+    assert record.attempt_count == 1
+    assert record.worker_id is None
+    assert record.lease_epoch == 1
+
+    queue.claim_job(engine, worker_id="w2", lease_ttl_seconds=10, now=now + timedelta(seconds=20))
+    # attempt 2 expired -> attempt_count 2 (still < 3, requeue)
+    queue.reclaim_expired(engine, max_attempts=3, now=now + timedelta(seconds=40))
+    record = queue.get_job(engine, job_id=job_id)
+    assert record.state == "pending"
+    assert record.attempt_count == 2
+
+    queue.claim_job(engine, worker_id="w3", lease_ttl_seconds=10, now=now + timedelta(seconds=40))
+    # attempt 3 expired -> budget exhausted (3 >= 3), terminal expired
+    queue.reclaim_expired(engine, max_attempts=3, now=now + timedelta(seconds=60))
+    record = queue.get_job(engine, job_id=job_id)
+    assert record.state == "expired"
+    assert record.attempt_count == 3
+
+
+def test_result_receipt_is_idempotent(engine) -> None:
+    now = utc_now()
+    job_id = _enqueue(engine, now=now)
+
+    queue.claim_job(engine, worker_id="w1", lease_ttl_seconds=60, now=now)
+    epoch = queue.get_job(engine, job_id=job_id).lease_epoch
+    first = queue.finish_job(
+        engine,
+        job_id=job_id,
+        worker_id="w1",
+        lease_epoch=epoch,
+        state="succeeded",
+        result_sha256="a" * 64,
+        now=now,
+    )
+    second = queue.finish_job(
+        engine,
+        job_id=job_id,
+        worker_id="w1",
+        lease_epoch=epoch,
+        state="succeeded",
+        result_sha256="a" * 64,
+        now=now,
+    )
+
+    assert first == second
+    assert _count(engine, "worker_result_receipts") == 1
+
+
+def test_finish_job_moves_owned_job_to_terminal(engine) -> None:
+    now = utc_now()
+    job_id = _enqueue(engine, now=now)
+    queue.claim_job(engine, worker_id="w1", lease_ttl_seconds=60, now=now)
+    epoch = queue.get_job(engine, job_id=job_id).lease_epoch
+
+    ok = queue.finish_job(
+        engine, job_id=job_id, worker_id="w1", lease_epoch=epoch, state="succeeded",
+        result_sha256="b" * 64, now=now,
+    )
+    assert ok
+    record = queue.get_job(engine, job_id=job_id)
+    assert record.state == "succeeded"
+    assert record.result_sha256 == "b" * 64
+
+
+def test_finish_job_rejected_by_another_worker(engine) -> None:
+    now = utc_now()
+    job_id = _enqueue(engine, now=now)
+    queue.claim_job(engine, worker_id="w1", lease_ttl_seconds=60, now=now)
+    epoch = queue.get_job(engine, job_id=job_id).lease_epoch
+
+    ok = queue.finish_job(
+        engine,
+        job_id=job_id,
+        worker_id="w2",
+        lease_epoch=epoch,
+        state="succeeded",
+        now=now,
+    )
+    assert not ok
+    assert queue.get_job(engine, job_id=job_id).state == "leased"
+
+
+def test_reclaimed_lease_epoch_fences_same_worker_id(engine) -> None:
+    now = utc_now()
+    job_id = _enqueue(engine, now=now)
+    queue.claim_job(engine, worker_id="stable-worker", lease_ttl_seconds=1, now=now)
+    old_epoch = queue.get_job(engine, job_id=job_id).lease_epoch
+    queue.reclaim_expired(engine, max_attempts=3, now=now + timedelta(seconds=2))
+    queue.claim_job(
+        engine,
+        worker_id="stable-worker",
+        lease_ttl_seconds=60,
+        now=now + timedelta(seconds=2),
+    )
+    replacement = queue.get_job(engine, job_id=job_id)
+
+    assert replacement.lease_epoch == old_epoch + 1
+    assert not queue.finish_job(
+        engine,
+        job_id=job_id,
+        worker_id="stable-worker",
+        lease_epoch=old_epoch,
+        state="succeeded",
+        result_sha256="a" * 64,
+        now=now + timedelta(seconds=3),
+    )
+    assert queue.get_job(engine, job_id=job_id).state == "leased"
+    assert _count(engine, "worker_result_receipts") == 0
+
+
+def test_conflicting_result_is_not_idempotent(engine) -> None:
+    now = utc_now()
+    job_id = _enqueue(engine, now=now)
+    queue.claim_job(engine, worker_id="w1", lease_ttl_seconds=60, now=now)
+    epoch = queue.get_job(engine, job_id=job_id).lease_epoch
+    assert queue.finish_job(
+        engine,
+        job_id=job_id,
+        worker_id="w1",
+        lease_epoch=epoch,
+        state="succeeded",
+        result_sha256="a" * 64,
+        now=now,
+    )
+    with pytest.raises(queue.ResultConflictError):
+        queue.finish_job(
+            engine,
+            job_id=job_id,
+            worker_id="w1",
+            lease_epoch=epoch,
+            state="succeeded",
+            result_sha256="b" * 64,
+            now=now,
+        )
+    assert queue.get_job(engine, job_id=job_id).result_sha256 == "a" * 64
+    assert _count(engine, "worker_result_receipts") == 1
+
+
+# --- toolchain registry + executor ------------------------------------------
+
+
+def _write_manifest(repo: Path, *, test_cmd=("true",)) -> None:
+    (repo / ".personal-agent").mkdir(parents=True, exist_ok=True)
+    (repo / ".personal-agent" / "toolchain.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "dal.toolchain-manifest/1.0",
+                "stages": {
+                    "format": {"cmd": ["true"]},
+                    "lint": {"cmd": ["true"]},
+                    "build": {"cmd": ["true"]},
+                    "test": {"cmd": list(test_cmd)},
+                },
+            }
+        )
+    )
+
+
+def test_manifest_schema_is_closed(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".personal-agent").mkdir()
+    manifest_path = repo / ".personal-agent" / "toolchain.json"
+
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "dal.toolchain-manifest/1.0",
+                "stages": {
+                    "format": {"cmd": ["true"]},
+                    "lint": {"cmd": ["true"]},
+                    "build": {"cmd": ["true"]},
+                    "test": {"cmd": ["true"]},
+                    "extra": {"cmd": ["true"]},
+                },
+            }
+        )
+    )
+    with pytest.raises(ValueError):
+        load_toolchain_manifest(repo)
+
+    # a missing stage is an error, not silently skipped
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "dal.toolchain-manifest/1.0",
+                "stages": {"format": {"cmd": ["true"]}},
+            }
+        )
+    )
+    with pytest.raises(ValueError):
+        load_toolchain_manifest(repo)
+
+    # a non-string argv is an error
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "dal.toolchain-manifest/1.0",
+                "stages": {
+                    "format": {"cmd": [1]},
+                    "lint": {"cmd": ["true"]},
+                    "build": {"cmd": ["true"]},
+                    "test": {"cmd": ["true"]},
+                },
+            }
+        )
+    )
+    with pytest.raises(ValueError):
+        load_toolchain_manifest(repo)
+
+
+def test_manifest_timeout_is_clamped(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".personal-agent").mkdir()
+    (repo / ".personal-agent" / "toolchain.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "dal.toolchain-manifest/1.0",
+                "stages": {
+                    "format": {"cmd": ["true"], "timeout_s": 999999},
+                    "lint": {"cmd": ["true"]},
+                    "build": {"cmd": ["true"]},
+                    "test": {"cmd": ["true"]},
+                },
+            }
+        )
+    )
+    manifest = load_toolchain_manifest(repo)
+    assert manifest.stages["format"].timeout_s == 600.0
+
+
+def test_execute_toolchain_times_out(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_manifest(repo, test_cmd=("sleep", "5"))
+    (repo / ".personal-agent" / "toolchain.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "dal.toolchain-manifest/1.0",
+                "stages": {
+                    "format": {"cmd": ["true"]},
+                    "lint": {"cmd": ["true"]},
+                    "build": {"cmd": ["true"]},
+                    "test": {"cmd": ["sleep", "5"], "timeout_s": 1},
+                },
+            }
+        )
+    )
+    manifest = load_toolchain_manifest(repo)
+    result = execute_toolchain(repo, manifest)
+    assert result.stages[3].returncode == TIMEOUT_RETURNCODE
+    assert not result.succeeded
+
+
+def test_toolchain_child_gets_closed_environment(tmp_path: Path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("DAL_REVIEW_CANARY", "must-not-cross")
+    command = (
+        "/usr/bin/python3",
+        "-c",
+        "import os,sys; sys.exit(0 if os.getenv('DAL_REVIEW_CANARY') is None else 9)",
+    )
+    _write_manifest(repo, test_cmd=command)
+    result = execute_toolchain(repo, load_toolchain_manifest(repo))
+    assert result.succeeded
+
+
+def test_timeout_kills_descendant_process_group(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = repo / "escaped-child"
+    child = f"import time; time.sleep(1); open({str(marker)!r}, 'w').write('escaped')"
+    parent = (
+        "/usr/bin/python3",
+        "-c",
+        "import subprocess,time; "
+        f"subprocess.Popen(['/usr/bin/python3','-c',{child!r}]); time.sleep(10)",
+    )
+    (repo / ".personal-agent").mkdir()
+    (repo / ".personal-agent" / "toolchain.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "dal.toolchain-manifest/1.0",
+                "stages": {
+                    "format": {"cmd": list(parent), "timeout_s": 0.2},
+                    "lint": {"cmd": ["true"]},
+                    "build": {"cmd": ["true"]},
+                    "test": {"cmd": ["true"]},
+                },
+            }
+        )
+    )
+    result = execute_toolchain(repo, load_toolchain_manifest(repo))
+    assert result.stages[0].returncode == TIMEOUT_RETURNCODE
+    time.sleep(1.2)
+    assert not marker.exists()
+
+
+def test_toolchain_network_is_denied_by_runtime_sandbox(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    script = repo / "network_probe.py"
+    script.write_text(
+        "import errno, socket, sys\n"
+        "try:\n"
+        "    socket.socket().bind(('127.0.0.1', 0))\n"
+        "except OSError as error:\n"
+        "    raise SystemExit(0 if error.errno in (errno.EPERM, errno.EACCES) else 2)\n"
+        "raise SystemExit(3)\n"
+    )
+    _write_manifest(repo, test_cmd=("/usr/bin/python3", str(script)))
+    result = execute_toolchain(repo, load_toolchain_manifest(repo))
+    assert result.succeeded
+
+
+def test_toolchain_cannot_read_supervisor_control_files(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    supervisor_db = tmp_path / "worker.db"
+    supervisor_db.write_text("supervisor-only")
+    probe = (
+        "/usr/bin/python3",
+        "-c",
+        "import pathlib,sys; p=pathlib.Path(sys.argv[1]); "
+        "\ntry: p.read_text()"
+        "\nexcept PermissionError: raise SystemExit(0)"
+        "\nraise SystemExit(3)",
+        str(supervisor_db),
+    )
+    _write_manifest(repo, test_cmd=probe)
+    result = execute_toolchain(
+        repo,
+        load_toolchain_manifest(repo),
+        forbidden_paths=(supervisor_db,),
+    )
+    assert result.succeeded
+
+
+def test_toolchain_cannot_write_read_only_repo_metadata(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    protected = tmp_path / "main-repo"
+    protected.mkdir()
+    probe = (
+        "/usr/bin/python3",
+        "-c",
+        "import pathlib,sys; p=pathlib.Path(sys.argv[1]); "
+        "\ntry: (p/'mutated').write_text('bad')"
+        "\nexcept PermissionError: raise SystemExit(0)"
+        "\nraise SystemExit(3)",
+        str(protected),
+    )
+    _write_manifest(repo, test_cmd=probe)
+    result = execute_toolchain(
+        repo,
+        load_toolchain_manifest(repo),
+        read_only_paths=(protected,),
+    )
+    assert result.succeeded
+    assert not (protected / "mutated").exists()
+
+
+# --- checkpoint bundle ------------------------------------------------------
+
+
+def test_checkpoint_roundtrip(tmp_path: Path) -> None:
+    root = tmp_path / "checkpoints"
+    bundle = CheckpointBundle(
+        schema_version=checkpoint_mod.CHECKPOINT_SCHEMA,
+        feature_id="feat-1",
+        repository_id="synthetic",
+        base_sha=BASE_SHA,
+        head_sha=BASE_SHA,
+        changed_files=("a.txt",),
+        acceptance_progress=(),
+        test_results={"format": 0, "lint": 0, "build": 0, "test": 0},
+        toolchain_ref=".personal-agent/toolchain.json",
+        toolchain_manifest_sha256="c" * 64,
+        patch="diff body",
+    )
+    path = checkpoint_mod.write_checkpoint(root, bundle)
+    assert path.is_file()
+    assert not path.with_suffix(".json.tmp").exists()
+
+    loaded = checkpoint_mod.load_checkpoint(root, "feat-1")
+    assert loaded == bundle
+    assert checkpoint_mod.checkpoint_exists(root, "feat-1")
+    assert checkpoint_mod.load_checkpoint(root, "feat-missing") is None
+
+
+# --- config loader ----------------------------------------------------------
+
+
+def test_config_loader_fails_closed_on_unknown_key(tmp_path: Path) -> None:
+    from personal_agent_dal.worker.config import load_worker_config
+
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "dal.worker-config/1.0",
+                "worker_id": "w1",
+                "database_path": str(tmp_path / "db"),
+                "worktree_root": str(tmp_path / "wt"),
+                "checkpoint_root": str(tmp_path / "cp"),
+                "kill_switch_path": str(tmp_path / "disabled"),
+                "lease_ttl_seconds": 60,
+                "max_attempts": 3,
+                "repos": {"synthetic": {"local_path": str(tmp_path / "repo")}},
+                "allow_any_repo": True,
+            }
+        )
+    )
+    with pytest.raises(ValueError):
+        load_worker_config(path)
+
+
+# --- full poll_once cycle ---------------------------------------------------
+
+
+def _make_synthetic_repo(repo: Path, *, test_cmd=("true",)) -> str:
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    _write_manifest(repo, test_cmd=test_cmd)
+    (repo / "README.md").write_text("synthetic\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def _seed_job_for(engine, base_sha: str, *, repository_id="synthetic") -> str:
+    return queue.enqueue_job(
+        engine,
+        feature_id="feat-demo",
+        repository_id=repository_id,
+        base_sha=base_sha,
+        branch_name="codex/feature-feat-demo",
+        toolchain_ref=".personal-agent/toolchain.json",
+    )
+
+
+def test_poll_once_succeeds_end_to_end(engine, config, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo)
+    job_id = _seed_job_for(engine, base_sha)
+
+    outcome = run_poll_once(engine, config)
+
+    assert outcome.claimed
+    assert outcome.state == "succeeded"
+
+    record = queue.get_job(engine, job_id=job_id)
+    assert record.state == "succeeded"
+    assert record.result_sha256 is not None
+    assert _count(engine, "worker_result_receipts") == 1
+
+    worktree = config.worktree_root / "feature-feat-demo"
+    assert (worktree / ".git").exists()
+    head = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert head == base_sha
+
+    bundle = checkpoint_mod.load_checkpoint(config.checkpoint_root, "feat-demo")
+    assert bundle is not None
+    assert bundle.base_sha == base_sha
+    assert bundle.head_sha == base_sha
+    assert bundle.test_results == {"format": 0, "lint": 0, "build": 0, "test": 0}
+
+
+def test_poll_once_heartbeats_during_long_stage(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, test_cmd=("sleep", "0.8"))
+    _seed_job_for(engine, base_sha)
+    config = WorkerConfig(
+        worker_id=config.worker_id,
+        database_path=config.database_path,
+        worktree_root=config.worktree_root,
+        checkpoint_root=config.checkpoint_root,
+        kill_switch_path=config.kill_switch_path,
+        lease_ttl_seconds=1,
+        max_attempts=config.max_attempts,
+        repos=config.repos,
+    )
+    original = queue.heartbeat
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(queue, "heartbeat", counted)
+    outcome = run_poll_once(engine, config)
+
+    assert outcome.state == "succeeded"
+    assert calls >= 5
+
+
+def test_poll_once_resumes_from_bound_checkpoint(engine, config, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo)
+    manifest_path = repo / ".personal-agent" / "toolchain.json"
+    body = json.loads(manifest_path.read_text())
+    body["stages"]["format"]["cmd"] = ["touch", "format-reran"]
+    body["stages"]["lint"]["cmd"] = ["touch", "lint-reran"]
+    manifest_path.write_text(json.dumps(body))
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "--amend", "--no-edit", "-q"], check=True)
+    base_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    worktree = config.worktree_root / "feature-feat-demo"
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "worktree",
+            "add",
+            str(worktree),
+            "-b",
+            "codex/feature-feat-demo",
+            base_sha,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    manifest = load_toolchain_manifest(worktree)
+    checkpoint_mod.write_checkpoint(
+        config.checkpoint_root,
+        CheckpointBundle(
+            schema_version=checkpoint_mod.CHECKPOINT_SCHEMA,
+            feature_id="feat-demo",
+            repository_id="synthetic",
+            base_sha=base_sha,
+            head_sha=base_sha,
+            changed_files=(),
+            acceptance_progress=("format", "lint"),
+            test_results={"format": 0, "lint": 0},
+            toolchain_ref=".personal-agent/toolchain.json",
+            toolchain_manifest_sha256=manifest.manifest_sha256,
+            patch="",
+        ),
+    )
+    _seed_job_for(engine, base_sha)
+
+    outcome = run_poll_once(engine, config)
+
+    assert outcome.state == "succeeded"
+    assert not (worktree / "format-reran").exists()
+    assert not (worktree / "lint-reran").exists()
+
+
+def test_poll_once_rejects_precreated_non_worktree(engine, config, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo)
+    job_id = _seed_job_for(engine, base_sha)
+    fake = config.worktree_root / "feature-feat-demo"
+    _write_manifest(fake)
+
+    outcome = run_poll_once(engine, config)
+
+    assert outcome.state == "failed"
+    assert outcome.error == "worktree_not_registered"
+    assert queue.get_job(engine, job_id=job_id).state == "failed"
+    assert _count(engine, "worker_result_receipts") == 0
+
+
+def test_kill_switch_prevents_claim(engine, config, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo)
+    job_id = _seed_job_for(engine, base_sha)
+    config.kill_switch_path.write_text("disabled\n")
+
+    outcome = run_poll_once(engine, config)
+
+    assert not outcome.claimed
+    assert outcome.error == "kill_switch_active"
+    assert queue.get_job(engine, job_id=job_id).state == "pending"
+
+
+def test_kill_switch_stops_an_active_toolchain(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, test_cmd=("sleep", "0.8"))
+    job_id = _seed_job_for(engine, base_sha)
+    original = queue.heartbeat
+    calls = 0
+
+    def engage_switch(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            config.kill_switch_path.write_text("disabled\n")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(queue, "heartbeat", engage_switch)
+    outcome = run_poll_once(engine, config)
+
+    assert outcome.state == "failed"
+    assert outcome.error == "kill_switch_active"
+    assert queue.get_job(engine, job_id=job_id).state == "failed"
+    assert _count(engine, "worker_result_receipts") == 0
+
+
+def test_launchd_template_requires_dedicated_identity() -> None:
+    path = (
+        Path(__file__).parents[2]
+        / "src/personal_agent_dal/worker/launchd/org.example.personal-agent-dal-worker.plist"
+    )
+    body = plistlib.loads(path.read_bytes())
+    assert body["UserName"] == "_personal_agent_dal"
+    assert body["GroupName"] == "_personal_agent_dal"
+    assert body["Umask"] == 0o77
+    assert body["EnvironmentVariables"]["HOME"] == "/var/empty"
+
+
+def test_poll_once_toolchain_failure_records_receipt(engine, config, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, test_cmd=("false",))
+    job_id = _seed_job_for(engine, base_sha)
+
+    outcome = run_poll_once(engine, config)
+
+    assert outcome.state == "failed"
+    assert outcome.error == "toolchain_failed"
+
+    record = queue.get_job(engine, job_id=job_id)
+    assert record.state == "failed"
+    assert record.last_error == "toolchain_failed"
+    # a toolchain that ran is still a result worth receipting
+    assert _count(engine, "worker_result_receipts") == 1
+
+
+def test_poll_once_refuses_unallowlisted_repo(engine, config) -> None:
+    job_id = _seed_job_for(engine, BASE_SHA, repository_id="other")
+
+    outcome = run_poll_once(engine, config)
+
+    assert outcome.state == "failed"
+    assert outcome.error == "repo_not_allowlisted"
+
+    record = queue.get_job(engine, job_id=job_id)
+    assert record.state == "failed"
+    assert record.last_error == "repo_not_allowlisted"
+    # no toolchain ran, so no result receipt
+    assert _count(engine, "worker_result_receipts") == 0
+
+
+def test_poll_once_no_pending_job_is_a_noop(engine, config) -> None:
+    outcome = run_poll_once(engine, config)
+    assert not outcome.claimed
+    assert outcome.state is None
