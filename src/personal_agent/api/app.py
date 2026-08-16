@@ -1616,10 +1616,21 @@ def _record_http_response(
     *,
     delivery: str,
 ) -> None:
-    """Record one actual HTTP response under its durable turn identity."""
+    """Record one actual HTTP response under its durable turn identity.
+
+    The anchor is optional here. Polling a category correction hit
+    `_anchor_event`'s hard failure on every request during the 2026-08-16
+    acceptance run: that operation has no user message, so it has no anchoring
+    event, and the recorder was treating a legitimate shape as a wiring error.
+    Nothing broke — the `except` below keeps diagnostics from changing API
+    behaviour — but every poll logged a traceback and dropped its transcript,
+    which is the opposite of what a transcript is for. `_turn_identity` already
+    accepts `None` and records the operation, trace and device ids, which
+    identify the record completely.
+    """
     try:
         identity = _turn_identity(
-            operation, _anchor_event(session, operation.operation_id)
+            operation, _anchor_event_or_none(session, operation.operation_id)
         )
         with deps.recorder.turn(identity):
             deps.recorder.record(
@@ -1680,8 +1691,15 @@ def _turn_identity(operation: Operation, anchor: _Anchor | None) -> TurnIdentity
     )
 
 
-def _anchor_event(session, operation_id: str) -> _Anchor:
-    """The Session, turn and event the operation's user message was written into."""
+def _anchor_event_or_none(session, operation_id: str) -> _Anchor | None:
+    """The operation's own Timeline anchor, or `None` if it has none.
+
+    Not every operation is a conversation turn. A receipt-card category
+    correction is a direct action on a ledger row: it has no user message, so
+    it has no anchoring event, and that is a legitimate shape rather than a
+    defect. Callers that merely want to *label* a record use this; callers for
+    which a missing anchor really is a wiring error use `_anchor_event`.
+    """
     row = session.execute(
         text_clause(
             "SELECT conversation_id, session_id, turn_id, event_id "
@@ -1691,16 +1709,24 @@ def _anchor_event(session, operation_id: str) -> _Anchor:
         {"oid": operation_id},
     ).one_or_none()
     if row is None:
-        raise AppError(
-            ErrorCode.INTERNAL_ERROR,
-            internal_detail="operation has no anchoring timeline event",
-        )
+        return None
     return _Anchor(
         conversation_id=row[0],
         session_id=row[1],
         turn_id=row[2],
         event_id=row[3],
     )
+
+
+def _anchor_event(session, operation_id: str) -> _Anchor:
+    """The Session, turn and event the operation's user message was written into."""
+    anchor = _anchor_event_or_none(session, operation_id)
+    if anchor is None:
+        raise AppError(
+            ErrorCode.INTERNAL_ERROR,
+            internal_detail="operation has no anchoring timeline event",
+        )
+    return anchor
 
 
 def _expense_record_anchor(session, record_id: str) -> _Anchor:
@@ -2109,14 +2135,31 @@ def _process_category_correction(
                         pre_resolved=True,
                         recorder=deps.recorder,
                     )
-            _append_expense_category_corrected(
-                session,
-                deps.keyring,
-                operation=operation,
-                anchor=anchor,
-                record_id=record_id,
-                now=deps.now(),
-            )
+            try:
+                _append_expense_category_corrected(
+                    session,
+                    deps.keyring,
+                    operation=operation,
+                    anchor=anchor,
+                    record_id=record_id,
+                    now=deps.now(),
+                )
+            except Exception:  # noqa: BLE001 - see below
+                # The marker is what lets an older receipt resolve to the new
+                # category after a restart; it is not what makes the correction
+                # true. By this point the ledger row is changed and verified and
+                # the operation is `succeeded`, so letting an append failure
+                # raise would report a completed governed write as a 500 — and
+                # invite a retry for something that already happened.
+                #
+                # The degradation is visible and bounded: the card shows the new
+                # category now and reverts to the stored one after a relaunch,
+                # which is exactly the state this whole change started from.
+                logger.warning(
+                    "category correction marker dropped operation_id=%s",
+                    operation.operation_id,
+                    exc_info=True,
+                )
             return _operation_response(deps.keyring, operation)
 
         return _commit(session, work, retry=False)

@@ -49,6 +49,7 @@ from personal_agent.auth.tokens import (
     issue_access_token,
 )
 from personal_agent.context.budget import ComponentKind
+from personal_agent.diagnostics import transcript
 from personal_agent.diagnostics.recording_dispatcher import RecordingDispatcher
 from personal_agent.diagnostics.transcript import TranscriptRecorder
 from personal_agent.storage.engine import (
@@ -1796,6 +1797,7 @@ def _client_with_expense_receipt(
     *,
     correction,
     original_category: str | None = "餐饮",
+    recorder=None,
 ):
     """Build the real Timeline owner a receipt-card correction requires."""
     interpreter = _ReceiptThenRefusingInterpreter()
@@ -1818,6 +1820,7 @@ def _client_with_expense_receipt(
         keyring,
         interpreter=interpreter,
         dispatcher=dispatcher,
+        **({} if recorder is None else {"recorder": recorder}),
     )
     seeded = client.post(
         "/v1/chat/messages",
@@ -1910,6 +1913,100 @@ def test_a_category_correction_requires_an_anchored_expense_receipt(
     assert reply.json()["error"]["code"] == "INVALID_ARGUMENT"
     assert dispatcher.commit_calls == []
     assert interpreter.calls == 0
+
+
+def test_polling_a_correction_records_its_transcript_without_an_anchor(
+    engine, token_ring, keyring, tmp_path: Path
+) -> None:
+    """A card action has no user message, and that is not a wiring error.
+
+    Specifically a **failed** one. A correction that succeeds writes its
+    `expense_category_corrected` marker, and that marker is itself an anchoring
+    event — which is why this went unnoticed until the 2026-08-16 acceptance
+    run, where Feishu refused the update and the marker was therefore never
+    written. Every poll of that operation then raised inside the transcript
+    recorder and dropped the record. Nothing broke — the recorder never changes
+    API behaviour — but a transcript that logs a traceback instead of the
+    response is the opposite of a transcript, and the failing path is exactly
+    the one whose transcript is worth having.
+    """
+    recorder = TranscriptRecorder(
+        tmp_path / "transcripts", service="api", now=lambda: NOW
+    )
+    client, _dispatcher, _interpreter = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=CommitFailedSafe("SOURCE_UNAVAILABLE"),
+        recorder=recorder,
+    )
+    created = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    assert created.status_code == 200
+    operation_id = created.json()["operation_id"]
+
+    polled = client.get(
+        f"/v1/operations/{operation_id}", headers=_auth(token_ring)
+    )
+
+    assert polled.status_code == 200
+    # The response was recorded, under an identity that names the operation
+    # even though it names no turn.
+    records = [
+        json.loads(line)
+        for path in sorted(recorder.directory.glob("*.jsonl"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    responses = [
+        record
+        for record in records
+        if record.get("kind") == transcript.API_RESPONSE
+        and record.get("turn", {}).get("operation_id") == operation_id
+    ]
+    assert responses, "the poll's transcript was dropped"
+    # Identified by the operation, anchored to no turn — which is the honest
+    # shape for an action that was never a conversation turn.
+    assert responses[-1]["turn"]["turn_id"] is None
+    assert responses[-1]["turn"]["conversation_id"] is None
+    assert responses[-1]["turn"]["device_id"]
+
+
+def test_a_lost_correction_marker_never_fails_a_completed_write(
+    engine, token_ring, keyring, monkeypatch
+) -> None:
+    """The marker is presentation; the ledger row is the fact.
+
+    Raising here would report a governed write that already happened as a 500
+    and invite a retry for it.
+    """
+    client, dispatcher, _interpreter = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=Written("rec-1", record=_corrected()),
+    )
+    import personal_agent.api.app as app_module
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("timeline append failed")
+
+    monkeypatch.setattr(
+        app_module, "_append_expense_category_corrected", explode
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert reply.status_code == 200
+    assert reply.json()["state"] == "succeeded"
+    assert reply.json()["record"]["category"] == "购物"
+    assert len(dispatcher.commit_calls) == 1
 
 
 def test_a_correction_without_its_expectation_is_refused(

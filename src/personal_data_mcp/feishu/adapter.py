@@ -24,6 +24,7 @@ test Base is the G2 step and needs the confirmed external inputs, not new code.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from typing import Any, Final
 
@@ -46,6 +47,9 @@ from personal_data_mcp.feishu.endpoints import (
 from personal_data_mcp.feishu.rate_limit import TokenBucket
 from personal_data_mcp.feishu.redaction import redact_for_log
 from personal_data_mcp.feishu.token_cache import TenantTokenCache
+
+
+logger = logging.getLogger(__name__)
 
 
 #: Per-operation timeouts, seconds (design 6.3).
@@ -363,10 +367,21 @@ class FeishuAdapter:
         read paths are exercised (DEV-018+). Here every non-zero code is a
         conservative `SOURCE_UNAVAILABLE`, and no provider message text is ever
         carried outward.
+
+        The refusing code is also **logged**, which it was not before. Collapsing
+        every provider failure into one stable code is right for the caller and
+        for the model, but it left the one number that explains the failure
+        reachable from nowhere: `internal_detail` travels on the exception and
+        never reaches the journal. The 2026-08-16 acceptance run spent a whole
+        round on a rejected `update_record` whose code existed in this exact
+        string and could not be read. The endpoint name and the numeric code are
+        logged; provider message text still is not, so the outward contract is
+        unchanged and only the operator's view improves.
         """
         try:
             body = response.json()
         except ValueError as exc:
+            logger.warning("feishu %s returned non-JSON", endpoint.name)
             raise AppError(
                 ErrorCode.SOURCE_UNAVAILABLE,
                 internal_detail=f"{endpoint.name} returned non-JSON",
@@ -374,6 +389,9 @@ class FeishuAdapter:
 
         code = body.get("code")
         if code != 0:
+            logger.warning(
+                "feishu %s refused with code %s", endpoint.name, code
+            )
             raise AppError(
                 ErrorCode.SOURCE_UNAVAILABLE,
                 internal_detail=redact_for_log(
