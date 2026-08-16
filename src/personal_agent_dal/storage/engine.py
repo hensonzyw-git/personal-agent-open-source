@@ -12,6 +12,7 @@ from __future__ import annotations
 from sqlalchemy import Engine
 
 from personal_agent_dal.storage import machine_models  # noqa: F401 - registers tables
+from personal_agent_dal.storage import worker_models  # noqa: F401 - registers worker tables
 from personal_agent_dal.storage.models import Base
 from personal_agent_core.sqlite import (
     BUSY_TIMEOUT_MS,

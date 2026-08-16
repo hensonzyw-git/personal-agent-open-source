@@ -814,16 +814,17 @@ def test_kill_switch_stops_an_active_toolchain(
     assert _count(engine, "worker_result_receipts") == 0
 
 
-def test_launchd_template_requires_dedicated_identity() -> None:
+def test_launchd_template_runs_as_login_user() -> None:
     path = (
         Path(__file__).parents[2]
         / "src/personal_agent_dal/worker/launchd/org.example.personal-agent-dal-worker.plist"
     )
     body = plistlib.loads(path.read_bytes())
-    assert body["UserName"] == "_personal_agent_dal"
-    assert body["GroupName"] == "_personal_agent_dal"
-    assert body["Umask"] == 0o77
-    assert body["EnvironmentVariables"]["HOME"] == "/var/empty"
+    assert "UserName" not in body
+    assert "GroupName" not in body
+    assert body["Label"] == "org.example.personal-agent-dal-worker"
+    assert body["ProgramArguments"][-1] == "poll-once"
+    assert body["StartInterval"] == 300
 
 
 def test_poll_once_toolchain_failure_records_receipt(engine, config, tmp_path: Path) -> None:

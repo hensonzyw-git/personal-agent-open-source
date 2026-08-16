@@ -9,8 +9,6 @@ on a `StartInterval`; there is no long-lived daemon loop and no listening port.
 from __future__ import annotations
 
 import argparse
-import os
-import pwd
 import sys
 from pathlib import Path
 
@@ -19,9 +17,6 @@ from sqlalchemy import text
 from personal_agent_dal.storage.engine import create_database_engine
 from personal_agent_dal.worker.config import WorkerConfig, load_worker_config
 from personal_agent_dal.worker.poll_once import run_poll_once
-
-WORKER_OS_USER = "_personal_agent_dal"
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="personal-agent-dal-worker")
@@ -37,10 +32,6 @@ def main(argv: list[str] | None = None) -> int:
         config = load_worker_config(args.config)
     except (OSError, ValueError) as error:
         print(f"config error: {type(error).__name__}", file=sys.stderr)
-        return 1
-
-    if pwd.getpwuid(os.geteuid()).pw_name != WORKER_OS_USER:
-        print("worker error: dedicated low-privilege user required", file=sys.stderr)
         return 1
 
     if args.command == "healthcheck":

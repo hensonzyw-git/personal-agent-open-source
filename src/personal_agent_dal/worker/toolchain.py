@@ -180,9 +180,9 @@ def _sandbox_profile(
 ) -> str:
     """Deny network/keychain plus the supervisor's database and control files.
 
-    The installed worker additionally runs as a dedicated OS user with no ACL to
-    Henson's files. These explicit denies separate an untrusted child from the
-    few queue/checkpoint paths that the supervisor identity itself must access.
+    The worker supervisor runs as the existing login user, so these explicit
+    sandbox denies are what separate an untrusted repo toolchain from the
+    queue/checkpoint paths the supervisor itself must access.
     """
     forbidden_rules = " ".join(
         f"(literal {_sandbox_literal(path)}) (subpath {_sandbox_literal(path)})"
