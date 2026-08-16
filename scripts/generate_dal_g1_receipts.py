@@ -4,9 +4,9 @@ every remaining DAL-G1 variant owned by DAL-007..013.
 
 The Development Agent Loop's G1 gate closes only when each frozen G1 variant is
 bound by a receipt proving *that exact variant* was executed and its oracle
-fully satisfied (threat model §6.1). DAL-007..011,013 closed with tests + prose
-evidence but no per-variant receipts; DAL-012 produced the single template
-receipt. This generator back-fills the other 1076 G1 variants.
+fully satisfied (threat model §6.1). This generator replays and signs the exact
+1077-variant denominator owned by DAL-007..013, including DAL-012's injection
+variant, so one closed dispatch and one naming convention cover the whole gate.
 
 For each variant it replays the variant through the **same** executor, oracle
 comparator and persisted-divergence checks its owning test file uses — it does
