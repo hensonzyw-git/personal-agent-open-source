@@ -35,6 +35,7 @@ from personal_agent_dal.storage import db
 from personal_agent_dal.storage.engine import create_database_engine
 from personal_agent_dal.worker import checkpoint as checkpoint_mod
 from personal_agent_dal.worker import queue
+from personal_agent_dal.worker import toolchain
 from personal_agent_dal.worker.checkpoint import CheckpointBundle
 from personal_agent_dal.worker.config import RepoAllowlistEntry, WorkerConfig
 from personal_agent_dal.worker.poll_once import run_poll_once
@@ -489,6 +490,47 @@ def test_toolchain_child_cannot_read_or_write_login_user_sibling(
     assert canary.read_text() == "must-stay-private"
 
 
+def test_toolchain_child_cannot_stat_credential_subtree(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Metadata (existence/size/mtime) is denied on credential subtrees while the
+    worktree stays stat-able.
+
+    The ``file-read-metadata`` grant is broad because the ``/usr/bin/python3``
+    shim requires it, so the profile compensates with a targeted ``deny`` on the
+    login user's credential home subtrees (Keychain/SSH/cloud dirs). This test
+    exercises that deny list in isolation: the secret canary may not be stat'ed,
+    but the worktree it is meant to build in still resolves.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    canary = secrets / "key"
+    canary.write_text("must-stay-private")
+    canary.chmod(0o600)
+    monkeypatch.setattr(toolchain, "METADATA_DENY_PATHS", (secrets,))
+    probe = (
+        "/usr/bin/python3",
+        "-c",
+        "import os,sys; secret_denied=repo_ok=False; "
+        "\ntry: os.stat(sys.argv[1])"
+        "\nexcept PermissionError: secret_denied=True"
+        "\ntry: os.stat(sys.argv[2])"
+        "\nexcept PermissionError: pass"
+        "\nelse: repo_ok=True"
+        "\nraise SystemExit(0 if secret_denied and repo_ok else 9)",
+        str(canary),
+        str(repo),
+    )
+    _write_manifest(repo, test_cmd=probe)
+
+    result = execute_toolchain(repo, load_toolchain_manifest(repo))
+
+    assert result.succeeded
+    assert canary.read_text() == "must-stay-private"
+
+
 def test_toolchain_child_cannot_escape_through_worktree_symlink(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -887,6 +929,15 @@ def test_poll_once_restores_nonempty_patch_after_supervisor_crash(
     )
     original_write = checkpoint_mod.write_checkpoint
 
+    # KeyboardInterrupt is a deterministic proxy for the crash boundary this
+    # test actually targets: "the checkpoint is durable but the job state has
+    # not advanced".  It is raised at the same logical point a SIGKILL would
+    # have to land to produce a dirty state (after the atomic checkpoint, before
+    # the post-format transition), and it propagates uncaught so the recovery
+    # path -- not in-process cleanup -- does the resuming.  Kill *timing* at an
+    # arbitrary instruction is an OS property, not a recovery invariant, and is
+    # exercised in the G3 live crash acceptance rather than this deterministic
+    # suite.
     def crash_after_first_checkpoint(root, bundle):
         path = original_write(root, bundle)
         if bundle.acceptance_progress == ("format",):

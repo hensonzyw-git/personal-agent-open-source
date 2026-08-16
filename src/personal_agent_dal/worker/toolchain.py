@@ -83,6 +83,50 @@ SYSTEM_READ_FILES: Final[tuple[Path, ...]] = tuple(
         "/private/var/db/xcode_select_link",
     )
 )
+def _login_user_home() -> Path:
+    """The supervisor's authoritative home, taken from the login database.
+
+    The sandbox profile is composed in the supervisor process, whose uid is the
+    login user, so ``getpwuid`` returns the real home even if ``HOME`` is
+    tampered.  ``pwd`` is Unix-only; this module only runs on macOS anyway.
+    """
+    try:
+        import pwd
+
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (ImportError, KeyError, OSError):  # pragma: no cover - non-Unix fallback
+        return Path.home()
+
+
+_HOME: Final[Path] = _login_user_home()
+
+#: The metadata carve-out is a *deny* list, not an allow list.  The
+#: ``/usr/bin/python3`` shim must ``readlink`` ``/var/select/developer_dir``
+#: before exec'ing the real interpreter, and macOS only grants that through a
+#: broad ``file-read-metadata`` grant (no scoped rule satisfies it -- verified
+#: empirically against several narrower profiles).  We therefore keep the broad
+#: grant and instead deny metadata on the home subtrees that actually hold
+#: credentials: Keychain, browser, iCloud and messaging state live under
+#: ``~/Library``, and SSH/GPG/cloud credentials live in home dot-directories.
+#: The login user's repositories and worktrees (which a stage must still be able
+#: to stat) live under a sibling project directory and are deliberately not
+#: denied.  Paths are filtered by existence at supervisor time, so a machine
+#: without one of these simply gets no rule for it.
+METADATA_DENY_PATHS: Final[tuple[Path, ...]] = tuple(
+    path
+    for path in (
+        _HOME / "Library",
+        _HOME / ".ssh",
+        _HOME / ".gnupg",
+        _HOME / ".aws",
+        _HOME / ".azure",
+        _HOME / ".docker",
+        _HOME / ".kube",
+        _HOME / ".config",
+        _HOME / ".netrc",
+    )
+    if path.exists()
+)
 SYSTEM_WRITE_FILES: Final[tuple[Path, ...]] = (Path("/dev/null"),)
 
 #: Return code recorded when a stage exceeds its timeout, matching the `timeout`
@@ -260,6 +304,12 @@ def _sandbox_profile(
         f"(literal {_sandbox_literal(path)}) (subpath {_sandbox_literal(path)})"
         for path in writable_paths
     )
+    metadata_deny_rules = " ".join(
+        f"(literal {_sandbox_literal(path)})"
+        + (f" (subpath {_sandbox_literal(path)})" if path.is_dir() else "")
+        for path in METADATA_DENY_PATHS
+        if path.exists()
+    )
     forbidden_rules = " ".join(
         f"(literal {_sandbox_literal(path)}) (subpath {_sandbox_literal(path)})"
         for path in forbidden_paths
@@ -268,6 +318,10 @@ def _sandbox_profile(
         f"(literal {_sandbox_literal(path)}) (subpath {_sandbox_literal(path)})"
         for path in read_only_paths
     )
+    # `sysctl-read` and the machine read roots below are required for the
+    # interpreter/Homebrew toolchain to start; their residual exposure (process
+    # argv enumeration, world-readable /etc) is bounded and documented in
+    # docs/dal/DAL004_威胁模型与权限矩阵_v0.1.md §4.3.1, not accidental.
     profile = (
         "(version 1)\n"
         "(deny default)\n"
@@ -287,6 +341,8 @@ def _sandbox_profile(
         profile += f"(deny file-write* {forbidden_rules})\n"
     if read_only_rules:
         profile += f"(deny file-write* {read_only_rules})\n"
+    if metadata_deny_rules:
+        profile += f"(deny file-read-metadata {metadata_deny_rules})\n"
     return profile
 
 
