@@ -53,3 +53,8 @@ ios/**/.swiftpm/
 ios/**/*.xcodeproj/project.xcworkspace/
 ios/**/*.xcodeproj/xcuserdata/
 DerivedData/
+
+# Agent worktrees. Scratch checkouts of this same repository: the commits live
+# on their branches, so tracking the directories would vendor the repo into
+# itself.
+.claude/worktrees/
