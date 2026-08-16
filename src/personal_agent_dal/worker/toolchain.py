@@ -17,6 +17,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,52 @@ MAX_TIMEOUT_S: Final[float] = 600.0
 MAX_OUTPUT_BYTES: Final[int] = 64 * 1024
 SANDBOX_EXEC: Final[str] = "/usr/bin/sandbox-exec"
 CHILD_PATH: Final[str] = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+
+#: Machine-owned runtime roots a credential-free tool/test child may read.  User
+#: home, sibling repositories and arbitrary absolute paths are intentionally not
+#: present: the supervisor uses the login identity, but an untrusted stage must
+#: not inherit that identity's filesystem authority.
+SYSTEM_READ_PATHS: Final[tuple[Path, ...]] = tuple(
+    Path(path)
+    for path in (
+        "/System",
+        "/usr/bin",
+        "/usr/lib",
+        "/usr/libexec",
+        "/usr/sbin",
+        "/usr/share",
+        "/bin",
+        "/sbin",
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/opt/homebrew/Cellar",
+        "/opt/homebrew/Frameworks",
+        "/opt/homebrew/lib",
+        "/opt/homebrew/opt",
+        "/opt/homebrew/share",
+        "/Applications/Xcode.app",
+        "/Library/Apple",
+        "/Library/Developer",
+        "/Library/Frameworks",
+        "/private/etc",
+        "/private/var/db/dyld",
+        "/private/var/db/timezone",
+    )
+)
+SYSTEM_READ_FILES: Final[tuple[Path, ...]] = tuple(
+    Path(path)
+    for path in (
+        "/",
+        "/dev/dtracehelper",
+        "/dev/null",
+        "/dev/random",
+        "/dev/urandom",
+        "/Library/Preferences/.GlobalPreferences.plist",
+        "/Library/Preferences/com.apple.dt.Xcode.plist",
+        "/private/var/db/xcode_select_link",
+    )
+)
+SYSTEM_WRITE_FILES: Final[tuple[Path, ...]] = (Path("/dev/null"),)
 
 #: Return code recorded when a stage exceeds its timeout, matching the `timeout`
 #: utility convention so a killed stage is distinguishable from an exit 0.
@@ -161,10 +208,15 @@ class SandboxUnavailableError(RuntimeError):
     """The Home Mac network/credential sandbox cannot be composed."""
 
 
-def _child_environment() -> dict[str, str]:
+def _child_environment(temp_path: Path) -> dict[str, str]:
     """Return the complete, credential-free environment given to a stage."""
-    environment = {"PATH": CHILD_PATH, "HOME": "/var/empty"}
-    for key in ("LANG", "LC_ALL", "LC_CTYPE", "TMPDIR"):
+    environment = {
+        "PATH": CHILD_PATH,
+        "HOME": "/var/empty",
+        "TMPDIR": str(temp_path.resolve()),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    for key in ("LANG", "LC_ALL", "LC_CTYPE"):
         value = os.environ.get(key)
         if value:
             environment[key] = value
@@ -176,14 +228,38 @@ def _sandbox_literal(path: Path) -> str:
 
 
 def _sandbox_profile(
-    forbidden_paths: tuple[Path, ...], read_only_paths: tuple[Path, ...]
+    repo_path: Path,
+    temp_path: Path,
+    forbidden_paths: tuple[Path, ...],
+    read_only_paths: tuple[Path, ...],
 ) -> str:
-    """Deny network/keychain plus the supervisor's database and control files.
+    """Default-deny files/network while permitting one worktree and runtime.
 
-    The worker supervisor runs as the existing login user, so these explicit
-    sandbox denies are what separate an untrusted repo toolchain from the
-    queue/checkpoint paths the supervisor itself must access.
+    The supervisor deliberately runs as the existing login user.  The stage
+    does not inherit that user's filesystem authority: it may read machine-owned
+    runtime files plus explicitly declared read-only roots, and may write only
+    its current worktree and a private per-stage temporary directory.
     """
+    readable_paths = (*SYSTEM_READ_PATHS, repo_path, temp_path, *read_only_paths)
+    readable_files = SYSTEM_READ_FILES
+    writable_paths = (repo_path, temp_path)
+    readable_rules = " ".join(
+        f"(literal {_sandbox_literal(path)}) (subpath {_sandbox_literal(path)})"
+        for path in readable_paths
+        if path.exists()
+    )
+    readable_file_rules = " ".join(
+        f"(literal {_sandbox_literal(path)})" for path in readable_files if path.exists()
+    )
+    writable_file_rules = " ".join(
+        f"(literal {_sandbox_literal(path)})"
+        for path in SYSTEM_WRITE_FILES
+        if path.exists()
+    )
+    writable_rules = " ".join(
+        f"(literal {_sandbox_literal(path)}) (subpath {_sandbox_literal(path)})"
+        for path in writable_paths
+    )
     forbidden_rules = " ".join(
         f"(literal {_sandbox_literal(path)}) (subpath {_sandbox_literal(path)})"
         for path in forbidden_paths
@@ -194,7 +270,14 @@ def _sandbox_profile(
     )
     profile = (
         "(version 1)\n"
-        "(allow default)\n"
+        "(deny default)\n"
+        "(allow process-exec)\n"
+        "(allow process-fork)\n"
+        "(allow signal (target same-sandbox))\n"
+        "(allow sysctl-read)\n"
+        "(allow file-read-metadata)\n"
+        f"(allow file-read* {readable_rules} {readable_file_rules})\n"
+        f"(allow file-write* {writable_rules} {writable_file_rules})\n"
         "(deny network*)\n"
         '(deny mach-lookup (global-name "com.apple.securityd"))\n'
         '(deny mach-lookup (global-name "com.apple.securityd.xpc"))\n'
@@ -209,6 +292,8 @@ def _sandbox_profile(
 
 def _sandboxed_argv(
     command: tuple[str, ...],
+    repo_path: Path,
+    temp_path: Path,
     forbidden_paths: tuple[Path, ...],
     read_only_paths: tuple[Path, ...],
 ) -> list[str]:
@@ -217,7 +302,7 @@ def _sandboxed_argv(
     return [
         SANDBOX_EXEC,
         "-p",
-        _sandbox_profile(forbidden_paths, read_only_paths),
+        _sandbox_profile(repo_path, temp_path, forbidden_paths, read_only_paths),
         *command,
     ]
 
@@ -244,44 +329,53 @@ def _run_stage(
     started = monotonic()
     if lease_guard is not None and not lease_guard():
         raise LeaseLostError("lease lost before stage start")
-    process = subprocess.Popen(
-        _sandboxed_argv(spec.command, forbidden_paths, read_only_paths),
-        cwd=str(repo_path),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=_child_environment(),
-        close_fds=True,
-        start_new_session=True,
-    )
-    try:
-        while True:
-            remaining = spec.timeout_s - (monotonic() - started)
-            if remaining <= 0:
-                raise subprocess.TimeoutExpired(spec.command, spec.timeout_s)
-            try:
-                output, _ = process.communicate(
-                    timeout=min(remaining, heartbeat_interval_s)
-                )
-                returncode = process.returncode
-                break
-            except subprocess.TimeoutExpired:
-                if lease_guard is not None and not lease_guard():
-                    _kill_process_group(process)
-                    raise LeaseLostError("lease lost during stage")
-        output = _bounded(output or "")
-    except subprocess.TimeoutExpired:
-        _kill_process_group(process)
-        output = _bounded(
-            f"[toolchain: stage {stage!r} exceeded {spec.timeout_s}s and was killed]"
+    with tempfile.TemporaryDirectory(prefix="personal-agent-dal-stage-") as raw_temp:
+        temp_path = Path(raw_temp)
+        os.chmod(temp_path, 0o700)
+        process = subprocess.Popen(
+            _sandboxed_argv(
+                spec.command,
+                repo_path,
+                temp_path,
+                forbidden_paths,
+                read_only_paths,
+            ),
+            cwd=str(repo_path),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=_child_environment(temp_path),
+            close_fds=True,
+            start_new_session=True,
         )
-        returncode = TIMEOUT_RETURNCODE
-    except LeaseLostError:
-        raise
-    except BaseException:
-        _kill_process_group(process)
-        raise
+        try:
+            while True:
+                remaining = spec.timeout_s - (monotonic() - started)
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(spec.command, spec.timeout_s)
+                try:
+                    output, _ = process.communicate(
+                        timeout=min(remaining, heartbeat_interval_s)
+                    )
+                    returncode = process.returncode
+                    break
+                except subprocess.TimeoutExpired:
+                    if lease_guard is not None and not lease_guard():
+                        _kill_process_group(process)
+                        raise LeaseLostError("lease lost during stage")
+            output = _bounded(output or "")
+        except subprocess.TimeoutExpired:
+            _kill_process_group(process)
+            output = _bounded(
+                f"[toolchain: stage {stage!r} exceeded {spec.timeout_s}s and was killed]"
+            )
+            returncode = TIMEOUT_RETURNCODE
+        except LeaseLostError:
+            raise
+        except BaseException:
+            _kill_process_group(process)
+            raise
     return StageResult(
         stage=stage,
         returncode=returncode,

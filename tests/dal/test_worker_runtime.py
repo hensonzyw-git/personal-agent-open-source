@@ -331,14 +331,16 @@ def test_conflicting_result_is_not_idempotent(engine) -> None:
 # --- toolchain registry + executor ------------------------------------------
 
 
-def _write_manifest(repo: Path, *, test_cmd=("true",)) -> None:
+def _write_manifest(
+    repo: Path, *, format_cmd=("true",), test_cmd=("true",)
+) -> None:
     (repo / ".personal-agent").mkdir(parents=True, exist_ok=True)
     (repo / ".personal-agent" / "toolchain.json").write_text(
         json.dumps(
             {
                 "schema_version": "dal.toolchain-manifest/1.0",
                 "stages": {
-                    "format": {"cmd": ["true"]},
+                    "format": {"cmd": list(format_cmd)},
                     "lint": {"cmd": ["true"]},
                     "build": {"cmd": ["true"]},
                     "test": {"cmd": list(test_cmd)},
@@ -459,6 +461,79 @@ def test_toolchain_child_gets_closed_environment(tmp_path: Path, monkeypatch) ->
     assert result.succeeded
 
 
+def test_toolchain_child_cannot_read_or_write_login_user_sibling(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    canary = tmp_path / "login-user-canary"
+    canary.write_text("must-stay-private")
+    canary.chmod(0o600)
+    probe = (
+        "/usr/bin/python3",
+        "-c",
+        "import pathlib,sys; p=pathlib.Path(sys.argv[1]); "
+        "read_denied=write_denied=False; "
+        "\ntry: p.read_text()"
+        "\nexcept PermissionError: read_denied=True"
+        "\ntry: p.write_text('sandbox-crossed')"
+        "\nexcept PermissionError: write_denied=True"
+        "\nraise SystemExit(0 if read_denied and write_denied else 9)",
+        str(canary),
+    )
+    _write_manifest(repo, test_cmd=probe)
+
+    result = execute_toolchain(repo, load_toolchain_manifest(repo))
+
+    assert result.succeeded
+    assert canary.read_text() == "must-stay-private"
+
+
+def test_toolchain_child_cannot_escape_through_worktree_symlink(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    canary = tmp_path / "symlink-canary"
+    canary.write_text("must-stay-private")
+    (repo / "escape").symlink_to(canary)
+    probe = (
+        "/usr/bin/python3",
+        "-c",
+        "import pathlib; p=pathlib.Path('escape'); read_denied=write_denied=False; "
+        "\ntry: p.read_text()"
+        "\nexcept PermissionError: read_denied=True"
+        "\ntry: p.write_text('sandbox-crossed')"
+        "\nexcept PermissionError: write_denied=True"
+        "\nraise SystemExit(0 if read_denied and write_denied else 9)",
+    )
+    _write_manifest(repo, test_cmd=probe)
+
+    result = execute_toolchain(repo, load_toolchain_manifest(repo))
+
+    assert result.succeeded
+    assert canary.read_text() == "must-stay-private"
+
+
+def test_toolchain_child_can_write_current_worktree_and_private_tmp(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    probe = (
+        "/usr/bin/python3",
+        "-c",
+        "import os,pathlib,tempfile; "
+        "pathlib.Path('tracked-output').write_text('inside'); "
+        "p=pathlib.Path(tempfile.gettempdir())/'stage-output'; p.write_text('temp'); "
+        "assert pathlib.Path(os.environ['TMPDIR']) == pathlib.Path(tempfile.gettempdir())",
+    )
+    _write_manifest(repo, test_cmd=probe)
+
+    result = execute_toolchain(repo, load_toolchain_manifest(repo))
+
+    assert result.succeeded
+    assert (repo / "tracked-output").read_text() == "inside"
+
+
 def test_timeout_kills_descendant_process_group(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -554,6 +629,31 @@ def test_toolchain_cannot_write_read_only_repo_metadata(tmp_path: Path) -> None:
     assert not (protected / "mutated").exists()
 
 
+def test_toolchain_cannot_overwrite_current_worktree_git_marker(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git_marker = repo / ".git"
+    git_marker.write_text("gitdir: protected\n")
+    probe = (
+        "/usr/bin/python3",
+        "-c",
+        "import pathlib,sys; p=pathlib.Path('.git'); "
+        "\ntry: p.write_text('mutated')"
+        "\nexcept PermissionError: raise SystemExit(0)"
+        "\nraise SystemExit(9)",
+    )
+    _write_manifest(repo, test_cmd=probe)
+
+    result = execute_toolchain(
+        repo,
+        load_toolchain_manifest(repo),
+        read_only_paths=(git_marker,),
+    )
+
+    assert result.succeeded
+    assert git_marker.read_text() == "gitdir: protected\n"
+
+
 # --- checkpoint bundle ------------------------------------------------------
 
 
@@ -612,7 +712,9 @@ def test_config_loader_fails_closed_on_unknown_key(tmp_path: Path) -> None:
 # --- full poll_once cycle ---------------------------------------------------
 
 
-def _make_synthetic_repo(repo: Path, *, test_cmd=("true",)) -> str:
+def _make_synthetic_repo(
+    repo: Path, *, format_cmd=("true",), test_cmd=("true",)
+) -> str:
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(
@@ -620,7 +722,7 @@ def _make_synthetic_repo(repo: Path, *, test_cmd=("true",)) -> str:
         check=True,
     )
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-    _write_manifest(repo, test_cmd=test_cmd)
+    _write_manifest(repo, format_cmd=format_cmd, test_cmd=test_cmd)
     (repo / "README.md").write_text("synthetic\n")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
@@ -759,6 +861,68 @@ def test_poll_once_resumes_from_bound_checkpoint(engine, config, tmp_path: Path)
     assert outcome.state == "succeeded"
     assert not (worktree / "format-reran").exists()
     assert not (worktree / "lint-reran").exists()
+
+
+def test_poll_once_restores_nonempty_patch_after_supervisor_crash(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    format_cmd = (
+        "/usr/bin/python3",
+        "-c",
+        "from pathlib import Path; "
+        "p=Path('README.md'); p.write_text(p.read_text()+'branch-only change\\n')",
+    )
+    base_sha = _make_synthetic_repo(repo, format_cmd=format_cmd)
+    _seed_job_for(engine, base_sha)
+    config = WorkerConfig(
+        worker_id=config.worker_id,
+        database_path=config.database_path,
+        worktree_root=config.worktree_root,
+        checkpoint_root=config.checkpoint_root,
+        kill_switch_path=config.kill_switch_path,
+        lease_ttl_seconds=1,
+        max_attempts=config.max_attempts,
+        repos=config.repos,
+    )
+    original_write = checkpoint_mod.write_checkpoint
+
+    def crash_after_first_checkpoint(root, bundle):
+        path = original_write(root, bundle)
+        if bundle.acceptance_progress == ("format",):
+            raise KeyboardInterrupt("synthetic supervisor crash")
+        return path
+
+    monkeypatch.setattr(checkpoint_mod, "write_checkpoint", crash_after_first_checkpoint)
+    with pytest.raises(KeyboardInterrupt, match="synthetic supervisor crash"):
+        run_poll_once(engine, config)
+
+    worktree = config.worktree_root / "feature-feat-demo"
+    crashed = checkpoint_mod.load_checkpoint(config.checkpoint_root, "feat-demo")
+    assert crashed is not None
+    assert crashed.acceptance_progress == ("format",)
+    assert crashed.changed_files == ("README.md",)
+    assert crashed.patch
+    assert (worktree / "README.md").read_text().count("branch-only change") == 1
+
+    # Simulate loss of the mutable worktree while preserving the durable
+    # checkpoint.  The replacement process must apply the bound patch before
+    # resuming at lint; format must not execute a second time.
+    subprocess.run(
+        ["git", "-C", str(worktree), "checkout", "--", "README.md"], check=True
+    )
+    monkeypatch.setattr(checkpoint_mod, "write_checkpoint", original_write)
+    time.sleep(1.1)
+
+    outcome = run_poll_once(engine, config)
+
+    assert outcome.state == "succeeded"
+    restored = checkpoint_mod.load_checkpoint(config.checkpoint_root, "feat-demo")
+    assert restored is not None
+    assert restored.acceptance_progress == ("format", "lint", "build", "test")
+    assert restored.changed_files == ("README.md",)
+    assert restored.patch == crashed.patch
+    assert (worktree / "README.md").read_text().count("branch-only change") == 1
 
 
 def test_poll_once_rejects_precreated_non_worktree(engine, config, tmp_path: Path) -> None:
