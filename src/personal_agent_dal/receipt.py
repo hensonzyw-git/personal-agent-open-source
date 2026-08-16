@@ -51,6 +51,14 @@ class ReceiptCode(StrEnum):
     #: A clean no-op: there was nothing to do (e.g. a notification batch whose
     #: every member is invalid). Not a success and not a refusal — zero writes.
     NOOP = "NOOP"
+    #: A capability- or lease-bound result is stale: its submitted epoch is
+    #: behind the current epoch. Distinct from POLICY_DENIED (an actor/evidence
+    #: refusal) so a replay can tell "the lease/capability went stale" from "the
+    #: caller was not allowed to ask". G2 (DAL-016) durability boundary.
+    CAPABILITY_STALE = "CAPABILITY_STALE"
+    #: An approval-bound result is invalid: its submitted approval epoch is
+    #: behind the current epoch. G2 (DAL-016) durability boundary.
+    APPROVAL_INVALID = "APPROVAL_INVALID"
 
 
 @dataclass(frozen=True)

@@ -257,11 +257,17 @@ def seed_state_machine(engine: Any, fixture_body: dict[str, Any]) -> None:
         if feature_state == "reconciliation_required":
             feature.reason_code = "EXTERNAL_RESULT_UNKNOWN"
             feature.reason_owner = "feature"
+        # A paused feature was paused by the user; the reason that put it there
+        # is part of the world the state implies (mirroring the stop reason the
+        # reconciliation_required branch records).
+        if feature_state == "paused":
+            feature.reason_code = "USER_PAUSE"
+            feature.reason_owner = "feature"
         session.add(feature)
 
         if test_id == "DAL-T-REC-001":
             effect_id = facts["external_effect_id"]
-            if variant.startswith("synthetic"):
+            if variant.startswith("synthetic") or variant.startswith("worker"):
                 # The operation records an *outcome* for an effect whose intent
                 # was already recorded: the effect sits in intent_recorded, and
                 # its creation event is the durable record of that fact.
@@ -403,10 +409,15 @@ def _observed_state_writes(before: dict[str, Any], after: dict[str, Any]) -> lis
 # ---------------------------------------------------------------------------
 
 #: Injected transport status -> the guard's `executor.failure_shape` fact.
+#: The G1 `synthetic_*` and G2 `worker_*` variants share the same effect
+#: lifecycle; they differ only in which executor was lost (a synthetic transport
+#: vs the Home Mac Worker).
 _FAILURE_SHAPES: dict[str, str] = {
     "response_lost_after_remote_accept": "response_lost",
     "connection_lost_after_dispatch": "response_lost",
     "process_killed_after_dispatch": "executor_terminated",
+    "worker_disconnected_after_dispatch": "response_lost",
+    "worker_killed_after_dispatch": "executor_terminated",
 }
 
 
@@ -464,9 +475,9 @@ def _record_external_effect_outcome(
         )
         return trace, transition_events
 
-    # Synthetic transport-loss variants: the four recording steps drive the
-    # effect from intent_recorded to unknown, then the feature stops for an
-    # unknown external result.
+    # Transport-loss variants (synthetic and worker): the four recording steps
+    # drive the effect from intent_recorded to unknown, then the feature stops
+    # for an unknown external result.
     trace.event_trace.append("external_effect.intent_recorded")
     steps = [
         {
@@ -687,6 +698,248 @@ def _apply_business_event(
     return trace, len(outcome.events)
 
 
+def _verify_git_mutation_preconditions(
+    engine: Any,
+    operation: dict[str, Any],
+    facts: dict[str, Any],
+    target: dict[str, Any],
+) -> tuple[ExecutionTrace, int]:
+    """OP-GIT-BASE-001: judge the git read-back and block on drift/conflict.
+
+    The pure policy reports whether the mutation preconditions hold; the frozen
+    G2 variants each fail one precondition, so the resolver blocks the feature
+    with the ``BLK-GIT--coding`` transition (``GIT_CONFLICT``). A clean
+    read-back is not a frozen GIT-BASE variant and is refused as a harness gap.
+    """
+    from personal_agent_dal.github.git_base import verify_git_mutation_preconditions
+
+    trace = ExecutionTrace()
+    evaluation = verify_git_mutation_preconditions(operation)
+    if not evaluation.conflict:
+        raise UnsupportedOperationError(
+            "a clean git read-back is not a frozen GIT-BASE variant"
+        )
+    spec = _spec_for(
+        "feature",
+        target["state"],
+        "block_feature",
+        target_state="needs_human",
+        effect_outcome=None,
+        reason_code=evaluation.reason,
+    )
+    command = _command_for_spec(
+        spec,
+        aggregate_id=target["entity_id"],
+        expected_version=target["version"],
+        idempotency_key=operation["idempotency_key"],
+    )
+    outcome = apply_transition(engine, command, facts=GuardFacts({}))
+    trace.event_trace.extend(outcome.events)
+    _record_feature_outcome(
+        trace, engine, target["entity_id"], target["state"], outcome,
+        idempotency_key=operation["idempotency_key"],
+    )
+    return trace, len(outcome.events)
+
+
+def _evaluate_untrusted_content_for_coding(
+    engine: Any,
+    operation: dict[str, Any],
+    facts: dict[str, Any],
+    target: dict[str, Any],
+) -> tuple[ExecutionTrace, int]:
+    """OP-INJECTION-001 (coding carriers): block a tainted escalation.
+
+    The pure injection policy reports ``POLICY_FAILURE`` as the block reason for
+    a coding-state carrier whose content is tainted and requests escalation; the
+    resolver blocks the feature with ``BLK-POLICY--coding``. A clean carrier is
+    not a frozen INJECTION G2 variant and is refused as a harness gap.
+    """
+    from personal_agent_dal.machine.injection import evaluate_untrusted_content
+
+    trace = ExecutionTrace()
+    evaluation = evaluate_untrusted_content(operation)
+    if evaluation.block_reason != "POLICY_FAILURE":
+        raise UnsupportedOperationError(
+            "a clean coding injection is not a frozen INJECTION G2 variant"
+        )
+    spec = _spec_for(
+        "feature",
+        target["state"],
+        "block_feature",
+        target_state="needs_human",
+        effect_outcome=None,
+        reason_code="POLICY_FAILURE",
+    )
+    command = _command_for_spec(
+        spec,
+        aggregate_id=target["entity_id"],
+        expected_version=target["version"],
+        idempotency_key=operation["idempotency_key"],
+    )
+    outcome = apply_transition(engine, command, facts=GuardFacts({}))
+    trace.event_trace.extend(outcome.events)
+    _record_feature_outcome(
+        trace, engine, target["entity_id"], target["state"], outcome,
+        idempotency_key=operation["idempotency_key"],
+    )
+    return trace, len(outcome.events)
+
+
+def _evaluate_lease(
+    engine: Any,
+    operation: dict[str, Any],
+    facts: dict[str, Any],
+    target: dict[str, Any],
+) -> tuple[ExecutionTrace, int]:
+    """OP-LEASE-001: refuse a dead lease, block a base drift.
+
+    The pure lease policy reports a dead lease as ``CAPABILITY_STALE`` (a
+    zero-write refusal) and a base drift as ``STATE_DRIFT`` (which the resolver
+    carries into ``BLK-DRIFT--paused``). A clean lease is not a frozen LEASE-001
+    variant and is refused as a harness gap.
+    """
+    from personal_agent_dal.machine.lease import evaluate_lease
+
+    trace = ExecutionTrace()
+    evaluation = evaluate_lease(operation)
+
+    if evaluation.block_reason == "STATE_DRIFT":
+        spec = _spec_for(
+            "feature",
+            target["state"],
+            "block_feature",
+            target_state="needs_human",
+            effect_outcome=None,
+            reason_code="STATE_DRIFT",
+        )
+        command = _command_for_spec(
+            spec,
+            aggregate_id=target["entity_id"],
+            expected_version=target["version"],
+            idempotency_key=operation["idempotency_key"],
+        )
+        outcome = apply_transition(engine, command, facts=GuardFacts({}))
+        trace.event_trace.extend(outcome.events)
+        _record_feature_outcome(
+            trace, engine, target["entity_id"], target["state"], outcome,
+            idempotency_key=operation["idempotency_key"],
+        )
+        return trace, len(outcome.events)
+
+    if evaluation.receipt.code.value == "APPLIED":
+        raise UnsupportedOperationError(
+            "a clean lease is not a frozen LEASE-001 variant"
+        )
+
+    # A dead lease is refused with zero writes: the feature stays put and no
+    # receipt is persisted, so the receipt is recorded from the pure decision
+    # and the final reason is read from the seeded row (USER_PAUSE for paused).
+    trace.receipts.append(
+        ReceiptRecord(
+            code=evaluation.receipt.code.value,
+            schema_version=evaluation.receipt.schema_version,
+        )
+    )
+    post_state, _, reason_code, reason_owner = _feature_state(engine, target["entity_id"])
+    trace.state_trace.append(post_state or target["state"])
+    trace.final_state = post_state or target["state"]
+    trace.final_reason_code = reason_code
+    trace.final_reason_owner = reason_owner
+    trace.final_entity_type = "feature"
+    return trace, 0
+
+
+def _block_on_policy_failure(
+    engine: Any,
+    operation: dict[str, Any],
+    target: dict[str, Any],
+    policy,
+) -> tuple[ExecutionTrace, int]:
+    """Run a pure guard and block the feature on its ``POLICY_FAILURE`` verdict.
+
+    The four worker-isolation guards (PATH/NET/CRED/SECRET-OUTPUT) all share the
+    same resolver shape: a pure decision reports a conflict, and the resolver
+    carries the reason into the ``BLK-POLICY--coding`` transition. A clean
+    verdict is not a frozen G2 variant and is refused as a harness gap.
+    """
+    trace = ExecutionTrace()
+    evaluation = policy(operation)
+    if not evaluation.conflict:
+        raise UnsupportedOperationError(
+            "a clean guard verdict is not a frozen G2 variant"
+        )
+    spec = _spec_for(
+        "feature",
+        target["state"],
+        "block_feature",
+        target_state="needs_human",
+        effect_outcome=None,
+        reason_code=evaluation.reason,
+    )
+    command = _command_for_spec(
+        spec,
+        aggregate_id=target["entity_id"],
+        expected_version=target["version"],
+        idempotency_key=operation["idempotency_key"],
+    )
+    outcome = apply_transition(engine, command, facts=GuardFacts({}))
+    trace.event_trace.extend(outcome.events)
+    _record_feature_outcome(
+        trace, engine, target["entity_id"], target["state"], outcome,
+        idempotency_key=operation["idempotency_key"],
+    )
+    return trace, len(outcome.events)
+
+
+def _evaluate_path(
+    engine: Any,
+    operation: dict[str, Any],
+    facts: dict[str, Any],
+    target: dict[str, Any],
+) -> tuple[ExecutionTrace, int]:
+    """OP-PATH-001: block a path escape with ``POLICY_FAILURE``."""
+    from personal_agent_dal.machine.path import evaluate_path
+
+    return _block_on_policy_failure(engine, operation, target, evaluate_path)
+
+
+def _evaluate_network(
+    engine: Any,
+    operation: dict[str, Any],
+    facts: dict[str, Any],
+    target: dict[str, Any],
+) -> tuple[ExecutionTrace, int]:
+    """OP-NET-001: block a denied network request with ``POLICY_FAILURE``."""
+    from personal_agent_dal.machine.net import evaluate_network_request
+
+    return _block_on_policy_failure(engine, operation, target, evaluate_network_request)
+
+
+def _evaluate_credential(
+    engine: Any,
+    operation: dict[str, Any],
+    facts: dict[str, Any],
+    target: dict[str, Any],
+) -> tuple[ExecutionTrace, int]:
+    """OP-CRED-001: block a credential-boundary breach with ``POLICY_FAILURE``."""
+    from personal_agent_dal.machine.cred import evaluate_credential_boundary
+
+    return _block_on_policy_failure(engine, operation, target, evaluate_credential_boundary)
+
+
+def _evaluate_secret_output(
+    engine: Any,
+    operation: dict[str, Any],
+    facts: dict[str, Any],
+    target: dict[str, Any],
+) -> tuple[ExecutionTrace, int]:
+    """OP-SECRET-OUTPUT-001: block a secret leak with ``POLICY_FAILURE``."""
+    from personal_agent_dal.machine.secret_output import evaluate_secret_output
+
+    return _block_on_policy_failure(engine, operation, target, evaluate_secret_output)
+
+
 def _record_feature_outcome(
     trace: ExecutionTrace,
     engine: Any,
@@ -759,6 +1012,20 @@ def execute_state_machine_fixture(
             trace, events = _record_plan(engine, command, facts, target)
         elif operation_spec_id == "OP-EVENT-ORDER-001":
             trace, events = _apply_business_event(engine, command, facts, target)
+        elif operation_spec_id == "OP-GIT-BASE-001":
+            trace, events = _verify_git_mutation_preconditions(engine, command, facts, target)
+        elif operation_spec_id == "OP-INJECTION-001":
+            trace, events = _evaluate_untrusted_content_for_coding(engine, command, facts, target)
+        elif operation_spec_id == "OP-LEASE-001":
+            trace, events = _evaluate_lease(engine, command, facts, target)
+        elif operation_spec_id == "OP-PATH-001":
+            trace, events = _evaluate_path(engine, command, facts, target)
+        elif operation_spec_id == "OP-NET-001":
+            trace, events = _evaluate_network(engine, command, facts, target)
+        elif operation_spec_id == "OP-CRED-001":
+            trace, events = _evaluate_credential(engine, command, facts, target)
+        elif operation_spec_id == "OP-SECRET-OUTPUT-001":
+            trace, events = _evaluate_secret_output(engine, command, facts, target)
         else:
             engine.dispose()
             raise UnsupportedOperationError(
@@ -958,6 +1225,10 @@ def operation_persisted_divergences(
                 first["operation_spec_id"] == "OP-REC-001"
                 and fixture_body["variant_id"].startswith("unknown_")
             )
+            or (
+                first["operation_spec_id"] == "OP-LEASE-001"
+                and fixture_body["variant_id"] != "new_lease_after_drift"
+            )
         )
         baseline_receipt_count = 1 if (
             first["operation_spec_id"] == "OP-CMD-IDEMPOTENCY-001"
@@ -993,7 +1264,10 @@ def operation_persisted_divergences(
         # and from/to states, in lifecycle order at versions 2, 3, 4.
         if (
             fixture_body["test_id"] == "DAL-T-REC-001"
-            and fixture_body["variant_id"].startswith("synthetic")
+            and (
+                fixture_body["variant_id"].startswith("synthetic")
+                or fixture_body["variant_id"].startswith("worker")
+            )
         ):
             effect_id = facts["external_effect_id"]
             effect_receipts = sorted(
@@ -1046,7 +1320,7 @@ def _expected_feature_spec(
     spec_id belongs to the seed, not the operation).
     """
     if operation_spec_id == "OP-REC-001":
-        if variant_id.startswith("synthetic"):
+        if variant_id.startswith("synthetic") or variant_id.startswith("worker"):
             return _spec_for(
                 "feature", pre_state, "require_reconciliation",
                 target_state="reconciliation_required", effect_outcome=None,
@@ -1084,6 +1358,12 @@ def _expected_feature_spec(
         return _spec_for(
             "feature", pre_state, "record_plan",
             target_state="awaiting_plan_review", effect_outcome=None,
+        )["spec_id"]
+    if operation_spec_id == "OP-LEASE-001":
+        return _spec_for(
+            "feature", pre_state, "block_feature",
+            target_state="needs_human", effect_outcome=None,
+            reason_code="STATE_DRIFT",
         )["spec_id"]
     raise UnsupportedOperationError(
         f"no expected feature spec for {operation_spec_id}"

@@ -9,10 +9,11 @@ an empty write set and the feature left in `intake`.
 
 `evaluate_untrusted_content` is the pure decision. It has no persistence step:
 `atomic_write_sets_by_variant.api_intake` is `[]`, so a refusal writes nothing —
-not even a receipt row. The positive path (accepting clean content and applying
-a real capability change, writing `decision_create` / `transition_receipt`) is
-the `diff`/`issue`/`readme`/`test_failure` (G2) and `provider_output` (G4)
-carriers, which are later-wave work and outside this slice.
+not even a receipt row. The G2 carriers (`diff`/`issue`/`readme`/`test_failure`)
+arrive while the feature is `coding` and emit a `POLICY_FAILURE` block reason,
+which the trusted resolver carries into `block_feature` (BLK-POLICY--coding);
+the pure decision itself never moves the feature. The `provider_output` (G4)
+carrier is later-wave work and outside this slice.
 """
 
 from __future__ import annotations
@@ -57,6 +58,19 @@ ACTION_COMMANDS: Final[tuple[str, ...]] = (
     "evaluate_requested_capability_change",
 )
 
+#: The intake carrier's source: content that arrives with the api body while
+#: the feature is still in `intake`. This is the G1 boundary.
+INTAKE_SOURCE: Final[str] = "api_body"
+
+#: The coding-state carriers (DAL-015/018/019, G2). An untrusted body that
+#: arrives *after* the feature is already coding — from a git diff, a GitHub
+#: issue, the repository README or a test failure — cannot be refused as an
+#: intake; the harm is a blocked feature (`POLICY_FAILURE`), not a zero-write
+#: refusal.
+CODING_SOURCES: Final[frozenset[str]] = frozenset(
+    {"git_diff", "github_issue", "repository_readme", "test_output"}
+)
+
 TARGET_FIELDS: Final[frozenset[str]] = frozenset(
     {"entity_id", "entity_type", "state", "version"}
 )
@@ -82,6 +96,10 @@ class InjectionEvaluation:
     state_trace: tuple[str, str]
     final_state: str
     final_entity_type: str
+    #: The block reason the resolver must carry into `block_feature` when the
+    #: carrier arrives while the feature is `coding`. None for the intake
+    #: carrier, whose refusal is the operation's own zero-write receipt.
+    block_reason: str | None = None
     declared_write_set: tuple[str, ...] = ()
     event_trace: tuple[str, ...] = ()
     external_effect_trace: tuple[str, ...] = ()
@@ -129,27 +147,33 @@ def _validate_command(command: dict[str, Any]) -> None:
     target = payload.get("target")
     if not isinstance(target, dict) or frozenset(target) != TARGET_FIELDS:
         raise _invalid("target shape is not closed")
+    target_state = target.get("state")
     if (
         not isinstance(target.get("entity_id"), str)
         or not target["entity_id"]
         or target.get("entity_type") != "feature"
-        or target.get("state") != "intake"
+        or target_state not in ("intake", "coding")
         or not isinstance(target.get("version"), int)
         or isinstance(target.get("version"), bool)
         or target["version"] < 0
     ):
-        raise _invalid("invalid api_intake target")
+        raise _invalid("invalid injection target")
 
     action_sequence = payload.get("action_sequence")
     if not isinstance(action_sequence, list) or len(action_sequence) != 2:
         raise _invalid("action sequence must contain exactly two steps")
     if any(not isinstance(step, dict) for step in action_sequence):
         raise _invalid("every action step must be an object")
-    if action_sequence[0] != {
-        "command": ACTION_COMMANDS[0],
-        "source": "api_body",
-    } or action_sequence[1] != {"command": ACTION_COMMANDS[1]}:
+    if action_sequence[1] != {"command": ACTION_COMMANDS[1]}:
         raise _invalid("unexpected action sequence")
+    source = action_sequence[0].get("source")
+    if action_sequence[0].get("command") != ACTION_COMMANDS[0]:
+        raise _invalid("unexpected action sequence")
+    if target_state == "intake":
+        if source != INTAKE_SOURCE:
+            raise _invalid("unexpected intake content source")
+    elif source not in CODING_SOURCES:
+        raise _invalid("unexpected coding content source")
 
     facts = payload.get("authoritative_facts")
     if not isinstance(facts, dict) or frozenset(facts) != FACT_FIELDS:
@@ -203,34 +227,46 @@ def _is_escalation(current: list[str], requested: list[str]) -> bool:
 
 
 def evaluate_untrusted_content(command: dict[str, Any]) -> InjectionEvaluation:
-    """Refuse a capability change whose content the parser has tainted.
+    """Refuse or block a capability change whose content the parser has tainted.
 
-    The one boundary this slice proves: tainted content asking for capabilities
-    beyond the current set is refused `POLICY_DENIED` with zero writes. Taint is
-    the trust boundary; escalation beyond the current capabilities is the
-    concrete harm the refusal prevents. Both hold in the frozen `api_intake`
-    variant (production_credentials + unrestricted_repository_write requested
-    over the current read_workspace).
+    The intake boundary (G1): tainted content asking for capabilities beyond the
+    current set is refused `POLICY_DENIED` with zero writes. The coding boundary
+    (G2): the same tainted escalation arrives while the feature is already
+    coding and reports `POLICY_FAILURE` as its `block_reason`, which the trusted
+    resolver carries into `block_feature`. Taint is the trust boundary;
+    escalation beyond the current capabilities is the concrete harm both prevent.
     """
     _validate_command(command)
     payload = command["input"]
     facts = payload["authoritative_facts"]
+    target = payload["target"]
 
     tainted = _content_is_tainted(payload["injected_results"])
     escalation = _is_escalation(
         facts["current_capabilities"], facts["requested_capabilities"]
     )
+    unsafe = tainted and escalation
 
-    # The frozen variant takes the first branch. Everything else remains an
-    # explicit refusal because the positive G2/G4 carriers are not implemented.
-    # Keeping the condition visible makes the frozen threat predicate testable
-    # without inventing an allow rule for the deferred surface.
-    _ = tainted and escalation
     receipt = OperationReceipt(
         ReceiptCode.POLICY_DENIED,
         schema_version=FEATURE_TRANSITION_RECEIPT_SCHEMA,
     )
-    target = payload["target"]
+    if target["state"] == "coding":
+        # A coding-state carrier that is unsafe blocks the feature: the trusted
+        # resolver drives `block_feature` (BLK-POLICY--coding) with this reason.
+        # The pure decision reports the block reason; it does not move the
+        # feature itself, so `state_trace` stays put and `final_state` is the
+        # carrier's starting state.
+        return InjectionEvaluation(
+            receipt=receipt,
+            state_trace=(target["state"], target["state"]),
+            final_state=target["state"],
+            final_entity_type=target["entity_type"],
+            block_reason="POLICY_FAILURE" if unsafe else None,
+        )
+
+    # Intake (G1): tainted escalation is refused with zero writes and the
+    # feature left where it was.
     return InjectionEvaluation(
         receipt=receipt,
         state_trace=(target["state"], target["state"]),
