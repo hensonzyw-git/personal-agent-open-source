@@ -3292,6 +3292,15 @@ def build_wave3_schemas() -> None:
     NONEMPTY = {"type": "string", "minLength": 1}
     # §4「去除首尾空白后仍非空」: 至少含一个非空白字符 (pattern 非锚定 = 存在性断言)。
     TRIMMED_NONEMPTY = {"type": "string", "minLength": 1, "pattern": "\\S"}
+    # §4/§5「规范化 repo-relative POSIX path」: 非空、非绝对路径、无 `.`/`..` segment、无 `.git` 子树。
+    # 与 §4 原文逐字对齐——只有 segment 恰为 `.`、`..` 或 `.git` 才拒；`.gitignore` / `.github` /
+    # `foo..bar` 等合法 dotfile/filename 放行。包含关系(realpath) 与 regular-file(mode) 属 controller
+    # 层(b)，不在此 pattern。负向前瞻在 Draft 2020-12 / Python re 均受支持。
+    POSIX_REL_PATH = {
+        "type": "string",
+        "minLength": 1,
+        "pattern": r"^(?!\/)(?!^\.\.?($|\/))(?!.*\/\.\.?($|\/))(?!^\.git($|\/))(?!.*\/\.git($|\/))",
+    }
     SHA256 = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
     GIT_SHA = {"type": "string", "pattern": "^[0-9a-f]{40}$"}
     NULL_OR_SHA256 = {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
@@ -3332,7 +3341,7 @@ def build_wave3_schemas() -> None:
             "additionalProperties": False,
             "required": ["path", "line_start", "line_end", "anchor_sha"],
             "properties": {
-                "path": NONEMPTY,
+                "path": POSIX_REL_PATH,
                 "line_start": {"type": "integer", "minimum": 1},
                 "line_end": {"type": "integer", "minimum": 1},
                 "anchor_sha": GIT_SHA,
@@ -3732,7 +3741,7 @@ def build_wave3_schemas() -> None:
         "type": "object",
         "additionalProperties": False,
         "required": ["path", "path_type"],
-        "properties": {"path": NONEMPTY, "path_type": {"enum": ["file", "directory"]}},
+        "properties": {"path": POSIX_REL_PATH, "path_type": {"enum": ["file", "directory"]}},
     }
     plan_task = {
         "type": "object",
@@ -3746,6 +3755,12 @@ def build_wave3_schemas() -> None:
             "acceptance_ids": {"type": "array", "minItems": 1, "items": NONEMPTY},
             "dependency_task_ids": {"type": "array", "items": NONEMPTY},
         },
+    }
+    # §4「order 必须从 1 开始」的 schema 可表达前半段: 首个 task 的 order==1 由 prefixItems[0] 锁定;
+    # 「连续递增」(无 gap) 是跨元素序列属性, 由 controller 判定 (见 $comment)。
+    plan_task_first = {
+        **plan_task,
+        "properties": {**plan_task["properties"], "order": {"type": "integer", "const": 1}},
     }
     plan_acceptance = {
         "type": "object",
@@ -3769,10 +3784,10 @@ def build_wave3_schemas() -> None:
             "base_sha": GIT_SHA,
             "prd": prd,
             "technical_design": technical_design,
-            "tasks": {"type": "array", "minItems": 1, "items": plan_task},
+            "tasks": {"type": "array", "minItems": 1, "prefixItems": [plan_task_first], "items": plan_task},
             "acceptance_criteria": {"type": "array", "minItems": 1, "items": plan_acceptance},
         },
-        "$comment": "feature_id/base_sha must byte-match the input manifest. task_id/acceptance_id uniqueness, order continuity from 1, non-overlapping allowed_paths across tasks, dependency referencing earlier tasks without cycles, acceptance reference existence, and verification_ids resolving into the repo-rules command registry are controller checks. allowed_paths_sha256 / acceptance_sha256 digests are computed by the artifact binding, not stored here.",
+        "$comment": "feature_id/base_sha must byte-match the input manifest. task_id/acceptance_id uniqueness, order continuity (no gaps; the first task's order==1 is schema-locked via prefixItems), non-overlapping allowed_paths across tasks, dependency referencing earlier tasks without cycles, acceptance reference existence, and verification_ids resolving into the repo-rules command registry are controller checks. allowed_paths_sha256 / acceptance_sha256 digests are computed by the artifact binding, not stored here.",
     }
     write("plan-artifact", plan_artifact_schema)
 

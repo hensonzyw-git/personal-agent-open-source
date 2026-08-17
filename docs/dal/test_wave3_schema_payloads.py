@@ -181,6 +181,22 @@ def main() -> None:
     _check("plan-artifact", _plan(["s"], desc=" "), False, failures)    # F4 whitespace description
     _check("plan-artifact", _plan([]), False, failures)             # scope minItems 1
 
+    # ---- round-2 FINDING 1: repo-relative POSIX path format is schema-locked ----
+    def _plan_path(p: str) -> dict:
+        d = _plan(["s"]); d["tasks"][0]["allowed_paths"][0]["path"] = p
+        return d
+    _check("plan-artifact", _plan_path("../../shared"), False, failures)  # `..` segment
+    _check("plan-artifact", _plan_path("/etc"), False, failures)          # absolute path
+    _check("plan-artifact", _plan_path(".git/config"), False, failures)   # .git subtree
+    _check("plan-artifact", _plan_path("a/../b"), False, failures)        # mid-path `..`
+    _check("plan-artifact", _plan_path(".gitignore"), True, failures)     # dotfile ≠ .git subtree
+    _check("plan-artifact", _plan_path(".github/ci.yml"), True, failures) # .github ≠ .git subtree
+    _check("plan-artifact", _plan_path("src/auth.py"), True, failures)    # ordinary rel path
+
+    # ---- round-2 FINDING 2: first task order==1 is schema-locked ----
+    p = _plan(["s"]); p["tasks"][0]["order"] = 7
+    _check("plan-artifact", p, False, failures)                     # order must start at 1
+
     # ---- review-findings ----
     def finding(fid: str = "F1") -> dict:
         return {"finding_id": fid, "severity": "P1",
@@ -194,6 +210,9 @@ def main() -> None:
     _check("review-findings", rf([], "approve"), True, failures)
     _check("review-findings", rf([finding()], "request_changes"), True, failures)
     _check("review-findings", rf([finding()], "approve"), False, failures)  # findings + approve
+    # round-2 FINDING 1: finding location.path uses the same repo-relative policy
+    r = rf([finding()], "request_changes"); r["findings"][0]["location"]["path"] = "../../x"
+    _check("review-findings", r, False, failures)                   # location path `..` segment
 
     # ---- session-binding ----
     sb = {"schema_version": "dal.reviewer-session-binding/1.0", "session_id": "thread_1",
