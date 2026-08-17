@@ -1,0 +1,579 @@
+{
+  "$comment": "The fixed role order/count per operation_kind and per-role media_type/artifact_schema_version are enforced via prefixItems. manifest<->request identity cross-binding (task_id/feature_id/run_id/base_sha/operation_kind byte-match the referencing request) and item size/hash read-back are controller checks.",
+  "$id": "dal.codex-input-manifest/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "operation_kind": {
+            "const": "planning"
+          }
+        },
+        "required": [
+          "operation_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "items": {
+            "items": false,
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_schema_version": {
+                    "type": "null"
+                  },
+                  "media_type": {
+                    "const": "text/markdown"
+                  },
+                  "protected_ref": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "const": "requirement_artifact"
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "size_bytes": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "role",
+                  "artifact_schema_version",
+                  "media_type",
+                  "protected_ref",
+                  "sha256",
+                  "size_bytes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_schema_version": {
+                    "type": "null"
+                  },
+                  "media_type": {
+                    "const": "text/markdown"
+                  },
+                  "protected_ref": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "const": "repo_rules"
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "size_bytes": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "role",
+                  "artifact_schema_version",
+                  "media_type",
+                  "protected_ref",
+                  "sha256",
+                  "size_bytes"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation_kind": {
+            "const": "independent_review"
+          }
+        },
+        "required": [
+          "operation_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "items": {
+            "items": false,
+            "maxItems": 4,
+            "minItems": 4,
+            "prefixItems": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_schema_version": {
+                    "const": "dal.plan-artifact/1.0"
+                  },
+                  "media_type": {
+                    "const": "application/json"
+                  },
+                  "protected_ref": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "const": "approved_plan"
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "size_bytes": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "role",
+                  "artifact_schema_version",
+                  "media_type",
+                  "protected_ref",
+                  "sha256",
+                  "size_bytes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_schema_version": {
+                    "type": "null"
+                  },
+                  "media_type": {
+                    "const": "text/x-diff"
+                  },
+                  "protected_ref": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "const": "candidate_diff"
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "size_bytes": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "role",
+                  "artifact_schema_version",
+                  "media_type",
+                  "protected_ref",
+                  "sha256",
+                  "size_bytes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_schema_version": {
+                    "const": "dal.evidence.test-receipt/1.0"
+                  },
+                  "media_type": {
+                    "const": "application/json"
+                  },
+                  "protected_ref": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "const": "test_receipts"
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "size_bytes": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "role",
+                  "artifact_schema_version",
+                  "media_type",
+                  "protected_ref",
+                  "sha256",
+                  "size_bytes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_schema_version": {
+                    "type": "null"
+                  },
+                  "media_type": {
+                    "const": "text/markdown"
+                  },
+                  "protected_ref": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "const": "repo_rules"
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "size_bytes": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "role",
+                  "artifact_schema_version",
+                  "media_type",
+                  "protected_ref",
+                  "sha256",
+                  "size_bytes"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation_kind": {
+            "const": "post_fix_verification"
+          }
+        },
+        "required": [
+          "operation_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "items": {
+            "items": false,
+            "maxItems": 5,
+            "minItems": 5,
+            "prefixItems": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_schema_version": {
+                    "const": "dal.plan-artifact/1.0"
+                  },
+                  "media_type": {
+                    "const": "application/json"
+                  },
+                  "protected_ref": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "const": "approved_plan"
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "size_bytes": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "role",
+                  "artifact_schema_version",
+                  "media_type",
+                  "protected_ref",
+                  "sha256",
+                  "size_bytes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_schema_version": {
+                    "const": "dal.review-findings/1.0"
+                  },
+                  "media_type": {
+                    "const": "application/json"
+                  },
+                  "protected_ref": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "const": "review_findings"
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "size_bytes": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "role",
+                  "artifact_schema_version",
+                  "media_type",
+                  "protected_ref",
+                  "sha256",
+                  "size_bytes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_schema_version": {
+                    "type": "null"
+                  },
+                  "media_type": {
+                    "const": "text/x-diff"
+                  },
+                  "protected_ref": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "const": "fix_diff"
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "size_bytes": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "role",
+                  "artifact_schema_version",
+                  "media_type",
+                  "protected_ref",
+                  "sha256",
+                  "size_bytes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_schema_version": {
+                    "const": "dal.evidence.test-receipt/1.0"
+                  },
+                  "media_type": {
+                    "const": "application/json"
+                  },
+                  "protected_ref": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "const": "test_receipts"
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "size_bytes": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "role",
+                  "artifact_schema_version",
+                  "media_type",
+                  "protected_ref",
+                  "sha256",
+                  "size_bytes"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "artifact_schema_version": {
+                    "type": "null"
+                  },
+                  "media_type": {
+                    "const": "text/markdown"
+                  },
+                  "protected_ref": {
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "const": "repo_rules"
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  "size_bytes": {
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "role",
+                  "artifact_schema_version",
+                  "media_type",
+                  "protected_ref",
+                  "sha256",
+                  "size_bytes"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "else": {
+        "properties": {
+          "result_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "operation_kind": {
+            "const": "planning"
+          }
+        },
+        "required": [
+          "operation_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "result_sha": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "base_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "feature_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_schema_version": {
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "media_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "role": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "size_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "role",
+          "artifact_schema_version",
+          "media_type",
+          "protected_ref",
+          "sha256",
+          "size_bytes"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "operation_kind": {
+      "enum": [
+        "planning",
+        "independent_review",
+        "post_fix_verification"
+      ]
+    },
+    "result_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "run_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "dal.codex-input-manifest/1.0"
+    },
+    "task_id": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "operation_kind",
+    "task_id",
+    "feature_id",
+    "run_id",
+    "base_sha",
+    "result_sha",
+    "items"
+  ],
+  "type": "object"
+}

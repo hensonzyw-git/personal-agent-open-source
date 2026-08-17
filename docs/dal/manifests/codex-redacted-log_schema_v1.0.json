@@ -1,0 +1,117 @@
+{
+  "$comment": "MUST NOT contain prompt, raw output, or any credential. A canary on any channel triggers quarantine (DAL004 §6 #4); that is a content check, not a schema assertion.",
+  "$id": "dal.codex-redacted-log/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "ended_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "endpoint_policy": {
+      "enum": [
+        "passed",
+        "failed"
+      ]
+    },
+    "exit_code": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "failure_class": {
+      "enum": [
+        "usage_limit",
+        "transient",
+        "auth",
+        "contract_failure",
+        "policy_failure",
+        "budget_limit",
+        null
+      ],
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "redaction_scan": {
+      "enum": [
+        "passed",
+        "failed"
+      ]
+    },
+    "run_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "dal.codex-redacted-log/1.0"
+    },
+    "started_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "task_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "usage": {
+      "additionalProperties": false,
+      "properties": {
+        "cached_input_tokens": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "provider_reported": {
+          "type": "boolean"
+        },
+        "total_tokens": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider_reported",
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "total_tokens"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "task_id",
+    "run_id",
+    "started_at",
+    "ended_at",
+    "exit_code",
+    "usage",
+    "failure_class",
+    "redaction_scan",
+    "endpoint_policy"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,35 @@
+{
+  "$comment": "Controller-written post-call attestation, not a provider artifact. independence_key = HMAC-SHA256(binding key, jcs({provider, session_id, context_binding_sha256, role})) rendered as 64-char lowercase hex; the key itself is selected by binding_key_id and never enters the payload.",
+  "$id": "dal.reviewer-session-binding/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "binding_key_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "context_binding_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "independence_key": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "dal.reviewer-session-binding/1.0"
+    },
+    "session_id": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "session_id",
+    "independence_key",
+    "binding_key_id",
+    "context_binding_sha256"
+  ],
+  "type": "object"
+}

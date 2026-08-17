@@ -1,0 +1,196 @@
+{
+  "$comment": "feature_id/base_sha must byte-match the input manifest. task_id/acceptance_id uniqueness, order continuity from 1, non-overlapping allowed_paths across tasks, dependency referencing earlier tasks without cycles, acceptance reference existence, and verification_ids resolving into the repo-rules command registry are controller checks. allowed_paths_sha256 / acceptance_sha256 digests are computed by the artifact binding, not stored here.",
+  "$id": "dal.plan-artifact/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "acceptance_criteria": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "description": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "verification_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "acceptance_id",
+          "description",
+          "verification_ids"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "base_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "feature_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "prd": {
+      "additionalProperties": false,
+      "properties": {
+        "non_goals": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "risks": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "scope": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "scope",
+        "non_goals",
+        "risks"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "dal.plan-artifact/1.0"
+    },
+    "tasks": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "allowed_paths": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "path_type": {
+                  "enum": [
+                    "file",
+                    "directory"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "path_type"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "dependency_task_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "order": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "task_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "order",
+          "title",
+          "allowed_paths",
+          "acceptance_ids",
+          "dependency_task_ids"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "technical_design": {
+      "additionalProperties": false,
+      "properties": {
+        "boundaries": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "change_points": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "rollback_steps": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "change_points",
+        "boundaries",
+        "rollback_steps"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "feature_id",
+    "base_sha",
+    "prd",
+    "technical_design",
+    "tasks",
+    "acceptance_criteria"
+  ],
+  "type": "object"
+}

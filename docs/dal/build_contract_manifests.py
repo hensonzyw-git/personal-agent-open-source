@@ -3280,11 +3280,632 @@ def build_eval_schema() -> None:
     (OUT / "eval-run-manifest_schema_v1.0.json").write_text(json.dumps(schema, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
+def build_wave3_schemas() -> None:
+    """Emit the Wave 3 (DAL-021..024) closed Draft 2020-12 JSON Schemas.
+
+    These encode the field sets frozen in ``DAL021-024_合同冻结包_v0.1.md`` §3-§6.
+    They are documentation artifacts only; the semantic cross-field checks that
+    require Git executor / controller recomputation are recorded in ``$comment``
+    and remain controller operations, never JSON Schema assertions.
+    """
+    DRAFT = "https://json-schema.org/draft/2020-12/schema"
+    NONEMPTY = {"type": "string", "minLength": 1}
+    SHA256 = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    GIT_SHA = {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+    NULL_OR_SHA256 = {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+    NULL_OR_GIT_SHA = {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"}
+    NULL_OR_NONEMPTY = {"type": ["string", "null"], "minLength": 1}
+    NULL_OR_INTEGER = {"type": ["integer", "null"]}
+    DATE_TIME = {"type": "string", "format": "date-time"}
+    OPERATION_KIND = {"enum": ["planning", "independent_review", "post_fix_verification"]}
+    OUTPUT_SCHEMA_VALUES = ["dal.plan-artifact/1.0", "dal.review-findings/1.0", "dal.post-fix-verdict/1.0"]
+    OUTPUT_SCHEMA_ENUM = {"enum": OUTPUT_SCHEMA_VALUES}
+    OUTPUT_SCHEMA_NULLABLE = {"type": ["string", "null"], "enum": OUTPUT_SCHEMA_VALUES + [None]}
+    CODECX_FAILURE_CLASS_VALUES = ["usage_limit", "transient", "auth", "contract_failure", "policy_failure", "budget_limit"]
+    NULLABLE_FAILURE_CLASS = {"type": ["string", "null"], "enum": CODECX_FAILURE_CLASS_VALUES + [None]}
+    PASS_FAIL = {"enum": ["passed", "failed"]}
+
+    def write(name: str, schema: dict) -> None:
+        (OUT / f"{name}_schema_v1.0.json").write_text(
+            json.dumps(schema, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    usage = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["provider_reported", "input_tokens", "cached_input_tokens", "output_tokens", "total_tokens"],
+        "properties": {
+            "provider_reported": {"type": "boolean"},
+            "input_tokens": {"type": ["integer", "null"], "minimum": 0},
+            "cached_input_tokens": {"type": ["integer", "null"], "minimum": 0},
+            "output_tokens": {"type": ["integer", "null"], "minimum": 0},
+            "total_tokens": {"type": ["integer", "null"], "minimum": 0},
+        },
+    }
+
+    def finding_location() -> dict:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["path", "line_start", "line_end", "anchor_sha"],
+            "properties": {
+                "path": NONEMPTY,
+                "line_start": {"type": "integer", "minimum": 1},
+                "line_end": {"type": "integer", "minimum": 1},
+                "anchor_sha": GIT_SHA,
+            },
+        }
+
+    def finding_object() -> dict:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["finding_id", "severity", "location", "summary", "failure_scenario", "category"],
+            "properties": {
+                "finding_id": NONEMPTY,
+                "severity": {"enum": ["P0", "P1", "P2", "P3"]},
+                "location": finding_location(),
+                "summary": NONEMPTY,
+                "failure_scenario": NONEMPTY,
+                "category": {"enum": ["correctness", "security", "data_integrity", "concurrency", "recovery", "contract", "test_coverage", "documentation"]},
+            },
+        }
+
+    # --- §3.1 dal.codex-adapter-request/1.0 ---
+    allowed_path_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["path", "access"],
+        "properties": {"path": NONEMPTY, "access": {"const": "read"}},
+    }
+    context_binding = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["source_type", "agent_identity", "context_sha256", "config_sha256", "prompt_template_sha256", "open_findings_sha256"],
+        "properties": {
+            "source_type": {"enum": ["planning-controller", "review-controller"]},
+            "agent_identity": NONEMPTY,
+            "context_sha256": SHA256,
+            "config_sha256": SHA256,
+            "prompt_template_sha256": SHA256,
+            "open_findings_sha256": NULL_OR_SHA256,
+        },
+    }
+    redaction_policy = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["canonicalizer", "rules_version"],
+        "properties": {"canonicalizer": {"const": "rfc8785-jcs/1.0"}, "rules_version": NONEMPTY},
+    }
+    codex_config = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["endpoint", "proxy", "sandbox_profile", "mcp_plugins", "feature_flags", "extra_read_roots", "extra_write_roots", "project_provider_override"],
+        "properties": {
+            "endpoint": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["scheme", "host", "path"],
+                "properties": {"scheme": NONEMPTY, "host": NONEMPTY, "path": NONEMPTY},
+            },
+            "proxy": {
+                "oneOf": [
+                    {"type": "null"},
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["scheme", "host", "port"],
+                        "properties": {"scheme": NONEMPTY, "host": NONEMPTY, "port": {"type": "integer"}},
+                    },
+                ]
+            },
+            "sandbox_profile": NONEMPTY,
+            "mcp_plugins": {"type": "array", "maxItems": 0},
+            "feature_flags": {"type": "array", "uniqueItems": True, "items": NONEMPTY},
+            "extra_read_roots": {"type": "array", "maxItems": 0},
+            "extra_write_roots": {"type": "array", "maxItems": 0},
+            "project_provider_override": {"oneOf": [{"type": "null"}, NONEMPTY]},
+        },
+    }
+    codex_endpoint_policy = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["scheme", "host", "path", "policy_version"],
+        "properties": {"scheme": NONEMPTY, "host": NONEMPTY, "path": NONEMPTY, "policy_version": NONEMPTY},
+    }
+    request_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.codex-adapter-request/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "schema_version", "task_id", "feature_id", "run_id", "operation_kind", "model",
+            "harness", "harness_version", "binary_sha256", "endpoint_policy_sha256", "output_schema",
+            "cwd", "base_sha", "input_manifest_ref", "input_manifest_sha256", "allowed_paths",
+            "context_binding", "timeout_wall_seconds", "max_turns", "max_tool_calls", "redaction_policy",
+        ],
+        "properties": {
+            "schema_version": {"const": "dal.codex-adapter-request/1.0"},
+            "task_id": NONEMPTY,
+            "feature_id": NONEMPTY,
+            "run_id": NONEMPTY,
+            "operation_kind": OPERATION_KIND,
+            "model": NONEMPTY,
+            "harness": NONEMPTY,
+            "harness_version": NONEMPTY,
+            "binary_sha256": SHA256,
+            "endpoint_policy_sha256": SHA256,
+            "output_schema": OUTPUT_SCHEMA_ENUM,
+            "cwd": NONEMPTY,
+            "base_sha": GIT_SHA,
+            "input_manifest_ref": NONEMPTY,
+            "input_manifest_sha256": SHA256,
+            "allowed_paths": {"type": "array", "uniqueItems": True, "items": allowed_path_item},
+            "context_binding": context_binding,
+            "timeout_wall_seconds": {"type": "integer", "minimum": 1},
+            "max_turns": {"const": 1},
+            "max_tool_calls": {"const": 0},
+            "redaction_policy": redaction_policy,
+        },
+        "allOf": [
+            {
+                "oneOf": [
+                    {"properties": {"operation_kind": {"const": "planning"}, "output_schema": {"const": "dal.plan-artifact/1.0"}}, "required": ["operation_kind", "output_schema"]},
+                    {"properties": {"operation_kind": {"const": "independent_review"}, "output_schema": {"const": "dal.review-findings/1.0"}}, "required": ["operation_kind", "output_schema"]},
+                    {"properties": {"operation_kind": {"const": "post_fix_verification"}, "output_schema": {"const": "dal.post-fix-verdict/1.0"}}, "required": ["operation_kind", "output_schema"]},
+                ]
+            },
+            {
+                "oneOf": [
+                    {"properties": {"operation_kind": {"const": "planning"}, "context_binding": {"properties": {"source_type": {"const": "planning-controller"}}, "required": ["source_type"]}}, "required": ["operation_kind", "context_binding"]},
+                    {"properties": {"operation_kind": {"enum": ["independent_review", "post_fix_verification"]}, "context_binding": {"properties": {"source_type": {"const": "review-controller"}}, "required": ["source_type"]}}, "required": ["operation_kind", "context_binding"]},
+                ]
+            },
+            {
+                "if": {"properties": {"operation_kind": {"const": "post_fix_verification"}}, "required": ["operation_kind"]},
+                "then": {"properties": {"context_binding": {"properties": {"open_findings_sha256": SHA256}, "required": ["open_findings_sha256"]}}},
+                "else": {"properties": {"context_binding": {"properties": {"open_findings_sha256": {"type": "null"}}, "required": ["open_findings_sha256"]}}},
+            },
+        ],
+        "$defs": {"codex_config": codex_config, "codex_endpoint_policy": codex_endpoint_policy},
+        "$comment": "config_sha256 / endpoint_policy_sha256 are RFC8785-JCS digests of $defs.codex_config / $defs.codex_endpoint_policy respectively, computed by the controller from launch params + read-back, never provider-asserted. allowed_paths sorted by UTF-8 byte order and access fixed to read are controller checks.",
+    }
+    write("codex-adapter-request", request_schema)
+
+    # --- §3.1.1 dal.codex-input-manifest/1.0 ---
+    def manifest_item(role: str, media_type: str, artifact_schema_version: str | None) -> dict:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["role", "artifact_schema_version", "media_type", "protected_ref", "sha256", "size_bytes"],
+            "properties": {
+                "role": {"const": role},
+                "artifact_schema_version": {"type": "null"} if artifact_schema_version is None else {"const": artifact_schema_version},
+                "media_type": {"const": media_type},
+                "protected_ref": NONEMPTY,
+                "sha256": SHA256,
+                "size_bytes": {"type": "integer", "minimum": 0},
+            },
+        }
+
+    generic_manifest_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["role", "artifact_schema_version", "media_type", "protected_ref", "sha256", "size_bytes"],
+        "properties": {
+            "role": NONEMPTY,
+            "artifact_schema_version": NULL_OR_NONEMPTY,
+            "media_type": NONEMPTY,
+            "protected_ref": NONEMPTY,
+            "sha256": SHA256,
+            "size_bytes": {"type": "integer", "minimum": 0},
+        },
+    }
+    ROLE_ORDER = {
+        "planning": [
+            ("requirement_artifact", "text/markdown", None),
+            ("repo_rules", "text/markdown", None),
+        ],
+        "independent_review": [
+            ("approved_plan", "application/json", "dal.plan-artifact/1.0"),
+            ("candidate_diff", "text/x-diff", None),
+            ("test_receipts", "application/json", "dal.evidence.test-receipt/1.0"),
+            ("repo_rules", "text/markdown", None),
+        ],
+        "post_fix_verification": [
+            ("approved_plan", "application/json", "dal.plan-artifact/1.0"),
+            ("review_findings", "application/json", "dal.review-findings/1.0"),
+            ("fix_diff", "text/x-diff", None),
+            ("test_receipts", "application/json", "dal.evidence.test-receipt/1.0"),
+            ("repo_rules", "text/markdown", None),
+        ],
+    }
+    manifest_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.codex-input-manifest/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "operation_kind", "task_id", "feature_id", "run_id", "base_sha", "result_sha", "items"],
+        "properties": {
+            "schema_version": {"const": "dal.codex-input-manifest/1.0"},
+            "operation_kind": OPERATION_KIND,
+            "task_id": NONEMPTY,
+            "feature_id": NONEMPTY,
+            "run_id": NONEMPTY,
+            "base_sha": GIT_SHA,
+            "result_sha": NULL_OR_GIT_SHA,
+            "items": {"type": "array", "items": generic_manifest_item},
+        },
+        "allOf": [
+            {
+                "if": {"properties": {"operation_kind": {"const": op}}, "required": ["operation_kind"]},
+                "then": {
+                    "properties": {
+                        "items": {
+                            "minItems": len(order),
+                            "maxItems": len(order),
+                            "prefixItems": [manifest_item(role, media_type, art) for (role, media_type, art) in order],
+                            "items": False,
+                        }
+                    }
+                },
+            }
+            for op, order in ROLE_ORDER.items()
+        ]
+        + [
+            {
+                "if": {"properties": {"operation_kind": {"const": "planning"}}, "required": ["operation_kind"]},
+                "then": {"properties": {"result_sha": {"type": "null"}}},
+                "else": {"properties": {"result_sha": GIT_SHA}},
+            }
+        ],
+        "$comment": "The fixed role order/count per operation_kind and per-role media_type/artifact_schema_version are enforced via prefixItems. manifest<->request identity cross-binding (task_id/feature_id/run_id/base_sha/operation_kind byte-match the referencing request) and item size/hash read-back are controller checks.",
+    }
+    write("codex-input-manifest", manifest_schema)
+
+    # --- §3.2 dal.codex-adapter-response/1.0 ---
+    def status_pair_branch(class_: str, reason: str) -> dict:
+        return {
+            "properties": {"failure_class": {"const": class_}, "reason_code": {"const": reason}},
+            "required": ["failure_class", "reason_code"],
+        }
+
+    response_allof = [
+        {
+            "if": {
+                "anyOf": [
+                    {"properties": {"redaction_scan": {"const": "failed"}}, "required": ["redaction_scan"]},
+                    {"properties": {"endpoint_policy": {"const": "failed"}}, "required": ["endpoint_policy"]},
+                ]
+            },
+            "then": {
+                "properties": {
+                    "result_status": {"const": "failed"},
+                    "failure_class": {"const": "policy_failure"},
+                    "reason_code": {"const": "POLICY_FAILURE"},
+                    "quarantined": {"const": True},
+                    "validated_output_schema": {"type": "null"},
+                    "final_payload_ref": {"type": "null"},
+                    "final_payload_sha256": {"type": "null"},
+                }
+            },
+            "else": {"properties": {"quarantined": {"const": False}}},
+        },
+        {
+            "if": {"properties": {"result_status": {"const": "succeeded"}}, "required": ["result_status"]},
+            "then": {
+                "properties": {
+                    "validated_output_schema": OUTPUT_SCHEMA_ENUM,
+                    "final_payload_ref": NONEMPTY,
+                    "final_payload_sha256": SHA256,
+                    "failure_class": {"type": "null"},
+                    "reason_code": {"type": "null"},
+                    "exit_code": {"const": 0},
+                    "redaction_scan": {"const": "passed"},
+                    "endpoint_policy": {"const": "passed"},
+                    "quarantined": {"const": False},
+                }
+            },
+        },
+        {
+            "if": {"properties": {"result_status": {"const": "blocked"}}, "required": ["result_status"]},
+            "then": {
+                "properties": {
+                    "validated_output_schema": {"type": "null"},
+                    "final_payload_ref": {"type": "null"},
+                    "final_payload_sha256": {"type": "null"},
+                    "quarantined": {"const": False},
+                },
+                "allOf": [
+                    {"oneOf": [status_pair_branch("usage_limit", "USAGE_LIMIT"), status_pair_branch("auth", "AUTH_REQUIRED"), status_pair_branch("budget_limit", "BUDGET_LIMIT")]}
+                ],
+            },
+        },
+        {
+            "if": {"properties": {"result_status": {"const": "failed"}}, "required": ["result_status"]},
+            "then": {
+                "properties": {
+                    "validated_output_schema": {"type": "null"},
+                    "final_payload_ref": {"type": "null"},
+                    "final_payload_sha256": {"type": "null"},
+                },
+                "allOf": [
+                    {"oneOf": [status_pair_branch("transient", "TRANSIENT_RETRY_EXHAUSTED"), status_pair_branch("contract_failure", "PROVIDER_CONTRACT_FAILURE"), status_pair_branch("policy_failure", "POLICY_FAILURE")]}
+                ],
+            },
+        },
+        {
+            "if": {"properties": {"result_status": {"const": "cancelled"}}, "required": ["result_status"]},
+            "then": {
+                "properties": {
+                    "validated_output_schema": {"type": "null"},
+                    "final_payload_ref": {"type": "null"},
+                    "final_payload_sha256": {"type": "null"},
+                    "failure_class": {"type": "null"},
+                    "reason_code": {"type": "null"},
+                }
+            },
+        },
+    ]
+    response_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.codex-adapter-response/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "schema_version", "task_id", "model", "harness", "harness_version", "binary_sha256",
+            "endpoint_policy_sha256", "result_status", "requested_output_schema", "validated_output_schema",
+            "input_manifest_sha256", "context_binding_sha256", "final_payload_ref", "final_payload_sha256",
+            "exit_code", "started_at", "ended_at", "usage", "failure_class", "reason_code",
+            "raw_evidence_ref", "raw_evidence_sha256", "redaction_scan", "endpoint_policy", "quarantined",
+        ],
+        "properties": {
+            "schema_version": {"const": "dal.codex-adapter-response/1.0"},
+            "task_id": NONEMPTY,
+            "model": NONEMPTY,
+            "harness": NONEMPTY,
+            "harness_version": NONEMPTY,
+            "binary_sha256": SHA256,
+            "endpoint_policy_sha256": SHA256,
+            "result_status": {"enum": ["succeeded", "blocked", "failed", "cancelled"]},
+            "requested_output_schema": OUTPUT_SCHEMA_ENUM,
+            "validated_output_schema": OUTPUT_SCHEMA_NULLABLE,
+            "input_manifest_sha256": SHA256,
+            "context_binding_sha256": SHA256,
+            "final_payload_ref": NULL_OR_NONEMPTY,
+            "final_payload_sha256": NULL_OR_SHA256,
+            "exit_code": NULL_OR_INTEGER,
+            "started_at": DATE_TIME,
+            "ended_at": DATE_TIME,
+            "usage": usage,
+            "failure_class": NULLABLE_FAILURE_CLASS,
+            "reason_code": NULL_OR_NONEMPTY,
+            "raw_evidence_ref": NONEMPTY,
+            "raw_evidence_sha256": SHA256,
+            "redaction_scan": PASS_FAIL,
+            "endpoint_policy": PASS_FAIL,
+            "quarantined": {"type": "boolean"},
+        },
+        "allOf": response_allof,
+        "$comment": "task_id/model/harness/harness_version/binary_sha256/endpoint_policy_sha256/input_manifest_sha256/context_binding_sha256/requested_output_schema must byte-match the protected request (adapter/controller filled, never provider-copied). 'transient must have consumed 2 retries' and 'ended_at >= started_at' are controller checks. base_sha is not a response field. task_failure from the provider is reclassified to contract_failure and is therefore absent from failure_class.",
+    }
+    write("codex-adapter-response", response_schema)
+
+    # --- §3.3 dal.codex-redacted-log/1.0 ---
+    redacted_log_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.codex-redacted-log/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "task_id", "run_id", "started_at", "ended_at", "exit_code", "usage", "failure_class", "redaction_scan", "endpoint_policy"],
+        "properties": {
+            "schema_version": {"const": "dal.codex-redacted-log/1.0"},
+            "task_id": NONEMPTY,
+            "run_id": NONEMPTY,
+            "started_at": DATE_TIME,
+            "ended_at": DATE_TIME,
+            "exit_code": NULL_OR_INTEGER,
+            "usage": usage,
+            "failure_class": NULLABLE_FAILURE_CLASS,
+            "redaction_scan": PASS_FAIL,
+            "endpoint_policy": PASS_FAIL,
+        },
+        "$comment": "MUST NOT contain prompt, raw output, or any credential. A canary on any channel triggers quarantine (DAL004 §6 #4); that is a content check, not a schema assertion.",
+    }
+    write("codex-redacted-log", redacted_log_schema)
+
+    # --- §4 dal.plan-artifact/1.0 (business content closure) ---
+    prd = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["scope", "non_goals", "risks"],
+        "properties": {
+            "scope": {"type": "array", "minItems": 1, "items": NONEMPTY},
+            "non_goals": {"type": "array", "items": NONEMPTY},
+            "risks": {"type": "array", "items": NONEMPTY},
+        },
+    }
+    technical_design = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["change_points", "boundaries", "rollback_steps"],
+        "properties": {
+            "change_points": {"type": "array", "minItems": 1, "items": NONEMPTY},
+            "boundaries": {"type": "array", "minItems": 1, "items": NONEMPTY},
+            "rollback_steps": {"type": "array", "minItems": 1, "items": NONEMPTY},
+        },
+    }
+    plan_allowed_path = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["path", "path_type"],
+        "properties": {"path": NONEMPTY, "path_type": {"enum": ["file", "directory"]}},
+    }
+    plan_task = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["task_id", "order", "title", "allowed_paths", "acceptance_ids", "dependency_task_ids"],
+        "properties": {
+            "task_id": NONEMPTY,
+            "order": {"type": "integer", "minimum": 1},
+            "title": NONEMPTY,
+            "allowed_paths": {"type": "array", "items": plan_allowed_path},
+            "acceptance_ids": {"type": "array", "minItems": 1, "items": NONEMPTY},
+            "dependency_task_ids": {"type": "array", "items": NONEMPTY},
+        },
+    }
+    plan_acceptance = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["acceptance_id", "description", "verification_ids"],
+        "properties": {
+            "acceptance_id": NONEMPTY,
+            "description": NONEMPTY,
+            "verification_ids": {"type": "array", "minItems": 1, "items": NONEMPTY},
+        },
+    }
+    plan_artifact_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.plan-artifact/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "feature_id", "base_sha", "prd", "technical_design", "tasks", "acceptance_criteria"],
+        "properties": {
+            "schema_version": {"const": "dal.plan-artifact/1.0"},
+            "feature_id": NONEMPTY,
+            "base_sha": GIT_SHA,
+            "prd": prd,
+            "technical_design": technical_design,
+            "tasks": {"type": "array", "minItems": 1, "items": plan_task},
+            "acceptance_criteria": {"type": "array", "minItems": 1, "items": plan_acceptance},
+        },
+        "$comment": "feature_id/base_sha must byte-match the input manifest. task_id/acceptance_id uniqueness, order continuity from 1, non-overlapping allowed_paths across tasks, dependency referencing earlier tasks without cycles, acceptance reference existence, and verification_ids resolving into the repo-rules command registry are controller checks. allowed_paths_sha256 / acceptance_sha256 digests are computed by the artifact binding, not stored here.",
+    }
+    write("plan-artifact", plan_artifact_schema)
+
+    # --- §5 dal.review-findings/1.0 ---
+    acceptance_gap = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["acceptance_id", "summary", "failure_scenario"],
+        "properties": {"acceptance_id": NONEMPTY, "summary": NONEMPTY, "failure_scenario": NONEMPTY},
+    }
+    coverage_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["acceptance_id", "verification_ids"],
+        "properties": {"acceptance_id": NONEMPTY, "verification_ids": {"type": "array", "minItems": 1, "items": NONEMPTY}},
+    }
+    review_findings_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.review-findings/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "review_id", "reviewed_input_manifest_sha256", "reviewed_diff_sha256", "base_sha", "result_sha", "findings", "acceptance_gaps", "coverage", "disposition"],
+        "properties": {
+            "schema_version": {"const": "dal.review-findings/1.0"},
+            "review_id": NONEMPTY,
+            "reviewed_input_manifest_sha256": SHA256,
+            "reviewed_diff_sha256": SHA256,
+            "base_sha": GIT_SHA,
+            "result_sha": GIT_SHA,
+            "findings": {"type": "array", "items": finding_object()},
+            "acceptance_gaps": {"type": "array", "items": acceptance_gap},
+            "coverage": {"type": "array", "items": coverage_item},
+            "disposition": {"enum": ["approve", "request_changes"]},
+        },
+        "allOf": [
+            {
+                "if": {"anyOf": [{"properties": {"findings": {"minItems": 1}}}, {"properties": {"acceptance_gaps": {"minItems": 1}}}]},
+                "then": {"properties": {"disposition": {"const": "request_changes"}}},
+            }
+        ],
+        "$comment": "finding.location.path must resolve to a regular file blob (mode 100644/100755, not tree/submodule 160000/symlink) in the result_sha tree, line_end >= line_start, and location.anchor_sha must equal result_sha; coverage must biject with the approved plan's acceptance_criteria, and disposition=approve requires empty findings/acceptance_gaps plus complete coverage. These are controller checks over Git/plan facts.",
+    }
+    write("review-findings", review_findings_schema)
+
+    # --- §5.1 dal.reviewer-session-binding/1.0 ---
+    session_binding_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.reviewer-session-binding/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "session_id", "independence_key", "binding_key_id", "context_binding_sha256"],
+        "properties": {
+            "schema_version": {"const": "dal.reviewer-session-binding/1.0"},
+            "session_id": NONEMPTY,
+            "independence_key": SHA256,
+            "binding_key_id": NONEMPTY,
+            "context_binding_sha256": SHA256,
+        },
+        "$comment": "Controller-written post-call attestation, not a provider artifact. independence_key = HMAC-SHA256(binding key, jcs({provider, session_id, context_binding_sha256, role})) rendered as 64-char lowercase hex; the key itself is selected by binding_key_id and never enters the payload.",
+    }
+    write("reviewer-session-binding", session_binding_schema)
+
+    # --- §6 dal.post-fix-verdict/1.0 ---
+    def resolution_item(id_field: str) -> dict:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [id_field, "status", "summary", "evidence_sha256"],
+            "properties": {
+                id_field: NONEMPTY,
+                "status": {"enum": ["closed", "remaining"]},
+                "summary": NONEMPTY,
+                "evidence_sha256": {"type": "array", "minItems": 1, "uniqueItems": True, "items": SHA256},
+            },
+        }
+
+    post_fix_verdict_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.post-fix-verdict/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "schema_version", "verdict_id", "reviewed_input_manifest_sha256", "original_review_sha256",
+            "fix_diff_sha256", "base_sha", "result_sha", "finding_resolutions", "acceptance_gap_resolutions",
+            "new_findings", "acceptance_verified", "verdict",
+        ],
+        "properties": {
+            "schema_version": {"const": "dal.post-fix-verdict/1.0"},
+            "verdict_id": NONEMPTY,
+            "reviewed_input_manifest_sha256": SHA256,
+            "original_review_sha256": SHA256,
+            "fix_diff_sha256": SHA256,
+            "base_sha": GIT_SHA,
+            "result_sha": GIT_SHA,
+            "finding_resolutions": {"type": "array", "items": resolution_item("finding_id")},
+            "acceptance_gap_resolutions": {"type": "array", "items": resolution_item("acceptance_id")},
+            "new_findings": {"type": "array", "items": finding_object()},
+            "acceptance_verified": {"type": "boolean"},
+            "verdict": {"enum": ["verified", "changes_requested"]},
+        },
+        "allOf": [
+            {"if": {"properties": {"new_findings": {"minItems": 1}}}, "then": {"properties": {"verdict": {"const": "changes_requested"}}}},
+            {
+                "if": {"properties": {"verdict": {"const": "verified"}}, "required": ["verdict"]},
+                "then": {
+                    "properties": {
+                        "new_findings": {"maxItems": 0},
+                        "acceptance_verified": {"const": True},
+                        "finding_resolutions": {"items": {"properties": {"status": {"const": "closed"}}}},
+                        "acceptance_gap_resolutions": {"items": {"properties": {"status": {"const": "closed"}}}},
+                    }
+                },
+            },
+        ],
+        "$comment": "finding_resolutions must biject with the controller-derived open-finding set; new_findings finding_id must be disjoint from all historical IDs and location.anchor_sha must equal result_sha; evidence_sha256 may only reference manifest items with role in {fix_diff, test_receipts, review_findings}; fix_diff localization (path-survival regular-file gate, anchor-line translation to surviving set S, incremental V_{N-1}->V_N '-' line check) and fix_diff incremental binding (V_1.base_sha = R_1.result_sha; V_N.base_sha = V_{N-1}.result_sha) are controller/Git-executor checks, not schema assertions.",
+    }
+    write("post-fix-verdict", post_fix_verdict_schema)
+
+
 def main() -> None:
     specs, registry_hash = build_transition_registry()
     evidence_hash, guard_hash = build_machine_registries(specs)
     build_test_contracts(specs, registry_hash, evidence_hash, guard_hash)
     build_eval_schema()
+    build_wave3_schemas()
     subprocess.run(
         [
             sys.executable,

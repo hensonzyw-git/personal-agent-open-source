@@ -1,0 +1,459 @@
+{
+  "$comment": "config_sha256 / endpoint_policy_sha256 are RFC8785-JCS digests of $defs.codex_config / $defs.codex_endpoint_policy respectively, computed by the controller from launch params + read-back, never provider-asserted. allowed_paths sorted by UTF-8 byte order and access fixed to read are controller checks.",
+  "$defs": {
+    "codex_config": {
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "additionalProperties": false,
+          "properties": {
+            "host": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "path": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "scheme": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "scheme",
+            "host",
+            "path"
+          ],
+          "type": "object"
+        },
+        "extra_read_roots": {
+          "maxItems": 0,
+          "type": "array"
+        },
+        "extra_write_roots": {
+          "maxItems": 0,
+          "type": "array"
+        },
+        "feature_flags": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "mcp_plugins": {
+          "maxItems": 0,
+          "type": "array"
+        },
+        "project_provider_override": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "minLength": 1,
+              "type": "string"
+            }
+          ]
+        },
+        "proxy": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "host": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "port": {
+                  "type": "integer"
+                },
+                "scheme": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "scheme",
+                "host",
+                "port"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "sandbox_profile": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "endpoint",
+        "proxy",
+        "sandbox_profile",
+        "mcp_plugins",
+        "feature_flags",
+        "extra_read_roots",
+        "extra_write_roots",
+        "project_provider_override"
+      ],
+      "type": "object"
+    },
+    "codex_endpoint_policy": {
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "policy_version": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "scheme": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "scheme",
+        "host",
+        "path",
+        "policy_version"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "dal.codex-adapter-request/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "operation_kind": {
+              "const": "planning"
+            },
+            "output_schema": {
+              "const": "dal.plan-artifact/1.0"
+            }
+          },
+          "required": [
+            "operation_kind",
+            "output_schema"
+          ]
+        },
+        {
+          "properties": {
+            "operation_kind": {
+              "const": "independent_review"
+            },
+            "output_schema": {
+              "const": "dal.review-findings/1.0"
+            }
+          },
+          "required": [
+            "operation_kind",
+            "output_schema"
+          ]
+        },
+        {
+          "properties": {
+            "operation_kind": {
+              "const": "post_fix_verification"
+            },
+            "output_schema": {
+              "const": "dal.post-fix-verdict/1.0"
+            }
+          },
+          "required": [
+            "operation_kind",
+            "output_schema"
+          ]
+        }
+      ]
+    },
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "context_binding": {
+              "properties": {
+                "source_type": {
+                  "const": "planning-controller"
+                }
+              },
+              "required": [
+                "source_type"
+              ]
+            },
+            "operation_kind": {
+              "const": "planning"
+            }
+          },
+          "required": [
+            "operation_kind",
+            "context_binding"
+          ]
+        },
+        {
+          "properties": {
+            "context_binding": {
+              "properties": {
+                "source_type": {
+                  "const": "review-controller"
+                }
+              },
+              "required": [
+                "source_type"
+              ]
+            },
+            "operation_kind": {
+              "enum": [
+                "independent_review",
+                "post_fix_verification"
+              ]
+            }
+          },
+          "required": [
+            "operation_kind",
+            "context_binding"
+          ]
+        }
+      ]
+    },
+    {
+      "else": {
+        "properties": {
+          "context_binding": {
+            "properties": {
+              "open_findings_sha256": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "open_findings_sha256"
+            ]
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "operation_kind": {
+            "const": "post_fix_verification"
+          }
+        },
+        "required": [
+          "operation_kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "context_binding": {
+            "properties": {
+              "open_findings_sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "open_findings_sha256"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "allowed_paths": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "access": {
+            "const": "read"
+          },
+          "path": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "access"
+        ],
+        "type": "object"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "base_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "binary_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "context_binding": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_identity": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "config_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "context_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "open_findings_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prompt_template_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "source_type": {
+          "enum": [
+            "planning-controller",
+            "review-controller"
+          ]
+        }
+      },
+      "required": [
+        "source_type",
+        "agent_identity",
+        "context_sha256",
+        "config_sha256",
+        "prompt_template_sha256",
+        "open_findings_sha256"
+      ],
+      "type": "object"
+    },
+    "cwd": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "endpoint_policy_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "feature_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "harness": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "harness_version": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "input_manifest_ref": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "input_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "max_tool_calls": {
+      "const": 0
+    },
+    "max_turns": {
+      "const": 1
+    },
+    "model": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "operation_kind": {
+      "enum": [
+        "planning",
+        "independent_review",
+        "post_fix_verification"
+      ]
+    },
+    "output_schema": {
+      "enum": [
+        "dal.plan-artifact/1.0",
+        "dal.review-findings/1.0",
+        "dal.post-fix-verdict/1.0"
+      ]
+    },
+    "redaction_policy": {
+      "additionalProperties": false,
+      "properties": {
+        "canonicalizer": {
+          "const": "rfc8785-jcs/1.0"
+        },
+        "rules_version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "canonicalizer",
+        "rules_version"
+      ],
+      "type": "object"
+    },
+    "run_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "dal.codex-adapter-request/1.0"
+    },
+    "task_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "timeout_wall_seconds": {
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "task_id",
+    "feature_id",
+    "run_id",
+    "operation_kind",
+    "model",
+    "harness",
+    "harness_version",
+    "binary_sha256",
+    "endpoint_policy_sha256",
+    "output_schema",
+    "cwd",
+    "base_sha",
+    "input_manifest_ref",
+    "input_manifest_sha256",
+    "allowed_paths",
+    "context_binding",
+    "timeout_wall_seconds",
+    "max_turns",
+    "max_tool_calls",
+    "redaction_policy"
+  ],
+  "type": "object"
+}

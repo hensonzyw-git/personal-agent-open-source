@@ -1,0 +1,270 @@
+{
+  "$comment": "finding_resolutions must biject with the controller-derived open-finding set; new_findings finding_id must be disjoint from all historical IDs and location.anchor_sha must equal result_sha; evidence_sha256 may only reference manifest items with role in {fix_diff, test_receipts, review_findings}; fix_diff localization (path-survival regular-file gate, anchor-line translation to surviving set S, incremental V_{N-1}->V_N '-' line check) and fix_diff incremental binding (V_1.base_sha = R_1.result_sha; V_N.base_sha = V_{N-1}.result_sha) are controller/Git-executor checks, not schema assertions.",
+  "$id": "dal.post-fix-verdict/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "new_findings": {
+            "minItems": 1
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "verdict": {
+            "const": "changes_requested"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "verified"
+          }
+        },
+        "required": [
+          "verdict"
+        ]
+      },
+      "then": {
+        "properties": {
+          "acceptance_gap_resolutions": {
+            "items": {
+              "properties": {
+                "status": {
+                  "const": "closed"
+                }
+              }
+            }
+          },
+          "acceptance_verified": {
+            "const": true
+          },
+          "finding_resolutions": {
+            "items": {
+              "properties": {
+                "status": {
+                  "const": "closed"
+                }
+              }
+            }
+          },
+          "new_findings": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "acceptance_gap_resolutions": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_sha256": {
+            "items": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "status": {
+            "enum": [
+              "closed",
+              "remaining"
+            ]
+          },
+          "summary": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "acceptance_id",
+          "status",
+          "summary",
+          "evidence_sha256"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "acceptance_verified": {
+      "type": "boolean"
+    },
+    "base_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "finding_resolutions": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence_sha256": {
+            "items": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "finding_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "closed",
+              "remaining"
+            ]
+          },
+          "summary": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_id",
+          "status",
+          "summary",
+          "evidence_sha256"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "fix_diff_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "new_findings": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "enum": [
+              "correctness",
+              "security",
+              "data_integrity",
+              "concurrency",
+              "recovery",
+              "contract",
+              "test_coverage",
+              "documentation"
+            ]
+          },
+          "failure_scenario": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "finding_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "location": {
+            "additionalProperties": false,
+            "properties": {
+              "anchor_sha": {
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              },
+              "line_end": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "line_start": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "line_start",
+              "line_end",
+              "anchor_sha"
+            ],
+            "type": "object"
+          },
+          "severity": {
+            "enum": [
+              "P0",
+              "P1",
+              "P2",
+              "P3"
+            ]
+          },
+          "summary": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_id",
+          "severity",
+          "location",
+          "summary",
+          "failure_scenario",
+          "category"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "original_review_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "result_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "reviewed_input_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "dal.post-fix-verdict/1.0"
+    },
+    "verdict": {
+      "enum": [
+        "verified",
+        "changes_requested"
+      ]
+    },
+    "verdict_id": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "verdict_id",
+    "reviewed_input_manifest_sha256",
+    "original_review_sha256",
+    "fix_diff_sha256",
+    "base_sha",
+    "result_sha",
+    "finding_resolutions",
+    "acceptance_gap_resolutions",
+    "new_findings",
+    "acceptance_verified",
+    "verdict"
+  ],
+  "type": "object"
+}
