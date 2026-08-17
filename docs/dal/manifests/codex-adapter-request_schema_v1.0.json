@@ -1,5 +1,5 @@
 {
-  "$comment": "config_sha256 / endpoint_policy_sha256 are RFC8785-JCS digests of $defs.codex_config / $defs.codex_endpoint_policy respectively, computed by the controller from launch params + read-back, never provider-asserted. allowed_paths sorted by UTF-8 byte order and access fixed to read are controller checks.",
+  "$comment": "config_sha256 / endpoint_policy_sha256 are RFC8785-JCS digests of $defs.codex_config / $defs.codex_endpoint_policy respectively, computed by the controller from launch params + read-back, never provider-asserted. allowed_paths sorted by UTF-8 byte order and access fixed to read are controller checks. config.proxy is locked to null (Wave 3 freezes the adapter subprocess to run with no proxy; the {scheme,host,port} shape documented in §3.1 is drift-detection illustration only, not a schema-valid value).",
   "$defs": {
     "codex_config": {
       "additionalProperties": false,
@@ -59,33 +59,7 @@
           ]
         },
         "proxy": {
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "host": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "port": {
-                  "type": "integer"
-                },
-                "scheme": {
-                  "minLength": 1,
-                  "type": "string"
-                }
-              },
-              "required": [
-                "scheme",
-                "host",
-                "port"
-              ],
-              "type": "object"
-            }
-          ]
+          "type": "null"
         },
         "sandbox_profile": {
           "minLength": 1,

@@ -3290,6 +3290,8 @@ def build_wave3_schemas() -> None:
     """
     DRAFT = "https://json-schema.org/draft/2020-12/schema"
     NONEMPTY = {"type": "string", "minLength": 1}
+    # §4「去除首尾空白后仍非空」: 至少含一个非空白字符 (pattern 非锚定 = 存在性断言)。
+    TRIMMED_NONEMPTY = {"type": "string", "minLength": 1, "pattern": "\\S"}
     SHA256 = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
     GIT_SHA = {"type": "string", "pattern": "^[0-9a-f]{40}$"}
     NULL_OR_SHA256 = {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
@@ -3389,17 +3391,7 @@ def build_wave3_schemas() -> None:
                 "required": ["scheme", "host", "path"],
                 "properties": {"scheme": NONEMPTY, "host": NONEMPTY, "path": NONEMPTY},
             },
-            "proxy": {
-                "oneOf": [
-                    {"type": "null"},
-                    {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["scheme", "host", "port"],
-                        "properties": {"scheme": NONEMPTY, "host": NONEMPTY, "port": {"type": "integer"}},
-                    },
-                ]
-            },
+            "proxy": {"type": "null"},
             "sandbox_profile": NONEMPTY,
             "mcp_plugins": {"type": "array", "maxItems": 0},
             "feature_flags": {"type": "array", "uniqueItems": True, "items": NONEMPTY},
@@ -3469,7 +3461,7 @@ def build_wave3_schemas() -> None:
             },
         ],
         "$defs": {"codex_config": codex_config, "codex_endpoint_policy": codex_endpoint_policy},
-        "$comment": "config_sha256 / endpoint_policy_sha256 are RFC8785-JCS digests of $defs.codex_config / $defs.codex_endpoint_policy respectively, computed by the controller from launch params + read-back, never provider-asserted. allowed_paths sorted by UTF-8 byte order and access fixed to read are controller checks.",
+        "$comment": "config_sha256 / endpoint_policy_sha256 are RFC8785-JCS digests of $defs.codex_config / $defs.codex_endpoint_policy respectively, computed by the controller from launch params + read-back, never provider-asserted. allowed_paths sorted by UTF-8 byte order and access fixed to read are controller checks. config.proxy is locked to null (Wave 3 freezes the adapter subprocess to run with no proxy; the {scheme,host,port} shape documented in §3.1 is drift-detection illustration only, not a schema-valid value).",
     }
     write("codex-adapter-request", request_schema)
 
@@ -3721,9 +3713,9 @@ def build_wave3_schemas() -> None:
         "additionalProperties": False,
         "required": ["scope", "non_goals", "risks"],
         "properties": {
-            "scope": {"type": "array", "minItems": 1, "items": NONEMPTY},
-            "non_goals": {"type": "array", "items": NONEMPTY},
-            "risks": {"type": "array", "items": NONEMPTY},
+            "scope": {"type": "array", "minItems": 1, "items": TRIMMED_NONEMPTY},
+            "non_goals": {"type": "array", "items": TRIMMED_NONEMPTY},
+            "risks": {"type": "array", "items": TRIMMED_NONEMPTY},
         },
     }
     technical_design = {
@@ -3731,9 +3723,9 @@ def build_wave3_schemas() -> None:
         "additionalProperties": False,
         "required": ["change_points", "boundaries", "rollback_steps"],
         "properties": {
-            "change_points": {"type": "array", "minItems": 1, "items": NONEMPTY},
-            "boundaries": {"type": "array", "minItems": 1, "items": NONEMPTY},
-            "rollback_steps": {"type": "array", "minItems": 1, "items": NONEMPTY},
+            "change_points": {"type": "array", "minItems": 1, "items": TRIMMED_NONEMPTY},
+            "boundaries": {"type": "array", "minItems": 1, "items": TRIMMED_NONEMPTY},
+            "rollback_steps": {"type": "array", "minItems": 1, "items": TRIMMED_NONEMPTY},
         },
     }
     plan_allowed_path = {
@@ -3749,7 +3741,7 @@ def build_wave3_schemas() -> None:
         "properties": {
             "task_id": NONEMPTY,
             "order": {"type": "integer", "minimum": 1},
-            "title": NONEMPTY,
+            "title": TRIMMED_NONEMPTY,
             "allowed_paths": {"type": "array", "items": plan_allowed_path},
             "acceptance_ids": {"type": "array", "minItems": 1, "items": NONEMPTY},
             "dependency_task_ids": {"type": "array", "items": NONEMPTY},
@@ -3761,7 +3753,7 @@ def build_wave3_schemas() -> None:
         "required": ["acceptance_id", "description", "verification_ids"],
         "properties": {
             "acceptance_id": NONEMPTY,
-            "description": NONEMPTY,
+            "description": TRIMMED_NONEMPTY,
             "verification_ids": {"type": "array", "minItems": 1, "items": NONEMPTY},
         },
     }
