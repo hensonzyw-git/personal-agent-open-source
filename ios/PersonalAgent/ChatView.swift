@@ -12,6 +12,11 @@ import UIKit
 /// model wrote.
 struct ChatView: View {
     @Bindable var model: ChatModel
+    /// `1j`. The daily-review surface, now a card inside this Timeline. `nil`
+    /// only before the first refresh has opened it; the review card draws from
+    /// it for the live status and the ack/defer calls, while the frozen values
+    /// come from the sealed event itself.
+    var review: ReviewModel? = nil
     /// The check awaiting the user's 仍然记录 confirmation. `write_anyway`
     /// forces a write past the duplicate gate, so it is never one tap.
     @State private var confirmingWriteAnyway: String?
@@ -331,6 +336,18 @@ struct ChatView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
+        case .dailyReview(let snapshot):
+            if model.isSupersededDailyReview(event) {
+                // A newer snapshot reopened this card. The older one stays in the
+                // sealed archive, and the screen says so rather than drawing the
+                // same review twice with a different item count.
+                Label("复核卡已更新", systemImage: "checkmark.seal")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                reviewCard(snapshot: snapshot)
+            }
+
         case .unrecognised(let eventType):
             // Not dropped: a history that silently omits entries is a history that
             // lies about what happened.
@@ -343,6 +360,167 @@ struct ChatView: View {
     private func reasonSuffix(_ reason: String?) -> String {
         guard let reason, !reason.isEmpty else { return "" }
         return "·\(reason)"
+    }
+
+    // --- the daily review card (`1j`) -----------------------------------------
+
+    /// The review card, drawn from the frozen snapshot sealed in the Timeline.
+    ///
+    /// The values come straight from the event — never re-read from Feishu — and
+    /// the status comes from `review`, the one field that keeps changing after
+    /// the snapshot was sealed. ack/defer move the status; 打开飞书账本 is the way
+    /// to a correction, which the card itself never makes.
+    @ViewBuilder
+    private func reviewCard(snapshot: ReviewCardSnapshot) -> some View {
+        // The status is live; until the review list has loaded it is unknown,
+        // and an unknown status is not "pending". The card then shows no badge
+        // and no buttons rather than guessing 待复核 for a card that may already
+        // be 已复核.
+        let status = review?.summary(for: snapshot.reviewID)?.status
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("每日复核 · \(snapshot.reviewDate)")
+                    .font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                if let status {
+                    reviewStatusCapsule(status)
+                }
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.top, Metric.cardHeaderTop)
+            .padding(.bottom, Metric.cardHeaderBottom)
+
+            Text("\(snapshot.itemCount) 笔写入")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Metric.cardInset)
+                .padding(.vertical, Metric.fieldRowPadding)
+                .overlay(alignment: .top) { hairline }
+
+            VStack(spacing: 0) {
+                ForEach(snapshot.items) { item in
+                    reviewItemRow(item)
+                }
+            }
+            .padding(.horizontal, Metric.cardInset)
+
+            if let status {
+                reviewActionRow(snapshot: snapshot, status: status)
+                    .overlay(alignment: .top) { hairline }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(Color.cardBorder, lineWidth: Metric.hairline)
+        )
+    }
+
+    private func reviewStatusCapsule(_ status: ReviewStatus) -> some View {
+        let (text, color): (String, Color) = switch status {
+        case .pending: ("待复核", .pending)
+        case .reviewed: ("已复核", .accentText)
+        case .deferred:
+            // 「稍后处理」是贪睡, shown as 已推迟 to tell it apart from 已复核 —
+            // the card is not done, it is paused until the next 0:00.
+            ("已推迟", .pending)
+        case .unrecognised(let raw): (raw, .secondary)
+        }
+        return Text(text)
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.15))
+            .foregroundStyle(color)
+            .clipShape(Capsule())
+    }
+
+    /// One record on the card, with the values frozen at build time.
+    @ViewBuilder
+    private func reviewItemRow(_ item: ReviewItem) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(item.tableKind ?? item.tool).font(.callout.weight(.medium))
+                Spacer()
+                Text(item.committedAt).font(.caption).foregroundStyle(.secondary)
+            }
+            if let unavailable = item.unavailable {
+                // The row stays, with its reason: a count that quietly loses a
+                // record is a review that lies about what was written.
+                Label(
+                    reviewUnavailableText(unavailable),
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.footnote)
+                .foregroundStyle(.pending)
+            }
+            if let values = item.values {
+                ForEach(values.keys.sorted(), id: \.self) { key in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(key).font(.caption).foregroundStyle(.secondary)
+                        Spacer(minLength: 12)
+                        Text(values[key]?.displayText ?? "—")
+                            .font(.callout)
+                            .tabularNumbers()
+                            .multilineTextAlignment(.trailing)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            if !item.unreadableFields.isEmpty {
+                Text("以下字段服务端未能解析：\(item.unreadableFields.joined(separator: "、"))")
+                    .font(.caption)
+                    .foregroundStyle(.pending)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("record_id").font(.caption).foregroundStyle(.secondary)
+                Text(item.recordID)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.vertical, 4)
+        .overlay(alignment: .top) { hairline }
+    }
+
+    @ViewBuilder
+    private func reviewActionRow(
+        snapshot: ReviewCardSnapshot, status: ReviewStatus
+    ) -> some View {
+        HStack(spacing: 12) {
+            if let review, status.allowsReviewActions {
+                Button("确认都正确") {
+                    Task { await review.ack(reviewID: snapshot.reviewID) }
+                }
+                .buttonStyle(.borderedProminent)
+                Button("稍后处理") {
+                    Task { await review.deferCard(reviewID: snapshot.reviewID) }
+                }
+                .buttonStyle(.bordered)
+            }
+            if let url = review?.ledgerURL {
+                Link("打开飞书账本", destination: url)
+                    .buttonStyle(.bordered)
+            } else if review != nil {
+                Text("服务端未提供账本链接")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .disabled(review?.busy ?? false)
+        .padding(Metric.cardInset)
+    }
+
+    private func reviewUnavailableText(_ reason: String) -> String {
+        switch reason {
+        case "unknown_tool": return "服务端不认识该写入工具，无法读取当前值"
+        case "source_unavailable": return "暂时无法从飞书读取当前值，请稍后重新打开"
+        case "no_receipt": return "服务端没有找到这条记录的回执"
+        default: return "无法读取当前值（\(reason)）"
+        }
     }
 
     // --- receipts -------------------------------------------------------------

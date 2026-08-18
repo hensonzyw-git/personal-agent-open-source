@@ -260,6 +260,34 @@ class SessionManager:
             .one_or_none()
         )
 
+    def system_event_session(
+        self, db, *, conversation_id: str, now: datetime
+    ) -> str:
+        """The Session a scheduler-initiated presentation event lands in.
+
+        A daily-review card has no user turn to anchor to, so it reuses the
+        Session that is already open -- which is where the next message would
+        continue anyway -- and opens a first Session when the Timeline has none
+        (a fresh install whose first content is the review, not a message). The
+        first Session carries `boundary_reason = None`, exactly as a first
+        message's would: it is not the outcome of a boundary decision.
+        """
+        current = self.open_session(db, conversation_id=conversation_id)
+        if current is not None:
+            return current.session_id
+        decision = self._open_new(
+            db,
+            conversation_id=conversation_id,
+            previous=None,
+            reason=None,
+            relation_kind="new_topic",
+            parent=None,
+            now=now,
+            classifier_version=None,
+            confidence_band=None,
+        )
+        return decision.session_id
+
     def non_terminal_session_id(self, db, *, conversation_id: str) -> str | None:
         """The Session holding an operation whose state may still change.
 

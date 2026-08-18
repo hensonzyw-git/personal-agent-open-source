@@ -71,6 +71,12 @@ EXPENSE_CATEGORY_CORRECTED = "expense_category_corrected"
 #: the model as an instruction.
 SESSION_DIVIDER = "session_divider"
 SESSION_BOUNDARY_CORRECTED = "session_boundary_corrected"
+#: The daily review card, sealed by the nightly job with the ledger values read
+#: at build time (design `1j`). It is presentation, not dialogue: the scheduler
+#: writes it without a user turn, and feeding a frozen review to the model as an
+#: instruction would be noise at best. Deliberately absent from
+#: `MODEL_VISIBLE_EVENT_TYPES`.
+DAILY_REVIEW = "daily_review"
 
 #: Event types the Context Builder may show the model as conversation history.
 #: Dividers are presentation, not dialogue.

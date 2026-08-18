@@ -10,30 +10,27 @@ import SwiftUI
 /// history. The test it must pass is that **its count returns to zero when nothing
 /// is outstanding** — a session list can never do that, and this bar disappears
 /// entirely at zero rather than rendering "0 项".
+///
+/// It is a glance indicator, not a navigation target: the review card itself now
+/// lives in the Timeline (`1j`), so there is no separate page left for this bar
+/// to open. The chevron and tap were removed with the page.
 struct AmbientOperationBar: View {
     let pendingCount: Int
-    let onOpen: () -> Void
 
     var body: some View {
         if pendingCount > 0 {
-            Button(action: onOpen) {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(Color.pending)
-                        .frame(width: 7, height: 7)
-                    Text("\(pendingCount) 项待你处理")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(.ink)
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 9)
-                .background(Color.surface)
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Color.pending)
+                    .frame(width: 7, height: 7)
+                Text("\(pendingCount) 项待你处理")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.ink)
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .background(Color.surface)
         }
     }
 }
@@ -49,7 +46,7 @@ func pendingReviewCount(_ summaries: [ReviewSummary]) -> Int {
 
 #Preview("指示条 · 有待处理") {
     VStack(spacing: 0) {
-        AmbientOperationBar(pendingCount: 2) {}
+        AmbientOperationBar(pendingCount: 2)
         Spacer()
     }
     .background(Color.screenBackground)
@@ -57,7 +54,7 @@ func pendingReviewCount(_ summaries: [ReviewSummary]) -> Int {
 
 #Preview("指示条 · 归零则消失") {
     VStack(spacing: 0) {
-        AmbientOperationBar(pendingCount: 0) {}
+        AmbientOperationBar(pendingCount: 0)
         Text("空闲时这里什么都没有 —— §1q 的判据")
             .font(.footnote)
             .foregroundStyle(.secondary)

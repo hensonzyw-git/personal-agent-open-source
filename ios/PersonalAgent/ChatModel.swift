@@ -84,6 +84,14 @@ final class ChatModel {
     var currentRecords: [String: FinanceExpenseRecord] = [:]
     /// In-flight and failed category corrections, keyed by `record_id`.
     var categoryEdits: [String: CategoryEditState] = [:]
+    /// `1j`. The newest `daily_review` event id per `review_id`.
+    ///
+    /// A late-verified write reopens a card and seals a *newer* snapshot as a
+    /// second event with the same `review_id`. The Timeline stays append-only,
+    /// so both events remain; this map lets the screen resolve the card to the
+    /// newest snapshot and collapse the older one instead of drawing the same
+    /// review twice with two different item counts.
+    private(set) var latestDailyReviewEventID: [String: String] = [:]
     var lastError: String?
     var busy = false
     var loadingOlder = false
@@ -109,6 +117,7 @@ final class ChatModel {
         // forget. A row corrected in another Timeline is not this one's fact.
         currentRecords = [:]
         categoryEdits = [:]
+        latestDailyReviewEventID = [:]
         busy = true
         defer { busy = false }
         do {
@@ -545,7 +554,22 @@ final class ChatModel {
                let record {
                 currentRecords[recordID] = record
             }
+            // `1j`. Same merge rule and the same reason: `events` is in Timeline
+            // order, so the last `daily_review` event for a `review_id` wins the
+            // map, and the screen collapses any older snapshot for that day.
+            if case .dailyReview(let snapshot) = event.kind {
+                latestDailyReviewEventID[snapshot.reviewID] = event.eventID
+            }
         }
+    }
+
+    /// `1j`. Whether a `daily_review` event has been superseded by a newer
+    /// snapshot for the same `review_id` (a late-verified write reopened the
+    /// card). The older event stays in the sealed archive; the screen collapses
+    /// it to a marker rather than drawing the same review twice.
+    func isSupersededDailyReview(_ event: TimelineEvent) -> Bool {
+        guard case .dailyReview(let snapshot) = event.kind else { return false }
+        return latestDailyReviewEventID[snapshot.reviewID] != event.eventID
     }
 
     /// A live receipt stays visible until the same state has arrived as a

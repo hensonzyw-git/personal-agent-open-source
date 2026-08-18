@@ -675,6 +675,11 @@ class DailyReview(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(
         UtcTimestamp, nullable=True
     )
+    #: The Timeline event holding this card's frozen value snapshot, or `None`
+    #: when none has been sealed yet (a review built before migration 0007, or
+    #: one whose event append is still owed after a crash between the review-row
+    #: commit and the append).
+    timeline_event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         CheckConstraint(_in_set("status", REVIEW_STATUSES), name="status"),

@@ -905,6 +905,10 @@ public enum TimelineEntryKind: Sendable, Equatable {
     /// ledger for an operation parked at `needs_manual_review`. Presentation
     /// state, never dialogue — and never evidence that a write happened.
     case manualReviewResolved(resolution: String)
+    /// `1j`. The daily review card, sealed by the nightly job with the ledger
+    /// values read once at build time. The `snapshot` is frozen; the card's
+    /// status is read live because ack/defer keep changing it after the seal.
+    case dailyReview(snapshot: ReviewCardSnapshot)
     /// An event type this build does not know. Kept visible rather than dropped:
     /// a silently-missing entry is a history that lies about what happened.
     case unrecognised(eventType: String)
@@ -1039,6 +1043,21 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                 return .unrecognised(eventType: eventType)
             }
             return .manualReviewResolved(resolution: resolution)
+        case "daily_review":
+            // The whole sealed content is the snapshot. Re-encoding the nested
+            // `JSONValue` object and decoding it back is the same path the query
+            // and receipt projections use, so history draws the same card the
+            // live build carried. A snapshot this build cannot read refuses the
+            // entry rather than rendering a partial, possibly-lying card.
+            guard
+                let data = try? JSONEncoder().encode(content),
+                let snapshot = try? JSONDecoder().decode(
+                    ReviewCardSnapshot.self, from: data
+                )
+            else {
+                return .unrecognised(eventType: eventType)
+            }
+            return .dailyReview(snapshot: snapshot)
         case "session_divider", "session_boundary_corrected":
             return .sessionDivider(
                 reason: content["reason"]?.stringValue,

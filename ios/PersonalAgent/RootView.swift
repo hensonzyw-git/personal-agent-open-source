@@ -4,8 +4,6 @@ import UIKit
 
 struct RootView: View {
     @Bindable var model: AppModel
-    /// The review list, reached from the ambient bar rather than from a tab.
-    @State private var showingReview = false
 
     var body: some View {
         switch model.phase {
@@ -15,8 +13,8 @@ struct RootView: View {
             NavigationStack { EnrollmentView(model: model) }
         case .ready, .revoked:
             // §1a: one Timeline, no tab bar. The review is no longer a peer surface
-            // -- §1j and §1q make every long-running item reachable the same way,
-            // through the ambient bar rather than through its own tab.
+            // -- §1j puts the card in the Timeline, and §1q's ambient bar indexes
+            // it, so every long-running item is reached the same way.
             //
             // A revoked device has no Timeline to show, so the status screen becomes
             // the root. `DEV-030`'s rule is unchanged: chat appears only once the
@@ -40,11 +38,9 @@ struct RootView: View {
             if let review = model.review {
                 AmbientOperationBar(
                     pendingCount: pendingReviewCount(review.summaries)
-                ) {
-                    showingReview = true
-                }
+                )
             }
-            ChatView(model: chat)
+            ChatView(model: chat, review: model.review)
         }
         .background(Color.screenBackground)
         .navigationTitle("Personal Agent")
@@ -63,11 +59,6 @@ struct RootView: View {
                         .frame(width: 11, height: 11)
                         .accessibilityLabel(healthLabel)
                 }
-            }
-        }
-        .sheet(isPresented: $showingReview) {
-            if let review = model.review {
-                NavigationStack { ReviewListView(model: review) }
             }
         }
     }
@@ -189,27 +180,6 @@ struct ServiceStatusView: View {
             }
             .listRowBackground(Color.cardSurface)
 
-            // **Temporary bridge, and it must not outlive the gap that requires it.**
-            //
-            // §1a removes the review tab because §1j puts the card in the Timeline
-            // and §1q's ambient bar indexes it. The bar is built; the Timeline card
-            // is not, because `TimelineEvent` has no case for a review and the
-            // service emits no such event. So once nothing is pending the bar
-            // disappears -- correctly, by its own zero rule -- and reviewed history
-            // would have no entry point at all.
-            //
-            // Losing reachability of a surface that passed real-device acceptance is
-            // not an acceptable cost of a visual refactor. Delete this section when
-            // the review card reaches the Timeline.
-            if model.review != nil {
-                Section {
-                    NavigationLink("每日复核") { reviewDestination }
-                } header: {
-                    groupHeader("复核")
-                }
-                .listRowBackground(Color.cardSurface)
-            }
-
             Section {
                 if model.phase == .revoked {
                     // Not "no tools": unreadable. The distinction is the same one
@@ -298,13 +268,6 @@ struct ServiceStatusView: View {
     /// truncated in the middle instead, where a hash's distinguishing characters sit
     /// at both ends, and the whole value stays reachable through long-press copy so
     /// nothing is actually lost.
-    @ViewBuilder
-    private var reviewDestination: some View {
-        if let review = model.review {
-            ReviewListView(model: review)
-        }
-    }
-
     private func row(_ label: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(label).foregroundStyle(.secondary)

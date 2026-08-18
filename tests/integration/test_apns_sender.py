@@ -536,3 +536,8 @@ def test_the_review_cli_wires_the_sender_rather_than_leaving_a_seam() -> None:
         for keyword in node.keywords
     }
     assert "send" in keywords
+    # The Timeline card is the same class of seam: without these the run builds
+    # cards and queues pushes but never seals the frozen `daily_review` event,
+    # and the review would have no entry point once the page is gone.
+    assert "keyring" in keywords
+    assert "session_manager" in keywords

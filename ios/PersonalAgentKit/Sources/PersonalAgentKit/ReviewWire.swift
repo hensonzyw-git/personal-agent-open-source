@@ -212,6 +212,62 @@ extension ReviewDetail: Decodable {
     }
 }
 
+// --- the Timeline snapshot (design `1j`) -------------------------------------
+
+/// The frozen content of a `daily_review` Timeline event.
+///
+/// Unlike `ReviewDetail` -- which the server assembles by reading the ledger
+/// live, every time a card is opened -- this is a sealed snapshot: the values
+/// were read once, when the nightly job built (or reopened) the card, and are
+/// what the Timeline renders from now on. A later correction in Feishu is seen
+/// through 打开飞书账本, never by re-reading here.
+///
+/// `status` is deliberately absent: it is the one field that keeps changing
+/// after the snapshot (确认都正确 / 稍后处理), so the card reads it live from
+/// the review list rather than from a value frozen at build time.
+public struct ReviewCardSnapshot: Sendable, Equatable {
+    public let reviewID: String
+    public let reviewDate: String
+    public let itemCount: Int
+    public let items: [ReviewItem]
+
+    public init(
+        reviewID: String,
+        reviewDate: String,
+        itemCount: Int,
+        items: [ReviewItem]
+    ) {
+        self.reviewID = reviewID
+        self.reviewDate = reviewDate
+        self.itemCount = itemCount
+        self.items = items
+    }
+}
+
+extension ReviewCardSnapshot: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case reviewID = "review_id"
+        case reviewDate = "review_date"
+        case itemCount = "item_count"
+        case items
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        reviewID = try container.decode(String.self, forKey: .reviewID)
+        reviewDate = try container.decode(String.self, forKey: .reviewDate)
+        itemCount = try container.decode(Int.self, forKey: .itemCount)
+        items = try container.decode([ReviewItem].self, forKey: .items)
+        if reviewID.isEmpty || reviewDate.isEmpty {
+            throw DecodingError.dataCorruptedError(
+                forKey: .reviewID,
+                in: container,
+                debugDescription: "a review card needs a review id and date"
+            )
+        }
+    }
+}
+
 // --- 待办 counting (§3h 第 4 条) ----------------------------------------------
 
 /// How many review cards are still awaiting Henson.

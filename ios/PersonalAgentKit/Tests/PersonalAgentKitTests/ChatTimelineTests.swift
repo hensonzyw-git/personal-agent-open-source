@@ -996,6 +996,52 @@ struct TimelineEventTests {
         #expect(parsed.kind == .unrecognised(eventType: "teleport"))
     }
 
+    @Test("a daily review event carries its frozen snapshot")
+    func dailyReviewEvent() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-review",
+                type: "daily_review",
+                content: [
+                    "review_id": "rev-1",
+                    "review_date": "2026-07-25",
+                    "item_count": 1,
+                    "items": [
+                        [
+                            "record_id": "recA",
+                            "tool": "finance.log_expense",
+                            "committed_at": "2026-07-25T06:00:00+00:00",
+                            "table_kind": "expense",
+                            "values": ["name": "咖啡", "amount": "18.00"],
+                        ]
+                    ],
+                ]
+            )
+        )
+        guard case .dailyReview(let snapshot) = parsed.kind else {
+            Issue.record("expected a daily review card, got \(parsed.kind)")
+            return
+        }
+        #expect(snapshot.reviewID == "rev-1")
+        #expect(snapshot.reviewDate == "2026-07-25")
+        #expect(snapshot.itemCount == 1)
+        #expect(snapshot.items.count == 1)
+        #expect(snapshot.items[0].recordID == "recA")
+        #expect(snapshot.items[0].values?["amount"] == .string("18.00"))
+    }
+
+    @Test("a daily review event without a review id is unreadable, not blank")
+    func dailyReviewNeedsIdentity() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-review-bad",
+                type: "daily_review",
+                content: ["review_date": "2026-07-25", "item_count": 0, "items": []]
+            )
+        )
+        #expect(parsed.kind == .unrecognised(eventType: "daily_review"))
+    }
+
     @Test("a non-string where text belongs is unreadable, not blank")
     func nonStringText() throws {
         let parsed = try decode(chatEvent("ev-7", content: ["text": 18]))
