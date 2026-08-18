@@ -73,6 +73,10 @@ OPERATION_COMMAND_TYPES = {
     "DAL-T-PROVIDER-ROUTE-001": "route_provider_attempt",
     "DAL-T-RESTART-001": "resume_persisted_run",
     "DAL-T-EFFECT-OWNERSHIP-001": "dispatch_effect_outcome_sequence",
+    "DAL-T-PLAN-XFIELD-001": "validate_plan_cross_fields",
+    "DAL-T-DISPOSITION-001": "recompute_review_disposition",
+    "DAL-T-OPENSET-001": "derive_open_finding_set",
+    "DAL-T-FIXDIFF-001": "validate_post_fix_verdict",
 }
 OPERATION_BINDINGS = {
     "DAL-T-SM-001": ("service", "workflow-service"),
@@ -113,6 +117,10 @@ OPERATION_BINDINGS = {
     "DAL-T-PROVIDER-ROUTE-001": ("service", "provider-adapter"),
     "DAL-T-RESTART-001": ("service", "workflow-service"),
     "DAL-T-EFFECT-OWNERSHIP-001": ("service", "workflow-service"),
+    "DAL-T-PLAN-XFIELD-001": ("service", "planner"),
+    "DAL-T-DISPOSITION-001": ("service", "review-controller"),
+    "DAL-T-OPENSET-001": ("service", "review-controller"),
+    "DAL-T-FIXDIFF-001": ("service", "review-controller"),
 }
 WRITE_SETS = {
     "A": BASE_WRITES,
@@ -584,6 +592,121 @@ def semantic_operation_input(
         actions = [{"command": "load_persisted_run"}, {"command": "evaluate_loop_budget"}, {"command": "resume_or_block"}]
         facts = {"provider_attempt_count": 3 if retry else 1, "transient_retry_count": 2 if retry else 0, "review_fix_count": 3 if not retry else 0, "max_transient_retries": 2, "max_review_fixes": 3, "execution_host": "home_mac" if variant.startswith("mac_") else "service"}
         results = [{"source": "run_store", "status": "completed", "persisted_counters_present": True}]
+    elif test_id == "DAL-T-PLAN-XFIELD-001":
+        tasks = [{"task_id": "T-1", "order": 1, "title": "Implement importer", "allowed_paths": [{"path": "src/importer", "path_type": "directory"}], "acceptance_ids": ["AC-1"], "dependency_task_ids": []}]
+        criteria = [{"acceptance_id": "AC-1", "description": "Rows import idempotently", "verification_ids": ["VR-1"]}]
+        if variant in {"paths_overlap_file_in_dir", "paths_overlap_dir_in_dir", "paths_overlap_equal", "order_gap", "dependency_not_earlier"}:
+            second_paths = {
+                "paths_overlap_file_in_dir": [{"path": "src/importer/patch.py", "path_type": "file"}],
+                "paths_overlap_dir_in_dir": [{"path": "src", "path_type": "directory"}],
+                "paths_overlap_equal": [{"path": "src/importer", "path_type": "directory"}],
+            }.get(variant, [{"path": "docs/patch-notes.md", "path_type": "file"}])
+            tasks.append({"task_id": "T-2", "order": 3 if variant == "order_gap" else 2, "title": "Add patch notes", "allowed_paths": second_paths, "acceptance_ids": ["AC-2"], "dependency_task_ids": []})
+            criteria.append({"acceptance_id": "AC-2", "description": "Patch notes rendered", "verification_ids": ["VR-1"]})
+            if variant == "dependency_not_earlier": tasks[0]["dependency_task_ids"] = ["T-2"]
+        if variant == "unknown_verification": criteria[0]["verification_ids"] = ["VR-404"]
+        plan = {
+            "schema_version": "dal.plan-artifact/1.0",
+            "feature_id": "feat-0002" if variant == "identity_mismatch" else "feat-0001",
+            "base_sha": "1" * 40,
+            "prd": {"scope": ["Import ledger rows"], "non_goals": [], "risks": []},
+            "technical_design": {"change_points": ["Add importer step"], "boundaries": ["No UI change"], "rollback_steps": ["Revert the importer commit"]},
+            "tasks": tasks,
+            "acceptance_criteria": criteria,
+        }
+        plan["allowed_paths_sha256"] = "0" * 64 if variant == "digest_drift" else digest([entry for task in sorted(tasks, key=lambda item: item["order"]) for entry in task["allowed_paths"]])
+        actions, facts, results = ([{"command": "validate_plan_cross_fields"}, {"command": "record_plan"}], {"input_manifest": {"feature_id": "feat-0001", "base_sha": "1" * 40}, "repo_rules_registry": [{"verification_id": "VR-1", "rule_id": "rule-import"}]}, [{"source": "planner", "status": "completed", "plan": plan}])
+    elif test_id == "DAL-T-DISPOSITION-001":
+        finding = {"finding_id": "F-1", "severity": "P2", "location": {"path": "src/importer/run.py", "line_start": 3, "line_end": 4, "anchor_sha": "3" * 40}, "summary": "Missing idempotency key", "failure_scenario": "Replay duplicates rows", "category": "correctness"}
+        findings = [finding] if variant in {"request_changes_findings", "provider_approve_with_findings"} else []
+        gaps = [{"acceptance_id": "AC-2", "summary": "Acceptance AC-2 left unreviewed", "failure_scenario": "Unreviewed acceptance ships a regression"}] if variant == "request_changes_gaps" else []
+        coverage = [] if variant == "coverage_incomplete" else [{"acceptance_id": "AC-1", "verification_ids": ["VR-1"]}, {"acceptance_id": "AC-2", "verification_ids": ["VR-2"]}]
+        disposition = "approve" if variant in {"approve_clean", "provider_approve_with_findings"} else "request_changes"
+        actions, facts, results = (
+            [{"command": "recompute_review_disposition"}, {"command": "record_review"}],
+            {"plan_acceptance_ids": ["AC-1", "AC-2"], "plan_verification_ids": {"AC-1": ["VR-1"], "AC-2": ["VR-2"]}, "recomputed_review_inputs": {"input_manifest_sha256": "a" * 64, "diff_base_sha": "1" * 40, "result_sha": "3" * 40}},
+            [{"source": "reviewer", "status": "completed", "disposition": disposition, "findings": findings, "acceptance_gaps": gaps, "coverage": coverage, "reviewed_input_manifest_sha256": "a" * 64, "reviewed_diff_base_sha": "1" * 40, "reviewed_result_sha": "3" * 40}],
+        )
+    elif test_id == "DAL-T-OPENSET-001":
+        path = "src/importer/run.py"
+
+        def resolution(finding_id: str, status: str, evidence: str) -> dict:
+            summary = f"{finding_id} covered this round" if status == "closed" else f"{finding_id} still open"
+            return {"finding_id": finding_id, "status": status, "summary": summary, "evidence_sha256": [evidence]}
+
+        def regression(finding_id: str, anchor: str) -> dict:
+            return {"finding_id": finding_id, "severity": "P2", "location": {"path": path, "line_start": 2, "line_end": 2, "anchor_sha": anchor}, "summary": "Regression in replay", "failure_scenario": "Replay duplicates rows again", "category": "correctness"}
+
+        if variant == "init_from_review":
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-1", "closed", "e" * 64)], [], "verified", [], "3" * 40, 3
+        elif variant == "carry_forward_exact":
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "closed", "e" * 64)], [], "verified", [regression("F-101", "4" * 40)], "4" * 40, 2
+        elif variant == "carried_finding_omitted":
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [], [], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 2
+        elif variant == "carried_finding_renamed":
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-999", "closed", "e" * 64)], [], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 2
+        elif variant == "new_finding_id_reused":
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "closed", "e" * 64)], [regression("F-1", "5" * 40)], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 2
+        elif variant == "verified_with_new_findings":
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "closed", "e" * 64)], [regression("F-202", "5" * 40)], "verified", [regression("F-101", "4" * 40)], "4" * 40, 2
+        else:
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "remaining", "r" * 64)], [], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 2
+        chain = [] if variant == "init_from_review" else [{"sequence": 1, "result_sha": "4" * 40, "new_findings": carried}]
+        increment = "@@ -1,5 +1,5 @@\n line1\n line2\n-old3\n+new3\n line4\n line5" if touched_line == 3 else "@@ -1,3 +1,3 @@\n line1\n-old2\n+new2\n line3"
+        actions, facts, results = (
+            [{"command": "derive_open_finding_set"}, {"command": "record_review"}],
+            {
+                "original_review": {"finding_ids": ["F-1"], "acceptance_gap_ids": []},
+                "prior_verdict_chain": chain,
+                "manifest_roles": {"e" * 64: "fix_diff", "r" * 64: "review_findings"},
+                "round_anchors": {"anchor_sha": anchor_sha, "previous_result_sha": anchor_sha},
+                "recomputed_result_sha": "5" * 40,
+            },
+            [
+                {"source": "git_executor", "status": "completed", "path": path, "anchor_tree_entry": {"mode": "100644", "type": "blob", "present": True}, "previous_tree_entry": {"mode": "100644", "type": "blob", "present": True}, "current_tree_entry": {"mode": "100644", "type": "blob", "present": True}, "anchor_translation_diff": None, "increment_diff": increment},
+                {"source": "reviewer", "status": "completed", "verdict": {"schema_version": "dal.post-fix-verdict/1.0", "result_sha": "5" * 40, "verdict": verdict_value, "acceptance_verified": True, "finding_resolutions": resolutions, "acceptance_gap_resolutions": [], "new_findings": new_findings}},
+            ],
+        )
+    elif test_id == "DAL-T-FIXDIFF-001":
+        path = "src/importer/run.py"
+        translation = "@@ -1,5 +1,5 @@\n line1\n line2\n-old3\n-old4\n+new3\n+new4\n line5"
+        increment = "@@ -2,4 +2,4 @@\n line2\n-new3\n-new4\n+fixed3\n+fixed4\n line5"
+        if variant == "surviving_set_empty":
+            translation = "@@ -1,5 +1,3 @@\n line1\n line2\n-old3\n-old4\n line5"
+        elif variant == "increment_missed_surviving_lines":
+            increment = "@@ -1,2 +1,2 @@\n line1\n-other\n+changed"
+        elif variant == "no_deletion_in_increment":
+            increment = "@@ -2,2 +2,3 @@\n line2\n+guard\n new3"
+        anchor_entry = {"mode": "040000", "type": "tree", "present": True} if variant == "anchor_entry_not_blob" else {"mode": "100644", "type": "blob", "present": True}
+        previous_entry = {"mode": "100644", "type": "blob", "present": False} if variant == "path_died_between_rounds" else {"mode": "100644", "type": "blob", "present": True}
+        evidence = "p" * 64 if variant == "evidence_role_violation" else "f" * 64
+        acceptance_verified = variant != "verified_with_unverified_acceptance"
+        gap_ids = ["AC-1"] if variant in {"gap_closed_by_test_receipts", "gap_closed_by_fix_diff_only"} else []
+        gap_evidence = "t" * 64 if variant == "gap_closed_by_test_receipts" else "f" * 64
+        gap_resolutions = [{"acceptance_id": "AC-1", "status": "closed", "summary": "Missing verification delivered", "evidence_sha256": [gap_evidence]}] if gap_ids else []
+        verdict_value = "changes_requested" if variant in {"new_finding_anchor_mismatch", "changes_requested_declared"} else "verified"
+        new_findings = [] if variant != "new_finding_anchor_mismatch" else [{"finding_id": "F-901", "severity": "P2", "location": {"path": path, "line_start": 2, "line_end": 2, "anchor_sha": "9" * 40}, "summary": "Anchor not bound to this verdict", "failure_scenario": "Regression measured on another tree", "category": "correctness"}]
+        if variant == "changes_requested_declared":
+            finding_resolutions = [{"finding_id": "F-1", "status": "remaining", "summary": "Fix attempt rejected", "evidence_sha256": ["r" * 64]}]
+        else:
+            finding_resolutions = [{"finding_id": "F-1", "status": "closed", "summary": "Idempotency key added", "evidence_sha256": [evidence]}]
+        verdict = {"schema_version": "dal.post-fix-verdict/1.0", "result_sha": "5" * 40, "verdict": verdict_value, "acceptance_verified": acceptance_verified, "finding_resolutions": finding_resolutions, "acceptance_gap_resolutions": gap_resolutions, "new_findings": new_findings}
+        actions, facts, results = (
+            [{"command": "validate_post_fix_verdict"}, {"command": "record_review"}],
+            {
+                "manifest_roles": {"f" * 64: "fix_diff", "t" * 64: "test_receipts", "p" * 64: "approved_plan", "r" * 64: "review_findings"},
+                "test_receipts": {"t" * 64: {"verification_id": "VR-1"}},
+                "plan_tasks": [{"task_id": "T-1", "allowed_paths": [{"path": "src/importer", "path_type": "directory"}], "acceptance_ids": ["AC-1"]}],
+                "plan_verification_ids": {"AC-1": ["VR-1"]},
+                "original_review": {"finding_ids": ["F-1"], "finding_locations": {"F-1": {"path": path, "line_start": 3, "line_end": 4, "anchor_sha": "3" * 40}}, "acceptance_gap_ids": gap_ids},
+                "prior_verdict_chain": [{"sequence": 1, "result_sha": "4" * 40, "finding_resolutions": [{"finding_id": "F-1", "status": "remaining", "summary": "Not yet fixed", "evidence_sha256": ["r" * 64]}], "new_findings": []}],
+                "round_anchors": {"anchor_sha": "3" * 40, "previous_result_sha": "4" * 40},
+            },
+            [
+                {"source": "git_executor", "status": "completed", "path": path, "anchor_tree_entry": anchor_entry, "previous_tree_entry": previous_entry, "current_tree_entry": {"mode": "100644", "type": "blob", "present": True}, "anchor_translation_diff": translation, "increment_diff": increment},
+                {"source": "reviewer", "status": "completed", "verdict": verdict},
+            ],
+        )
     else:
         raise ValueError(f"missing semantic operation input: {test_id}/{variant}/{gate}")
 
@@ -2568,6 +2691,17 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
     many("DAL-T-REVIEW-INDEP-001", ["same_session", "same_context", "same_independence_key"], "G3", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "reviewing", None, None, "POLICY_DENIED", None, [])
     many("DAL-T-REVIEW-INDEP-001", ["synthetic_fresh"], "G3", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
     many("DAL-T-REVIEW-INDEP-001", ["live_fresh"], "G4", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
+    many("DAL-T-PLAN-XFIELD-001", ["identity_mismatch", "paths_overlap_file_in_dir", "paths_overlap_dir_in_dir", "paths_overlap_equal", "order_gap", "dependency_not_earlier", "unknown_verification", "digest_drift"], "G3", ["DAL-022"], "planning", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
+    many("DAL-T-PLAN-XFIELD-001", ["plan_complete"], "G3", ["DAL-022"], "planning", "awaiting_plan_review", None, None, "APPLIED", None, ["plan.ready"])
+    many("DAL-T-DISPOSITION-001", ["coverage_incomplete", "provider_approve_with_findings", "provider_request_changes_clean"], "G3", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
+    many("DAL-T-DISPOSITION-001", ["approve_clean"], "G3", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
+    many("DAL-T-DISPOSITION-001", ["request_changes_findings", "request_changes_gaps"], "G3", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "fixing", None, None, "APPLIED", None, ["fix.requested"])
+    many("DAL-T-OPENSET-001", ["carried_finding_omitted", "carried_finding_renamed", "new_finding_id_reused", "verified_with_new_findings"], "G3", ["DAL-024", "DAL-030"], "reviewing", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
+    many("DAL-T-OPENSET-001", ["init_from_review", "carry_forward_exact"], "G3", ["DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
+    many("DAL-T-OPENSET-001", ["remaining_declared"], "G3", ["DAL-024", "DAL-030"], "reviewing", "fixing", None, None, "APPLIED", None, ["fix.requested"])
+    many("DAL-T-FIXDIFF-001", ["evidence_role_violation", "anchor_entry_not_blob", "path_died_between_rounds", "surviving_set_empty", "increment_missed_surviving_lines", "no_deletion_in_increment", "gap_closed_by_fix_diff_only", "new_finding_anchor_mismatch", "verified_with_unverified_acceptance"], "G3", ["DAL-022", "DAL-024", "DAL-030"], "reviewing", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
+    many("DAL-T-FIXDIFF-001", ["verified_clean", "gap_closed_by_test_receipts"], "G3", ["DAL-022", "DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
+    many("DAL-T-FIXDIFF-001", ["changes_requested_declared"], "G3", ["DAL-022", "DAL-024", "DAL-030"], "reviewing", "fixing", None, None, "APPLIED", None, ["fix.requested"])
     pronly = {
         "text_request": ("awaiting_merge", "POLICY_DENIED", None, []),
         "approve_record": ("awaiting_merge", "APPLIED", None, ["approval.recorded"]),
@@ -3074,13 +3208,13 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
     fixture_sequences = [fixture for fixture in fixtures.values() if "operation_sequence" in fixture]
     operation_fixture_sequences = [fixture for fixture in fixture_sequences if fixture.get("resolver_sequence_kind") == "operation_commands"]
     transition_fixture_sequences = [fixture for fixture in fixture_sequences if fixture.get("resolver_sequence_kind") == "transition_commands"]
-    if (len(common_specs), len(sequence_specs), len(common_commands), len(sequence_commands), operation_variant_count) != (36, 2, 190, 17, 204):
+    if (len(common_specs), len(sequence_specs), len(common_commands), len(sequence_commands), operation_variant_count) != (40, 2, 224, 17, 238):
         raise ValueError("semantic operation coverage drift")
     if (
         len(fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in fixture_sequences),
         len(operation_fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in operation_fixture_sequences),
         len(transition_fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in transition_fixture_sequences),
-    ) != (205, 209, 204, 207, 1, 2):
+    ) != (239, 243, 238, 241, 1, 2):
         raise ValueError("fixture operation/transition sequence accounting drift")
     forbidden_resolver_keys = {"test_id", "variant_id", "case_id", "injection_point", "injection_occurrence", "expected_result", "expected_receipt_code"}
 
@@ -3163,12 +3297,12 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
             "forbidden_resolver_fields": ["test_id", "variant_id", "case_id", "injection_point", "injection_occurrence", "expected_result", "expected_receipt_code"],
             "allowed_expected_comparison_fields": ["expected_head_sha", "expected_provider_attempt_version", "expected_version"],
             "sequence_accounting": {
-                "fixture_operation_sequence_variants": 205,
-                "fixture_raw_command_objects": 209,
-                "operation_registry_variants": 204,
-                "operation_registry_command_objects": 207,
-                "common_input_specs": 36,
-                "common_input_commands": 190,
+                "fixture_operation_sequence_variants": 239,
+                "fixture_raw_command_objects": 243,
+                "operation_registry_variants": 238,
+                "operation_registry_command_objects": 241,
+                "common_input_specs": 40,
+                "common_input_commands": 224,
                 "multi_command_operation_specs": 2,
                 "multi_command_operation_commands": 17,
                 "transition_sequence_variants_excluded_from_operation_registry": 1,

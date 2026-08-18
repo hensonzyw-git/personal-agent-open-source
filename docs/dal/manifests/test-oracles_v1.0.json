@@ -1,8 +1,8 @@
 {
-  "catalog_sha256": "fdf5b451b3a1923aefebd289146e2c2a638f0b438977ed9a5602c25ebe40938b",
+  "catalog_sha256": "1c91f2e302e81bbc6a8a8cbe6c3ad1b674bb5aad614f4e4ee8155dcdc9df1410",
   "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
   "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
-  "operation_registry_sha256": "314f44f698f0c1ba390287aff14c37d37fad0b418285b948625f435916975938",
+  "operation_registry_sha256": "57396000fb4d7b588fed07fb0087bf82071c22bf65233963ba2be3cbf5925ed1",
   "oracles": {
     "dal.oracle/DAL-T-APP-001/concurrent_consume/G1/1.0": {
       "allowed_write_set": [
@@ -3091,6 +3091,333 @@
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-DELIVERY-OBS-001",
       "variant_id": "unknown_deploy_observation"
+    },
+    "dal.oracle/DAL-T-DISPOSITION-001/approve_clean/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "review.completed"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "verified"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "verified"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-DISPOSITION-001/approve_clean/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "approve_clean",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-DISPOSITION-001",
+      "variant_id": "approve_clean"
+    },
+    "dal.oracle/DAL-T-DISPOSITION-001/coverage_incomplete/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-DISPOSITION-001/coverage_incomplete/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "coverage_incomplete",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-DISPOSITION-001",
+      "variant_id": "coverage_incomplete"
+    },
+    "dal.oracle/DAL-T-DISPOSITION-001/provider_approve_with_findings/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-DISPOSITION-001/provider_approve_with_findings/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "provider_approve_with_findings",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-DISPOSITION-001",
+      "variant_id": "provider_approve_with_findings"
+    },
+    "dal.oracle/DAL-T-DISPOSITION-001/provider_request_changes_clean/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-DISPOSITION-001/provider_request_changes_clean/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "provider_request_changes_clean",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-DISPOSITION-001",
+      "variant_id": "provider_request_changes_clean"
+    },
+    "dal.oracle/DAL-T-DISPOSITION-001/request_changes_findings/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "fix.requested"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "fixing"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "fixing"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-DISPOSITION-001/request_changes_findings/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "request_changes_findings",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-DISPOSITION-001",
+      "variant_id": "request_changes_findings"
+    },
+    "dal.oracle/DAL-T-DISPOSITION-001/request_changes_gaps/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "fix.requested"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "fixing"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "fixing"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-DISPOSITION-001/request_changes_gaps/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "request_changes_gaps",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-DISPOSITION-001",
+      "variant_id": "request_changes_gaps"
     },
     "dal.oracle/DAL-T-DOCK-001/bulk_high_risk/G1/1.0": {
       "allowed_write_set": [
@@ -11616,6 +11943,669 @@
       "test_id": "DAL-T-FALLBACK-RESTART-001",
       "variant_id": "restart_observes_dispatch_started"
     },
+    "dal.oracle/DAL-T-FIXDIFF-001/anchor_entry_not_blob/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FIXDIFF-001/anchor_entry_not_blob/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "anchor_entry_not_blob",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FIXDIFF-001",
+      "variant_id": "anchor_entry_not_blob"
+    },
+    "dal.oracle/DAL-T-FIXDIFF-001/changes_requested_declared/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "fix.requested"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "fixing"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "fixing"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FIXDIFF-001/changes_requested_declared/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "changes_requested_declared",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FIXDIFF-001",
+      "variant_id": "changes_requested_declared"
+    },
+    "dal.oracle/DAL-T-FIXDIFF-001/evidence_role_violation/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FIXDIFF-001/evidence_role_violation/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "evidence_role_violation",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FIXDIFF-001",
+      "variant_id": "evidence_role_violation"
+    },
+    "dal.oracle/DAL-T-FIXDIFF-001/gap_closed_by_fix_diff_only/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FIXDIFF-001/gap_closed_by_fix_diff_only/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "gap_closed_by_fix_diff_only",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FIXDIFF-001",
+      "variant_id": "gap_closed_by_fix_diff_only"
+    },
+    "dal.oracle/DAL-T-FIXDIFF-001/gap_closed_by_test_receipts/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "review.completed"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "verified"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "verified"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FIXDIFF-001/gap_closed_by_test_receipts/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "gap_closed_by_test_receipts",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FIXDIFF-001",
+      "variant_id": "gap_closed_by_test_receipts"
+    },
+    "dal.oracle/DAL-T-FIXDIFF-001/increment_missed_surviving_lines/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FIXDIFF-001/increment_missed_surviving_lines/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "increment_missed_surviving_lines",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FIXDIFF-001",
+      "variant_id": "increment_missed_surviving_lines"
+    },
+    "dal.oracle/DAL-T-FIXDIFF-001/new_finding_anchor_mismatch/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FIXDIFF-001/new_finding_anchor_mismatch/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "new_finding_anchor_mismatch",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FIXDIFF-001",
+      "variant_id": "new_finding_anchor_mismatch"
+    },
+    "dal.oracle/DAL-T-FIXDIFF-001/no_deletion_in_increment/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FIXDIFF-001/no_deletion_in_increment/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "no_deletion_in_increment",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FIXDIFF-001",
+      "variant_id": "no_deletion_in_increment"
+    },
+    "dal.oracle/DAL-T-FIXDIFF-001/path_died_between_rounds/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FIXDIFF-001/path_died_between_rounds/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "path_died_between_rounds",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FIXDIFF-001",
+      "variant_id": "path_died_between_rounds"
+    },
+    "dal.oracle/DAL-T-FIXDIFF-001/surviving_set_empty/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FIXDIFF-001/surviving_set_empty/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "surviving_set_empty",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FIXDIFF-001",
+      "variant_id": "surviving_set_empty"
+    },
+    "dal.oracle/DAL-T-FIXDIFF-001/verified_clean/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "review.completed"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "verified"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "verified"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FIXDIFF-001/verified_clean/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "verified_clean",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FIXDIFF-001",
+      "variant_id": "verified_clean"
+    },
+    "dal.oracle/DAL-T-FIXDIFF-001/verified_with_unverified_acceptance/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-FIXDIFF-001/verified_with_unverified_acceptance/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "verified_with_unverified_acceptance",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-FIXDIFF-001",
+      "variant_id": "verified_with_unverified_acceptance"
+    },
     "dal.oracle/DAL-T-GH-EVENT-001/edited_event/G2/1.0": {
       "allowed_write_set": [],
       "coverage_ref": null,
@@ -13419,6 +14409,389 @@
       "test_id": "DAL-T-NOTIFY-001",
       "variant_id": "restart"
     },
+    "dal.oracle/DAL-T-OPENSET-001/carried_finding_omitted/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-OPENSET-001/carried_finding_omitted/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "carried_finding_omitted",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-OPENSET-001",
+      "variant_id": "carried_finding_omitted"
+    },
+    "dal.oracle/DAL-T-OPENSET-001/carried_finding_renamed/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-OPENSET-001/carried_finding_renamed/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "carried_finding_renamed",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-OPENSET-001",
+      "variant_id": "carried_finding_renamed"
+    },
+    "dal.oracle/DAL-T-OPENSET-001/carry_forward_exact/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "review.completed"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "verified"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "verified"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-OPENSET-001/carry_forward_exact/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "carry_forward_exact",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-OPENSET-001",
+      "variant_id": "carry_forward_exact"
+    },
+    "dal.oracle/DAL-T-OPENSET-001/init_from_review/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "review.completed"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "verified"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "verified"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-OPENSET-001/init_from_review/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "init_from_review",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-OPENSET-001",
+      "variant_id": "init_from_review"
+    },
+    "dal.oracle/DAL-T-OPENSET-001/new_finding_id_reused/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-OPENSET-001/new_finding_id_reused/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "new_finding_id_reused",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-OPENSET-001",
+      "variant_id": "new_finding_id_reused"
+    },
+    "dal.oracle/DAL-T-OPENSET-001/remaining_declared/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "fix.requested"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "fixing"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "fixing"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-OPENSET-001/remaining_declared/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "remaining_declared",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-OPENSET-001",
+      "variant_id": "remaining_declared"
+    },
+    "dal.oracle/DAL-T-OPENSET-001/verified_with_new_findings/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "reviewing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-OPENSET-001/verified_with_new_findings/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "verified_with_new_findings",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-OPENSET-001",
+      "variant_id": "verified_with_new_findings"
+    },
     "dal.oracle/DAL-T-PATH-001/absolute/G2/1.0": {
       "allowed_write_set": [
         "aggregate",
@@ -13642,6 +15015,507 @@
       "schema_version": "dal.test-oracle/1.0",
       "test_id": "DAL-T-PATH-001",
       "variant_id": "symlink_swap"
+    },
+    "dal.oracle/DAL-T-PLAN-XFIELD-001/dependency_not_earlier/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "planning",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-PLAN-XFIELD-001/dependency_not_earlier/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "dependency_not_earlier",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-PLAN-XFIELD-001",
+      "variant_id": "dependency_not_earlier"
+    },
+    "dal.oracle/DAL-T-PLAN-XFIELD-001/digest_drift/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "planning",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-PLAN-XFIELD-001/digest_drift/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "digest_drift",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-PLAN-XFIELD-001",
+      "variant_id": "digest_drift"
+    },
+    "dal.oracle/DAL-T-PLAN-XFIELD-001/identity_mismatch/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "planning",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-PLAN-XFIELD-001/identity_mismatch/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "identity_mismatch",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-PLAN-XFIELD-001",
+      "variant_id": "identity_mismatch"
+    },
+    "dal.oracle/DAL-T-PLAN-XFIELD-001/order_gap/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "planning",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-PLAN-XFIELD-001/order_gap/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "order_gap",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-PLAN-XFIELD-001",
+      "variant_id": "order_gap"
+    },
+    "dal.oracle/DAL-T-PLAN-XFIELD-001/paths_overlap_dir_in_dir/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "planning",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-PLAN-XFIELD-001/paths_overlap_dir_in_dir/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "paths_overlap_dir_in_dir",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-PLAN-XFIELD-001",
+      "variant_id": "paths_overlap_dir_in_dir"
+    },
+    "dal.oracle/DAL-T-PLAN-XFIELD-001/paths_overlap_equal/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "planning",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-PLAN-XFIELD-001/paths_overlap_equal/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "paths_overlap_equal",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-PLAN-XFIELD-001",
+      "variant_id": "paths_overlap_equal"
+    },
+    "dal.oracle/DAL-T-PLAN-XFIELD-001/paths_overlap_file_in_dir/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "planning",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-PLAN-XFIELD-001/paths_overlap_file_in_dir/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "paths_overlap_file_in_dir",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-PLAN-XFIELD-001",
+      "variant_id": "paths_overlap_file_in_dir"
+    },
+    "dal.oracle/DAL-T-PLAN-XFIELD-001/plan_complete/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "plan.ready"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "awaiting_plan_review"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "planning",
+        "awaiting_plan_review"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-PLAN-XFIELD-001/plan_complete/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "plan_complete",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-PLAN-XFIELD-001",
+      "variant_id": "plan_complete"
+    },
+    "dal.oracle/DAL-T-PLAN-XFIELD-001/unknown_verification/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_atomic_companion_transitions": [],
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_external_effect_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_related_snapshots": [],
+      "expected_state_trace": [
+        "planning",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "unapproved_external_effect",
+        "production_access"
+      ],
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-PLAN-XFIELD-001/unknown_verification/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "unknown_verification",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "scenario_assertions": [],
+      "schema_version": "dal.test-oracle/1.0",
+      "test_id": "DAL-T-PLAN-XFIELD-001",
+      "variant_id": "unknown_verification"
     },
     "dal.oracle/DAL-T-PRONLY-MERGE-001/approve_record/G3/1.0": {
       "allowed_write_set": [
