@@ -4,10 +4,11 @@ Freeze package §3.4 (docs/dal/DAL021-024_合同冻结包_v0.1.md) fixes the
 single-shot consumption rule: a Codex turn dispatched with `max_turns=1` and
 `max_tool_calls=0` must land as exactly one non-empty `final` event bound to
 the requested context envelope. Anything else — a tool call, prose mixed with
-a tool call, a second assistant turn, a malformed `arguments_json`, a stream
-that dies in a transport error, multiple finals, an empty payload, or a final
-whose context envelope drifted — is a provider contract failure that fails
-closed *regardless of how valid the rest of the payload looks*.
+a tool call, free prose (text / stream_delta) ahead of the final, a second
+assistant turn, a malformed `arguments_json`, a stream that dies in a
+transport error, multiple finals, an empty payload, or a final whose context
+envelope is missing, malformed or drifted — is a provider contract failure
+that fails closed *regardless of how valid the rest of the payload looks*.
 
 The frozen `DAL-T-PROVIDER-CONTRACT-001` oracle freezes exactly that outcome
 for all eight adversarial variants: the feature moves `coding → needs_human`
@@ -103,18 +104,20 @@ FACT_FIELDS: Final[frozenset[str]] = frozenset(
 #: mandatory fields and the optional fields. An event's field set must lie
 #: between the two — a missing mandatory field or a field outside the union is
 #: an unknown shape on the untrusted side, i.e. a contract failure, not a crash.
-#: (`turn` and `context_envelope_sha256` are optional because the frozen
-#: fixtures legitimately omit them; the frozen `dal.provider-response/1.0`
-#: envelope carries the turn and context binding at the transport layer.)
+#: `context_envelope_sha256` is mandatory on `final`: §3.4 context_drift fails
+#: closed when the binding cannot be proven, and a final that omits the field
+#: proves nothing, so absence is drift — never a silent pass. `turn` stays
+#: optional because the frozen `dal.provider-response/1.0` envelope carries the
+#: turn at the transport layer and the frozen fixtures legitimately omit it.
 EVENT_REQUIRED_FIELDS: Final[dict[str, frozenset[str]]] = {
-    "final": frozenset({"type", "content"}),
+    "final": frozenset({"type", "content", "context_envelope_sha256"}),
     "text": frozenset({"type", "content"}),
     "stream_delta": frozenset({"type", "content"}),
     "tool_call": frozenset({"type", "name"}),
     "transport_error": frozenset({"type", "code"}),
 }
 EVENT_OPTIONAL_FIELDS: Final[dict[str, frozenset[str]]] = {
-    "final": frozenset({"turn", "context_envelope_sha256"}),
+    "final": frozenset({"turn"}),
     "text": frozenset(),
     "stream_delta": frozenset(),
     "tool_call": frozenset({"turn", "arguments", "arguments_json"}),
@@ -237,9 +240,9 @@ def _classify_stream(
     """Classify the untrusted stream per §3.4; returns `(verdict, reasons)`.
 
     The verdict is ``"conforming"`` only when the stream is exactly one
-    non-empty final bound to the requested context envelope with no tool
-    calls, no prose, no extra turns and no transport error. Every other
-    shape — including shapes too malformed to interpret — is
+    non-empty final carrying a context envelope that matches the request,
+    with no tool calls, no prose, no extra turns and no transport error.
+    Every other shape — including shapes too malformed to interpret — is
     ``"contract_failure"``. The provider's output never raises and is never
     silently repaired: what cannot be parsed fails the contract.
     """
@@ -294,29 +297,39 @@ def _classify_stream(
         elif event_type in ("text", "stream_delta"):
             if not isinstance(event.get("content"), str):
                 reasons.append(f"{event_type} content is not a string")
+            #: §3.4 prose 混正文: any model free-prose text outside the final
+            #: structured payload fails closed, even when the content is a
+            #: well-formed string and the final is otherwise valid. A clean
+            #: final never launders prose that preceded it.
+            reasons.append(f"{event_type} is free prose outside the final payload")
 
         elif event_type == "transport_error":
             if not isinstance(event.get("code"), str) or not event["code"]:
                 reasons.append("transport error code is not a non-empty string")
-            else:
-                reasons.append("stream terminated by a transport error")
+            #: §3.4 half stream / 断流: a transport_error event means the stream
+            #: died mid-flight regardless of whether its code is well-formed.
+            reasons.append("stream terminated by a transport error")
 
         elif event_type == "final":
             if not isinstance(event.get("content"), str):
                 reasons.append("final content is not a string")
             elif not event["content"]:
                 reasons.append("final payload is empty")
-            if "context_envelope_sha256" in event:
-                if not _is_sha256_hex(event["context_envelope_sha256"]):
-                    reasons.append("final context envelope digest is malformed")
-                elif (
-                    event["context_envelope_sha256"]
-                    != facts["requested_context_envelope_sha256"]
-                ):
-                    reasons.append("final context envelope drifted from the request")
+            #: The field is mandatory (EVENT_REQUIRED_FIELDS), so reaching here
+            #: guarantees its presence; only its value is judged.
+            if not _is_sha256_hex(event["context_envelope_sha256"]):
+                reasons.append("final context envelope digest is malformed")
+            elif (
+                event["context_envelope_sha256"]
+                != facts["requested_context_envelope_sha256"]
+            ):
+                reasons.append("final context envelope drifted from the request")
             finals.append(event)
 
-    if tool_calls > min(facts["maximum_tool_calls"], SINGLE_SHOT_MAX_TOOL_CALLS):
+    #: §3.4 single-shot caps tool calls at zero; `maximum_tool_calls` only
+    #: widens the harness allowance, never narrows it below the operation's own
+    #: `SINGLE_SHOT_MAX_TOOL_CALLS`, so the effective ceiling is the constant.
+    if tool_calls > SINGLE_SHOT_MAX_TOOL_CALLS:
         reasons.append("single-shot consumption permits no tool calls")
     if facts["require_single_final"] and len(finals) != 1:
         reasons.append(

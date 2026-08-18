@@ -220,6 +220,71 @@ def test_conforming_single_shot_stream_does_not_block(
     assert outcome.receipt.code.value == "APPLIED"
 
 
+def _assert_blocked(command: dict, label: str) -> None:
+    """A §3.4 violation must block, never conform, however clean the final."""
+    outcome = provider_contract_policy.consume_provider_stream(command)
+    assert outcome.final_state == "needs_human", label
+    assert outcome.final_reason_code == "PROVIDER_CONTRACT_FAILURE", label
+    assert outcome.receipt.code.value == "APPLIED", label
+
+
+def test_prose_ahead_of_a_valid_final_still_blocks(
+    contracts: FrozenContracts,
+) -> None:
+    """§3.4 prose 混正文: free prose + a legal final must fail closed.
+
+    The frozen oracles pair prose with a tool call, so a classifier that only
+    penalises the tool call would still pass them. This pins the harder shape:
+    prose whose final is perfectly valid and bound. The clean final must not
+    launder the prose that preceded it.
+    """
+    for label, prose in (
+        ("stream_delta", {"type": "stream_delta", "content": "thinking…"}),
+        ("text", {"type": "text", "content": "let me check"}),
+    ):
+        command = _command(contracts, "empty")
+        requested = command["input"]["authoritative_facts"][
+            "requested_context_envelope_sha256"
+        ]
+        command["input"]["injected_results"] = [
+            prose,
+            {"type": "final", "content": "done", "context_envelope_sha256": requested},
+        ]
+        _assert_blocked(command, f"prose event {label} before a valid final")
+
+
+def test_final_without_context_envelope_blocks(
+    contracts: FrozenContracts,
+) -> None:
+    """§3.4 context_drift fails closed when the binding cannot be proven.
+
+    A final that omits `context_envelope_sha256` proves nothing about the
+    context it answered; absence must be treated as drift, not skipped over.
+    """
+    command = _command(contracts, "empty")
+    command["input"]["injected_results"] = [{"type": "final", "content": "done"}]
+    _assert_blocked(command, "final omits context_envelope_sha256")
+
+
+def test_well_formed_transport_error_still_blocks(
+    contracts: FrozenContracts,
+) -> None:
+    """§3.4 half stream: a transport_error dies the stream even with a good code.
+
+    The failure is the termination, not the code's shape; a non-empty string
+    code must not read as a clean event that a trailing final then rescues.
+    """
+    command = _command(contracts, "empty")
+    requested = command["input"]["authoritative_facts"][
+        "requested_context_envelope_sha256"
+    ]
+    command["input"]["injected_results"] = [
+        {"type": "transport_error", "code": "econnreset"},
+        {"type": "final", "content": "done", "context_envelope_sha256": requested},
+    ]
+    _assert_blocked(command, "well-formed transport_error before a valid final")
+
+
 def test_executor_observes_a_forbidden_boundary_crossing(
     contracts: FrozenContracts,
     monkeypatch: pytest.MonkeyPatch,
