@@ -249,7 +249,10 @@ def test_the_provider_token_is_es256_and_carries_the_key_id(config) -> None:
 def test_the_payload_holds_the_count_and_the_id_and_nothing_else() -> None:
     payload = build_payload(NOTIFICATION)
     assert payload["review_id"] == "rev_1"
-    assert payload["aps"]["badge"] == 3
+    # The icon badge is not this payload's to set: one card's item count is not
+    # the number of reviews still pending, and a stale badge nothing clears is
+    # worse than none.
+    assert "badge" not in payload["aps"]
     flattened = json.dumps(payload, ensure_ascii=False)
     # Nothing that could be a ledger figure or a merchant name.
     for forbidden in ("CNY", "¥", "amount", "咖啡", "category"):
@@ -278,7 +281,7 @@ def test_a_200_is_acceptance_and_carries_the_right_request(
     assert seen["headers"]["apns-push-type"] == "alert"
     assert seen["headers"]["authorization"].startswith("bearer ")
     assert seen["headers"]["apns-collapse-id"] == "review:rev_1"
-    assert seen["body"]["aps"]["badge"] == 3
+    assert "badge" not in seen["body"]["aps"]
 
 
 @pytest.mark.parametrize(

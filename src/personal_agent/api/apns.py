@@ -190,6 +190,11 @@ def build_payload(notification: PushNotification) -> dict[str, Any]:
     Design 7.7 step 4 limits this to how many entries there are. No name, no
     amount, no category -- those would end up on a lock screen and inside
     Apple's infrastructure.
+
+    The icon `badge` is deliberately **not** set: the number of items on one
+    card is not the number of reviews still pending, and a stale badge that
+    nothing clears is worse than no badge. The app shows 待你处理 itself and
+    clears any icon badge when it comes to the foreground.
     """
     return {
         "aps": {
@@ -198,7 +203,6 @@ def build_payload(notification: PushNotification) -> dict[str, Any]:
                 "body": f"有 {notification.item_count} 笔待复核",
             },
             "sound": "default",
-            "badge": notification.item_count,
         },
         "review_id": notification.review_id,
     }
