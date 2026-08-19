@@ -238,6 +238,69 @@ def test_a_mismatched_tool_and_table_is_refused(sessions) -> None:
             build_review(session, reader, day=YESTERDAY, now=NOW)
 
 
+def test_a_day_of_only_category_corrections_creates_no_card(sessions) -> None:
+    """A category correction is a modification, not a new write, so it is not a
+    review-worthy day on its own (Henson, 2026-08-18)."""
+    reader = Reader(
+        {
+            "2026-07-25": [
+                write(
+                    "recA",
+                    tool="finance.update_expense_category",
+                    table_kind="expense",
+                )
+            ]
+        }
+    )
+    with sessions() as session:
+        outcome = build_review(session, reader, day=YESTERDAY, now=NOW)
+        session.commit()
+
+    assert outcome.result is ReviewResult.NO_WRITES
+    assert reviews(session) == []
+
+
+def test_a_category_correction_is_excluded_from_an_expense_card(sessions) -> None:
+    reader = Reader(
+        {
+            "2026-07-25": [
+                write("recA"),
+                write(
+                    "recA",
+                    tool="finance.update_expense_category",
+                    table_kind="expense",
+                ),
+            ]
+        }
+    )
+    with sessions() as session:
+        outcome = build_review(session, reader, day=YESTERDAY, now=NOW)
+        session.commit()
+        stored = items(session, outcome.review_id)
+
+    # The same record appears once, as its original write; the correction is not
+    # a second review item.
+    assert outcome.item_count == 1
+    assert {(item.tool, item.record_id) for item in stored} == {
+        ("finance.log_expense", "recA")
+    }
+
+
+def test_a_tool_with_no_known_table_still_refuses(sessions) -> None:
+    """Excluding a named modification tool must not turn every unknown tool into
+    a silent skip: an unmapped tool is still a contract drift."""
+    reader = Reader(
+        {
+            "2026-07-25": [
+                write("recA", tool="finance.some_future_tool", table_kind="expense")
+            ]
+        }
+    )
+    with sessions() as session:
+        with pytest.raises(ControlPlaneError):
+            build_review(session, reader, day=YESTERDAY, now=NOW)
+
+
 def test_an_unreadable_control_plane_is_not_a_quiet_day(sessions) -> None:
     with sessions() as session:
         with pytest.raises(ControlPlaneError):

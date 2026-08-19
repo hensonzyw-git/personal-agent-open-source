@@ -78,6 +78,18 @@ TABLE_KIND_BY_TOOL: dict[str, str] = {
     "finance.update_family_fund": "family_fund",
 }
 
+#: Governed writes that must not appear on the daily review card.
+#:
+#: `finance.update_expense_category` (`G1`) modifies a row that is already on the
+#: card, or was written on another day: it is a change to an existing record, not
+#: a new write. It is already reviewable in the Timeline as an
+#: `expense_category_corrected` marker, and the card reads current values, so the
+#: corrected 分类 shows on the row's own entry. Including it would put the same
+#: `record_id` on the card twice. Henson's 2026-08-18 decision: exclude it.
+REVIEW_EXCLUDED_TOOLS: frozenset[str] = frozenset(
+    {"finance.update_expense_category"}
+)
+
 
 def build_review(
     session: Session,
@@ -211,10 +223,19 @@ def catch_up_reviews(
 def _validated_unique_writes(
     writes: list[SuccessfulWrite],
 ) -> list[SuccessfulWrite]:
-    """Validate the tool/table binding and dedupe only within one table."""
+    """Validate the tool/table binding and dedupe only within one table.
+
+    Writes in `REVIEW_EXCLUDED_TOOLS` are dropped before validation: they are
+    modifications, not new records, and their absence must not crash the job the
+    way an unknown tool still does. Anything else with no `TABLE_KIND_BY_TOOL`
+    mapping raises, because an unmapped tool is a contract drift that a review
+    must not silently guess at.
+    """
     seen: set[tuple[str, str]] = set()
     unique: list[SuccessfulWrite] = []
     for write in writes:
+        if write.tool in REVIEW_EXCLUDED_TOOLS:
+            continue
         expected_table = TABLE_KIND_BY_TOOL.get(write.tool)
         if expected_table != write.table_kind:
             raise ControlPlaneError(
