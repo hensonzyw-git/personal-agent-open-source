@@ -1,4 +1,5 @@
 import UIKit
+import UserNotifications
 
 /// `DEV-040`: the bridge between iOS's remote-notification callbacks and
 /// `PushCoordinator`.
@@ -29,8 +30,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func applicationDidBecomeActive(_ application: UIApplication) {
         // The icon badge is a lock-screen convenience, not a durable pending
         // counter: once the app is open, the ambient bar and the Timeline already
-        // show what is outstanding, so the badge clears. Without this it stays at
-        // the last pushed `item_count` forever, because nothing else resets it.
+        // show what is outstanding, so the badge clears. Both APIs are used
+        // because iOS can derive the badge from a still-pending notification and
+        // `setBadgeCount` (iOS 16+) clears that path too.
         application.applicationIconBadgeNumber = 0
+        UNUserNotificationCenter.current().setBadgeCount(0)
     }
 }
