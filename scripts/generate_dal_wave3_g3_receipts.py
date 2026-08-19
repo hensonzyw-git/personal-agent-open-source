@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-"""Generate per-variant G3 ``dal.test-receipt/1.0`` for DAL-T-REVIEW-INDEP-001.
+"""Generate per-variant G3 ``dal.test-receipt/1.0`` for the Wave 3 G3 variants.
 
-Wave 3 (DAL-021+) freezes two adversarial test ids. Their gates split:
+Wave 3 (DAL-021+) freezes five test ids. Their gates split:
 
-- ``DAL-T-REVIEW-INDEP-001`` carries four **G3** variants (`same_session`,
-  `same_context`, `same_independence_key`, `synthetic_fresh`) whose pure
-  independence decision is offline replayable. Those four — and only those —
+- **G3** (offline replayable pure decisions): the four
+  ``DAL-T-REVIEW-INDEP-001`` independence variants, the nine
+  ``DAL-T-PLAN-XFIELD-001`` cross-field variants, the six
+  ``DAL-T-DISPOSITION-001`` disposition variants, the seven
+  ``DAL-T-OPENSET-001`` open-set variants and the twelve
+  ``DAL-T-FIXDIFF-001`` post-fix verdict variants. These — and only these —
   may earn an offline PASS receipt, which is what this generator issues.
-- Every other Wave 3 variant is **G4** (the eight PROVIDER-CONTRACT streams
-  and REVIEW-INDEP's `live_fresh`): earning those receipts requires the real
-  Codex adapter subprocess, blocked until DAL-006 §6.1 is revised (File-mode
-  No-Go). This generator refuses to emit receipts for them — writing one now
-  would claim a live run that never happened.
+- **G4** (the eight PROVIDER-CONTRACT streams and REVIEW-INDEP's
+  `live_fresh`): earning those receipts requires the real Codex adapter
+  subprocess, blocked until DAL-006 §6.1 is revised (File-mode No-Go). This
+  generator refuses to emit receipts for them — writing one now would claim a
+  live run that never happened.
 
 For each eligible variant this replays the **same** executor, oracle
-comparator and write-set/side-effect checks the owning test file
-(`tests/dal/test_review_independence.py`) uses. A variant that diverges is a
-hard failure: no PASS receipt is ever written for a failing variant, and the
-whole run exits non-zero.
+comparator and write-set/side-effect checks the owning test file uses. A
+variant that diverges is a hard failure: no PASS receipt is ever written for a
+failing variant, and the whole run exits non-zero.
 
 The receipts bind an existing implementation commit (``--implementation-sha``):
 they are generated *after* that commit exists so the SHA is not
@@ -51,6 +53,18 @@ from tests.dal.oracle_comparator import compare  # noqa: E402
 from tests.dal.review_independence_executor import (  # noqa: E402
     execute_review_independence_fixture,
 )
+from tests.dal.plan_cross_fields_executor import (  # noqa: E402
+    execute_plan_cross_fields_fixture,
+)
+from tests.dal.review_disposition_executor import (  # noqa: E402
+    execute_review_disposition_fixture,
+)
+from tests.dal.open_finding_set_executor import (  # noqa: E402
+    execute_open_finding_set_fixture,
+)
+from tests.dal.post_fix_verdict_executor import (  # noqa: E402
+    execute_post_fix_verdict_fixture,
+)
 
 RESULT_SCHEMA = "dal.test-result/1.0"
 RECEIPT_SCHEMA = "dal.test-receipt/1.0"
@@ -58,14 +72,58 @@ RECEIPT_SCHEMA = "dal.test-receipt/1.0"
 RESULTS_DIR = REPO_ROOT / "docs" / "evidence" / "results"
 RECEIPTS_DIR = REPO_ROOT / "docs" / "evidence" / "receipts"
 
-#: The only test id whose G3 variants exist in Wave 3 today. The closed-set
-#: check below fails the run if the frozen manifest grows or shrinks this
-#: surface, so a manifest change can never silently widen the receipt set.
-WAVE3_G3_TEST_IDS: frozenset[str] = frozenset({"DAL-T-REVIEW-INDEP-001"})
-
-EXPECTED_G3_VARIANTS: frozenset[str] = frozenset(
-    {"same_session", "same_context", "same_independence_key", "synthetic_fresh"}
+#: The test ids whose G3 variants exist in Wave 3 today. The closed-set check
+#: below fails the run if the frozen manifest grows or shrinks this surface,
+#: so a manifest change can never silently widen the receipt set.
+WAVE3_G3_TEST_IDS: frozenset[str] = frozenset(
+    {
+        "DAL-T-REVIEW-INDEP-001",
+        "DAL-T-PLAN-XFIELD-001",
+        "DAL-T-DISPOSITION-001",
+        "DAL-T-OPENSET-001",
+        "DAL-T-FIXDIFF-001",
+    }
 )
+
+#: Per-test-id G3 variant names. The variant surface is not a cross product:
+#: each test id owns its own named subset, and the closed-set check below must
+#: reproduce that exact map so a manifest drift fails instead of widening.
+EXPECTED_G3_VARIANTS: dict[str, frozenset[str]] = {
+    "DAL-T-REVIEW-INDEP-001": frozenset(
+        {"same_session", "same_context", "same_independence_key", "synthetic_fresh"}
+    ),
+    "DAL-T-PLAN-XFIELD-001": frozenset(
+        {
+            "plan_complete", "identity_mismatch", "paths_overlap_file_in_dir",
+            "paths_overlap_dir_in_dir", "paths_overlap_equal", "order_gap",
+            "dependency_not_earlier", "unknown_verification", "digest_drift",
+        }
+    ),
+    "DAL-T-DISPOSITION-001": frozenset(
+        {
+            "approve_clean", "request_changes_findings", "request_changes_gaps",
+            "coverage_incomplete", "provider_approve_with_findings",
+            "provider_request_changes_clean",
+        }
+    ),
+    "DAL-T-OPENSET-001": frozenset(
+        {
+            "init_from_review", "carry_forward_exact", "remaining_declared",
+            "carried_finding_omitted", "carried_finding_renamed",
+            "new_finding_id_reused", "verified_with_new_findings",
+        }
+    ),
+    "DAL-T-FIXDIFF-001": frozenset(
+        {
+            "verified_clean", "gap_closed_by_test_receipts",
+            "changes_requested_declared", "evidence_role_violation",
+            "anchor_entry_not_blob", "path_died_between_rounds",
+            "surviving_set_empty", "increment_missed_surviving_lines",
+            "no_deletion_in_increment", "gap_closed_by_fix_diff_only",
+            "new_finding_anchor_mismatch", "verified_with_unverified_acceptance",
+        }
+    ),
+}
 
 
 def _sha256(value: Any) -> str:
@@ -73,13 +131,13 @@ def _sha256(value: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Replay. A transcription of the owning test file's replay loop, calling the
+# Replay. A transcription of each owning test file's replay loop, calling the
 # same executor + comparator + write-set and side-effect checks.
 # ---------------------------------------------------------------------------
 
-def _replay_review_independence(variant) -> list[str]:
+def _replay(executor: Callable[[Any, Any], Any], variant) -> list[str]:
     probe = fresh_probe()
-    trace = execute_review_independence_fixture(variant.fixture.body, probe=probe)
+    trace = executor(variant.fixture.body, probe=probe)
     divergences = list(compare(trace, variant.oracle.body).mismatches)
     if set(trace.declared_write_set) != set(trace.write_set):
         divergences.append(
@@ -92,7 +150,21 @@ def _replay_review_independence(variant) -> list[str]:
 
 
 DISPATCH: dict[str, Callable[[Any], list[str]]] = {
-    "DAL-T-REVIEW-INDEP-001": _replay_review_independence,
+    "DAL-T-REVIEW-INDEP-001": lambda v: _replay(
+        execute_review_independence_fixture, v
+    ),
+    "DAL-T-PLAN-XFIELD-001": lambda v: _replay(
+        execute_plan_cross_fields_fixture, v
+    ),
+    "DAL-T-DISPOSITION-001": lambda v: _replay(
+        execute_review_disposition_fixture, v
+    ),
+    "DAL-T-OPENSET-001": lambda v: _replay(
+        execute_open_finding_set_fixture, v
+    ),
+    "DAL-T-FIXDIFF-001": lambda v: _replay(
+        execute_post_fix_verdict_fixture, v
+    ),
 }
 
 
@@ -250,14 +322,14 @@ def _g3_variants(frozen: FrozenContracts, filter_test_id: str | None,
         for variant in frozen.all_variants()
         if variant.run_gate == "G3" and variant.test_id in WAVE3_G3_TEST_IDS
     ]
-    # Closed-set proof: the receipt denominator must be exactly the four
-    # frozen synthetic variants — a manifest drift (added, renamed or
+    # Closed-set proof: the receipt denominator must be exactly the frozen
+    # per-test-id variant subsets — a manifest drift (added, renamed or
     # regated variant) fails the run instead of silently widening it.
     seen = {(variant.test_id, variant.variant_id) for variant in eligible}
     expected = {
         (test_id, variant_id)
-        for test_id in WAVE3_G3_TEST_IDS
-        for variant_id in EXPECTED_G3_VARIANTS
+        for test_id, variant_ids in EXPECTED_G3_VARIANTS.items()
+        for variant_id in variant_ids
     }
     if seen != expected:
         raise ValueError(
