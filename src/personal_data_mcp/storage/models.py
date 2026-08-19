@@ -73,6 +73,16 @@ SCHEMA_SNAPSHOT_STATUSES: Final[tuple[str, ...]] = ("valid", "drifted")
 
 TABLE_KINDS: Final[tuple[str, ...]] = ("expense", "income", "family_fund")
 
+#: What a person reported finding in the ledger for an execution parked at
+#: `needs_manual_review`. The same vocabulary as the Agent side (DEV-040), so the
+#: two halves of one review never disagree about what a conclusion means. It is a
+#: report, never a state transition: `state` stays `needs_manual_review` forever,
+#: because a human observation must not overwrite what the system could prove.
+MANUAL_RESOLUTIONS: Final[tuple[str, ...]] = (
+    "confirmed_written",
+    "confirmed_not_written",
+)
+
 
 def _in_set(column: str, values: tuple[str, ...]) -> str:
     joined = ", ".join(f"'{value}'" for value in values)
@@ -123,6 +133,14 @@ class ToolExecution(Base):
     completed_at: Mapped[datetime | None] = mapped_column(
         UtcTimestamp, nullable=True
     )
+    #: A person's report about the ledger, for an execution that ended at
+    #: `needs_manual_review`. It is a flag beside the state, never instead of it:
+    #: `state` still means what the *system* proved, and this records only what a
+    #: human saw. It is what lets the observe alert stop once someone has looked.
+    manual_resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    manual_resolved_at: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint(_in_set("state", EXECUTION_STATES), name="state"),
@@ -137,6 +155,21 @@ class ToolExecution(Base):
             "state IN ('prepared', 'failed_safe', 'cancelled_pre_submit') "
             "OR submitted_at IS NOT NULL",
             name="post_submit_states_record_submission_time",
+        ),
+        CheckConstraint(
+            "manual_resolution IS NULL OR "
+            + _in_set("manual_resolution", MANUAL_RESOLUTIONS),
+            name="manual_resolution",
+        ),
+        # A conclusion and its timestamp are one fact; neither half may exist
+        # alone, and only a review-parked execution may carry one.
+        CheckConstraint(
+            "(manual_resolution IS NULL) = (manual_resolved_at IS NULL)",
+            name="manual_resolution_pairs_with_its_time",
+        ),
+        CheckConstraint(
+            "manual_resolution IS NULL OR state = 'needs_manual_review'",
+            name="manual_resolution_only_for_review",
         ),
         Index("ix_tool_executions_state", "state"),
     )

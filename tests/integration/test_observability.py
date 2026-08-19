@@ -150,6 +150,28 @@ def test_a_manual_review_write_is_critical(database) -> None:
     assert worst_severity(findings) == "critical"
 
 
+def test_a_reviewed_manual_review_write_is_no_longer_critical(database) -> None:
+    """A person has reported what they found, so the alert clears.
+
+    `state` stays `needs_manual_review` forever -- a human observation must not
+    overwrite what the system could prove -- but the alert counts only executions
+    with no conclusion yet.
+    """
+    add_execution(database, key="k1", state="needs_manual_review")
+    factory, engine = sessions_for(database)
+    try:
+        with factory() as session:
+            execution = session.get(ToolExecution, "k1")
+            execution.manual_resolution = "confirmed_written"
+            execution.manual_resolved_at = utc_now()
+            session.commit()
+    finally:
+        engine.dispose()
+
+    findings = evaluate(facts_for(database))
+    assert "write_needs_manual_review" not in codes(findings)
+
+
 def test_a_tampered_audit_chain_is_critical(database) -> None:
     """Not a stubbed verifier: a real row is really edited underneath it."""
     factory, engine = sessions_for(database)

@@ -104,6 +104,11 @@ class DerivedFacts:
     """What the databases and the filesystem say right now."""
 
     execution_states: dict[str, int] = field(default_factory=dict)
+    #: `needs_manual_review` executions nobody has recorded a conclusion for yet.
+    #: The raw `execution_states` keeps the full distribution; this is the number
+    #: the alert actually cares about, because a reviewed execution is not "still
+    #: waiting" once a person has reported what they found.
+    unresolved_manual_review: int = 0
     stuck_executions: int = 0
     broken_audit_events: int = 0
     audit_event_count: int = 0
@@ -120,6 +125,7 @@ class DerivedFacts:
     def as_dict(self) -> dict[str, Any]:
         return {
             "execution_states": dict(sorted(self.execution_states.items())),
+            "unresolved_manual_review": self.unresolved_manual_review,
             "stuck_executions": self.stuck_executions,
             "broken_audit_events": self.broken_audit_events,
             "audit_event_count": self.audit_event_count,
@@ -148,6 +154,20 @@ def execution_state_counts(session: Session) -> dict[str, int]:
         select(ToolExecution.state, func.count()).group_by(ToolExecution.state)
     ).all()
     return {state: count for state, count in rows}
+
+
+def unresolved_manual_review_count(session: Session) -> int:
+    """Review-parked executions nobody has reported a conclusion for yet."""
+    return int(
+        session.execute(
+            select(func.count())
+            .select_from(ToolExecution)
+            .where(
+                ToolExecution.state == "needs_manual_review",
+                ToolExecution.manual_resolution.is_(None),
+            )
+        ).scalar_one()
+    )
 
 
 def stuck_execution_count(
@@ -263,12 +283,14 @@ def collect(
             "backup_marker and backup_monitor_start must be configured together"
         )
     states: dict[str, int] = {}
+    unresolved_review = 0
     stuck = 0
     broken = 0
     audit_total = 0
     drift = 0
     if finance_session is not None:
         states = execution_state_counts(finance_session)
+        unresolved_review = unresolved_manual_review_count(finance_session)
         stuck = stuck_execution_count(finance_session, now=now)
         broken = len(verify_audit_chain(finance_session))
         audit_total = int(
@@ -298,6 +320,7 @@ def collect(
         monitor_age_hours = (now - monitor_started).total_seconds() / 3600.0
     return DerivedFacts(
         execution_states=states,
+        unresolved_manual_review=unresolved_review,
         stuck_executions=stuck,
         broken_audit_events=broken,
         audit_event_count=audit_total,
@@ -333,7 +356,7 @@ def evaluate(facts: DerivedFacts) -> list[Finding]:
             )
         )
 
-    review = facts.execution_states.get("needs_manual_review", 0)
+    review = facts.unresolved_manual_review
     if review:
         findings.append(
             Finding(
