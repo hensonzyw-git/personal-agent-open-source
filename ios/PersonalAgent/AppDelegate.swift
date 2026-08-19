@@ -28,12 +28,22 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
-        // The icon badge is a lock-screen convenience, not a durable pending
-        // counter: once the app is open, the ambient bar and the Timeline already
-        // show what is outstanding, so the badge clears. Both APIs are used
-        // because iOS can derive the badge from a still-pending notification and
-        // `setBadgeCount` (iOS 16+) clears that path too.
-        application.applicationIconBadgeNumber = 0
-        UNUserNotificationCenter.current().setBadgeCount(0)
+        Self.clearBadge()
+    }
+
+    /// Clear the icon badge through every path iOS can derive it from.
+    ///
+    /// `UIApplication.applicationIconBadgeNumber` is deprecated and its setter
+    /// is a no-op on modern iOS (the 2026-08-20 probe read the badge back as 1
+    /// after assigning 0); `UNUserNotificationCenter.setBadgeCount(_:)` is the
+    /// API that actually clears it. The delivered notification is removed too so
+    /// iOS cannot re-derive the badge from it. Called on
+    /// `applicationDidBecomeActive` and again from the SwiftUI `.task`, because
+    /// neither alone has proven enough.
+    static func clearBadge() {
+        UIApplication.shared.applicationIconBadgeNumber = 0
+        let centre = UNUserNotificationCenter.current()
+        centre.setBadgeCount(0)
+        centre.removeAllDeliveredNotifications()
     }
 }

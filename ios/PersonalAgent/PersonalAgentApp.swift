@@ -28,6 +28,10 @@ struct PersonalAgentApp: App {
                     // exists, because uploading a token needs a device id and
                     // an access token.
                     model.bindPushCoordinator(into: appDelegate)
+                    // Cleared here in addition to `applicationDidBecomeActive`:
+                    // a cold launch into the badge state must clear it even if
+                    // the delegate callback is the one thing that did not run.
+                    AppDelegate.clearBadge()
                     await model.start()
                     await model.registerPushIfPermitted()
                 }
