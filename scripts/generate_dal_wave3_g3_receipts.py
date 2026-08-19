@@ -286,7 +286,16 @@ def _head_sha() -> str:
 
 
 def _validate_implementation_sha(implementation_sha: str, paths: list[str]) -> None:
-    """Require a real ancestor commit whose bound implementation is unchanged."""
+    """Require a real ancestor commit whose bound implementation is unchanged.
+
+    The ``git diff`` below compares ``implementation_sha`` against the
+    **worktree** (no ``HEAD``), not against a commit. That is deliberate:
+    generation happens *before* the receipt files are committed, so the
+    invariant is "the implementation on disk still matches the commit being
+    bound". The verifier (`verify_dal_test_receipt.py`) runs after the receipt
+    is committed and therefore compares ``implementation_sha`` against
+    ``HEAD`` instead — same intent, different reference point.
+    """
     subprocess.run(
         ["git", "cat-file", "-e", f"{implementation_sha}^{{commit}}"],
         cwd=REPO_ROOT,
