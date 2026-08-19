@@ -25,4 +25,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     ) {
         pushCoordinator?.didFailToRegister(error: error)
     }
+
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        // The icon badge is a lock-screen convenience, not a durable pending
+        // counter: once the app is open, the ambient bar and the Timeline already
+        // show what is outstanding, so the badge clears. Without this it stays at
+        // the last pushed `item_count` forever, because nothing else resets it.
+        application.applicationIconBadgeNumber = 0
+    }
 }
