@@ -125,13 +125,16 @@ def _decimal_or_unreadable(raw: Any) -> Any:
 
 
 def _formula_or_unreadable(raw: Any) -> Any:
-    """Accept only the formula envelope that has live provider evidence.
+    """Accept the two number-result shapes Feishu actually returns.
 
-    `DEV-022` observed `{"type": 2, "value": [20]}` from `search_records`.
-    `get_record` has not yet been observed for a formula cell, so a plausible
-    bare number must stay unreadable until that boundary is verified live.
+    `DEV-022` observed `{"type": 2, "value": [20]}` from `search_records`. The
+    2026-08-19 live probe observed a bare JSON number (`17`, `41.91`) from
+    `get_record` for the same formula cell, so the review read -- which goes
+    through `get_record` -- saw a plausible number and reported it unreadable.
+    Both shapes are the ledger's own number and both read as exact 2dp money;
+    a bare number is never silently turned into zero, and a bare string stays
+    unreadable because it could be a text formula result rather than a number.
     """
-
     if isinstance(raw, dict):
         if raw.get("type") != 2:
             return _UNREADABLE
@@ -139,6 +142,13 @@ def _formula_or_unreadable(raw: Any) -> Any:
         if not isinstance(inner, list) or len(inner) != 1:
             return _UNREADABLE
         return _decimal_or_unreadable(inner[0])
+    # `get_record` returns a number result as a bare number. `bool` is an `int`
+    # subclass, so it is refused before the numeric branch -- a checkbox result
+    # is never a money formula result.
+    if isinstance(raw, bool):
+        return _UNREADABLE
+    if isinstance(raw, (int, float)):
+        return _decimal_or_unreadable(raw)
     return _UNREADABLE
 
 
