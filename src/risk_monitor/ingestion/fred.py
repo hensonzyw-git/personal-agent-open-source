@@ -83,10 +83,6 @@ class FredClient:
         rows = self.observations(series_id, limit=1, sort="desc")
         return rows[0] if rows else None
 
-    def latest_many(self, metric_ids: Optional[list[str]] = None) -> dict[str, Optional[tuple[str, Optional[float]]]]:
-        ids = metric_ids if metric_ids is not None else list(FRED_SERIES)
-        return {mid: self.latest(FRED_SERIES[mid]) for mid in ids}
-
     def history(self, series_id: str) -> list[tuple[str, Optional[float]]]:
         """Full ascending history, for local archiving (ADR-0001: the ICE BofA
         OAS window is shrinking, so we archive from day one)."""

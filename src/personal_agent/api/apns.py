@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Callable, Final
+from typing import Any, Callable, Final, Literal
 
 import httpx2
 import jwt
@@ -313,7 +313,7 @@ class ApnsPushSender:
         title: str,
         body: str,
         collapse_id: str,
-        priority: str = "5",
+        priority: Literal["5", "10"] = "5",
     ) -> None:
         """Deliver a lock-screen alert (title + body) to one enrolled device.
 
@@ -335,7 +335,7 @@ class ApnsPushSender:
         payload: dict[str, Any],
         *,
         collapse_id: str,
-        priority: str,
+        priority: Literal["5", "10"],
     ) -> None:
         device_token = self._device_token(device_id)
         try:

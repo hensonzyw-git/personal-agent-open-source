@@ -88,6 +88,43 @@ def test_missing_tags_yield_no_score():
     assert outcome.score is None
 
 
+def test_company_afrs_applies_filtering():
+    """An indicator whose ``applies`` list omits the company is *excluded* (not
+    "unavailable"), so its weight never renormalises into the company's
+    denominator. NVDA is the canonical case: ``capex_ocf_pct`` applies to the
+    other five names but not NVDA."""
+    policy = load_policy()
+    values = {
+        "company.capex_ocf_pct": 150.0,   # red — but capex does not apply to NVDA
+        "company.fcf_ocf_pct": 50.0,      # green
+        "company.ar_dso_concentration": 0.0,  # green
+    }
+    nvda = company_afrs(policy, values, company="NVDA")
+    orcl = company_afrs(policy, values, company="ORCL")
+
+    # NVDA: capex_ocf is excluded entirely, so it is not scored, not unavailable,
+    # and its weight is not renormalised. Covered = fcf(18) + ar(10) = 28.
+    assert nvda.covered_weight == 28.0
+    assert "company.capex_ocf_pct" not in nvda.unavailable
+    assert all(r.metric_id != "company.capex_ocf_pct" for r in nvda.results)
+    assert nvda.score == 0.0
+
+    # ORCL: capex_ocf applies and is red, so its score must exceed NVDA's.
+    assert orcl.score is not None and orcl.score > nvda.score
+    capex = next(r for r in orcl.results if r.metric_id == "company.capex_ocf_pct")
+    assert capex.available and capex.band == "red"
+
+
+def test_company_afrs_unqualified_scores_all_indicators():
+    """With ``company=None`` every indicator is in scope (the historical /
+    convenience form), preserving the prior behaviour for callers that have not
+    resolved a name."""
+    policy = load_policy()
+    values = {"company.fcf_ocf_pct": 50.0}
+    full = company_afrs(policy, values)
+    assert len(full.results) == len(policy["afrs"]["company_indicators"])
+
+
 def test_sector_afrs_aggregation():
     policy = load_policy()
     scores = {"NVDA": 20.0, "ORCL": 40.0, "MSFT": 60.0, "META": 80.0}

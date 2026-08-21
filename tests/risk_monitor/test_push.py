@@ -5,13 +5,14 @@ from __future__ import annotations
 from risk_monitor.push import ALERT_TITLE, push_risk_report, risk_alert
 
 
-def _report(state="NORMAL", mbs=0.0, css=0.0, afrs=19.5, as_of="2026-08-21"):
+def _report(state="NORMAL", mbs=0.0, css=0.0, afrs=19.5, as_of="2026-08-21", action=None):
     from risk_monitor.report import SEVERITY_BY_STATE
 
     return {
         "as_of": as_of,
         "scores": {"mbs": mbs, "css": css, "afrs": afrs},
         "state": state,
+        "action": action,
         "severity": SEVERITY_BY_STATE.get(state, "INFO"),
     }
 
@@ -28,6 +29,11 @@ def test_deleveraging_is_immediate_priority():
     alert = risk_alert(_report("DELEVERAGING", mbs=70.0, css=80.0, afrs=60.0))
     assert alert["priority"] == "10"
     assert "去杠杆" in alert["body"]
+
+
+def test_push_body_carries_the_action_conclusion():
+    alert = risk_alert(_report("CREDIT_CONFIRMATION", action="减仓（降低敞口）"))
+    assert alert["body"].startswith("减仓（降低敞口）")
 
 
 def test_credit_confirmation_is_immediate_priority():

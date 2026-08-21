@@ -37,6 +37,7 @@ def build_report(run: dict) -> dict:
             "afrs": run["afrs"],
         },
         "state": run["state"],
+        "action": run.get("action"),
         "indication": run.get("indication"),
         "severity": SEVERITY_BY_STATE.get(run.get("state", "NORMAL"), "INFO"),
         "reasons": run.get("reasons") or [],
@@ -57,7 +58,9 @@ def push_summary(report: dict) -> str:
     afrs = _fmt(scores.get("afrs"))
     state = report.get("state", "NORMAL")
     label = _STATE_LABEL.get(state, state)
-    return f"系统性风险 {label} — MBS {mbs} / CSS {css} / AFRS {afrs}"
+    action = report.get("action")
+    head = f"{action}；系统性风险 {label}" if action else f"系统性风险 {label}"
+    return f"{head} — MBS {mbs} / CSS {css} / AFRS {afrs}"
 
 
 def render_markdown(report: dict) -> str:
@@ -68,6 +71,7 @@ def render_markdown(report: dict) -> str:
         "",
         f"- 截至：{report['as_of']}",
         f"- 状态：{report['state']}（{_STATE_LABEL.get(report['state'], report['state'])}）",
+        f"- 操作：{report.get('action', '-')}",
         f"- 严重度：{report['severity']}",
         f"- MBS：{_fmt(scores.get('mbs'))}  / CSS：{_fmt(scores.get('css'))}  / AFRS：{_fmt(scores.get('afrs'))}",
     ]

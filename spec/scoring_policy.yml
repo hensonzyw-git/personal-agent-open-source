@@ -8,7 +8,7 @@
 # All thresholds are TRANSPARENT HEURISTICS, not statistically validated
 # (PRD §15.6). They are a risk-review scaffold, not investment advice.
 
-policy_version: "2026-08-21.1"
+policy_version: "2026-08-21.2"
 definition_version: "2026-08-21.1"
 description: >
   First frozen baseline for the US/AI systemic-risk monitor. Bands are
@@ -308,3 +308,55 @@ alerts:
   CRITICAL:
     condition: "state -> DELEVERAGING, or major-fact override"
     notify: immediate + mandatory human confirmation
+
+# ---------------------------------------------------------------------------
+# §10.2 daily action conclusion (deterministic, from the *confirmed* state)
+#
+# This is the "判断结果" Henson reads on the daily push: the four-stage state
+# projected onto a single action level. It is a rule, not a model output, so it
+# is reproducible from the same (policy, state) pair and auditable. It is a
+# personal decision signal, NOT automated trading and NOT advice to others.
+# ---------------------------------------------------------------------------
+actions:
+  NORMAL: "持有（无需操作）"
+  RISK_ACCUMULATION: "观察，暂不卖出（重仓可减）"
+  CREDIT_CONFIRMATION: "减仓（降低敞口）"
+  DELEVERAGING: "卖出 / 大幅减仓（强制人工确认）"
+
+# ---------------------------------------------------------------------------
+# §15.6 free secondary-data proxies for qualitative indicators
+#
+# The qualitative indicators (ai_basket, term_financing) have no free daily
+# primary source; these rules map a free proxy input to the indicator's band
+# label. proxy=true is always surfaced, never reported as a real credit signal.
+# All thresholds are heuristics, tunable, and versioned with the policy.
+# ---------------------------------------------------------------------------
+proxies:
+  ai_basket:
+    source: equity_proxy
+    proxy: true
+    note: >
+      Six-name equity drawdown vs 200dma as a credit-stress proxy. No free
+      individual-issuer CDS/bond spread exists (ADR-0001 §4); proxy=true.
+    per_name_bands:
+      green:  { lo: 0.0,   hi: null }
+      yellow: { lo: -10.0, hi: 0.0 }
+      orange: { lo: -25.0, hi: -10.0 }
+      red:    { lo: null,  hi: -25.0 }
+    aggregate:
+      min_names: 4        # fewer names with a signal than this -> unavailable
+      orange_names: 2     # >= this many names at orange/red -> ai_basket orange
+      yellow_names: 1     # >= this many names at yellow-or-worse -> ai_basket yellow
+  term_financing:
+    source: dgs30_20d_change
+    proxy: true
+    note: >
+      30Y treasury 20d change (basis points) as a term/tradability proxy. The
+      "high rates alone != crisis" caveat is preserved by the thresholds; the
+      corp-issuance half is not free daily (SIFMA is monthly) and is left
+      unavailable in MVP.
+    bands:
+      green:  { lo: null, hi: 25.0 }
+      yellow: { lo: 25.0, hi: 50.0 }
+      orange: { lo: 50.0, hi: 75.0 }
+      red:    { lo: 75.0, hi: null }

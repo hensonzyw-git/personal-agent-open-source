@@ -108,13 +108,36 @@ def compute_score(
     return weighted_score(results)
 
 
+def _applies_to(indicator: dict, company: str | None) -> bool:
+    """An indicator applies to a company when its ``applies`` list is absent
+    (whole-cohort) or names the company. ``company=None`` means "no specific
+    company" and applies every indicator."""
+    if company is None:
+        return True
+    applies = indicator.get("applies")
+    return applies is None or company in applies
+
+
 def company_afrs(
     policy: dict,
     values: dict[str, float | str],
     unavailable: frozenset[str] = frozenset(),
+    *,
+    company: str | None = None,
 ) -> ScoreOutcome:
-    """One company's AI Fundamental Risk Score over the 7 company indicators."""
-    return compute_score("afrs", policy, values, unavailable)
+    """One company's AI Fundamental Risk Score over its *applicable* indicators.
+
+    ``company`` is the entity_id (ticker). An indicator whose ``applies`` list
+    omits the company is excluded entirely — it is not "unavailable" (which
+    would renormalise its weight into the company's denominator and silently
+    change the score), it is simply not part of that company's score at all.
+    With ``company=None`` the full indicator set is scored (the convenience form
+    used by tests and callers that have not resolved a name)."""
+    indicators = policy["afrs"]["company_indicators"]
+    if company is not None:
+        indicators = [ind for ind in indicators if _applies_to(ind, company)]
+    results = score_indicators(indicators, values, set(unavailable))
+    return weighted_score(results)
 
 
 def sector_afrs(

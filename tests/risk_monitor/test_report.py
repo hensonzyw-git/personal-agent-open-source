@@ -39,6 +39,24 @@ def test_push_summary_with_afrs():
     assert "AFRS 42.0" in push_summary(r)
 
 
+def test_push_summary_leads_with_action_conclusion():
+    # The push must carry the deterministic conclusion, not raw scores to read.
+    r = build_report(_run(state="CREDIT_CONFIRMATION", action="减仓（降低敞口）"))
+    summary = push_summary(r)
+    assert summary.startswith("减仓（降低敞口）")
+    assert "信用确认" in summary
+
+
+def test_push_summary_without_action_still_names_state():
+    # A replay built before the action field existed must not break.
+    assert push_summary(build_report(_run())).startswith("系统性风险 正常")
+
+
+def test_render_markdown_includes_action():
+    md = render_markdown(build_report(_run(state="DELEVERAGING", action="卖出 / 大幅减仓（强制人工确认）")))
+    assert "- 操作：卖出 / 大幅减仓（强制人工确认）" in md
+
+
 def test_render_markdown_includes_unavailable():
     md = render_markdown(build_report(_run()))
     assert "# 系统性风险周报" in md

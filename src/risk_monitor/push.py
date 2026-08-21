@@ -17,7 +17,7 @@ the whole severity/collapse/priority mapping is testable without a database.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Literal, Protocol
 
 from risk_monitor.report import SEVERITY_BY_STATE, push_summary
 
@@ -28,6 +28,8 @@ ALERT_TITLE = "系统性风险监控"
 #: the immediate path; a NORMAL / RISK_ACCUMULATION card can wait.
 _IMMEDIATE_SEVERITIES = frozenset({"ACTION_REVIEW", "CRITICAL"})
 
+ApnsPriority = Literal["5", "10"]
+
 
 class AlertSender(Protocol):
     def send_alert(
@@ -37,7 +39,7 @@ class AlertSender(Protocol):
         title: str,
         body: str,
         collapse_id: str,
-        priority: str,
+        priority: ApnsPriority,
     ) -> None: ...
 
 

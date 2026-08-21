@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from risk_monitor import afrs as afrs_mod
 from risk_monitor import breadth as breadth_mod
 from risk_monitor import derive
+from risk_monitor import proxy as proxy_mod
 from risk_monitor.config import load_dotenv_local
 from risk_monitor.constituents import load_tickers
 from risk_monitor.domain.models import (
@@ -58,34 +59,62 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def collect_fred(client: FredClient) -> dict[str, object]:
-    """Pull the raw series: full history for the two derived inputs (SPX 200dma,
-    HY OAS 20d change), latest for the direct inputs."""
-    return {
-        "spx_history": client.history(FRED_SERIES["market.spx_close"]),
-        "hy_oas_history": client.history(FRED_SERIES["credit.hy_oas_pct"]),
-        "bbb_oas_latest": client.latest(FRED_SERIES["credit.bbb_oas_pct"]),
-        "dgs10_latest": client.latest(FRED_SERIES["treasury.10y_yield"]),
-        "dgs30_latest": client.latest(FRED_SERIES["treasury.30y_yield"]),
-        "vix_latest": client.latest(FRED_SERIES["market.vix"]),
-    }
+_HISTORY_SERIES = (
+    ("spx_history", "market.spx_close"),
+    ("hy_oas_history", "credit.hy_oas_pct"),
+    ("dgs30_history", "treasury.30y_yield"),  # full history for the 20d term-financing proxy
+)
+_LATEST_SERIES = (
+    ("bbb_oas_latest", "credit.bbb_oas_pct"),
+    ("dgs10_latest", "treasury.10y_yield"),
+    ("vix_latest", "market.vix"),
+)
+
+
+def collect_fred(client: FredClient) -> tuple[dict[str, object], dict[str, str]]:
+    """Pull the raw series: full history for the derived inputs (SPX 200dma,
+    HY OAS 20d change, DGS30 20d term-financing proxy), latest for the direct
+    inputs.
+
+    Fail-closed per series (ADR-0001): a failed series is stored as ``None`` and
+    recorded in the returned ``failures`` map rather than crashing the run, so a
+    VIX/BBB/DGS outage degrades that indicator to ``unavailable`` instead of
+    aborting the daily job. Returns ``(raw, failures)`` where ``failures`` maps
+    metric_id -> exception type name."""
+    raw: dict[str, object] = {}
+    failures: dict[str, str] = {}
+    for key, series_id in _HISTORY_SERIES:
+        try:
+            raw[key] = client.history(FRED_SERIES[series_id])
+        except Exception as exc:  # noqa: BLE001 — fail closed per series
+            raw[key] = None
+            failures[series_id] = type(exc).__name__
+    for key, series_id in _LATEST_SERIES:
+        try:
+            raw[key] = client.latest(FRED_SERIES[series_id])
+        except Exception as exc:  # noqa: BLE001
+            raw[key] = None
+            failures[series_id] = type(exc).__name__
+    return raw, failures
 
 
 def derive_market_values(raw: dict[str, object]) -> tuple[dict[str, float], dict, str]:
     """Return ``(mbs_values, css_values, as_of)`` from the FRED raw series.
-    Metrics we cannot yet source (breadth, forward EPS, AI basket, term
-    financing) are simply omitted — the engine marks them unavailable and
-    renormalises. Breadth is merged separately in ``run()``."""
-    spx = raw["spx_history"]
-    hy = raw["hy_oas_history"]
+    Metrics sourced elsewhere (breadth, the ai_basket and term_financing
+    proxies) are omitted here and merged in ``run()``; ``fwd_eps_revisions`` has
+    no free daily source and stays unavailable — the engine marks it unavailable
+    and renormalises. A series that failed to collect is ``None`` here and
+    degrades its metric to ``unavailable``, never to a fabricated value."""
+    spx = raw.get("spx_history")
+    hy = raw.get("hy_oas_history")
 
-    spx_vs_200dma = derive.pct_vs_200dma(spx)
-    hy_oas = derive.latest(hy)
+    spx_vs_200dma = derive.pct_vs_200dma(spx) if spx else None
+    hy_oas = derive.latest(hy) if hy else None
     hy_oas_pct = hy_oas[1] if hy_oas else None
-    hy_oas_20d = derive.change_over_days(hy, 20, basis_points=True)
-    spx_latest = derive.latest(spx)
-    vix = raw["vix_latest"]
-    bbb = raw["bbb_oas_latest"]
+    hy_oas_20d = derive.change_over_days(hy, 20, basis_points=True) if hy else None
+    spx_latest = derive.latest(spx) if spx else None
+    vix = raw.get("vix_latest")
+    bbb = raw.get("bbb_oas_latest")
 
     mbs_values: dict[str, float] = {}
     if spx_vs_200dma is not None:
@@ -105,29 +134,55 @@ def derive_market_values(raw: dict[str, object]) -> tuple[dict[str, float], dict
     return mbs_values, css_values, as_of
 
 
+MIN_BREADTH_COVERAGE = 0.8  # below this, breadth is not a reliable signal
+
+
 def collect_breadth(client: YahooClient, tickers: list[str]) -> tuple[dict[str, float], dict, list]:
     """Compute the two breadth metrics from per-ticker daily closes. Returns
     ``(metrics, meta, breadth_series)``; metrics are omitted (not zero) when
     breadth cannot be computed, and ``meta`` carries coverage so the job can
     surface a drop. ``breadth_series`` is the compact ``[[date, pct], ...]``
-    series stored as a raw artifact for provenance."""
+    series stored as a raw artifact for provenance.
+
+    Fail-closed on coverage (ADR-0001): when the pull covers fewer than
+    ``MIN_BREADTH_COVERAGE`` of the requested tickers, no breadth metric is
+    emitted — the two MBS indicators become ``unavailable`` and MBS renormalises
+    over the rest, rather than scoring a subset as if it were the whole market."""
     closes, errors = client.collect_closes(tickers)
     bs = breadth_mod.breadth_series(closes)
-    cov = breadth_mod.coverage(closes)
+    signal_cov = breadth_mod.coverage(closes)  # of pulled names, how many have a 200dma signal
+    pull_cov = len(closes) / len(tickers) if tickers else 0.0  # of requested names, how many we pulled
 
+    below_threshold = pull_cov < MIN_BREADTH_COVERAGE
     metrics: dict[str, float] = {}
-    if bs:
-        metrics["market.spx_pct_above_200dma"] = bs[-1][1]
-    if len(bs) > 20:
-        metrics["market.breadth_20d_change"] = round(bs[-1][1] - bs[-1 - 20][1], 4)
+    if not below_threshold:
+        if bs:
+            metrics["market.spx_pct_above_200dma"] = bs[-1][1]
+        if len(bs) > 20:
+            metrics["market.breadth_20d_change"] = round(bs[-1][1] - bs[-1 - 20][1], 4)
 
     meta = {
         "tickers_requested": len(tickers),
         "tickers_ok": len(closes),
         "tickers_failed": len(errors),
-        "coverage": cov,
+        "coverage": signal_cov,
+        "pull_coverage": round(pull_cov, 4),
+        "below_threshold": below_threshold,
     }
     return metrics, meta, bs
+
+
+def collect_ai_basket(client: YahooClient) -> dict[str, list]:
+    """Collect the six AI-capex-cycle names' daily closes for the ai_basket
+    equity proxy (``proxy.ai_basket_proxy``). Returns ``{entity_id: series}``;
+    a name Yahoo fails on is omitted (fail-closed per name, not zero)."""
+    ticker_to_entity = {c["ticker"]: c["entity_id"] for c in COMPANY_ENTITIES}
+    closes, _errors = client.collect_closes(list(ticker_to_entity))
+    return {
+        ticker_to_entity[t]: series
+        for t, series in closes.items()
+        if t in ticker_to_entity
+    }
 
 
 def collect_afrs(client: EdgarClient) -> tuple[dict[str, dict[str, float]], dict]:
@@ -187,6 +242,15 @@ def recompute_state(
         if up_to is not None:
             query = query.where(ScoreSnapshot.as_of_date <= up_to)
         snaps = session.scalars(query).all()
+        # Collapse same-day re-runs: only the latest write for each as_of_date
+        # feeds the tracker, so N runs on one day can never count as N days of
+        # confirmation (and thus bypass the 5-day upgrade gate). The query is
+        # ordered by (as_of_date, id), so overwriting keeps the highest-id row
+        # for each date.
+        by_day: dict[date, ScoreSnapshot] = {}
+        for snap in snaps:
+            by_day[snap.as_of_date] = snap
+        snaps = [by_day[d] for d in sorted(by_day)]
         for snap in snaps:
             comp = json.loads(snap.component_json)
             ind = comp.get("indication")
@@ -216,14 +280,25 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
     engine = initialize(db_path, policy)
 
     with FredClient() as fred:
-        raw = collect_fred(fred)
+        raw, fred_failures = collect_fred(fred)
         mbs_values, css_values, as_of = derive_market_values(raw)
 
         # Breadth is self-computed (ADR-0001); a failed pull leaves the two
         # breadth metrics unavailable and renormalises MBS, never zero/green.
-        breadth_client = YahooClient()
-        breadth_metrics, breadth_meta, breadth_series = collect_breadth(breadth_client, load_tickers())
+        yahoo = YahooClient()
+        breadth_metrics, breadth_meta, breadth_series = collect_breadth(yahoo, load_tickers())
         mbs_values.update(breadth_metrics)
+
+        # Qualitative CSS proxies (policy `proxies`): ai_basket <- six-name
+        # equity drawdown, term_financing <- 30Y 20d change. A proxy that
+        # returns None leaves the indicator unavailable (renormalised), never a
+        # fabricated green.
+        ai_label, ai_per_name = proxy_mod.ai_basket_proxy(policy, collect_ai_basket(yahoo))
+        if ai_label is not None:
+            css_values["credit.ai_basket"] = ai_label
+        term_label, term_bp = proxy_mod.term_financing_proxy(policy, raw.get("dgs30_history"))
+        if term_label is not None:
+            css_values["credit.term_financing"] = term_label
 
         mbs = compute_score("mbs", policy, mbs_values)
         css = compute_score("css", policy, css_values)
@@ -234,7 +309,7 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
         per_company, afrs_details = collect_afrs(EdgarClient())
         company_scores: dict[str, float] = {}
         for entity_id, values in per_company.items():
-            outcome = company_afrs(policy, values)
+            outcome = company_afrs(policy, values, company=entity_id)
             if outcome.score is not None:
                 company_scores[entity_id] = outcome.score
         afrs: Optional[float] = sector_afrs(policy, company_scores)
@@ -262,6 +337,11 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
             "indication": {"state": ind.state, "reasons": ind.reasons, "red_combo": red},
             "raw_values": {"mbs": mbs_values, "css": css_values},
             "breadth": breadth_meta,
+            "proxies": {
+                "ai_basket": {"label": ai_label, "per_name_pct": ai_per_name},
+                "term_financing": {"label": term_label, "dgs30_20d_bp": term_bp},
+            },
+            "fred_failures": fred_failures,
         }
 
         # Persist raw artifacts + observations + score snapshot.
@@ -289,6 +369,10 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
             for mid, v in mbs_values.items():
                 _store_observation(session, mid, _entity_for(mid), v, as_of)
             for mid, v in css_values.items():
+                if isinstance(v, str):
+                    # Qualitative proxy label: carried in component_json for
+                    # scoring/replay, not a numeric Observation row.
+                    continue
                 _store_observation(session, mid, _entity_for(mid), v, as_of)
             # Company fundamentals: one observation per auto-extracted indicator.
             # The giant companyfacts JSON is NOT stored as a raw artifact (it can
@@ -304,12 +388,16 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
                 afrs=afrs,
                 component_json=json.dumps(component),
                 policy_version=policy["policy_version"],
-                quality_status="ok" if (mbs.score is not None and css.score is not None) else "data_quality_warning",
+                quality_status="ok" if (mbs.score is not None and css.score is not None and not fred_failures and not breadth_meta.get("below_threshold")) else "data_quality_warning",
                 created_at=_utcnow(),
             ))
             session.commit()
 
         state, reasons, conf = recompute_state(engine, policy)
+        # The deterministic action conclusion (policy `actions`), derived from
+        # the *confirmed* state — not the daily indication. This is the thing
+        # the push must carry so Henson reads a conclusion, not raw scores.
+        action = policy["actions"].get(state, state)
         with Session(engine) as session:
             session.add(StateSnapshot(
                 as_of_date=date.fromisoformat(as_of),
@@ -327,11 +415,13 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
         "css": css.score,
         "afrs": afrs,
         "state": state,
+        "action": action,
         "indication": ind.state,
         "reasons": reasons or ind.reasons,
         "mbs_unavailable": mbs.unavailable,
         "css_unavailable": css.unavailable,
         "breadth": breadth_meta,
+        "fred_failures": fred_failures,
     }
 
 
@@ -388,15 +478,21 @@ def _store_company_observation(session: Session, metric_id: str, entity_id: str,
 
 def _raw_artifact_rows(raw: dict[str, object]) -> list[tuple[str, list]]:
     """Map the collected raw data back to (series_id, observations) for append-only
-    raw-artifact storage."""
-    return [
-        (FRED_SERIES["market.spx_close"], raw["spx_history"]),
-        (FRED_SERIES["credit.hy_oas_pct"], raw["hy_oas_history"]),
-        (FRED_SERIES["credit.bbb_oas_pct"], [raw["bbb_oas_latest"]] if raw["bbb_oas_latest"] else []),
-        (FRED_SERIES["treasury.10y_yield"], [raw["dgs10_latest"]] if raw["dgs10_latest"] else []),
-        (FRED_SERIES["treasury.30y_yield"], [raw["dgs30_latest"]] if raw["dgs30_latest"] else []),
-        (FRED_SERIES["market.vix"], [raw["vix_latest"]] if raw["vix_latest"] else []),
-    ]
+    raw-artifact storage. A series that failed to collect (``None``) contributes
+    no row — the failure is recorded in the snapshot's ``fred_failures`` map
+    instead, and a ``None`` value is never serialised as an observation."""
+    rows: list[tuple[str, list]] = []
+    for series_id, value in (
+        (FRED_SERIES["market.spx_close"], raw.get("spx_history")),
+        (FRED_SERIES["credit.hy_oas_pct"], raw.get("hy_oas_history")),
+        (FRED_SERIES["credit.bbb_oas_pct"], [raw["bbb_oas_latest"]] if raw.get("bbb_oas_latest") else []),
+        (FRED_SERIES["treasury.10y_yield"], [raw["dgs10_latest"]] if raw.get("dgs10_latest") else []),
+        (FRED_SERIES["treasury.30y_yield"], raw.get("dgs30_history")),
+        (FRED_SERIES["market.vix"], [raw["vix_latest"]] if raw.get("vix_latest") else []),
+    ):
+        if value:
+            rows.append((series_id, value))
+    return rows
 
 
 def main() -> None:
