@@ -79,7 +79,8 @@ NODE_BY_STATE = {
     "needs_human": "gate", "paused": "gate", "cancelled": "terminal",
 }
 
-# The 47 real command_type names, mirrored from the frozen transition registry.
+# The 68 real command_type names, mirrored from the frozen transition registry
+# (244 feature + 21 recovery_case + 11 external_effect specs).
 REAL_COMMAND_TYPES = {
     "accept_current_fact", "accept_deploy_result", "accept_merge_result",
     "approve_plan", "approve_recovery", "block_feature", "block_recovery",
@@ -105,6 +106,44 @@ REAL_COMMAND_TYPES = {
     "start_effect_reconciliation", "start_managed_deploy", "start_managed_merge",
     "start_plan", "start_provider", "start_recovery", "supply_requirement",
     "verify_recovery",
+}
+
+# §4.1 per-state dispatch-row resulting commands (independent mirror of the
+# frozen dispatch table).  A real command_type absent from its state's row is an
+# "unknown dispatch tuple" -> CONTRACT_SCHEMA_INVALID (§4.3/§7), distinct from a
+# fabricated command the registry rejects as ILLEGAL_TRANSITION.
+ROW_COMMANDS = {
+    "intake": {"start_plan"},
+    "planning": {"record_plan"},
+    "awaiting_plan_review": {"approve_plan", "request_revision"},
+    "approved": {"start_provider"},
+    "coding": {"record_provider_result"},
+    "verifying": {"record_verification/pass", "record_verification/fixable_fail",
+                  "record_verification/blocked"},
+    "reviewing": {"record_review/pass", "record_review/findings"},
+    "fixing": {"record_fix_result", "block_feature"},
+    "verified": {"record_merge_candidate"},
+    "awaiting_merge": {"record_merge_approval", "record_observed_merge",
+                       "record_unapproved_observed_merge", "start_managed_merge",
+                       "record_managed_merge"},
+    "merged": {"complete_without_deploy", "record_deploy_approval",
+               "start_managed_deploy", "record_observed_deployment",
+               "record_deployment", "record_unapproved_observed_deployment"},
+    "deployed": {"complete_after_deploy"},
+    "completed": set(),
+    "blocked_requirement": {"supply_requirement"},
+    "blocked_usage": {"resume_frozen_route", "start_approved_fallback"},
+    "blocked_auth": {"resume_after_auth"},
+    "blocked_test": {"continue_fix"},
+    "blocked_external_prerequisite": {"resume_after_prerequisite"},
+    "blocked_unknown": {"resume_checkpoint", "require_reconciliation"},
+    "reconciliation_required": {"resume_checkpoint", "accept_merge_result",
+                                "accept_deploy_result", "open_recovery"},
+    "needs_human": {"retry_from_checkpoint", "replan", "resume_with_budget",
+                    "continue_fix", "accept_current_fact", "open_recovery_case",
+                    "complete_verified_recovery"},
+    "paused": {"resume_checkpoint"},
+    "cancelled": set(),
 }
 
 
@@ -161,10 +200,11 @@ def derive(fixture: dict) -> dict:
     if node_type == "terminal":
         orchestration, resulting = None, None
     elif node_type == "deterministic":
-        orchestration = "deterministic_test_receipt_gate" if state == "verifying" else {
+        orchestration = {
             "intake": "validate_feature_shape",
             "approved": "approval_validity_and_sha_binding",
             "verified": "merge_candidate_sha_binding",
+            "verifying": "test_receipt_gate",
         }.get(state)
         resulting = None if provider_attempted else {
             "intake": "start_plan", "approved": "start_provider",
@@ -188,7 +228,15 @@ def derive(fixture: dict) -> dict:
     # Universal legality gate: a fabricated command_type is ILLEGAL_TRANSITION.
     if attempted is not None and attempted not in REAL_COMMAND_TYPES:
         return _assemble(state, node_type, None, [], None, None, ["provider_call"], seam,
-                         [state], [], [], [], None, None)
+                         [state], [], [], [], None, "ILLEGAL_TRANSITION--planning")
+
+    # §4.3 unknown dispatch tuple: a real command_type absent from this state's
+    # dispatch row -> CONTRACT_SCHEMA_INVALID (controller-side), distinct from
+    # the fabricated-command gate above.
+    if attempted is not None and attempted not in ROW_COMMANDS[state]:
+        return _assemble(state, node_type, "fail_closed_unknown_tuple", [], None, None,
+                         ["provider_call"], seam, [state], [], [], [], None,
+                         "CONTRACT_SCHEMA_INVALID--planning")
 
     if node_type == "deterministic" and provider_attempted:
         return _assemble(state, node_type, orchestration, [], None, None, ["provider_call"], seam,
@@ -211,9 +259,6 @@ def derive(fixture: dict) -> dict:
             return _assemble(state, node_type, orchestration, [], rnd, None, ["subprocess_spawn"], seam,
                              [state, "blocked_auth"], BLOCK_EVENT, APPLIED_RECEIPT,
                              FULL_WRITES, "AUTH_REQUIRED", "BLK-AUTH--planning")
-        if state == "planning" and attempted == "reviewing_handler_combo":
-            return _assemble(state, node_type, "fail_closed_unknown_tuple", [], None, None,
-                             ["provider_call"], seam, [state], [], [], [], None, None)
         if stream and stream[0].get("drift"):
             return _assemble(state, node_type, orchestration, handlers, rnd, None, [], seam,
                              [state, "needs_human"], BLOCK_EVENT, APPLIED_RECEIPT,

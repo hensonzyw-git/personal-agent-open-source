@@ -1,5 +1,5 @@
 {
-  "catalog_sha256": "a24e01d90813c05a0faff3f6f345afb4e2954f514823315b46e516e496425593",
+  "catalog_sha256": "83b55e4c00ed9278d87bea9186c1adca558b6a0a27a153f5c3cdf1c08d0d108d",
   "fixtures": {
     "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/deterministic_node_no_provider/G3/1.0": {
       "attempted_resulting_command": null,
@@ -201,7 +201,7 @@
       "variant_id": "provider_node_empty_response"
     },
     "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/provider_node_wrong_route/G3/1.0": {
-      "attempted_resulting_command": "reviewing_handler_combo",
+      "attempted_resulting_command": "record_review/pass",
       "controller_facts": {
         "cancel_receipt_present": false,
         "has_findings_receipt_since_plan": false,

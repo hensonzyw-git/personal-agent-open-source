@@ -32,8 +32,11 @@ _TRANSITION_REGISTRY = json.loads(
     (OUT / "transition-spec-registry_v1.0.json").read_text(encoding="utf-8")
 )
 TRANSITION_REGISTRY_SHA256 = _TRANSITION_REGISTRY["registry_sha256"]
-# The 47 real command_type names — the authoritative vocabulary.  A command the
-# graph emits that is not one of these is a fabricated transition (§7).
+# The authoritative command_type vocabulary: the 68 unique names across the
+# frozen transition registry's 276 specs (244 feature + 21 recovery_case + 11
+# external_effect).  A command the graph emits that is not one of these is a
+# fabricated transition (§7).  The 47 feature-spec command_types are a proper
+# subset (create_feature is the graph-external root command).
 COMMAND_TYPES = frozenset(spec["command_type"] for spec in _TRANSITION_REGISTRY["specs"])
 
 BASE_WRITES = ["aggregate", "business_event", "transition_receipt", "audit"]
@@ -220,6 +223,7 @@ def digest(value: object) -> str:
 def dispatch_decision(state: str, facts: dict, seam: str, stream: list | None,
                       attempted_command: str | None, provider_attempted: bool) -> dict:
     node_type = NODE_BY_STATE[state]
+    row = DISPATCH_ROWS[STATES.index(state)]
 
     if node_type == "terminal":
         return {
@@ -228,7 +232,7 @@ def dispatch_decision(state: str, facts: dict, seam: str, stream: list | None,
             "outcome": "fail_closed_terminal",
         }
 
-    # A command the graph emits that is not one of the 47 real command_types is
+    # A command the graph emits that is not one of the 68 real command_types is
     # a fabricated transition (§7): the TransitionSpec registry rejects it with
     # ILLEGAL_TRANSITION before any node logic runs.
     if attempted_command is not None and attempted_command not in COMMAND_TYPES:
@@ -238,29 +242,34 @@ def dispatch_decision(state: str, facts: dict, seam: str, stream: list | None,
             "outcome": "illegal_transition",
         }
 
+    # §4.3 unknown dispatch tuple: a real command_type that is not in THIS
+    # state's dispatch row is a controller-side routing error — the dispatch
+    # table has no such (state, command) entry — and fails closed at
+    # CONTRACT_SCHEMA_INVALID (§7).  Distinct from the fabricated-command gate
+    # above, which the registry rejects as ILLEGAL_TRANSITION.
+    row_commands = {c[0] for c in row[3]}
+    if attempted_command is not None and attempted_command not in row_commands:
+        return {
+            "node_type": node_type, "orchestration_action": "fail_closed_unknown_tuple",
+            "handler_sequence": [], "round": None, "resulting_command": None,
+            "seam": seam, "outcome": "wrong_route",
+        }
+
     if node_type == "deterministic":
         if provider_attempted:
             return {
                 "node_type": "deterministic",
-                "orchestration_action": "deterministic_test_receipt_gate",
+                "orchestration_action": row[2],
                 "handler_sequence": [], "round": None, "resulting_command": None,
                 "seam": seam, "outcome": "deterministic_provider_rejected",
             }
-        # The main-route command for a deterministic state is its only legal
-        # deterministic migration; a fabricated command is illegal.
-        row = DISPATCH_ROWS[STATES.index(state)]
-        commands = [c for c in row[3]]
-        legal = {c[0] for c in commands}
-        if attempted_command is not None and attempted_command not in legal:
-            return {
-                "node_type": "deterministic", "orchestration_action": row[2],
-                "handler_sequence": [], "round": None, "resulting_command": None,
-                "seam": seam, "outcome": "illegal_transition",
-            }
+        # A deterministic state's only legal migration is its dispatch-row
+        # command; any other command was already rejected as an unknown
+        # dispatch tuple above.
         return {
             "node_type": "deterministic", "orchestration_action": row[2],
             "handler_sequence": [], "round": None,
-            "resulting_command": commands[0][0] if commands else None,
+            "resulting_command": row[3][0][0] if row[3] else None,
             "seam": seam, "outcome": "deterministic_migrate",
         }
 
@@ -307,14 +316,6 @@ def dispatch_decision(state: str, facts: dict, seam: str, stream: list | None,
             "node_type": "provider", "orchestration_action": action,
             "handler_sequence": [], "round": rnd if state == "reviewing" else None,
             "resulting_command": None, "seam": seam, "outcome": "subprocess_ungated",
-        }
-
-    # wrong route: reviewing handler combo on a non-reviewing provider state.
-    if state == "planning" and attempted_command == "reviewing_handler_combo":
-        return {
-            "node_type": "provider", "orchestration_action": "fail_closed_unknown_tuple",
-            "handler_sequence": [], "round": None, "resulting_command": None,
-            "seam": seam, "outcome": "wrong_route",
         }
 
     # drift in the injected stream -> consume_provider_stream contract failure.
@@ -437,7 +438,7 @@ VARIANTS = [
     ("provider_node_cancelled_no_receipt", "planning", "injected", ["cancelled"],
      _facts(cancel_receipt_present=False), None, False),
     ("provider_node_wrong_route", "planning", "injected", [{"type": "final", "content": "done"}],
-     _facts(), "reviewing_handler_combo", False),
+     _facts(), "record_review/pass", False),
     ("handler_pass_fail_composition", "reviewing", "injected",
      [{"type": "final", "independence_reuse": True, "disposition": "approve"}],
      _facts(), None, False),
@@ -498,6 +499,8 @@ def _variant_oracle(name: str, state: str, facts: dict, seam: str, stream: list 
         "subprocess_ungated": "BLK-AUTH--planning",
         "loop_limit": "BLK-LOOP--fixing",
         "cancelled_close": "SM-CANCEL--planning",
+        "wrong_route": "CONTRACT_SCHEMA_INVALID--planning",
+        "illegal_transition": "ILLEGAL_TRANSITION--planning",
     }.get(decision["outcome"])
     return {
         "schema_version": "dal.controller-dispatch-oracle/1.0",
@@ -558,6 +561,8 @@ def _build_schema() -> dict:
         c[0] for row in DISPATCH_ROWS for c in row[3]
     } | {r[0] for r in UNIVERSAL_ROUTES} | {"block_feature"})
     node_types = sorted(NODE_TAXONOMY)
+    reason_families = sorted({r[1] for r in UNIVERSAL_ROUTES})
+    block_reasons = sorted({r[0] for r in BLOCK_FEATURE_ROUTES})
     return {
         "schema_version": "dal.controller-dispatch/1.0",
         "title": "controller 调度表闭包 schema",
@@ -608,7 +613,7 @@ def _build_schema() -> dict:
                     "required": ["command_type", "reason_family", "to_state", "from_states"],
                     "properties": {
                         "command_type": {"enum": command_types},
-                        "reason_family": {"type": "string"},
+                        "reason_family": {"type": "string", "enum": reason_families},
                         "to_state": {"enum": states_enum},
                         "from_states": {"type": "array", "items": {"enum": states_enum}},
                     },
@@ -620,7 +625,7 @@ def _build_schema() -> dict:
                     "type": "object", "additionalProperties": False,
                     "required": ["reason_code", "from_states", "to_state"],
                     "properties": {
-                        "reason_code": {"type": "string"},
+                        "reason_code": {"type": "string", "enum": block_reasons},
                         "from_states": {"type": "array", "items": {"enum": states_enum}},
                         "to_state": {"enum": states_enum},
                     },

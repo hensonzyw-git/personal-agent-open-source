@@ -1,8 +1,8 @@
 {
-  "fixture_catalog_sha256": "a24e01d90813c05a0faff3f6f345afb4e2954f514823315b46e516e496425593",
-  "manifest_sha256": "7e994102b2a9db976434825569bc207053268f238f70907f0952797248014de2",
+  "fixture_catalog_sha256": "83b55e4c00ed9278d87bea9186c1adca558b6a0a27a153f5c3cdf1c08d0d108d",
+  "manifest_sha256": "ef3dfe69e7de8945253a815c37e04d2aa41e6a95e9b81a5e5964f2bd22342104",
   "manifest_version": "1.0",
-  "oracle_catalog_sha256": "caa27d8bec5a3528037b6282ae3a10fbf3f0441e8f27d1ad5d04884ed172775f",
+  "oracle_catalog_sha256": "5e64a4604d5f3dfa0214c606075d974dacface6faef38e6671d22175bab6cc1a",
   "registry_sha256": "0a333922f31e0679e5488822607367253a559290729a87186255bc830736c25c",
   "schema_version": "dal.controller-dispatch-manifest/1.0",
   "test_variants": [

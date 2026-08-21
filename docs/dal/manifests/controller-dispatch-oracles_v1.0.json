@@ -1,5 +1,5 @@
 {
-  "catalog_sha256": "caa27d8bec5a3528037b6282ae3a10fbf3f0441e8f27d1ad5d04884ed172775f",
+  "catalog_sha256": "5e64a4604d5f3dfa0214c606075d974dacface6faef38e6671d22175bab6cc1a",
   "oracles": {
     "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/deterministic_node_no_provider/G3/1.0": {
       "allowed_write_set": [],
@@ -8,7 +8,7 @@
       "expected_dispatch": {
         "handler_sequence": [],
         "node_type": "deterministic",
-        "orchestration_action": "deterministic_test_receipt_gate",
+        "orchestration_action": "test_receipt_gate",
         "resulting_command": null,
         "round": null,
         "seam": "injected"
@@ -410,12 +410,12 @@
     },
     "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/provider_node_wrong_route/G3/1.0": {
       "allowed_write_set": [],
-      "coverage_ref": null,
+      "coverage_ref": "CONTRACT_SCHEMA_INVALID--planning",
       "expected_atomic_companion_transitions": [],
       "expected_dispatch": {
         "handler_sequence": [],
         "node_type": "provider",
-        "orchestration_action": null,
+        "orchestration_action": "fail_closed_unknown_tuple",
         "resulting_command": null,
         "round": null,
         "seam": "injected"
@@ -842,7 +842,7 @@
     },
     "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/transition_legality/G3/1.0": {
       "allowed_write_set": [],
-      "coverage_ref": null,
+      "coverage_ref": "ILLEGAL_TRANSITION--planning",
       "expected_atomic_companion_transitions": [],
       "expected_dispatch": {
         "handler_sequence": [],

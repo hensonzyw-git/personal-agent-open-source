@@ -50,6 +50,21 @@
             "type": "array"
           },
           "reason_code": {
+            "enum": [
+              "AUTH_REQUIRED",
+              "BUDGET_LIMIT",
+              "EXTERNAL_PREREQUISITE",
+              "GIT_CONFLICT",
+              "POLICY_FAILURE",
+              "POST_EFFECT_EXCEPTION",
+              "PROVIDER_CONTRACT_FAILURE",
+              "REQUIREMENT_MISSING",
+              "REVIEW_LOOP_LIMIT",
+              "STATE_DRIFT",
+              "TEST_BLOCKED",
+              "TRANSIENT_RETRY_EXHAUSTED",
+              "USAGE_LIMIT"
+            ],
             "type": "string"
           },
           "to_state": {
@@ -331,6 +346,12 @@
             "type": "array"
           },
           "reason_family": {
+            "enum": [
+              "CANCEL",
+              "EXTERNAL_RESULT_UNKNOWN",
+              "UNKNOWN_NO_EXTERNAL_INTENT",
+              "USER_PAUSE"
+            ],
             "type": "string"
           },
           "to_state": {
