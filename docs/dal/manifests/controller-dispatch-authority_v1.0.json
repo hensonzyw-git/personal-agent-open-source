@@ -1,0 +1,1117 @@
+{
+  "authority_sha256": "a8e1083fb394a62be3ebb2d7a2eacac8be095bee6cb3b1f6e5950e11d8428df4",
+  "authority_version": "1.0",
+  "dispatch_rows": {
+    "approved": {
+      "node_type": "deterministic",
+      "orchestration_action": "approval_validity_and_sha_binding",
+      "resulting_commands": [
+        {
+          "command_type": "start_provider",
+          "to_family": null,
+          "to_state": "coding"
+        }
+      ]
+    },
+    "awaiting_merge": {
+      "node_type": "gate",
+      "orchestration_action": "human_merge_and_github_readback",
+      "resulting_commands": [
+        {
+          "command_type": "record_merge_approval",
+          "to_family": null,
+          "to_state": "awaiting_merge"
+        },
+        {
+          "command_type": "record_observed_merge",
+          "to_family": null,
+          "to_state": "merged"
+        },
+        {
+          "command_type": "record_unapproved_observed_merge",
+          "to_family": null,
+          "to_state": "merged"
+        },
+        {
+          "command_type": "start_managed_merge",
+          "to_family": null,
+          "to_state": "awaiting_merge"
+        },
+        {
+          "command_type": "record_managed_merge",
+          "to_family": null,
+          "to_state": "merged"
+        }
+      ]
+    },
+    "awaiting_plan_review": {
+      "node_type": "gate",
+      "orchestration_action": "human_plan_approval",
+      "resulting_commands": [
+        {
+          "command_type": "approve_plan",
+          "to_family": null,
+          "to_state": "approved"
+        },
+        {
+          "command_type": "request_revision",
+          "to_family": null,
+          "to_state": "planning"
+        }
+      ]
+    },
+    "blocked_auth": {
+      "node_type": "gate",
+      "orchestration_action": "human_auth_and_probe",
+      "resulting_commands": [
+        {
+          "command_type": "resume_after_auth",
+          "to_family": "checkpoint",
+          "to_state": null
+        }
+      ]
+    },
+    "blocked_external_prerequisite": {
+      "node_type": "gate",
+      "orchestration_action": "prerequisite_complete_and_preflight",
+      "resulting_commands": [
+        {
+          "command_type": "resume_after_prerequisite",
+          "to_family": "checkpoint",
+          "to_state": null
+        }
+      ]
+    },
+    "blocked_requirement": {
+      "node_type": "gate",
+      "orchestration_action": "human_supply_requirement",
+      "resulting_commands": [
+        {
+          "command_type": "supply_requirement",
+          "to_family": null,
+          "to_state": "planning"
+        }
+      ]
+    },
+    "blocked_test": {
+      "node_type": "gate",
+      "orchestration_action": "human_takeover_or_continue_fix",
+      "resulting_commands": [
+        {
+          "command_type": "continue_fix",
+          "to_family": null,
+          "to_state": "fixing"
+        }
+      ]
+    },
+    "blocked_unknown": {
+      "node_type": "gate",
+      "orchestration_action": "effect_inventory",
+      "resulting_commands": [
+        {
+          "command_type": "resume_checkpoint",
+          "to_family": "checkpoint",
+          "to_state": null
+        },
+        {
+          "command_type": "require_reconciliation",
+          "to_family": null,
+          "to_state": "reconciliation_required"
+        }
+      ]
+    },
+    "blocked_usage": {
+      "node_type": "gate",
+      "orchestration_action": "frozen_route_resume_or_fallback",
+      "resulting_commands": [
+        {
+          "command_type": "resume_frozen_route",
+          "to_family": "checkpoint",
+          "to_state": null
+        },
+        {
+          "command_type": "start_approved_fallback",
+          "to_family": "checkpoint",
+          "to_state": null
+        }
+      ]
+    },
+    "cancelled": {
+      "node_type": "terminal",
+      "orchestration_action": null,
+      "resulting_commands": []
+    },
+    "coding": {
+      "node_type": "provider",
+      "orchestration_action": "coding_compose_forward_ref",
+      "resulting_commands": [
+        {
+          "command_type": "record_provider_result",
+          "to_family": null,
+          "to_state": "verifying"
+        }
+      ]
+    },
+    "completed": {
+      "node_type": "terminal",
+      "orchestration_action": null,
+      "resulting_commands": []
+    },
+    "deployed": {
+      "node_type": "gate",
+      "orchestration_action": "production_verification_readback",
+      "resulting_commands": [
+        {
+          "command_type": "complete_after_deploy",
+          "to_family": null,
+          "to_state": "completed"
+        }
+      ]
+    },
+    "fixing": {
+      "node_type": "provider",
+      "orchestration_action": "fixing_compose_forward_ref",
+      "resulting_commands": [
+        {
+          "command_type": "record_fix_result",
+          "to_family": null,
+          "to_state": "verifying"
+        },
+        {
+          "command_type": "block_feature",
+          "to_family": "REVIEW_LOOP_LIMIT",
+          "to_state": "needs_human"
+        }
+      ]
+    },
+    "intake": {
+      "node_type": "deterministic",
+      "orchestration_action": "validate_feature_shape",
+      "resulting_commands": [
+        {
+          "command_type": "start_plan",
+          "to_family": null,
+          "to_state": "planning"
+        }
+      ]
+    },
+    "merged": {
+      "node_type": "gate",
+      "orchestration_action": "deploy_scope_and_approval",
+      "resulting_commands": [
+        {
+          "command_type": "complete_without_deploy",
+          "to_family": null,
+          "to_state": "completed"
+        },
+        {
+          "command_type": "record_deploy_approval",
+          "to_family": null,
+          "to_state": "merged"
+        },
+        {
+          "command_type": "start_managed_deploy",
+          "to_family": null,
+          "to_state": "merged"
+        },
+        {
+          "command_type": "record_observed_deployment",
+          "to_family": null,
+          "to_state": "deployed"
+        },
+        {
+          "command_type": "record_deployment",
+          "to_family": null,
+          "to_state": "deployed"
+        },
+        {
+          "command_type": "record_unapproved_observed_deployment",
+          "to_family": null,
+          "to_state": "deployed"
+        }
+      ]
+    },
+    "needs_human": {
+      "node_type": "gate",
+      "orchestration_action": "action_bound_approval_by_reason",
+      "resulting_commands": [
+        {
+          "command_type": "retry_from_checkpoint",
+          "to_family": "checkpoint",
+          "to_state": null
+        },
+        {
+          "command_type": "replan",
+          "to_family": null,
+          "to_state": "planning"
+        },
+        {
+          "command_type": "resume_with_budget",
+          "to_family": "checkpoint",
+          "to_state": null
+        },
+        {
+          "command_type": "continue_fix",
+          "to_family": null,
+          "to_state": "fixing"
+        },
+        {
+          "command_type": "accept_current_fact",
+          "to_family": "merged|deployed",
+          "to_state": null
+        },
+        {
+          "command_type": "open_recovery_case",
+          "to_family": null,
+          "to_state": "needs_human"
+        },
+        {
+          "command_type": "complete_verified_recovery",
+          "to_family": "merged|deployed",
+          "to_state": null
+        }
+      ]
+    },
+    "paused": {
+      "node_type": "gate",
+      "orchestration_action": "resume_and_drift_probe",
+      "resulting_commands": [
+        {
+          "command_type": "resume_checkpoint",
+          "to_family": "checkpoint",
+          "to_state": null
+        }
+      ]
+    },
+    "planning": {
+      "node_type": "provider",
+      "orchestration_action": "planning_compose",
+      "resulting_commands": [
+        {
+          "command_type": "record_plan",
+          "to_family": null,
+          "to_state": "awaiting_plan_review"
+        }
+      ]
+    },
+    "reconciliation_required": {
+      "node_type": "gate",
+      "orchestration_action": "authoritative_readback_and_approval",
+      "resulting_commands": [
+        {
+          "command_type": "resume_checkpoint",
+          "to_family": "checkpoint",
+          "to_state": null
+        },
+        {
+          "command_type": "accept_merge_result",
+          "to_family": null,
+          "to_state": "merged"
+        },
+        {
+          "command_type": "accept_deploy_result",
+          "to_family": null,
+          "to_state": "deployed"
+        },
+        {
+          "command_type": "open_recovery",
+          "to_family": null,
+          "to_state": "needs_human"
+        }
+      ]
+    },
+    "reviewing": {
+      "node_type": "provider",
+      "orchestration_action": "reviewing_compose",
+      "resulting_commands": [
+        {
+          "command_type": "record_review/pass",
+          "to_family": null,
+          "to_state": "verified"
+        },
+        {
+          "command_type": "record_review/findings",
+          "to_family": null,
+          "to_state": "fixing"
+        }
+      ]
+    },
+    "verified": {
+      "node_type": "deterministic",
+      "orchestration_action": "merge_candidate_sha_binding",
+      "resulting_commands": [
+        {
+          "command_type": "record_merge_candidate",
+          "to_family": null,
+          "to_state": "awaiting_merge"
+        }
+      ]
+    },
+    "verifying": {
+      "node_type": "deterministic",
+      "orchestration_action": "test_receipt_gate",
+      "resulting_commands": [
+        {
+          "command_type": "record_verification/pass",
+          "to_family": null,
+          "to_state": "reviewing"
+        },
+        {
+          "command_type": "record_verification/fixable_fail",
+          "to_family": null,
+          "to_state": "fixing"
+        },
+        {
+          "command_type": "record_verification/blocked",
+          "to_family": null,
+          "to_state": "blocked_test"
+        }
+      ]
+    }
+  },
+  "frozen_fixture_catalog_sha256": "a24e01d90813c05a0faff3f6f345afb4e2954f514823315b46e516e496425593",
+  "frozen_manifest_sha256": "7e994102b2a9db976434825569bc207053268f238f70907f0952797248014de2",
+  "frozen_oracle_catalog_sha256": "caa27d8bec5a3528037b6282ae3a10fbf3f0441e8f27d1ad5d04884ed172775f",
+  "frozen_registry_sha256": "0a333922f31e0679e5488822607367253a559290729a87186255bc830736c25c",
+  "frozen_schema_sha256": "d21721f1fb4e191198eebd889ce7b6007a0684c6ae9d1600701a06cad4b19d1a",
+  "frozen_transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+  "oracle_entries": {
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/deterministic_node_no_provider/G3/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": null,
+      "expected_dispatch": {
+        "handler_sequence": [],
+        "node_type": "deterministic",
+        "orchestration_action": "deterministic_test_receipt_gate",
+        "resulting_command": null,
+        "round": null,
+        "seam": "injected"
+      },
+      "expected_event_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "verifying"
+      },
+      "expected_receipts": [],
+      "expected_state_trace": [
+        "verifying"
+      ],
+      "forbidden_side_effects": [
+        "production_access",
+        "provider_call",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "deterministic_node_no_provider"
+    },
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/drift_fail_closed/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": "BLK-CONTRACT--planning",
+      "expected_dispatch": {
+        "handler_sequence": [
+          "consume_provider_stream",
+          "plan_cross_fields"
+        ],
+        "node_type": "provider",
+        "orchestration_action": "planning_compose",
+        "resulting_command": null,
+        "round": null,
+        "seam": "injected"
+      },
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_state_trace": [
+        "planning",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "production_access",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "drift_fail_closed"
+    },
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/handler_pass_fail_composition/G3/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": null,
+      "expected_dispatch": {
+        "handler_sequence": [
+          "consume_provider_stream",
+          "review_independence",
+          "review_disposition"
+        ],
+        "node_type": "provider",
+        "orchestration_action": "reviewing_compose_round_1",
+        "resulting_command": null,
+        "round": 1,
+        "seam": "injected"
+      },
+      "expected_event_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "reviewing"
+      },
+      "expected_receipts": [],
+      "expected_state_trace": [
+        "reviewing"
+      ],
+      "forbidden_side_effects": [
+        "disposition_adoption",
+        "production_access",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "handler_pass_fail_composition"
+    },
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/loop_limit_in_fixing/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": "BLK-LOOP--fixing",
+      "expected_dispatch": {
+        "handler_sequence": [],
+        "node_type": "provider",
+        "orchestration_action": "fixing_compose_forward_ref",
+        "resulting_command": "block_feature",
+        "round": null,
+        "seam": "injected"
+      },
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "REVIEW_LOOP_LIMIT",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_state_trace": [
+        "fixing",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "coder_derivation",
+        "production_access",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "fixing",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "loop_limit_in_fixing"
+    },
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/provider_node_cancelled/G3/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "SM-CANCEL--planning",
+      "expected_dispatch": {
+        "handler_sequence": [],
+        "node_type": "provider",
+        "orchestration_action": "close_without_transition",
+        "resulting_command": null,
+        "round": null,
+        "seam": "injected"
+      },
+      "expected_event_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "planning"
+      },
+      "expected_receipts": [],
+      "expected_state_trace": [
+        "planning"
+      ],
+      "forbidden_side_effects": [
+        "production_access",
+        "provider_handler_invocation",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "provider_node_cancelled"
+    },
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/provider_node_cancelled_no_receipt/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": "BLK-CONTRACT--planning",
+      "expected_dispatch": {
+        "handler_sequence": [
+          "consume_provider_stream",
+          "plan_cross_fields"
+        ],
+        "node_type": "provider",
+        "orchestration_action": "planning_compose",
+        "resulting_command": null,
+        "round": null,
+        "seam": "injected"
+      },
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_state_trace": [
+        "planning",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "production_access",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "provider_node_cancelled_no_receipt"
+    },
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/provider_node_empty_response/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": "BLK-CONTRACT--planning",
+      "expected_dispatch": {
+        "handler_sequence": [
+          "consume_provider_stream",
+          "plan_cross_fields"
+        ],
+        "node_type": "provider",
+        "orchestration_action": "planning_compose",
+        "resulting_command": null,
+        "round": null,
+        "seam": "injected"
+      },
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_state_trace": [
+        "planning",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "production_access",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "provider_node_empty_response"
+    },
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/provider_node_wrong_route/G3/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": null,
+      "expected_dispatch": {
+        "handler_sequence": [],
+        "node_type": "provider",
+        "orchestration_action": null,
+        "resulting_command": null,
+        "round": null,
+        "seam": "injected"
+      },
+      "expected_event_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "planning"
+      },
+      "expected_receipts": [],
+      "expected_state_trace": [
+        "planning"
+      ],
+      "forbidden_side_effects": [
+        "production_access",
+        "provider_call",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "provider_node_wrong_route"
+    },
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/round_dispatch_after_replan/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_dispatch": {
+        "handler_sequence": [
+          "consume_provider_stream",
+          "review_independence",
+          "review_disposition"
+        ],
+        "node_type": "provider",
+        "orchestration_action": "reviewing_compose_round_1",
+        "resulting_command": "record_review/pass",
+        "round": 1,
+        "seam": "injected"
+      },
+      "expected_event_trace": [
+        "review.completed"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "verified"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_state_trace": [
+        "reviewing",
+        "verified"
+      ],
+      "forbidden_side_effects": [
+        "production_access",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "round_dispatch_after_replan"
+    },
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/round_dispatch_first/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_dispatch": {
+        "handler_sequence": [
+          "consume_provider_stream",
+          "review_independence",
+          "review_disposition"
+        ],
+        "node_type": "provider",
+        "orchestration_action": "reviewing_compose_round_1",
+        "resulting_command": "record_review/pass",
+        "round": 1,
+        "seam": "injected"
+      },
+      "expected_event_trace": [
+        "review.completed"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "verified"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_state_trace": [
+        "reviewing",
+        "verified"
+      ],
+      "forbidden_side_effects": [
+        "production_access",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "round_dispatch_first"
+    },
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/round_dispatch_gaps_only/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_dispatch": {
+        "handler_sequence": [
+          "consume_provider_stream",
+          "post_fix_verdict",
+          "open_finding_set"
+        ],
+        "node_type": "provider",
+        "orchestration_action": "reviewing_compose_round_2",
+        "resulting_command": "record_review/findings",
+        "round": 2,
+        "seam": "injected"
+      },
+      "expected_event_trace": [
+        "fix.requested"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "fixing"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_state_trace": [
+        "reviewing",
+        "fixing"
+      ],
+      "forbidden_side_effects": [
+        "production_access",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "round_dispatch_gaps_only"
+    },
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/round_dispatch_post_fix/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit"
+      ],
+      "coverage_ref": null,
+      "expected_dispatch": {
+        "handler_sequence": [
+          "consume_provider_stream",
+          "post_fix_verdict",
+          "open_finding_set"
+        ],
+        "node_type": "provider",
+        "orchestration_action": "reviewing_compose_round_2",
+        "resulting_command": "record_review/pass",
+        "round": 2,
+        "seam": "injected"
+      },
+      "expected_event_trace": [
+        "review.completed"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "verified"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_state_trace": [
+        "reviewing",
+        "verified"
+      ],
+      "forbidden_side_effects": [
+        "production_access",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "round_dispatch_post_fix"
+    },
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/seam_injection_no_subprocess/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": null,
+      "expected_dispatch": {
+        "handler_sequence": [
+          "consume_provider_stream",
+          "plan_cross_fields"
+        ],
+        "node_type": "provider",
+        "orchestration_action": "planning_compose",
+        "resulting_command": "record_plan",
+        "round": null,
+        "seam": "injected"
+      },
+      "expected_event_trace": [
+        "plan.ready"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "awaiting_plan_review"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_state_trace": [
+        "planning",
+        "awaiting_plan_review"
+      ],
+      "forbidden_side_effects": [
+        "production_access",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "seam_injection_no_subprocess"
+    },
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/seam_subprocess_gated/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "business_event",
+        "transition_receipt",
+        "audit",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox"
+      ],
+      "coverage_ref": "BLK-AUTH--planning",
+      "expected_dispatch": {
+        "handler_sequence": [],
+        "node_type": "provider",
+        "orchestration_action": "planning_compose",
+        "resulting_command": null,
+        "round": null,
+        "seam": "subprocess"
+      },
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "AUTH_REQUIRED",
+        "reason_owner": "feature",
+        "state": "blocked_auth"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_state_trace": [
+        "planning",
+        "blocked_auth"
+      ],
+      "forbidden_side_effects": [
+        "production_access",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "seam_subprocess_gated"
+    },
+    "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/transition_legality/G3/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": null,
+      "expected_dispatch": {
+        "handler_sequence": [],
+        "node_type": "provider",
+        "orchestration_action": null,
+        "resulting_command": null,
+        "round": null,
+        "seam": "injected"
+      },
+      "expected_event_trace": [],
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "planning"
+      },
+      "expected_receipts": [],
+      "expected_state_trace": [
+        "planning"
+      ],
+      "forbidden_side_effects": [
+        "production_access",
+        "provider_call",
+        "subprocess_spawn",
+        "unapproved_external_effect"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "transition_legality"
+    }
+  },
+  "schema_version": "dal.controller-dispatch-authority/1.0",
+  "semantic_counts": {
+    "block_feature_routes": 13,
+    "block_variants": 4,
+    "deterministic_nodes": 4,
+    "dispatch_rows": 23,
+    "gate_nodes": 13,
+    "graph_variants": 15,
+    "provider_nodes": 4,
+    "round_1_variants": 3,
+    "round_2_variants": 2,
+    "terminal_nodes": 2,
+    "universal_routes": 4,
+    "zero_write_variants": 5
+  },
+  "source_boundary": "static-independent-review-authority; never generated by build_controller_dispatch_manifests.py"
+}

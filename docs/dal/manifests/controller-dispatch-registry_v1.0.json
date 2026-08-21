@@ -1,0 +1,642 @@
+{
+  "adapter_seam": {
+    "injected": {
+      "constraint": "MUST NOT 派生 subprocess、MUST NOT 触碰网络/凭据",
+      "definition": "以 normalized 事件流（dal.codex-adapter-response/1.0）驱动 provider 节点"
+    },
+    "subprocess": {
+      "constraint": "MUST 绑定有效 dal.provider-preflight-result/1.0（DAL006 §5）；无 receipt 不得派生",
+      "definition": "派生 codex exec 子进程、固定 cwd/--ephemeral/--sandbox read-only/max_tool_calls=0"
+    }
+  },
+  "block_feature_routes": [
+    {
+      "from_states": [
+        "planning"
+      ],
+      "reason_code": "REQUIREMENT_MISSING",
+      "to_state": "blocked_requirement"
+    },
+    {
+      "from_states": [
+        "planning",
+        "coding",
+        "reviewing",
+        "fixing"
+      ],
+      "reason_code": "USAGE_LIMIT",
+      "to_state": "blocked_usage"
+    },
+    {
+      "from_states": [
+        "planning",
+        "coding",
+        "reviewing",
+        "fixing"
+      ],
+      "reason_code": "AUTH_REQUIRED",
+      "to_state": "blocked_auth"
+    },
+    {
+      "from_states": [
+        "planning",
+        "approved",
+        "coding",
+        "verifying",
+        "reviewing",
+        "fixing"
+      ],
+      "reason_code": "EXTERNAL_PREREQUISITE",
+      "to_state": "blocked_external_prerequisite"
+    },
+    {
+      "from_states": [
+        "fixing"
+      ],
+      "reason_code": "TEST_BLOCKED",
+      "to_state": "blocked_test"
+    },
+    {
+      "from_states": [
+        "fixing"
+      ],
+      "reason_code": "REVIEW_LOOP_LIMIT",
+      "to_state": "needs_human"
+    },
+    {
+      "from_states": [
+        "planning",
+        "coding",
+        "reviewing",
+        "fixing"
+      ],
+      "reason_code": "TRANSIENT_RETRY_EXHAUSTED",
+      "to_state": "needs_human"
+    },
+    {
+      "from_states": [
+        "planning",
+        "coding",
+        "reviewing",
+        "fixing"
+      ],
+      "reason_code": "PROVIDER_CONTRACT_FAILURE",
+      "to_state": "needs_human"
+    },
+    {
+      "from_states": [
+        "planning",
+        "coding",
+        "reviewing",
+        "fixing"
+      ],
+      "reason_code": "BUDGET_LIMIT",
+      "to_state": "needs_human"
+    },
+    {
+      "from_states": [
+        "planning",
+        "awaiting_plan_review",
+        "approved",
+        "coding",
+        "verifying",
+        "reviewing",
+        "fixing",
+        "verified",
+        "awaiting_merge"
+      ],
+      "reason_code": "POLICY_FAILURE",
+      "to_state": "needs_human"
+    },
+    {
+      "from_states": [
+        "approved",
+        "coding",
+        "verifying",
+        "reviewing",
+        "fixing",
+        "verified",
+        "awaiting_merge"
+      ],
+      "reason_code": "GIT_CONFLICT",
+      "to_state": "needs_human"
+    },
+    {
+      "from_states": [
+        "awaiting_plan_review",
+        "approved",
+        "coding",
+        "verifying",
+        "reviewing",
+        "fixing",
+        "verified",
+        "awaiting_merge",
+        "paused"
+      ],
+      "reason_code": "STATE_DRIFT",
+      "to_state": "needs_human"
+    },
+    {
+      "from_states": [
+        "merged",
+        "deployed"
+      ],
+      "reason_code": "POST_EFFECT_EXCEPTION",
+      "to_state": "needs_human"
+    }
+  ],
+  "dispatch_rows": [
+    {
+      "node_type": "deterministic",
+      "orchestration_action": "validate_feature_shape",
+      "resulting_commands": [
+        {
+          "command_type": "start_plan",
+          "to_family": null,
+          "to_state": "planning"
+        }
+      ],
+      "state": "intake"
+    },
+    {
+      "node_type": "provider",
+      "orchestration_action": "planning_compose",
+      "resulting_commands": [
+        {
+          "command_type": "record_plan",
+          "to_family": null,
+          "to_state": "awaiting_plan_review"
+        }
+      ],
+      "state": "planning"
+    },
+    {
+      "node_type": "gate",
+      "orchestration_action": "human_plan_approval",
+      "resulting_commands": [
+        {
+          "command_type": "approve_plan",
+          "to_family": null,
+          "to_state": "approved"
+        },
+        {
+          "command_type": "request_revision",
+          "to_family": null,
+          "to_state": "planning"
+        }
+      ],
+      "state": "awaiting_plan_review"
+    },
+    {
+      "node_type": "deterministic",
+      "orchestration_action": "approval_validity_and_sha_binding",
+      "resulting_commands": [
+        {
+          "command_type": "start_provider",
+          "to_family": null,
+          "to_state": "coding"
+        }
+      ],
+      "state": "approved"
+    },
+    {
+      "node_type": "provider",
+      "orchestration_action": "coding_compose_forward_ref",
+      "resulting_commands": [
+        {
+          "command_type": "record_provider_result",
+          "to_family": null,
+          "to_state": "verifying"
+        }
+      ],
+      "state": "coding"
+    },
+    {
+      "node_type": "deterministic",
+      "orchestration_action": "test_receipt_gate",
+      "resulting_commands": [
+        {
+          "command_type": "record_verification/pass",
+          "to_family": null,
+          "to_state": "reviewing"
+        },
+        {
+          "command_type": "record_verification/fixable_fail",
+          "to_family": null,
+          "to_state": "fixing"
+        },
+        {
+          "command_type": "record_verification/blocked",
+          "to_family": null,
+          "to_state": "blocked_test"
+        }
+      ],
+      "state": "verifying"
+    },
+    {
+      "node_type": "provider",
+      "orchestration_action": "reviewing_compose",
+      "resulting_commands": [
+        {
+          "command_type": "record_review/pass",
+          "to_family": null,
+          "to_state": "verified"
+        },
+        {
+          "command_type": "record_review/findings",
+          "to_family": null,
+          "to_state": "fixing"
+        }
+      ],
+      "state": "reviewing"
+    },
+    {
+      "node_type": "provider",
+      "orchestration_action": "fixing_compose_forward_ref",
+      "resulting_commands": [
+        {
+          "command_type": "record_fix_result",
+          "to_family": null,
+          "to_state": "verifying"
+        },
+        {
+          "command_type": "block_feature",
+          "to_family": "REVIEW_LOOP_LIMIT",
+          "to_state": "needs_human"
+        }
+      ],
+      "state": "fixing"
+    },
+    {
+      "node_type": "deterministic",
+      "orchestration_action": "merge_candidate_sha_binding",
+      "resulting_commands": [
+        {
+          "command_type": "record_merge_candidate",
+          "to_family": null,
+          "to_state": "awaiting_merge"
+        }
+      ],
+      "state": "verified"
+    },
+    {
+      "node_type": "gate",
+      "orchestration_action": "human_merge_and_github_readback",
+      "resulting_commands": [
+        {
+          "command_type": "record_merge_approval",
+          "to_family": null,
+          "to_state": "awaiting_merge"
+        },
+        {
+          "command_type": "record_observed_merge",
+          "to_family": null,
+          "to_state": "merged"
+        },
+        {
+          "command_type": "record_unapproved_observed_merge",
+          "to_family": null,
+          "to_state": "merged"
+        },
+        {
+          "command_type": "start_managed_merge",
+          "to_family": null,
+          "to_state": "awaiting_merge"
+        },
+        {
+          "command_type": "record_managed_merge",
+          "to_family": null,
+          "to_state": "merged"
+        }
+      ],
+      "state": "awaiting_merge"
+    },
+    {
+      "node_type": "gate",
+      "orchestration_action": "deploy_scope_and_approval",
+      "resulting_commands": [
+        {
+          "command_type": "complete_without_deploy",
+          "to_family": null,
+          "to_state": "completed"
+        },
+        {
+          "command_type": "record_deploy_approval",
+          "to_family": null,
+          "to_state": "merged"
+        },
+        {
+          "command_type": "start_managed_deploy",
+          "to_family": null,
+          "to_state": "merged"
+        },
+        {
+          "command_type": "record_observed_deployment",
+          "to_family": null,
+          "to_state": "deployed"
+        },
+        {
+          "command_type": "record_deployment",
+          "to_family": null,
+          "to_state": "deployed"
+        },
+        {
+          "command_type": "record_unapproved_observed_deployment",
+          "to_family": null,
+          "to_state": "deployed"
+        }
+      ],
+      "state": "merged"
+    },
+    {
+      "node_type": "gate",
+      "orchestration_action": "production_verification_readback",
+      "resulting_commands": [
+        {
+          "command_type": "complete_after_deploy",
+          "to_family": null,
+          "to_state": "completed"
+        }
+      ],
+      "state": "deployed"
+    },
+    {
+      "node_type": "terminal",
+      "orchestration_action": null,
+      "resulting_commands": [],
+      "state": "completed"
+    },
+    {
+      "node_type": "gate",
+      "orchestration_action": "human_supply_requirement",
+      "resulting_commands": [
+        {
+          "command_type": "supply_requirement",
+          "to_family": null,
+          "to_state": "planning"
+        }
+      ],
+      "state": "blocked_requirement"
+    },
+    {
+      "node_type": "gate",
+      "orchestration_action": "frozen_route_resume_or_fallback",
+      "resulting_commands": [
+        {
+          "command_type": "resume_frozen_route",
+          "to_family": "checkpoint",
+          "to_state": null
+        },
+        {
+          "command_type": "start_approved_fallback",
+          "to_family": "checkpoint",
+          "to_state": null
+        }
+      ],
+      "state": "blocked_usage"
+    },
+    {
+      "node_type": "gate",
+      "orchestration_action": "human_auth_and_probe",
+      "resulting_commands": [
+        {
+          "command_type": "resume_after_auth",
+          "to_family": "checkpoint",
+          "to_state": null
+        }
+      ],
+      "state": "blocked_auth"
+    },
+    {
+      "node_type": "gate",
+      "orchestration_action": "human_takeover_or_continue_fix",
+      "resulting_commands": [
+        {
+          "command_type": "continue_fix",
+          "to_family": null,
+          "to_state": "fixing"
+        }
+      ],
+      "state": "blocked_test"
+    },
+    {
+      "node_type": "gate",
+      "orchestration_action": "prerequisite_complete_and_preflight",
+      "resulting_commands": [
+        {
+          "command_type": "resume_after_prerequisite",
+          "to_family": "checkpoint",
+          "to_state": null
+        }
+      ],
+      "state": "blocked_external_prerequisite"
+    },
+    {
+      "node_type": "gate",
+      "orchestration_action": "effect_inventory",
+      "resulting_commands": [
+        {
+          "command_type": "resume_checkpoint",
+          "to_family": "checkpoint",
+          "to_state": null
+        },
+        {
+          "command_type": "require_reconciliation",
+          "to_family": null,
+          "to_state": "reconciliation_required"
+        }
+      ],
+      "state": "blocked_unknown"
+    },
+    {
+      "node_type": "gate",
+      "orchestration_action": "authoritative_readback_and_approval",
+      "resulting_commands": [
+        {
+          "command_type": "resume_checkpoint",
+          "to_family": "checkpoint",
+          "to_state": null
+        },
+        {
+          "command_type": "accept_merge_result",
+          "to_family": null,
+          "to_state": "merged"
+        },
+        {
+          "command_type": "accept_deploy_result",
+          "to_family": null,
+          "to_state": "deployed"
+        },
+        {
+          "command_type": "open_recovery",
+          "to_family": null,
+          "to_state": "needs_human"
+        }
+      ],
+      "state": "reconciliation_required"
+    },
+    {
+      "node_type": "gate",
+      "orchestration_action": "action_bound_approval_by_reason",
+      "resulting_commands": [
+        {
+          "command_type": "retry_from_checkpoint",
+          "to_family": "checkpoint",
+          "to_state": null
+        },
+        {
+          "command_type": "replan",
+          "to_family": null,
+          "to_state": "planning"
+        },
+        {
+          "command_type": "resume_with_budget",
+          "to_family": "checkpoint",
+          "to_state": null
+        },
+        {
+          "command_type": "continue_fix",
+          "to_family": null,
+          "to_state": "fixing"
+        },
+        {
+          "command_type": "accept_current_fact",
+          "to_family": "merged|deployed",
+          "to_state": null
+        },
+        {
+          "command_type": "open_recovery_case",
+          "to_family": null,
+          "to_state": "needs_human"
+        },
+        {
+          "command_type": "complete_verified_recovery",
+          "to_family": "merged|deployed",
+          "to_state": null
+        }
+      ],
+      "state": "needs_human"
+    },
+    {
+      "node_type": "gate",
+      "orchestration_action": "resume_and_drift_probe",
+      "resulting_commands": [
+        {
+          "command_type": "resume_checkpoint",
+          "to_family": "checkpoint",
+          "to_state": null
+        }
+      ],
+      "state": "paused"
+    },
+    {
+      "node_type": "terminal",
+      "orchestration_action": null,
+      "resulting_commands": [],
+      "state": "cancelled"
+    }
+  ],
+  "node_taxonomy": {
+    "deterministic": {
+      "definition": "该状态只用 controller 已持有的确定性事实自行判定并立即迁移",
+      "orchestration": "无 provider、不等待；跑 gate（测试 receipt / approval 有效性 / SHA / hash 绑定）-> 迁移"
+    },
+    "gate": {
+      "definition": "该状态无 provider、无确定性判定，必须等待人工 decision 或新到达的外部事实",
+      "orchestration": "只接受 action-bound approval / 外部 read-back（GitHub / 生产）-> 迁移"
+    },
+    "provider": {
+      "definition": "该状态需要一次受控 provider 调用",
+      "orchestration": "adapter(seam) -> consume_provider_stream -> 节点业务 handler(s) -> 迁移"
+    },
+    "terminal": {
+      "definition": "终态",
+      "orchestration": "无出边、无编排动作；任何迁移请求 fail closed"
+    }
+  },
+  "registry_sha256": "0a333922f31e0679e5488822607367253a559290729a87186255bc830736c25c",
+  "schema_version": "dal.controller-dispatch-registry/1.0",
+  "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+  "universal_routes": [
+    {
+      "command_type": "pause_feature",
+      "from_states": [
+        "planning",
+        "awaiting_plan_review",
+        "approved",
+        "coding",
+        "verifying",
+        "reviewing",
+        "fixing",
+        "verified",
+        "awaiting_merge"
+      ],
+      "reason_family": "USER_PAUSE",
+      "to_state": "paused"
+    },
+    {
+      "command_type": "cancel_feature",
+      "from_states": [
+        "intake",
+        "planning",
+        "awaiting_plan_review",
+        "approved",
+        "coding",
+        "verifying",
+        "reviewing",
+        "fixing",
+        "verified",
+        "awaiting_merge",
+        "blocked_requirement",
+        "blocked_usage",
+        "blocked_auth",
+        "blocked_test",
+        "blocked_external_prerequisite",
+        "blocked_unknown",
+        "needs_human",
+        "paused"
+      ],
+      "reason_family": "CANCEL",
+      "to_state": "cancelled"
+    },
+    {
+      "command_type": "block_unknown",
+      "from_states": [
+        "intake",
+        "planning",
+        "awaiting_plan_review",
+        "approved",
+        "coding",
+        "verifying",
+        "reviewing",
+        "fixing",
+        "verified",
+        "awaiting_merge",
+        "merged",
+        "deployed"
+      ],
+      "reason_family": "UNKNOWN_NO_EXTERNAL_INTENT",
+      "to_state": "blocked_unknown"
+    },
+    {
+      "command_type": "require_reconciliation",
+      "from_states": [
+        "intake",
+        "planning",
+        "awaiting_plan_review",
+        "approved",
+        "coding",
+        "verifying",
+        "reviewing",
+        "fixing",
+        "verified",
+        "awaiting_merge",
+        "merged",
+        "deployed",
+        "blocked_unknown"
+      ],
+      "reason_family": "EXTERNAL_RESULT_UNKNOWN",
+      "to_state": "reconciliation_required"
+    }
+  ]
+}
