@@ -37,6 +37,7 @@ dev = [
 [project.scripts]
 personal-agent-api = "personal_agent.cli:main"
 personal-agent-review = "personal_agent.review_cli:main"
+risk-monitor-daily = "risk_monitor.daily_cli:main"
 personal-agent-cleanup = "personal_agent.cleanup_cli:main"
 personal-agent-device = "personal_agent.device_cli:main"
 personal-agent-db = "personal_agent.storage.db:main"
