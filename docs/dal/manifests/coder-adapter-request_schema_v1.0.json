@@ -1,0 +1,88 @@
+{
+  "$comment": "The trusted (protected) half of the coder contract. base_sha / requested_*_sha256 are RFC8785-JCS digests or git SHA filled by the controller, never provider-asserted. allowed_tools is non-empty and closed; allowed_paths are write-scope prefixes.",
+  "$id": "dal.coder-adapter-request/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "authoritative_facts": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_paths": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "allowed_tools": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "base_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "max_patch_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_turns": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_wall_seconds": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pinned_endpoint": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "requested_classifier_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "requested_context_envelope_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "allowed_paths",
+        "allowed_tools",
+        "base_sha",
+        "max_patch_bytes",
+        "max_turns",
+        "max_wall_seconds",
+        "pinned_endpoint",
+        "requested_classifier_digest",
+        "requested_context_envelope_sha256"
+      ],
+      "type": "object"
+    },
+    "contract_version": {
+      "const": "dal.coder-response/1.0"
+    },
+    "operation_spec_id": {
+      "const": "OP-CODER-CONTRACT-001"
+    },
+    "schema_version": {
+      "const": "dal.coder-adapter-request/1.0"
+    }
+  },
+  "required": [
+    "schema_version",
+    "operation_spec_id",
+    "contract_version",
+    "authoritative_facts"
+  ],
+  "schema_version": "dal.coder-adapter-request/1.0",
+  "type": "object"
+}
