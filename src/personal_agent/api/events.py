@@ -77,6 +77,12 @@ SESSION_BOUNDARY_CORRECTED = "session_boundary_corrected"
 #: instruction would be noise at best. Deliberately absent from
 #: `MODEL_VISIBLE_EVENT_TYPES`.
 DAILY_REVIEW = "daily_review"
+#: The systemic-risk daily card, sealed by the risk-monitor job with the scores
+#: read at build time. Presentation, not dialogue, exactly like ``DAILY_REVIEW``:
+#: the scheduler writes it without a user turn, and a frozen score snapshot is
+#: not an instruction for a later model turn. Deliberately absent from
+#: `MODEL_VISIBLE_EVENT_TYPES`.
+RISK_REPORT = "risk_report"
 
 #: Event types the Context Builder may show the model as conversation history.
 #: Dividers are presentation, not dialogue.

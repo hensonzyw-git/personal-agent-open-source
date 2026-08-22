@@ -10,27 +10,38 @@ than a decision to go without push.
 Two databases are involved and they are deliberately distinct (ADR-0001): the
 risk monitor's own SQLite holds scores and observations; the Personal Agent
 database holds the enrolled devices whose push tokens the sender must open. The
-sender is composed against the *latter*, never against the risk database.
+sender is composed against the *latter*, never against the risk database — and
+this job also *writes* to that database, sealing the day's risk card as a
+`risk_report` Timeline event (a trust-boundary widening beyond the original
+read-only token query; see `seal_risk_event`).
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 from sqlalchemy import select
 
+from personal_agent.api import events
 from personal_agent.api.apns import ApnsConfigError, build_push_sender
+from personal_agent.context.config import default_context_config
+from personal_agent.context.session_manager import SessionManager
 from personal_agent.keys import load_agent_data_keyring
 from personal_agent.storage.engine import (
     check_integrity,
     create_database_engine,
     session_factory,
 )
+from personal_agent_core.sqlite import run_write_transaction
+from personal_agent_core.timeutil import utc_now
 
 from risk_monitor import daily
 from risk_monitor.push import push_risk_report
 from risk_monitor.report import build_report
+
+logger = logging.getLogger(__name__)
 
 
 def enrolled_device_ids(sessions) -> list[str]:
@@ -49,7 +60,58 @@ def enrolled_device_ids(sessions) -> list[str]:
         )
 
 
+def _card_content(report: dict) -> dict:
+    """The ``risk_report`` Timeline event content (frozen contract with the iOS
+    decoder). ``as_of``/``state`` are mandatory — a missing value makes the
+    client treat the card as unrecognised rather than render a half card.
+    ``components`` carries the per-indicator breakdown behind MBS/CSS (each row
+    ``label``/``value``/``band``); it is optional so an older card still decodes."""
+    scores = report["scores"]
+    return {
+        "as_of": report["as_of"],
+        "state": report["state"],
+        "mbs": scores.get("mbs"),
+        "css": scores.get("css"),
+        "afrs": scores.get("afrs"),
+        "action": report.get("action"),
+        "components": report.get("components"),
+    }
+
+
+def seal_risk_event(sessions, keyring, session_manager, report) -> str:
+    """Seal today's risk card as a frozen ``risk_report`` Timeline event.
+
+    The content is read once from ``build_report`` output — there is no Feishu
+    round-trip, so the read and the append stay in one transaction (§5.2). Each
+    run seals a fresh card: deliberately not idempotent on ``as_of`` (a manual
+    re-run stacks a second card; the production timer runs once a day).
+    """
+    now = utc_now()
+    content = _card_content(report)
+
+    with sessions() as session:
+
+        def append_and_mark() -> str:
+            timeline_id = events.canonical_timeline_id(session, now=now)
+            return events.append_event(
+                session,
+                keyring,
+                conversation_id=timeline_id,
+                session_id=session_manager.system_event_session(
+                    session, conversation_id=timeline_id, now=now
+                ),
+                turn_id=events.new_turn_id(),
+                event_type=events.RISK_REPORT,
+                content=content,
+                operation_id=None,
+                now=now,
+            )
+
+        return run_write_transaction(session, append_and_mark)
+
+
 def main() -> None:
+    logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(
         description="Run the US/AI systemic risk monitor and push the daily card."
     )
@@ -74,6 +136,7 @@ def main() -> None:
     check_integrity(engine)
     sessions = session_factory(engine)
     keyring = load_agent_data_keyring()
+    session_manager = SessionManager(default_context_config())
 
     try:
         sender = build_push_sender(session_factory=sessions, keyring=keyring)
@@ -86,6 +149,16 @@ def main() -> None:
             db_path=str(args.risk_database) if args.risk_database else None
         )
         report = build_report(result)
+        try:
+            event_id = seal_risk_event(sessions, keyring, session_manager, report)
+            logger.info("risk card sealed: %s", event_id)
+        except Exception as exc:  # noqa: BLE001 - a failed seal must not drop the push
+            logger.error(
+                "risk card seal failed: %s: %s",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
         devices = enrolled_device_ids(sessions)
         if sender is not None:
             outcome = push_risk_report(sender, report, devices)

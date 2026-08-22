@@ -62,3 +62,57 @@ def test_render_markdown_includes_unavailable():
     assert "# 系统性风险周报" in md
     assert "market.fwd_eps_revisions" in md
     assert "credit.ai_basket" in md
+
+
+def _comp(mid, band, available=True, value=None):
+    return {"metric_id": mid, "available": available, "band": band, "value": value}
+
+
+def test_build_report_components_format_indicators():
+    """The per-indicator breakdown is formatted into label/value/band rows —
+    numeric values with sign+unit, qualitative bands as a Chinese word — and the
+    permanently-unavailable ``fwd_eps_revisions`` is dropped."""
+    run = _run(
+        mbs_components=[
+            _comp("market.spx_vs_200dma_pct", "green", value=8.1549),
+            _comp("market.spx_pct_above_200dma", "green", value=68.4),
+            _comp("market.vix", "green", value=16.01),
+            _comp("market.breadth_20d_change", "green", value=4.2717),
+            _comp("market.fwd_eps_revisions", None, available=False),
+        ],
+        css_components=[
+            _comp("credit.hy_oas_pct", "green", value=2.75),
+            _comp("credit.hy_oas_20d_change", "green", value=-2.0),
+            _comp("credit.bbb_oas_pct", "green", value=1.0),
+            _comp("credit.ai_basket", "orange"),  # qualitative: value=None
+            _comp("credit.term_financing", "green"),  # qualitative
+        ],
+    )
+    components = build_report(run)["components"]
+    assert components["mbs"] == [
+        {"label": "SPX vs 200日均线", "value": "+8.2%", "band": "green"},
+        {"label": "广度（>200日均线）", "value": "68.4%", "band": "green"},
+        {"label": "VIX", "value": "16.0", "band": "green"},
+        {"label": "广度 20 日变化", "value": "+4.3pp", "band": "green"},
+    ]
+    assert components["css"] == [
+        {"label": "HY OAS", "value": "2.75%", "band": "green"},
+        {"label": "HY OAS 20 日变化", "value": "-2.0bp", "band": "green"},
+        {"label": "BBB OAS", "value": "1.00%", "band": "green"},
+        {"label": "AI 篮子", "value": "警戒", "band": "orange"},
+        {"label": "期限融资", "value": "正常", "band": "green"},
+    ]
+
+
+def test_build_report_components_skip_unavailable():
+    """An indicator that failed closed (available=False) is dropped, not shown
+    as a fabricated number — the score already renormalised over it."""
+    run = _run(
+        mbs_components=[
+            _comp("market.spx_pct_above_200dma", None, available=False),
+            _comp("market.vix", "green", value=16.0),
+        ],
+    )
+    components = build_report(run)["components"]
+    assert [r["label"] for r in components["mbs"]] == ["VIX"]
+    assert components["css"] == []
