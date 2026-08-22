@@ -1,8 +1,8 @@
 {
-  "fixture_catalog_sha256": "54b6bcd56ad3384eaae3af809f97bf123b59da19779b47242eeea84668b96eba",
-  "manifest_sha256": "134b1ffbb0c78b37bb6db1dde533a02082ecd21c6cc1487bf384d6fd56e2a794",
+  "fixture_catalog_sha256": "0de4ef54eb13943b115b15bbb67fb08a21729ce39801fa9d8dd5202c506dfc46",
+  "manifest_sha256": "7a0415c580673470ac867e3881a573dbe9f95dd514c226a941c839dfc98832ea",
   "manifest_version": "1.0",
-  "oracle_catalog_sha256": "acba3cfd8e622822ed6dd1caefe250f243b9ad34b19a204e6fdea963a28ea5a7",
+  "oracle_catalog_sha256": "74d30cf835af47ecfeffa66af3307edac4b0e892dbb87455a4befa30f3be4209",
   "registry_sha256": "6811ee79ce77c610fbb59ed6706e5b13b388103015b889cb5a5a697010959793",
   "schema_version": "dal.verification-manifest/1.0",
   "test_variants": [
@@ -15,6 +15,16 @@
       "run_gate": "G3",
       "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
       "variant_id": "all_pass"
+    },
+    {
+      "fixture_ref": "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/diff_fail/G3/1.0",
+      "oracle_id": "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/diff_fail/G3/1.0",
+      "owner_tasks": [
+        "DAL-029"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "diff_fail"
     },
     {
       "fixture_ref": "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/diff_empty/G3/1.0",

@@ -16,6 +16,9 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
+
+from personal_agent_dal.errors import DalError, DalErrorCode
 from personal_agent_dal.machine.verification_contract import CHECK_STAGES
 from personal_agent_dal.worker import verification
 from personal_agent_dal.worker.toolchain import (
@@ -69,6 +72,7 @@ def _install_fakes(
         results = tuple(
             StageResult(
                 stage=s,
+                command=manifest.stages[s].command,
                 returncode=returncodes.get(s, 0),
                 output=f"{s} ok",
                 duration_s=0.1,
@@ -184,3 +188,73 @@ def test_envelope_binds_sha_and_idempotency_key(monkeypatch) -> None:
     assert recorded["command"]["idempotency_key"] == f"verify:feature:{BASE_SHA}"
     assert recorded["command"]["actor_type"] == "service"
     assert recorded["command"]["evidence_source_type"] == "verification-adapter"
+
+
+def test_missing_diff_key_raises_dal_error(monkeypatch) -> None:
+    """A registry missing the `diff` stage is an INVALID_ARGUMENT DalError, not
+    a bare KeyError, raised before any subprocess runs."""
+    capture: dict = {}
+    _install_fakes(monkeypatch, returncodes={}, capture=capture)
+
+    with pytest.raises(DalError) as raised:
+        verification.run_verification(
+            repo_path=REPO,
+            base_sha=BASE_SHA,
+            registry_commands={"format": ("make", "format")},
+            manifest=_manifest(),
+        )
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
+def test_head_move_during_diff_fails_closed(monkeypatch) -> None:
+    """A concurrent HEAD move between the two baseline reads must fail closed —
+    the diff is reported unbound so the classifier refuses it instead of binding
+    the patch to the wrong SHA."""
+    capture: dict = {}
+    _install_fakes(monkeypatch, returncodes={}, capture=capture)
+
+    heads = iter([BASE_SHA, "f" * 40])
+    monkeypatch.setattr(verification, "_head_sha", lambda repo_path: next(heads))
+
+    outcome = verification.run_verification(
+        repo_path=REPO,
+        base_sha=BASE_SHA,
+        registry_commands=_registry(),
+        manifest=_manifest(),
+    )
+
+    assert outcome.result_status == "failed"
+    assert outcome.failure_class == "contract_failure"
+
+
+def test_observed_command_reads_stage_result_not_manifest(monkeypatch) -> None:
+    """The worker reports the argv the toolchain actually executed
+    (StageResult.command), not the manifest's declared command — so a toolchain
+    that ran something else surfaces as a policy_failure swap, never masked."""
+    capture: dict = {}
+    _install_fakes(monkeypatch, returncodes={}, capture=capture)
+
+    def divergent_execute(repo_path, manifest, *, stages=(), **kwargs):
+        results = tuple(
+            StageResult(
+                stage=s,
+                command=("make", "test", "--evil") if s == "test" else manifest.stages[s].command,
+                returncode=0,
+                output=f"{s} ok",
+                duration_s=0.1,
+            )
+            for s in stages
+        )
+        return ToolchainResult(stages=results)
+
+    monkeypatch.setattr(verification, "execute_toolchain", divergent_execute)
+
+    outcome = verification.run_verification(
+        repo_path=REPO,
+        base_sha=BASE_SHA,
+        registry_commands=_registry(),
+        manifest=_manifest(),
+    )
+
+    assert outcome.failure_class == "policy_failure"
+    assert outcome.report.commands["test"] == ["make", "test", "--evil"]

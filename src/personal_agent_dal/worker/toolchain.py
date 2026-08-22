@@ -154,9 +154,13 @@ class ToolchainManifest:
 
 @dataclass(frozen=True)
 class StageResult:
-    """The outcome of one stage. `output` is already truncated."""
+    """The outcome of one stage. `output` is already truncated; `command` is the
+    logical argv actually executed (the declared spec command, without the
+    sandbox wrapper) so callers observe what ran rather than re-reading the
+    manifest."""
 
     stage: str
+    command: tuple[str, ...]
     returncode: int
     output: str
     duration_s: float
@@ -434,10 +438,58 @@ def _run_stage(
             raise
     return StageResult(
         stage=stage,
+        command=spec.command,
         returncode=returncode,
         output=output,
         duration_s=monotonic() - started,
     )
+
+
+def run_sandboxed_command(
+    command: tuple[str, ...],
+    repo_path: Path,
+    *,
+    forbidden_paths: tuple[Path, ...] = (),
+    read_only_paths: tuple[Path, ...] = (),
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    monotonic=time.monotonic,
+) -> tuple[str, int]:
+    """Run one command under the same default-deny sandbox, credential-free env
+    and output bound that `execute_toolchain` stages use, returning
+    `(bounded_output, returncode)`. A timeout returns `TIMEOUT_RETURNCODE` with a
+    bounded marker instead of raising.
+
+    Exists so the diff capture — which is *not* a toolchain manifest stage — gets
+    the identical subprocess boundary instead of a bare `subprocess.run`. It has
+    no lease/heartbeat semantics; callers that need those use `execute_toolchain`.
+    """
+    with tempfile.TemporaryDirectory(prefix="personal-agent-dal-cmd-") as raw_temp:
+        temp_path = Path(raw_temp)
+        os.chmod(temp_path, 0o700)
+        process = subprocess.Popen(
+            _sandboxed_argv(command, repo_path, temp_path, forbidden_paths, read_only_paths),
+            cwd=str(repo_path),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=_child_environment(temp_path),
+            close_fds=True,
+            start_new_session=True,
+        )
+        try:
+            output, _ = process.communicate(timeout=timeout_s)
+            returncode = process.returncode
+        except subprocess.TimeoutExpired:
+            _kill_process_group(process)
+            return (
+                _bounded(f"[toolchain: command timed out after {timeout_s}s]"),
+                TIMEOUT_RETURNCODE,
+            )
+        except BaseException:
+            _kill_process_group(process)
+            raise
+    return _bounded(output or ""), returncode
 
 
 def execute_toolchain(

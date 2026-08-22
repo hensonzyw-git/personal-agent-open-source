@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Prove coherent generator-source verification mutations fail closed.
 
-Mutates ``build_verification_manifests.py`` at four semantic anchors (the
-command-swap detection, a reason-to-state target, a diff-integrity branch, and
-the report-body base_sha binding), rebuilds the manifests in an isolated
-directory, and proves the frozen authority rejects each single-sided change.
+Mutates ``build_verification_manifests.py`` at five semantic anchors (the
+command-swap detection, a reason-to-state target, a diff-integrity branch, the
+diff-exit-code branch, and the report-body base_sha binding), rebuilds the
+manifests in an isolated directory, and proves the frozen authority rejects
+each single-sided change.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ ROOT = Path(__file__).resolve().parent
 COMMAND_SWAP_SOURCE = '        if list(observed_command) != list(declared):'
 REASON_TARGET_SOURCE = '    "TEST_BLOCKED": "blocked_test",'
 DIFF_INTEGRITY_SOURCE = '    if injected["diff_sha"] != _sha256_text(injected["diff"]):'
+DIFF_EXIT_SOURCE = '        if isinstance(diff_code, int) and not isinstance(diff_code, bool) and diff_code != 0:'
 REPORT_BODY_SOURCE = '        "base_sha": facts["base_sha"],'
 
 MUTATIONS = {
@@ -35,6 +37,9 @@ MUTATIONS = {
     ),
     "diff_integrity": (
         DIFF_INTEGRITY_SOURCE, DIFF_INTEGRITY_SOURCE.replace('if injected', 'if False and injected'),
+    ),
+    "diff_exit": (
+        DIFF_EXIT_SOURCE, DIFF_EXIT_SOURCE.replace('if isinstance(diff_code', 'if False and isinstance(diff_code'),
     ),
     "report_body": (
         REPORT_BODY_SOURCE, REPORT_BODY_SOURCE.replace('facts["base_sha"]', '"tampered"'),

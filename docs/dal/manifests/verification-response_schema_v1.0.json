@@ -1,5 +1,5 @@
 {
-  "$comment": "The verification classifier result. result_status is the deterministic verdict (succeeded / blocked / failed); failure_class is task_failure for a failed check stage, contract_failure for a drifted diff or malformed stage set, policy_failure for a swapped command. last_verified_sha advances to base_sha on success and preserves the prior value otherwise; report_hash binds base_sha + diff_sha + the observed commands and exit codes.",
+  "$comment": "The verification classifier result. result_status is the deterministic verdict (succeeded / blocked / failed); failure_class is task_failure for a failed check stage, contract_failure for a failed diff capture / drifted diff / malformed stage set, policy_failure for a swapped command. last_verified_sha advances to base_sha on success and preserves the prior value otherwise; report_hash binds base_sha + diff_sha + the raw observed stage_results (nothing dropped).",
   "$id": "dal.verification-response/1.0",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,

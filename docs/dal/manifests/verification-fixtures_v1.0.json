@@ -1,5 +1,5 @@
 {
-  "catalog_sha256": "54b6bcd56ad3384eaae3af809f97bf123b59da19779b47242eeea84668b96eba",
+  "catalog_sha256": "0de4ef54eb13943b115b15bbb67fb08a21729ce39801fa9d8dd5202c506dfc46",
   "fixtures": {
     "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/all_pass/G3/1.0": {
       "operation_sequence": [
@@ -556,6 +556,117 @@
       "schema_version": "dal.verification-fixture/1.0",
       "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
       "variant_id": "diff_empty"
+    },
+    "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/diff_fail/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "verification-adapter",
+          "idempotency_key": "diff_fail",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_verification",
+                "contract_version": "dal.verification-report/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "prior_last_verified_sha": null,
+              "registry_commands": {
+                "build": [
+                  "make",
+                  "build"
+                ],
+                "diff": [
+                  "git",
+                  "diff",
+                  "--binary",
+                  "--no-ext-diff",
+                  "HEAD"
+                ],
+                "format": [
+                  "make",
+                  "format"
+                ],
+                "lint": [
+                  "make",
+                  "lint"
+                ],
+                "test": [
+                  "make",
+                  "test"
+                ]
+              }
+            },
+            "injected_results": {
+              "diff": "fatal: bad object HEAD\n",
+              "diff_base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "diff_sha": "0dca4cd2ccd48ae06d564550b19c99e9d58c514476a5066cb45793a024bc6077",
+              "stage_results": {
+                "build": {
+                  "command": [
+                    "make",
+                    "build"
+                  ],
+                  "exit_code": 0
+                },
+                "diff": {
+                  "command": [
+                    "git",
+                    "diff",
+                    "--binary",
+                    "--no-ext-diff",
+                    "HEAD"
+                  ],
+                  "exit_code": 128
+                },
+                "format": {
+                  "command": [
+                    "make",
+                    "format"
+                  ],
+                  "exit_code": 0
+                },
+                "lint": {
+                  "command": [
+                    "make",
+                    "lint"
+                  ],
+                  "exit_code": 0
+                },
+                "test": {
+                  "command": [
+                    "make",
+                    "test"
+                  ],
+                  "exit_code": 0
+                }
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "verifying",
+              "version": 7
+            }
+          },
+          "operation_id": "diff_fail",
+          "operation_spec_id": "OP-VERIFICATION-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.verification-fixture/1.0",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "diff_fail"
     },
     "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/diff_hash_drift/G3/1.0": {
       "operation_sequence": [

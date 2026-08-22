@@ -41,6 +41,7 @@ CONTRACT_VERSION = "dal.verification-report/1.0"
 
 FROZEN_VARIANTS: set[str] = {
     "all_pass",
+    "diff_fail",
     "diff_empty",
     "diff_hash_drift",
     "diff_base_mismatch",
@@ -67,25 +68,34 @@ def test_variant_set_is_closed(contracts: VerificationContracts) -> None:
     )
 
 
+def _jsonable(value):
+    """Independent copy of the report normaliser: JSON primitives pass through,
+    dict keys are stringified with a type prefix, and anything else becomes a
+    stable `repr`. It must agree byte-for-byte with the classifier's own."""
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            (key if isinstance(key, str) else f"<{type(key).__name__}:{key!r}>"): _jsonable(v)
+            for key, v in value.items()
+        }
+    return f"<{type(value).__name__}:{value!r}>"
+
+
 def _report_hash_from_fixture(fixture: dict) -> str:
     """Independent re-derivation of the report hash, so the classifier's binding
     is proven against a third computation (builder + classifier + this)."""
     facts = fixture["operation_sequence"][0]["input"]["authoritative_facts"]
     injected = fixture["operation_sequence"][0]["input"]["injected_results"]
-    stage_results = injected["stage_results"]
-    commands: dict = {}
-    exit_codes: dict = {}
-    for stage in sorted(key for key in stage_results if isinstance(key, str)):
-        observed = stage_results[stage]
-        if isinstance(observed, dict):
-            commands[stage] = observed.get("command")
-            exit_codes[stage] = observed.get("exit_code")
     body = {
         "schema_version": CONTRACT_VERSION,
         "base_sha": facts["base_sha"],
         "diff_sha": injected["diff_sha"],
-        "commands": commands,
-        "exit_codes": exit_codes,
+        "stage_results": _jsonable(injected["stage_results"]),
     }
     return hashlib.sha256(
         json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -281,6 +291,56 @@ def test_failure_preserves_last_verified_sha(
     assert outcome.failure_class == "task_failure"
     assert outcome.final_state == "blocked_test"
     assert outcome.last_verified_sha == prior
+
+
+def test_diff_fail_is_contract_failure(contracts: VerificationContracts) -> None:
+    """A failed diff capture (exit code != 0) is a contract failure — the diff
+    is an error message, not a patch — and must not advance last_verified_sha."""
+    command = _command(contracts, "diff_fail")
+    outcome = verification_contract_policy.consume_verification(command)
+    assert outcome.result_status == "failed"
+    assert outcome.failure_class == "contract_failure"
+    assert outcome.final_state == "needs_human"
+    assert outcome.last_verified_sha is None
+    assert outcome.report.exit_codes["diff"] == 128
+
+
+def test_report_hash_binds_malformed_stage_content(
+    contracts: VerificationContracts,
+) -> None:
+    """Two observations differing only in a non-dict stage value must produce
+    different report hashes — nothing may be silently dropped (§5.1)."""
+    clean_hash = verification_contract_policy.consume_verification(
+        _command(contracts, "all_pass")
+    ).report.report_hash
+
+    hostile = _command(contracts, "all_pass")
+    hostile["input"]["injected_results"]["stage_results"]["pwn"] = "rm -rf /"
+    hostile_outcome = verification_contract_policy.consume_verification(hostile)
+    assert hostile_outcome.report.report_hash != clean_hash
+    assert hostile_outcome.failure_class == "contract_failure"
+
+    other = _command(contracts, "all_pass")
+    other["input"]["injected_results"]["stage_results"]["pwn"] = "rm -rf /tmp"
+    other_hash = verification_contract_policy.consume_verification(other).report.report_hash
+    assert other_hash != hostile_outcome.report.report_hash
+
+
+def test_report_hash_binds_non_string_stage_key(
+    contracts: VerificationContracts,
+) -> None:
+    """A non-string stage key changes the hash and is a contract failure."""
+    clean_hash = verification_contract_policy.consume_verification(
+        _command(contracts, "all_pass")
+    ).report.report_hash
+
+    hostile = _command(contracts, "all_pass")
+    hostile["input"]["injected_results"]["stage_results"][42] = {
+        "command": ["x"], "exit_code": 0,
+    }
+    outcome = verification_contract_policy.consume_verification(hostile)
+    assert outcome.report.report_hash != clean_hash
+    assert outcome.failure_class == "contract_failure"
 
 
 def test_executor_observes_a_forbidden_boundary_crossing(

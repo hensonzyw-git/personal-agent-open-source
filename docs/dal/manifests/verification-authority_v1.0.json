@@ -1,12 +1,12 @@
 {
-  "authority_sha256": "e199c8dd0dd503c395a3e73326905d0bf1e8b7078b3c3fbb761d5fda2aeed1eb",
+  "authority_sha256": "324b9273ff0a4fe74a12c32ecc1a0d8b45b87689a6b4ac398683c21a52c46594",
   "authority_version": "1.0",
-  "frozen_fixture_catalog_sha256": "54b6bcd56ad3384eaae3af809f97bf123b59da19779b47242eeea84668b96eba",
-  "frozen_manifest_sha256": "134b1ffbb0c78b37bb6db1dde533a02082ecd21c6cc1487bf384d6fd56e2a794",
-  "frozen_oracle_catalog_sha256": "acba3cfd8e622822ed6dd1caefe250f243b9ad34b19a204e6fdea963a28ea5a7",
+  "frozen_fixture_catalog_sha256": "0de4ef54eb13943b115b15bbb67fb08a21729ce39801fa9d8dd5202c506dfc46",
+  "frozen_manifest_sha256": "7a0415c580673470ac867e3881a573dbe9f95dd514c226a941c839dfc98832ea",
+  "frozen_oracle_catalog_sha256": "74d30cf835af47ecfeffa66af3307edac4b0e892dbb87455a4befa30f3be4209",
   "frozen_registry_sha256": "6811ee79ce77c610fbb59ed6706e5b13b388103015b889cb5a5a697010959793",
   "frozen_request_schema_sha256": "2dc85de7987014f279fdce77de497607597f694ebafa3d42a96ab29abae7346f",
-  "frozen_response_schema_sha256": "73a82375adccc4755cecb2deaced962695138d38706d81861a7e3b3b2b0ea891",
+  "frozen_response_schema_sha256": "cf3999d3f779dd821c76745f1c31857c7f376cf5a2f6854ed0c26bbeec62c594",
   "oracle_entries": {
     "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/all_pass/G3/1.0": {
       "allowed_write_set": [
@@ -30,7 +30,7 @@
           "schema_version": "dal.transition-receipt/1.0"
         }
       ],
-      "expected_report_hash": "f1da978369d3d677d62e48aeefa943607a7a926bce26d198a5bbd84d0837558e",
+      "expected_report_hash": "ef932fb678541355a0b035de85d95338c8f9013228668cae29b2e6718462e1e8",
       "expected_result_status": "succeeded",
       "expected_state_trace": [
         "verifying",
@@ -80,7 +80,7 @@
           "schema_version": "dal.transition-receipt/1.0"
         }
       ],
-      "expected_report_hash": "7e6fc389cfb09d6b2f56d00f085dab71f9c63430874df920e1c4d8e733d7b3d5",
+      "expected_report_hash": "b2a92f132526c4d705be599b43815ab5fb0f3f654765012e4506be41c332c8a4",
       "expected_result_status": "blocked",
       "expected_state_trace": [
         "verifying",
@@ -130,7 +130,7 @@
           "schema_version": "dal.transition-receipt/1.0"
         }
       ],
-      "expected_report_hash": "692ffe2870d271708ac164e2f777ed4ba29d6ce9ed62b08263649ea058208667",
+      "expected_report_hash": "8c27b5053b0bd84c8e73a8a4294b2192df3a26dd1bace8d359b9f0b79b931d2f",
       "expected_result_status": "failed",
       "expected_state_trace": [
         "verifying",
@@ -180,7 +180,7 @@
           "schema_version": "dal.transition-receipt/1.0"
         }
       ],
-      "expected_report_hash": "f1da978369d3d677d62e48aeefa943607a7a926bce26d198a5bbd84d0837558e",
+      "expected_report_hash": "ef932fb678541355a0b035de85d95338c8f9013228668cae29b2e6718462e1e8",
       "expected_result_status": "failed",
       "expected_state_trace": [
         "verifying",
@@ -230,7 +230,7 @@
           "schema_version": "dal.transition-receipt/1.0"
         }
       ],
-      "expected_report_hash": "f1da978369d3d677d62e48aeefa943607a7a926bce26d198a5bbd84d0837558e",
+      "expected_report_hash": "ef932fb678541355a0b035de85d95338c8f9013228668cae29b2e6718462e1e8",
       "expected_result_status": "failed",
       "expected_state_trace": [
         "verifying",
@@ -250,6 +250,56 @@
       },
       "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
       "variant_id": "diff_empty"
+    },
+    "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/diff_fail/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-CONTRACT--verifying",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "contract_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_last_verified_sha": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_report_hash": "0242d952be095783118843d50340feea84100b0d4ca8b94d40d9c4ce9c52b793",
+      "expected_result_status": "failed",
+      "expected_state_trace": [
+        "verifying",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "diff_fail"
     },
     "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/diff_hash_drift/G3/1.0": {
       "allowed_write_set": [
@@ -280,7 +330,7 @@
           "schema_version": "dal.transition-receipt/1.0"
         }
       ],
-      "expected_report_hash": "be5e8ed0d7df170de752f838ff4ec462082d063b976cafe7df743b83f8de93bc",
+      "expected_report_hash": "0aa86208785cadee3b0c845af7d64dfc6ae387aee8b292a611708fc9e8244869",
       "expected_result_status": "failed",
       "expected_state_trace": [
         "verifying",
@@ -330,7 +380,7 @@
           "schema_version": "dal.transition-receipt/1.0"
         }
       ],
-      "expected_report_hash": "f7dffbb0b274f0f4e39724814b073785a5a8fedae076dc67259551d1e822b059",
+      "expected_report_hash": "2f88d7068a49f5bd1575c3946bebe26cd5154ada84bf218323770bf149c10aeb",
       "expected_result_status": "blocked",
       "expected_state_trace": [
         "verifying",
@@ -380,7 +430,7 @@
           "schema_version": "dal.transition-receipt/1.0"
         }
       ],
-      "expected_report_hash": "f98fb512b0cb9a091058ef596a70f9f9365a4ff8585d9719235085d250ca988a",
+      "expected_report_hash": "dc4e5ef6c7afff27695af0d32d8cc8df38bea02d751a9735f0278540eb6de75f",
       "expected_result_status": "blocked",
       "expected_state_trace": [
         "verifying",
@@ -430,7 +480,7 @@
           "schema_version": "dal.transition-receipt/1.0"
         }
       ],
-      "expected_report_hash": "5d44fb140d5062d76e0f7fce70a8fa06978671bb3be39198dfc5bf8f97f1a70d",
+      "expected_report_hash": "a1ee31af1b296fa13db998a85c7bcfabb400279a2a2e4fc5db75a425f8956167",
       "expected_result_status": "blocked",
       "expected_state_trace": [
         "verifying",
@@ -480,7 +530,7 @@
           "schema_version": "dal.transition-receipt/1.0"
         }
       ],
-      "expected_report_hash": "5737bc1093eb5554de033bfd8685b364128ae39aa6d6a7a7953b01088e9d754c",
+      "expected_report_hash": "25a32462e9c4101c373e9a6ebe381913af10c80bcf8432012c04bf0fbace0555",
       "expected_result_status": "failed",
       "expected_state_trace": [
         "verifying",
@@ -530,7 +580,7 @@
           "schema_version": "dal.transition-receipt/1.0"
         }
       ],
-      "expected_report_hash": "f7dffbb0b274f0f4e39724814b073785a5a8fedae076dc67259551d1e822b059",
+      "expected_report_hash": "2f88d7068a49f5bd1575c3946bebe26cd5154ada84bf218323770bf149c10aeb",
       "expected_result_status": "blocked",
       "expected_state_trace": [
         "verifying",
@@ -554,17 +604,17 @@
   },
   "schema_version": "dal.verification-authority/1.0",
   "semantic_counts": {
-    "block_event_variants": 10,
+    "block_event_variants": 11,
     "blocked_test_variants": 5,
     "blocked_variants": 5,
-    "contract_failure_variants": 4,
-    "failed_variants": 5,
+    "contract_failure_variants": 5,
+    "failed_variants": 6,
     "last_verified_sha_advanced_variants": 1,
-    "needs_human_variants": 5,
+    "needs_human_variants": 6,
     "policy_failure_variants": 1,
     "succeeded_variants": 1,
     "task_failure_variants": 5,
-    "verification_variants": 11,
+    "verification_variants": 12,
     "verified_variants": 1
   },
   "source_boundary": "static-independent-review-authority; never generated by build_verification_manifests.py"

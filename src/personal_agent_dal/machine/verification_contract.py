@@ -131,11 +131,11 @@ class VerificationReport:
     """The deterministic verification report (§7): commands, exit codes, their
     JCS-bound `report_hash`, and the `APPLIED` check receipt.
 
-    `commands` and `exit_codes` are keyed by the observed stage name and record
-    exactly what the worker reported — including `None` for a malformed or
-    missing stage — so the report is a faithful record even when the verdict is
-    a failure. `report_hash` binds `base_sha` + `diff_sha` + the observed
-    commands and exit codes.
+    `commands` and `exit_codes` are the clean, string-keyed view of the observed
+    stages, with `None` for a missing or malformed stage. `report_hash` binds
+    `base_sha` + `diff_sha` + the *raw* observed `stage_results` (nothing
+    dropped — non-string keys and non-dict values are recorded faithfully), so
+    two different observations can never share a hash.
     """
 
     commands: dict[str, Any]
@@ -280,11 +280,37 @@ def _validate_command(command: dict[str, Any]) -> None:
         raise _invalid("injected_results.stage_results must be an object")
 
 
-def _report_body(facts: dict[str, Any], injected: dict[str, Any]) -> dict[str, Any]:
-    """The report body: base_sha + diff_sha + the observed commands and exit
-    codes, keyed by observed stage name. A malformed or missing stage records
-    `None`; non-string stage names are dropped from the report (they are already
-    a contract failure, and the report must never crash on them)."""
+def _jsonable(value: Any) -> Any:
+    """Reduce an untrusted value to a JSON-serialisable, deterministic form.
+
+    JSON primitives and containers pass through; dict keys are normalised to
+    strings with a type prefix, so mixed-type keys neither crash
+    `sort_keys=True` nor collide with string-keyed entries; any other object
+    becomes a stable `repr` string. This is the report's faithfulness guarantee
+    (§5.1): nothing is silently dropped, and nothing can crash the hash.
+    """
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            (
+                key if isinstance(key, str) else f"<{type(key).__name__}:{key!r}>"
+            ): _jsonable(val)
+            for key, val in value.items()
+        }
+    return f"<{type(value).__name__}:{value!r}>"
+
+
+def _observed_commands_exit_codes(
+    injected: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The clean, string-keyed view of the observed stage results (§7). Non-string
+    stage names are excluded here — they are recorded faithfully in the hashed
+    report body instead — and a missing or malformed stage records `None`."""
     stage_results = injected["stage_results"]
     commands: dict[str, Any] = {}
     exit_codes: dict[str, Any] = {}
@@ -293,19 +319,22 @@ def _report_body(facts: dict[str, Any], injected: dict[str, Any]) -> dict[str, A
         if isinstance(observed, dict):
             commands[stage] = observed.get("command")
             exit_codes[stage] = observed.get("exit_code")
-    return {
-        "schema_version": CONTRACT_VERSION,
-        "base_sha": facts["base_sha"],
-        "diff_sha": injected["diff_sha"],
-        "commands": commands,
-        "exit_codes": exit_codes,
-    }
+        else:
+            commands[stage] = None
+            exit_codes[stage] = None
+    return commands, exit_codes
 
 
 def _report_hash(facts: dict[str, Any], injected: dict[str, Any]) -> str:
-    return hashlib.sha256(
-        _canonical_json(_report_body(facts, injected)).encode("utf-8")
-    ).hexdigest()
+    """`sha256(JCS(report body))`, where the body binds `base_sha` + `diff_sha` +
+    the raw observed `stage_results` (via `_jsonable`, so nothing is dropped)."""
+    body = {
+        "schema_version": CONTRACT_VERSION,
+        "base_sha": facts["base_sha"],
+        "diff_sha": injected["diff_sha"],
+        "stage_results": _jsonable(injected["stage_results"]),
+    }
+    return hashlib.sha256(_canonical_json(body).encode("utf-8")).hexdigest()
 
 
 def _registry_contract_reasons(
@@ -350,9 +379,16 @@ def _registry_contract_reasons(
 
 
 def _diff_reasons(facts: dict[str, Any], injected: dict[str, Any]) -> list[str]:
-    """The diff-integrity contract failures: an empty diff, a diff not bound to
-    the requested base, or a drifted `diff_sha`. Never raises."""
+    """The diff-integrity contract failures, checked in order: a non-zero diff
+    exit code (the diff command itself failed, so `diff` is an error message
+    rather than a patch), an empty diff, a diff not bound to the requested base,
+    or a drifted `diff_sha`. Never raises: the stage results are untrusted."""
     reasons: list[str] = []
+    diff_stage = injected["stage_results"].get("diff")
+    if isinstance(diff_stage, dict):
+        diff_code = diff_stage.get("exit_code")
+        if isinstance(diff_code, int) and not isinstance(diff_code, bool) and diff_code != 0:
+            reasons.append("diff command failed")
     if not injected["diff"]:
         reasons.append("empty diff")
     if injected["diff_base_sha"] != facts["base_sha"]:
@@ -410,9 +446,10 @@ def consume_verification(command: dict[str, Any]) -> VerificationEvaluation:
 
     result_status, failure_class, reason_code, reasons = _classify(facts, injected)
 
+    commands, exit_codes = _observed_commands_exit_codes(injected)
     report = VerificationReport(
-        commands=_report_body(facts, injected)["commands"],
-        exit_codes=_report_body(facts, injected)["exit_codes"],
+        commands=commands,
+        exit_codes=exit_codes,
         report_hash=_report_hash(facts, injected),
         check_receipt=OperationReceipt(ReceiptCode.APPLIED, schema_version=CONTRACT_VERSION),
     )

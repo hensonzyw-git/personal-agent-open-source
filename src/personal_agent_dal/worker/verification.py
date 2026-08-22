@@ -8,20 +8,27 @@ whole envelope to the pure `consume_verification`. It performs no classification
 and no persistence: the machine classifier owns the verdict, and this module
 only records what actually ran.
 
-The diff is captured against the worktree HEAD, and its true base is reported as
-`diff_base_sha` so the classifier can refuse a diff not bound to the requested
-`base_sha`. Commands come only from the declared `registry_commands` (for the
-diff) and the pinned toolchain manifest (for the checks) — never from issue
-text, a model, or the environment.
+Every subprocess here — the `git rev-parse HEAD` baseline and the `git diff`
+capture — runs through `run_sandboxed_command`, so the diff capture gets the
+same default-deny sandbox, credential-free environment and output bound as the
+toolchain stages; no bare `subprocess.run` escapes the boundary. The baseline is
+read before *and* after the diff and the two must agree, so a concurrent HEAD
+move during the capture fails closed (the classifier then refuses the diff as
+unbound) instead of silently binding a patch to the wrong base.
+
+Commands come only from the declared `registry_commands` (for the diff) and the
+pinned toolchain manifest (for the checks) — never from issue text, a model, or
+the environment. The check-stage observed command is read from the `StageResult`
+(the argv actually executed), never re-read from the manifest.
 """
 
 from __future__ import annotations
 
 import hashlib
-import subprocess
 from pathlib import Path
 from typing import Any, Final
 
+from personal_agent_dal.errors import DalError, DalErrorCode
 from personal_agent_dal.machine.verification_contract import (
     COMMAND_TYPE,
     CONTRACT_VERSION,
@@ -31,7 +38,11 @@ from personal_agent_dal.machine.verification_contract import (
     VerificationEvaluation,
     consume_verification,
 )
-from personal_agent_dal.worker.toolchain import ToolchainManifest, execute_toolchain
+from personal_agent_dal.worker.toolchain import (
+    ToolchainManifest,
+    execute_toolchain,
+    run_sandboxed_command,
+)
 
 CHECK_STAGES: Final[tuple[str, ...]] = ("format", "lint", "build", "test")
 
@@ -41,30 +52,20 @@ def _sha256_text(text: str) -> str:
 
 
 def _head_sha(repo_path: Path) -> str:
-    """The worktree HEAD, reported as `diff_base_sha` so the classifier can
-    refuse a diff that was not taken against the requested base."""
-    process = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=str(repo_path),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    return (process.stdout or "").strip()
+    """The worktree HEAD, read under the sandbox. Reported as the diff base so
+    the classifier can refuse a diff that was not taken against the requested
+    base. A failed `rev-parse` returns an empty/non-sha string, which the
+    classifier's binding check refuses."""
+    output, _code = run_sandboxed_command(("git", "rev-parse", "HEAD"), repo_path)
+    return output.strip()
 
 
 def _capture_diff(repo_path: Path, diff_command: tuple[str, ...]) -> tuple[str, int]:
-    """Run the declared diff command and return `(patch_text, exit_code)`."""
-    process = subprocess.run(
-        list(diff_command),
-        cwd=str(repo_path),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    return process.stdout or "", process.returncode
+    """Run the declared diff command under the sandbox and return
+    `(bounded_output, exit_code)`. stderr is merged into stdout, so a failed
+    `git diff` yields error text as `diff` — the classifier's diff-exit-code and
+    integrity checks (not the worker) own the verdict."""
+    return run_sandboxed_command(diff_command, repo_path)
 
 
 def run_verification(
@@ -87,9 +88,30 @@ def run_verification(
     untrusted injected results, together with the trusted base SHA, the declared
     registry, and the prior last-verified SHA.
     """
-    diff_command = tuple(registry_commands["diff"])
+    if not isinstance(registry_commands, dict) or "diff" not in registry_commands:
+        raise DalError(
+            DalErrorCode.INVALID_ARGUMENT,
+            internal_detail="registry_commands must declare the diff stage",
+        )
+    diff_command = registry_commands["diff"]
+    if (
+        not isinstance(diff_command, (list, tuple))
+        or not diff_command
+        or not all(isinstance(token, str) and token for token in diff_command)
+    ):
+        raise DalError(
+            DalErrorCode.INVALID_ARGUMENT,
+            internal_detail="registry_commands['diff'] must be a non-empty argv",
+        )
+    diff_command = tuple(diff_command)
+
+    # Read the baseline before and after the diff; a concurrent HEAD move during
+    # the capture makes the two disagree, and we report an unbound base so the
+    # classifier fails closed rather than binding the patch to the wrong SHA.
+    head_before = _head_sha(repo_path)
     diff_text, diff_exit_code = _capture_diff(repo_path, diff_command)
-    diff_base_sha = _head_sha(repo_path)
+    head_after = _head_sha(repo_path)
+    diff_base_sha = head_before if head_before == head_after else ""
 
     toolchain = execute_toolchain(repo_path, manifest, stages=CHECK_STAGES)
     stage_results: dict[str, dict[str, Any]] = {
@@ -97,7 +119,7 @@ def run_verification(
     }
     for stage_result in toolchain.stages:
         stage_results[stage_result.stage] = {
-            "command": list(manifest.stages[stage_result.stage].command),
+            "command": list(stage_result.command),
             "exit_code": stage_result.returncode,
         }
 

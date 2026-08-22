@@ -43,6 +43,7 @@ from personal_agent_dal.worker.toolchain import (
     TIMEOUT_RETURNCODE,
     load_toolchain_manifest,
     execute_toolchain,
+    run_sandboxed_command,
 )
 
 BASE_SHA = "0" * 40
@@ -446,6 +447,31 @@ def test_execute_toolchain_times_out(tmp_path: Path) -> None:
     result = execute_toolchain(repo, manifest)
     assert result.stages[3].returncode == TIMEOUT_RETURNCODE
     assert not result.succeeded
+
+
+def test_run_sandboxed_command_bounds_output_and_clears_env(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The diff-capture primitive (P2-5) runs under the same sandbox,
+    credential-free env and output bound as toolchain stages."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    output, code = run_sandboxed_command(
+        ("/usr/bin/python3", "-c", "print('x' * 200_000)"), repo
+    )
+    assert code == 0
+    assert "[toolchain: output truncated]" in output
+    assert len(output) < 70_000
+
+    monkeypatch.setenv("DAL_RUNTIME_CANARY", "secret")
+    output2, code2 = run_sandboxed_command(
+        ("/usr/bin/python3", "-c",
+         "import os; print('leaked' if os.getenv('DAL_RUNTIME_CANARY') else 'clean')"),
+        repo,
+    )
+    assert code2 == 0
+    assert "clean" in output2
 
 
 def test_toolchain_child_gets_closed_environment(tmp_path: Path, monkeypatch) -> None:

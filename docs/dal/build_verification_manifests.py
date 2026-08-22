@@ -3,7 +3,7 @@
 
 Machine counterpart of `DAL029_确定性验证流水线_合同冻结包_v0.1.md`.  It emits the
 closed `dal.verification-request/1.0` and `dal.verification-response/1.0` JSON
-Schemas, the stage/registry + verification-decision registry, and the eleven
+Schemas, the stage/registry + verification-decision registry, and the twelve
 `DAL-T-VERIFICATION-CONTRACT-001` adversarial oracles plus their fixtures and
 manifest rows.  It is documentation tooling only: it does not import or execute
 DAL runtime, Worker, provider, or Personal Agent code, and it never touches
@@ -65,6 +65,11 @@ DIFF_TEXT = (
     "+    return execute_toolchain(repo, manifest)\n"
     "+\n"
 )
+
+#: The stderr text a failed `git diff` writes (stderr is merged into stdout by
+#: the worker), used by the `diff_fail` variant — a non-empty, self-consistent
+#: diff whose capture command failed (exit code != 0).
+DIFF_ERROR_TEXT = "fatal: bad object HEAD\n"
 
 #: The five registered commands, in worker order. `diff` is `git diff` against
 #: the base the patch was taken against; the four check stages are the repo's
@@ -130,29 +135,36 @@ def _is_sha40_hex(value: object) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# §7 report body + hash.  The report body binds base_sha + diff_sha + the
-# observed commands and exit codes; `report_hash` is its RFC 8785 JCS digest.
+# §7 report body + hash.  `report_hash` is the RFC 8785 JCS digest of
+# {schema_version, base_sha, diff_sha, stage_results} where stage_results is the
+# raw observation reduced by `_jsonable` (nothing dropped — non-string keys and
+# non-dict values are recorded faithfully, and mixed-type keys cannot crash).
 # ---------------------------------------------------------------------------
-def _report_body(facts: dict, injected: dict) -> dict:
-    stage_results = injected["stage_results"]
-    commands: dict = {}
-    exit_codes: dict = {}
-    for stage in sorted(key for key in stage_results if isinstance(key, str)):
-        observed = stage_results[stage]
-        if isinstance(observed, dict):
-            commands[stage] = observed.get("command")
-            exit_codes[stage] = observed.get("exit_code")
-    return {
-        "schema_version": CONTRACT_VERSION,
-        "base_sha": facts["base_sha"],
-        "diff_sha": injected["diff_sha"],
-        "commands": commands,
-        "exit_codes": exit_codes,
-    }
+def _jsonable(value):
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            (
+                key if isinstance(key, str) else f"<{type(key).__name__}:{key!r}>"
+            ): _jsonable(val)
+            for key, val in value.items()
+        }
+    return f"<{type(value).__name__}:{value!r}>"
 
 
 def _report_hash(facts: dict, injected: dict) -> str:
-    return digest(_report_body(facts, injected))
+    body = {
+        "schema_version": CONTRACT_VERSION,
+        "base_sha": facts["base_sha"],
+        "diff_sha": injected["diff_sha"],
+        "stage_results": _jsonable(injected["stage_results"]),
+    }
+    return digest(body)
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +208,11 @@ def _registry_contract_reasons(facts: dict, injected: dict) -> tuple[list[str], 
 
 def _diff_reasons(facts: dict, injected: dict) -> list[str]:
     reasons: list[str] = []
+    diff_stage = injected["stage_results"].get("diff")
+    if isinstance(diff_stage, dict):
+        diff_code = diff_stage.get("exit_code")
+        if isinstance(diff_code, int) and not isinstance(diff_code, bool) and diff_code != 0:
+            reasons.append("diff command failed")
     if not injected["diff"]:
         reasons.append("empty diff")
     if injected["diff_base_sha"] != facts["base_sha"]:
@@ -248,7 +265,7 @@ def transition_outcome(
 
 
 # ---------------------------------------------------------------------------
-# The 11 frozen variants (inputs only — outcomes are derived).
+# The 12 frozen variants (inputs only — outcomes are derived).
 # ---------------------------------------------------------------------------
 def _facts(**overrides: object) -> dict:
     base: dict = {
@@ -297,6 +314,10 @@ VARIANTS = [
     # (name, fact_overrides, injected_overrides, coverage_ref)
     ("all_pass", {}, {},
      "VERIFY-SUCCEED--verifying"),
+    ("diff_fail", {},
+     {"diff": DIFF_ERROR_TEXT, "diff_sha": _sha256_text(DIFF_ERROR_TEXT),
+      "stage_results": _mutated_stage_results(exit_codes={"diff": 128})},
+     "BLK-CONTRACT--verifying"),
     ("diff_empty", {}, {"diff": ""},
      "BLK-CONTRACT--verifying"),
     ("diff_hash_drift", {}, {"diff_sha": "d" * 64},
@@ -436,7 +457,7 @@ def _build_response_schema() -> dict:
     return {
         "$id": "dal.verification-response/1.0",
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$comment": "The verification classifier result. result_status is the deterministic verdict (succeeded / blocked / failed); failure_class is task_failure for a failed check stage, contract_failure for a drifted diff or malformed stage set, policy_failure for a swapped command. last_verified_sha advances to base_sha on success and preserves the prior value otherwise; report_hash binds base_sha + diff_sha + the observed commands and exit codes.",
+        "$comment": "The verification classifier result. result_status is the deterministic verdict (succeeded / blocked / failed); failure_class is task_failure for a failed check stage, contract_failure for a failed diff capture / drifted diff / malformed stage set, policy_failure for a swapped command. last_verified_sha advances to base_sha on success and preserves the prior value otherwise; report_hash binds base_sha + diff_sha + the raw observed stage_results (nothing dropped).",
         "schema_version": "dal.verification-response/1.0",
         "type": "object",
         "additionalProperties": False,

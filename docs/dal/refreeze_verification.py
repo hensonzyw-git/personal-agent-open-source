@@ -90,28 +90,33 @@ def _is_argv(value: object) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Independent re-derivation of the eleven variants.
+# Independent re-derivation of the twelve variants.
 # ---------------------------------------------------------------------------
-def _report_body(facts: dict, injected: dict) -> dict:
-    stage_results = injected["stage_results"]
-    commands: dict = {}
-    exit_codes: dict = {}
-    for stage in sorted(key for key in stage_results if isinstance(key, str)):
-        observed = stage_results[stage]
-        if isinstance(observed, dict):
-            commands[stage] = observed.get("command")
-            exit_codes[stage] = observed.get("exit_code")
-    return {
-        "schema_version": CONTRACT_VERSION,
-        "base_sha": facts["base_sha"],
-        "diff_sha": injected["diff_sha"],
-        "commands": commands,
-        "exit_codes": exit_codes,
-    }
+def _jsonable(value):
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            (
+                key if isinstance(key, str) else f"<{type(key).__name__}:{key!r}>"
+            ): _jsonable(val)
+            for key, val in value.items()
+        }
+    return f"<{type(value).__name__}:{value!r}>"
 
 
 def _report_hash(facts: dict, injected: dict) -> str:
-    return digest(_report_body(facts, injected))
+    body = {
+        "schema_version": CONTRACT_VERSION,
+        "base_sha": facts["base_sha"],
+        "diff_sha": injected["diff_sha"],
+        "stage_results": _jsonable(injected["stage_results"]),
+    }
+    return digest(body)
 
 
 def _classify(facts: dict, injected: dict) -> tuple:
@@ -149,6 +154,11 @@ def _classify(facts: dict, injected: dict) -> tuple:
     if reasons:
         return ("failed", "contract_failure", "PROVIDER_CONTRACT_FAILURE")
 
+    diff_stage = stage_results.get("diff")
+    if isinstance(diff_stage, dict):
+        diff_code = diff_stage.get("exit_code")
+        if isinstance(diff_code, int) and not isinstance(diff_code, bool) and diff_code != 0:
+            return ("failed", "contract_failure", "PROVIDER_CONTRACT_FAILURE")
     if not injected["diff"]:
         return ("failed", "contract_failure", "PROVIDER_CONTRACT_FAILURE")
     if injected["diff_base_sha"] != facts["base_sha"]:
