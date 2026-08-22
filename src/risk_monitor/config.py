@@ -9,17 +9,26 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_ENV_PATH = _REPO_ROOT / ".env.local"
+_REPO_ENV = Path(__file__).resolve().parents[2] / ".env.local"
+
+
+def _candidates(path: str | Path | None) -> list[Path]:
+    if path is not None:
+        return [Path(path)]
+    # Checkout first, then CWD. On the Mac the source tree finds the repo-root
+    # ``.env.local``; on ECS the wheel lives under site-packages so that path is
+    # wrong, and the operator's ``.env.local`` (mode 600, /opt/personal-agent) is
+    # found relative to the current working directory instead.
+    return [_REPO_ENV, Path.cwd() / ".env.local"]
 
 
 def load_dotenv_local(path: str | Path | None = None) -> None:
-    target = Path(path) if path is not None else DEFAULT_ENV_PATH
-    if not target.exists():
-        return
-    for line in target.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    for target in _candidates(path):
+        if not target.exists():
             continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip())
+        for line in target.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip())
