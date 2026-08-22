@@ -1,0 +1,44 @@
+# Daily US/AI systemic-risk monitor. See src/risk_monitor/daily_cli.py.
+#
+# Runs as the API service user because it writes the risk_report Timeline event
+# into the Agent database (the API's 0700 data dir) and reads the Agent data key
+# (`PERSONAL_AGENT_DATA_ACTIVE_*`) to open the sealed device push token, exactly
+# like the review job. It composes the real APNs sender from `PERSONAL_AGENT_APNS_*`
+# and reads FRED_API_KEY from /opt/personal-agent/.env.local (via WorkingDirectory).
+# Unlike the review job it reaches OUT to FRED, Tencent and EDGAR, so the internet
+# is not firewalled off. NOT idempotent on as_of: each run seals a fresh card
+# (Henson's choice), so a manual rerun stacks a second card.
+[Unit]
+Description=Personal Agent daily systemic-risk monitor
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=personal-agent-api
+Group=personal-agent-api
+EnvironmentFile=/etc/personal-agent/api.env
+WorkingDirectory=/opt/personal-agent
+ExecStart=/opt/personal-agent/.venv/bin/risk-monitor-daily \
+    --agent-database /var/lib/personal-agent-api/agent.sqlite \
+    --risk-database /var/lib/personal-agent-api/risk_monitor.db
+# The job writes scores into risk_monitor.db and the risk_report event into the
+# Agent database; ProtectSystem=strict plus this one writable path is the same
+# shape as the API and review services.
+ReadWritePaths=/var/lib/personal-agent-api
+TimeoutStartSec=600s
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+# FRED + Tencent + EDGAR over HTTPS; AF_UNIX for local SQLite.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
