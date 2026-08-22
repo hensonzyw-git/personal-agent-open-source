@@ -67,6 +67,7 @@ class Observation(Base):
     metric_id: Mapped[str] = mapped_column(String(64), index=True)
     entity_id: Mapped[str] = mapped_column(String(32), index=True)
     value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # None = not_disclosed
+    value_text: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # qualitative band label (green/yellow/orange/red)
     unit: Mapped[str] = mapped_column(String(32))
     period_type: Mapped[str] = mapped_column(String(16))  # daily_close | quarter | ttm | instant
     period_start: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
@@ -132,6 +133,7 @@ MARKET_ENTITIES: list[dict] = [
     {"entity_id": "DGS10",     "name": "10-Year Treasury Yield",           "entity_type": "market"},
     {"entity_id": "DGS30",     "name": "30-Year Treasury Yield",           "entity_type": "market"},
     {"entity_id": "BREADTH",   "name": "S&P 500 breadth (% above 200dma)", "entity_type": "market"},
+    {"entity_id": "AI_BASKET", "name": "AI credit basket (6-name equity proxy)", "entity_type": "market"},
 ]
 
 SOURCES: list[dict] = [

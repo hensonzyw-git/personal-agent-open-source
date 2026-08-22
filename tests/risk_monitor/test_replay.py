@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from risk_monitor.domain.models import Observation, ScoreSnapshot
 from risk_monitor.domain.storage import create_database_engine, init_schema
 from risk_monitor.replay import replay_score
+from risk_monitor.scoring import compute_score
 from risk_monitor.scoring.policy import load_policy
 
 
@@ -80,4 +81,58 @@ def test_replay_score_mismatch_detected(tmp_path):
         result = replay_score(s, policy, as_of)
 
     assert result["matches_mbs"] is False
+    assert result["matches_css"] is True
+
+
+def _qobs(metric_id, entity_id, label, as_of):
+    """A qualitative proxy observation: ``value`` is None, the band label lives
+    in ``value_text`` (the same shape ``daily`` persists)."""
+    return Observation(
+        metric_id=metric_id, entity_id=entity_id, value=None, value_text=label,
+        unit="band", period_type="daily_close", as_of_date=as_of,
+        retrieved_at=_now(), source_id="yahoo", extraction_method="derived",
+        confidence="proxy", status="active", definition_version="2026-08-21.1",
+    )
+
+
+def test_replay_rebuilds_qualitative_labels(tmp_path):
+    """The two qualitative CSS proxies round-trip: seeded with ``value=None`` and
+    their band label in ``value_text``, replay must read them back as scoring
+    inputs — never silently renormalise them away (the critical defect where
+    replay dropped the labels and rebuilt a *different* CSS on every run)."""
+    policy = load_policy()
+    engine = create_database_engine(tmp_path / "r3.db")
+    init_schema(engine)
+    as_of = date(2026, 8, 20)
+
+    values = {
+        "credit.hy_oas_pct": 5.0,        # orange
+        "credit.hy_oas_20d_change": 60.0,  # orange
+        "credit.bbb_oas_pct": 1.75,      # orange
+        "credit.ai_basket": "green",     # qualitative proxy label
+        "credit.term_financing": "green",
+    }
+    with Session(engine) as s:
+        s.add(_obs("credit.hy_oas_pct", "HY_OAS", 5.0, as_of))
+        s.add(_obs("credit.hy_oas_20d_change", "HY_OAS", 60.0, as_of))
+        s.add(_obs("credit.bbb_oas_pct", "BBB_OAS", 1.75, as_of))
+        s.add(_qobs("credit.ai_basket", "AI_BASKET", "green", as_of))
+        s.add(_qobs("credit.term_financing", "DGS30", "green", as_of))
+        s.add(ScoreSnapshot(
+            as_of_date=as_of, mbs=None,
+            css=compute_score("css", policy, values).score, afrs=None,
+            component_json="{}", policy_version="2026-08-21.1",
+            quality_status="ok", created_at=_now(),
+        ))
+        s.commit()
+
+    # Sanity: dropping the two labels must CHANGE the CSS, otherwise this test
+    # would pass even if the labels were silently dropped by replay.
+    numeric_only = {k: v for k, v in values.items() if not isinstance(v, str)}
+    assert compute_score("css", policy, values).score != compute_score("css", policy, numeric_only).score
+
+    with Session(engine) as s:
+        result = replay_score(s, policy, as_of)
+
+    assert result["recomputed"]["css"] == compute_score("css", policy, values).score
     assert result["matches_css"] is True

@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -37,6 +37,21 @@ def create_database_engine(path: str | Path | None = None) -> Engine:
 
 def init_schema(engine: Engine) -> None:
     Base.metadata.create_all(engine)
+    _ensure_column(engine, "observations", "value_text", "VARCHAR(32)")
+
+
+def _ensure_column(engine: Engine, table: str, column: str, ddl_type: str) -> None:
+    """Add a column to an existing table when it is missing.
+
+    ``create_all`` only *creates* tables; it never alters an existing table, so
+    a database written under an earlier schema would silently lack a newly added
+    column and the first read of that column would raise ``OperationalError``.
+    This is a one-off, inspected add — the table/column/type are fixed literals,
+    never user input, so there is no injection surface."""
+    existing = {c["name"] for c in inspect(engine).get_columns(table)}
+    if column not in existing:
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
 
 
 def _seed_entities(session: Session) -> None:

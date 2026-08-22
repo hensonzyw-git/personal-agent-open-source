@@ -67,6 +67,11 @@ def ai_basket_proxy(
 
     if len([p for p in per_name_pct.values() if p is not None]) < agg["min_names"]:
         return None, per_name_pct
+    # Deliberately capped at orange, never red. The policy's red band for
+    # ai_basket is "rating + CDS + bond market worsening in unison" — evidence
+    # an equity-drawdown proxy structurally cannot see. Returning red from
+    # equity alone would report a proxy signal as a real credit signal, which
+    # the policy forbids (proxy=true is surfaced, never asserted as fact).
     if orange_plus >= agg["orange_names"]:
         return "orange", per_name_pct
     if yellow_plus >= agg["yellow_names"]:

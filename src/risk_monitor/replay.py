@@ -24,16 +24,24 @@ from risk_monitor.scoring import compute_score
 from risk_monitor.scoring.policy import load_policy
 
 
-def _observations_for(session: Session, as_of: date) -> dict[str, dict[str, float]]:
-    """Group stored observations by score key (mbs/css) and metric_id."""
-    out: dict[str, dict[str, float]] = {"mbs": {}, "css": {}}
+def _observations_for(session: Session, as_of: date) -> dict[str, dict[str, float | str]]:
+    """Group stored observations by score key (mbs/css) and metric_id.
+
+    A qualitative proxy label is persisted with ``value=None`` and its band
+    label in ``value_text``; it is a scoring input exactly like a numeric value,
+    so it must be read back here or replay silently renormalises the indicator
+    away on every normal day."""
+    out: dict[str, dict[str, float | str]] = {"mbs": {}, "css": {}}
     for o in session.scalars(select(Observation).where(Observation.as_of_date == as_of)):
-        if o.value is None or o.metric_id.startswith("company."):
+        if o.metric_id.startswith("company."):
+            continue
+        v = o.value_text if o.value is None and o.value_text is not None else o.value
+        if v is None:
             continue
         if o.metric_id.startswith("market."):
-            out["mbs"][o.metric_id] = o.value
+            out["mbs"][o.metric_id] = v
         elif o.metric_id.startswith("credit."):
-            out["css"][o.metric_id] = o.value
+            out["css"][o.metric_id] = v
     return out
 
 

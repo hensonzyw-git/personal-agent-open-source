@@ -112,7 +112,6 @@ def derive_market_values(raw: dict[str, object]) -> tuple[dict[str, float], dict
     hy_oas = derive.latest(hy) if hy else None
     hy_oas_pct = hy_oas[1] if hy_oas else None
     hy_oas_20d = derive.change_over_days(hy, 20, basis_points=True) if hy else None
-    spx_latest = derive.latest(spx) if spx else None
     vix = raw.get("vix_latest")
     bbb = raw.get("bbb_oas_latest")
 
@@ -130,8 +129,31 @@ def derive_market_values(raw: dict[str, object]) -> tuple[dict[str, float], dict
     if bbb is not None and bbb[1] is not None:
         css_values["credit.bbb_oas_pct"] = bbb[1]
 
-    as_of = spx_latest[0] if spx_latest else date.today().isoformat()
+    as_of = _latest_as_of(raw)
     return mbs_values, css_values, as_of
+
+
+def _latest_as_of(raw: dict[str, object]) -> str:
+    """Snapshot date = latest trading date across every series that collected.
+
+    The old code used SPX's date alone and fell back to ``date.today()`` when
+    SPX was down — stamping "today" (possibly a non-trading day, or a date for
+    which no input exists) whenever that one series failed. ``as_of`` feeds the
+    score-snapshot key and same-day dedup, so it must be a real input date
+    whenever any series collected; ``date.today()`` remains only the
+    fully-failed-run fallback."""
+    dates: list[str] = []
+    for key in ("spx_history", "hy_oas_history", "dgs30_history"):
+        series = raw.get(key)
+        if series:
+            latest = derive.latest(series)
+            if latest:
+                dates.append(latest[0])
+    for key in ("vix_latest", "bbb_oas_latest", "dgs10_latest"):
+        item = raw.get(key)
+        if item and item[0] is not None:
+            dates.append(item[0])
+    return max(dates) if dates else date.today().isoformat()
 
 
 MIN_BREADTH_COVERAGE = 0.8  # below this, breadth is not a reliable signal
@@ -172,17 +194,21 @@ def collect_breadth(client: YahooClient, tickers: list[str]) -> tuple[dict[str, 
     return metrics, meta, bs
 
 
-def collect_ai_basket(client: YahooClient) -> dict[str, list]:
+def collect_ai_basket(client: YahooClient) -> tuple[dict[str, list], dict[str, str]]:
     """Collect the six AI-capex-cycle names' daily closes for the ai_basket
-    equity proxy (``proxy.ai_basket_proxy``). Returns ``{entity_id: series}``;
-    a name Yahoo fails on is omitted (fail-closed per name, not zero)."""
+    equity proxy (``proxy.ai_basket_proxy``). Returns ``(closes_by_entity,
+    errors)`` where ``errors`` maps ticker -> failure message; a name Yahoo
+    fails on is omitted from the result (fail-closed per name, not zero). The
+    errors are surfaced so the job can distinguish "name failed to pull" from
+    "no 200dma signal yet" in audit, instead of silently dropping them."""
     ticker_to_entity = {c["ticker"]: c["entity_id"] for c in COMPANY_ENTITIES}
-    closes, _errors = client.collect_closes(list(ticker_to_entity))
-    return {
+    closes, errors = client.collect_closes(list(ticker_to_entity))
+    result = {
         ticker_to_entity[t]: series
         for t, series in closes.items()
         if t in ticker_to_entity
     }
+    return result, errors
 
 
 def collect_afrs(client: EdgarClient) -> tuple[dict[str, dict[str, float]], dict]:
@@ -293,7 +319,8 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
         # equity drawdown, term_financing <- 30Y 20d change. A proxy that
         # returns None leaves the indicator unavailable (renormalised), never a
         # fabricated green.
-        ai_label, ai_per_name = proxy_mod.ai_basket_proxy(policy, collect_ai_basket(yahoo))
+        ai_basket_closes, ai_basket_errors = collect_ai_basket(yahoo)
+        ai_label, ai_per_name = proxy_mod.ai_basket_proxy(policy, ai_basket_closes)
         if ai_label is not None:
             css_values["credit.ai_basket"] = ai_label
         term_label, term_bp = proxy_mod.term_financing_proxy(policy, raw.get("dgs30_history"))
@@ -338,7 +365,7 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
             "raw_values": {"mbs": mbs_values, "css": css_values},
             "breadth": breadth_meta,
             "proxies": {
-                "ai_basket": {"label": ai_label, "per_name_pct": ai_per_name},
+                "ai_basket": {"label": ai_label, "per_name_pct": ai_per_name, "errors": ai_basket_errors},
                 "term_financing": {"label": term_label, "dgs30_20d_bp": term_bp},
             },
             "fred_failures": fred_failures,
@@ -361,7 +388,7 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
                 session.add(RawArtifact(
                     raw_record_id=uuid.uuid4().hex,
                     source_id="yahoo",
-                    uri=f"{breadth_client.base_url}/v8/finance/chart/{{ticker}}",
+                    uri=f"{yahoo.base_url}/v8/finance/chart/{{ticker}}",
                     retrieved_at=_utcnow(),
                     content_sha256=_sha256(bbody),
                     content=bbody,
@@ -370,10 +397,17 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
                 _store_observation(session, mid, _entity_for(mid), v, as_of)
             for mid, v in css_values.items():
                 if isinstance(v, str):
-                    # Qualitative proxy label: carried in component_json for
-                    # scoring/replay, not a numeric Observation row.
-                    continue
-                _store_observation(session, mid, _entity_for(mid), v, as_of)
+                    # A qualitative proxy label IS a scoring input: it must be
+                    # persisted so replay can rebuild the CSS score, or replay
+                    # would silently renormalise the indicator away on every
+                    # normal day. Stored in value_text (value stays None).
+                    _store_observation(
+                        session, mid, _entity_for(mid), None, as_of,
+                        value_text=v, unit="band", confidence="proxy",
+                        source_id=("fred" if mid == "credit.term_financing" else "yahoo"),
+                    )
+                else:
+                    _store_observation(session, mid, _entity_for(mid), v, as_of)
             # Company fundamentals: one observation per auto-extracted indicator.
             # The giant companyfacts JSON is NOT stored as a raw artifact (it can
             # be several MB per CIK); instead the score snapshot's component_json
@@ -381,6 +415,20 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
             for entity_id, values in per_company.items():
                 for mid, v in values.items():
                     _store_company_observation(session, mid, entity_id, v, as_of)
+            # A snapshot is "ok" only when every surface produced a value:
+            # both scores, sector AFRS (EDGAR), no FRED series failure, breadth
+            # above the coverage threshold, and both qualitative proxies
+            # resolvable. Any single gap flips it to data_quality_warning so a
+            # partially-failed day can never be mistaken for a clean one.
+            quality_ok = (
+                mbs.score is not None
+                and css.score is not None
+                and afrs is not None
+                and not fred_failures
+                and not breadth_meta.get("below_threshold")
+                and ai_label is not None
+                and term_label is not None
+            )
             session.add(ScoreSnapshot(
                 as_of_date=date.fromisoformat(as_of),
                 mbs=mbs.score,
@@ -388,7 +436,7 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
                 afrs=afrs,
                 component_json=json.dumps(component),
                 policy_version=policy["policy_version"],
-                quality_status="ok" if (mbs.score is not None and css.score is not None and not fred_failures and not breadth_meta.get("below_threshold")) else "data_quality_warning",
+                quality_status="ok" if quality_ok else "data_quality_warning",
                 created_at=_utcnow(),
             ))
             session.commit()
@@ -433,6 +481,8 @@ _ENTITY_MAP = {
     "credit.hy_oas_pct": "HY_OAS",
     "credit.hy_oas_20d_change": "HY_OAS",
     "credit.bbb_oas_pct": "BBB_OAS",
+    "credit.ai_basket": "AI_BASKET",
+    "credit.term_financing": "DGS30",
 }
 
 
@@ -440,18 +490,30 @@ def _entity_for(metric_id: str) -> str:
     return _ENTITY_MAP.get(metric_id, "SPX")
 
 
-def _store_observation(session: Session, metric_id: str, entity_id: str, value: Optional[float], as_of: str) -> None:
+def _store_observation(
+    session: Session,
+    metric_id: str,
+    entity_id: str,
+    value: Optional[float],
+    as_of: str,
+    *,
+    value_text: Optional[str] = None,
+    unit: Optional[str] = None,
+    confidence: str = "derived",
+    source_id: str = "fred",
+) -> None:
     session.add(Observation(
         metric_id=metric_id,
         entity_id=entity_id,
         value=value,
-        unit="percent" if "pct" in metric_id or "change" in metric_id else "index",
+        value_text=value_text,
+        unit=unit or ("percent" if "pct" in metric_id or "change" in metric_id else "index"),
         period_type="daily_close",
         as_of_date=date.fromisoformat(as_of),
         retrieved_at=_utcnow(),
-        source_id="fred",
+        source_id=source_id,
         extraction_method="derived",
-        confidence="derived",
+        confidence=confidence,
         status="active",
         definition_version="2026-08-21.1",
     ))
