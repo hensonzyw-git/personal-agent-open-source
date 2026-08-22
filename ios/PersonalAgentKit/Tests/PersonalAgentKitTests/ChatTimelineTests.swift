@@ -1042,6 +1042,102 @@ struct TimelineEventTests {
         #expect(parsed.kind == .unrecognised(eventType: "daily_review"))
     }
 
+    @Test("a risk report event carries its frozen snapshot")
+    func riskReportEvent() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-risk",
+                type: "risk_report",
+                content: [
+                    "as_of": "2026-08-22",
+                    "state": "NORMAL",
+                    "mbs": 35.0,
+                    "css": 40.0,
+                    "afrs": 60.0,
+                    "action": "持仓观察",
+                ]
+            )
+        )
+        guard case .riskReport(let snapshot) = parsed.kind else {
+            Issue.record("expected a risk report card, got \(parsed.kind)")
+            return
+        }
+        #expect(snapshot.asOf == "2026-08-22")
+        #expect(snapshot.state == "NORMAL")
+        #expect(snapshot.mbs == 35.0)
+        #expect(snapshot.css == 40.0)
+        #expect(snapshot.afrs == 60.0)
+        #expect(snapshot.action == "持仓观察")
+    }
+
+    @Test("a risk report event tolerates absent scores and action")
+    func riskReportAbsentScores() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-risk-null",
+                type: "risk_report",
+                content: ["as_of": "2026-08-22", "state": "DELEVERAGING"]
+            )
+        )
+        guard case .riskReport(let snapshot) = parsed.kind else {
+            Issue.record("expected a risk report card, got \(parsed.kind)")
+            return
+        }
+        #expect(snapshot.mbs == nil)
+        #expect(snapshot.css == nil)
+        #expect(snapshot.afrs == nil)
+        #expect(snapshot.action == nil)
+    }
+
+    @Test("a risk report event without as_of is unreadable, not blank")
+    func riskReportNeedsAsOf() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-risk-bad",
+                type: "risk_report",
+                content: ["state": "NORMAL", "mbs": 35.0]
+            )
+        )
+        #expect(parsed.kind == .unrecognised(eventType: "risk_report"))
+    }
+
+    @Test("a risk report event carries its indicator breakdown")
+    func riskReportComponents() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-risk-comp",
+                type: "risk_report",
+                content: [
+                    "as_of": "2026-08-22",
+                    "state": "NORMAL",
+                    "components": [
+                        "mbs": [
+                            ["label": "VIX", "value": "16.0", "band": "green"],
+                            ["label": "广度（>200日均线）", "value": "68.4%", "band": "green"],
+                        ],
+                        "css": [
+                            ["label": "AI 篮子", "value": "警戒", "band": "orange"],
+                        ],
+                    ],
+                ]
+            )
+        )
+        guard case .riskReport(let snapshot) = parsed.kind else {
+            Issue.record("expected a risk report card, got \(parsed.kind)")
+            return
+        }
+        let components = try #require(snapshot.components)
+        #expect(components.mbs.count == 2)
+        #expect(components.mbs[0].label == "VIX")
+        #expect(components.mbs[0].value == "16.0")
+        #expect(components.mbs[0].band == "green")
+        #expect(components.mbs[1].value == "68.4%")
+        #expect(components.css.count == 1)
+        #expect(components.css[0].label == "AI 篮子")
+        #expect(components.css[0].value == "警戒")
+        #expect(components.css[0].band == "orange")
+    }
+
     @Test("a non-string where text belongs is unreadable, not blank")
     func nonStringText() throws {
         let parsed = try decode(chatEvent("ev-7", content: ["text": 18]))

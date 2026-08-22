@@ -348,6 +348,9 @@ struct ChatView: View {
                 reviewCard(snapshot: snapshot)
             }
 
+        case .riskReport(let snapshot):
+            riskReportCard(snapshot: snapshot)
+
         case .unrecognised(let eventType):
             // Not dropped: a history that silently omits entries is a history that
             // lies about what happened.
@@ -417,6 +420,128 @@ struct ChatView: View {
             RoundedRectangle(cornerRadius: Metric.cardRadius)
                 .strokeBorder(Color.cardBorder, lineWidth: Metric.hairline)
         )
+    }
+
+    // --- the systemic-risk card ------------------------------------------------
+
+    /// The risk card, drawn from the frozen snapshot sealed in the Timeline. The
+    /// values come straight from the event — never re-pulled from FRED/Tencent —
+    /// so scrolling back always shows the score as it was sealed that day.
+    @ViewBuilder
+    private func riskReportCard(snapshot: RiskReportSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("系统性风险 · \(snapshot.asOf)")
+                    .font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                Text(riskStateLabel(snapshot.state))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.top, Metric.cardHeaderTop)
+            .padding(.bottom, Metric.cardHeaderBottom)
+
+            Text(riskScoresLine(snapshot))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Metric.cardInset)
+                .padding(.vertical, Metric.fieldRowPadding)
+                .overlay(alignment: .top) { hairline }
+
+            if let components = snapshot.components {
+                riskComponentGroup("MBS 指标", components.mbs)
+                riskComponentGroup("CSS 指标", components.css)
+            }
+
+            if let action = snapshot.action, !action.isEmpty {
+                Text(action)
+                    .font(.footnote)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Metric.cardInset)
+                    .padding(.vertical, Metric.fieldRowPadding)
+                    .overlay(alignment: .top) { hairline }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(Color.cardBorder, lineWidth: Metric.hairline)
+        )
+    }
+
+    private func riskStateLabel(_ state: String) -> String {
+        switch state {
+        case "NORMAL": return "正常"
+        case "RISK_ACCUMULATION": return "风险累积"
+        case "CREDIT_CONFIRMATION": return "信用确认"
+        case "DELEVERAGING": return "去杠杆"
+        default: return state
+        }
+    }
+
+    private func riskScoresLine(_ snapshot: RiskReportSnapshot) -> String {
+        func fmt(_ value: Double?) -> String {
+            guard let value else { return "-" }
+            return String(format: "%.1f", value)
+        }
+        return "MBS \(fmt(snapshot.mbs)) / CSS \(fmt(snapshot.css)) / AFRS \(fmt(snapshot.afrs))"
+    }
+
+    /// The band's traffic-light colour for the status dot. Green/orange/red are
+    /// the standard risk convention; the dot is a status label, not a second
+    /// brand colour (DesignTokens §7).
+    private func riskBandColor(_ band: String) -> Color {
+        switch band {
+        case "green": return .green
+        case "yellow": return .yellow
+        case "orange": return .orange
+        case "red": return .red
+        default: return .secondary
+        }
+    }
+
+    /// One indicator group (MBS or CSS): a quiet header over its rows.
+    @ViewBuilder
+    private func riskComponentGroup(_ title: String, _ rows: [RiskComponent]) -> some View {
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Metric.cardInset)
+                    .padding(.top, Metric.fieldRowPadding)
+                    .padding(.bottom, 4)
+
+                ForEach(rows, id: \.label) { component in
+                    riskComponentRow(component)
+                }
+            }
+            .overlay(alignment: .top) { hairline }
+        }
+    }
+
+    /// A single indicator row: band dot + label on the left, the frozen value on
+    /// the right. The value is a string already formatted by the backend, never a
+    /// re-derived number.
+    private func riskComponentRow(_ component: RiskComponent) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Circle()
+                .fill(riskBandColor(component.band))
+                .frame(width: 8, height: 8)
+            Text(component.label)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(component.value)
+                .font(.footnote)
+        }
+        .padding(.horizontal, Metric.cardInset)
+        .padding(.vertical, 6)
     }
 
     private func reviewStatusCapsule(_ status: ReviewStatus) -> some View {

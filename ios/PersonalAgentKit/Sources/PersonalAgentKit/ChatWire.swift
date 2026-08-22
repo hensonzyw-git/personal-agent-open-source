@@ -909,6 +909,9 @@ public enum TimelineEntryKind: Sendable, Equatable {
     /// values read once at build time. The `snapshot` is frozen; the card's
     /// status is read live because ack/defer keep changing it after the seal.
     case dailyReview(snapshot: ReviewCardSnapshot)
+    /// The systemic-risk daily card, sealed by the risk-monitor job with the
+    /// scores read once at build time. Presentation, never dialogue.
+    case riskReport(snapshot: RiskReportSnapshot)
     /// An event type this build does not know. Kept visible rather than dropped:
     /// a silently-missing entry is a history that lies about what happened.
     case unrecognised(eventType: String)
@@ -1058,6 +1061,16 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                 return .unrecognised(eventType: eventType)
             }
             return .dailyReview(snapshot: snapshot)
+        case "risk_report":
+            guard
+                let data = try? JSONEncoder().encode(content),
+                let snapshot = try? JSONDecoder().decode(
+                    RiskReportSnapshot.self, from: data
+                )
+            else {
+                return .unrecognised(eventType: eventType)
+            }
+            return .riskReport(snapshot: snapshot)
         case "session_divider", "session_boundary_corrected":
             return .sessionDivider(
                 reason: content["reason"]?.stringValue,
