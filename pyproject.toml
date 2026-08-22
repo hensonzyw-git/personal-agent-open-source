@@ -19,6 +19,7 @@ dependencies = [
   "httpx2>=2.5,<3",
   "cryptography>=49,<50",
   "pyjwt>=2.13,<3",
+  "pyyaml>=6.0,<7",
   "jsonschema>=4.23,<5",
   "h2>=4,<5",
 ]
@@ -70,10 +71,12 @@ packages = [
   "src/personal_agent_dal",
   "src/personal_data_mcp",
   "src/personal_agent_spike",
+  "src/risk_monitor",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
 "evals/finance_v0.2.jsonl" = "personal_agent_core/data/finance_v0.2.jsonl"
+"spec/scoring_policy.yml" = "risk_monitor/scoring/scoring_policy.yml"
 
 [tool.pytest.ini_options]
 addopts = "-q"

@@ -9,9 +9,14 @@ from typing import Any
 
 import yaml
 
-# Resolve from src/risk_monitor/scoring/policy.py up to the repo root.
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_POLICY_PATH = _REPO_ROOT / "spec" / "scoring_policy.yml"
+# Resolve the policy from the checkout first, then the packaged copy. The
+# checkout keeps the canonical editable source at ``spec/scoring_policy.yml``
+# (next to ADR-0001); ``pyproject.toml`` force-includes that same file into the
+# wheel at ``risk_monitor/scoring/scoring_policy.yml`` so an installed wheel is
+# self-contained. This mirrors ``personal_agent_core.evalset``.
+_REPOSITORY_POLICY = Path(__file__).resolve().parents[3] / "spec" / "scoring_policy.yml"
+_PACKAGED_POLICY = Path(__file__).resolve().with_name("scoring_policy.yml")
+DEFAULT_POLICY_PATH = _REPOSITORY_POLICY if _REPOSITORY_POLICY.exists() else _PACKAGED_POLICY
 
 
 def load_policy(path: str | Path | None = None) -> dict[str, Any]:
