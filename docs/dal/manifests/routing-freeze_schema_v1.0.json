@@ -13,7 +13,9 @@
     "providers",
     "routing",
     "credentials",
-    "redacted"
+    "redacted",
+    "violations",
+    "plaintext_credentials"
   ],
   "properties": {
     "schema": {
@@ -114,6 +116,37 @@
       "type": "array",
       "items": { "type": "string" },
       "description": "Completeness witness. Every config field the exporter could not classify as routing/version/usage-state is force-redacted and its path listed here. Empty means nothing fell through unclassified — a structural proof that no unknown field silently entered the freeze. This is the fail-closed invariant that keeps the rules forward-compatible with future provider/agent/CCR shapes."
+    },
+    "violations": {
+      "type": "array",
+      "description": "Credential-compliance hard gate (DAL-006 §3.3): credential stores must be 0600 file / 0700 parent. Empty means compliant. A non-empty list marks the freeze non-compliant and the downstream preflight/adapter must refuse it. A plaintext key inside a 0600-protected third-party store is NOT a violation — Henson ruled (2026-08-22, option 2) that the 'no plaintext' gate applies only to credentials the DAL system itself writes; CCR-native storage is judged by file permissions. The pinned-host runtime check is deliberately NOT here — that is DAL-026's job.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "store"],
+        "properties": {
+          "code": {
+            "enum": ["credential-store-loose-file-perm", "credential-store-loose-parent-perm", "credential-store-unreadable"],
+            "description": "loose-file-perm = store file not 0600; loose-parent-perm = store dir not 0700; unreadable = could not be opened read-only to verify (fail closed)."
+          },
+          "store": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      }
+    },
+    "plaintext_credentials": {
+      "type": "array",
+      "description": "Informational, NOT a hard gate. CCR-native credentials stored unencrypted at rest, detected without ever outputting a key value (name only). Henson accepted these as CCR-native on 2026-08-22 (option 2); they are recorded so the fact stays visible and drift-tracked, but they do not mark the freeze non-compliant.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "store"],
+        "properties": {
+          "name": { "type": "string" },
+          "store": { "type": "string" },
+          "encryption": { "enum": ["plain", "unreadable"] }
+        }
+      }
     }
   }
 }
