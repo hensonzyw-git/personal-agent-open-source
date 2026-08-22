@@ -1,0 +1,571 @@
+{
+  "authority_sha256": "e199c8dd0dd503c395a3e73326905d0bf1e8b7078b3c3fbb761d5fda2aeed1eb",
+  "authority_version": "1.0",
+  "frozen_fixture_catalog_sha256": "54b6bcd56ad3384eaae3af809f97bf123b59da19779b47242eeea84668b96eba",
+  "frozen_manifest_sha256": "134b1ffbb0c78b37bb6db1dde533a02082ecd21c6cc1487bf384d6fd56e2a794",
+  "frozen_oracle_catalog_sha256": "acba3cfd8e622822ed6dd1caefe250f243b9ad34b19a204e6fdea963a28ea5a7",
+  "frozen_registry_sha256": "6811ee79ce77c610fbb59ed6706e5b13b388103015b889cb5a5a697010959793",
+  "frozen_request_schema_sha256": "2dc85de7987014f279fdce77de497607597f694ebafa3d42a96ab29abae7346f",
+  "frozen_response_schema_sha256": "73a82375adccc4755cecb2deaced962695138d38706d81861a7e3b3b2b0ea891",
+  "oracle_entries": {
+    "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/all_pass/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "transition_receipt"
+      ],
+      "coverage_ref": "VERIFY-SUCCEED--verifying",
+      "expected_event_trace": [],
+      "expected_failure_class": null,
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "verified"
+      },
+      "expected_last_verified_sha": "0123456789abcdef0123456789abcdef01234567",
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_report_hash": "f1da978369d3d677d62e48aeefa943607a7a926bce26d198a5bbd84d0837558e",
+      "expected_result_status": "succeeded",
+      "expected_state_trace": [
+        "verifying",
+        "verified"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "all_pass"
+    },
+    "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/build_fail/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-TASK--verifying",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "task_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "TEST_BLOCKED",
+        "reason_owner": "feature",
+        "state": "blocked_test"
+      },
+      "expected_last_verified_sha": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_report_hash": "7e6fc389cfb09d6b2f56d00f085dab71f9c63430874df920e1c4d8e733d7b3d5",
+      "expected_result_status": "blocked",
+      "expected_state_trace": [
+        "verifying",
+        "blocked_test"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "build_fail"
+    },
+    "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/command_not_in_registry/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-POLICY--verifying",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "policy_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "POLICY_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_last_verified_sha": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_report_hash": "692ffe2870d271708ac164e2f777ed4ba29d6ce9ed62b08263649ea058208667",
+      "expected_result_status": "failed",
+      "expected_state_trace": [
+        "verifying",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "command_not_in_registry"
+    },
+    "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/diff_base_mismatch/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-CONTRACT--verifying",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "contract_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_last_verified_sha": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_report_hash": "f1da978369d3d677d62e48aeefa943607a7a926bce26d198a5bbd84d0837558e",
+      "expected_result_status": "failed",
+      "expected_state_trace": [
+        "verifying",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "diff_base_mismatch"
+    },
+    "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/diff_empty/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-CONTRACT--verifying",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "contract_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_last_verified_sha": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_report_hash": "f1da978369d3d677d62e48aeefa943607a7a926bce26d198a5bbd84d0837558e",
+      "expected_result_status": "failed",
+      "expected_state_trace": [
+        "verifying",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "diff_empty"
+    },
+    "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/diff_hash_drift/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-CONTRACT--verifying",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "contract_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_last_verified_sha": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_report_hash": "be5e8ed0d7df170de752f838ff4ec462082d063b976cafe7df743b83f8de93bc",
+      "expected_result_status": "failed",
+      "expected_state_trace": [
+        "verifying",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "diff_hash_drift"
+    },
+    "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/fail_preserves_last_verified_sha/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-TASK--verifying",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "task_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "TEST_BLOCKED",
+        "reason_owner": "feature",
+        "state": "blocked_test"
+      },
+      "expected_last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_report_hash": "f7dffbb0b274f0f4e39724814b073785a5a8fedae076dc67259551d1e822b059",
+      "expected_result_status": "blocked",
+      "expected_state_trace": [
+        "verifying",
+        "blocked_test"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "fail_preserves_last_verified_sha"
+    },
+    "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/format_fail/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-TASK--verifying",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "task_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "TEST_BLOCKED",
+        "reason_owner": "feature",
+        "state": "blocked_test"
+      },
+      "expected_last_verified_sha": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_report_hash": "f98fb512b0cb9a091058ef596a70f9f9365a4ff8585d9719235085d250ca988a",
+      "expected_result_status": "blocked",
+      "expected_state_trace": [
+        "verifying",
+        "blocked_test"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "format_fail"
+    },
+    "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/lint_fail/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-TASK--verifying",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "task_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "TEST_BLOCKED",
+        "reason_owner": "feature",
+        "state": "blocked_test"
+      },
+      "expected_last_verified_sha": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_report_hash": "5d44fb140d5062d76e0f7fce70a8fa06978671bb3be39198dfc5bf8f97f1a70d",
+      "expected_result_status": "blocked",
+      "expected_state_trace": [
+        "verifying",
+        "blocked_test"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "lint_fail"
+    },
+    "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/missing_stage/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-CONTRACT--verifying",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "contract_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_last_verified_sha": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_report_hash": "5737bc1093eb5554de033bfd8685b364128ae39aa6d6a7a7953b01088e9d754c",
+      "expected_result_status": "failed",
+      "expected_state_trace": [
+        "verifying",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "missing_stage"
+    },
+    "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/test_fail/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-TASK--verifying",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "task_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "TEST_BLOCKED",
+        "reason_owner": "feature",
+        "state": "blocked_test"
+      },
+      "expected_last_verified_sha": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_report_hash": "f7dffbb0b274f0f4e39724814b073785a5a8fedae076dc67259551d1e822b059",
+      "expected_result_status": "blocked",
+      "expected_state_trace": [
+        "verifying",
+        "blocked_test"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "test_fail"
+    }
+  },
+  "schema_version": "dal.verification-authority/1.0",
+  "semantic_counts": {
+    "block_event_variants": 10,
+    "blocked_test_variants": 5,
+    "blocked_variants": 5,
+    "contract_failure_variants": 4,
+    "failed_variants": 5,
+    "last_verified_sha_advanced_variants": 1,
+    "needs_human_variants": 5,
+    "policy_failure_variants": 1,
+    "succeeded_variants": 1,
+    "task_failure_variants": 5,
+    "verification_variants": 11,
+    "verified_variants": 1
+  },
+  "source_boundary": "static-independent-review-authority; never generated by build_verification_manifests.py"
+}

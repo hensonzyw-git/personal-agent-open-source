@@ -1,0 +1,1222 @@
+{
+  "catalog_sha256": "54b6bcd56ad3384eaae3af809f97bf123b59da19779b47242eeea84668b96eba",
+  "fixtures": {
+    "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/all_pass/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "verification-adapter",
+          "idempotency_key": "all_pass",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_verification",
+                "contract_version": "dal.verification-report/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "prior_last_verified_sha": null,
+              "registry_commands": {
+                "build": [
+                  "make",
+                  "build"
+                ],
+                "diff": [
+                  "git",
+                  "diff",
+                  "--binary",
+                  "--no-ext-diff",
+                  "HEAD"
+                ],
+                "format": [
+                  "make",
+                  "format"
+                ],
+                "lint": [
+                  "make",
+                  "lint"
+                ],
+                "test": [
+                  "make",
+                  "test"
+                ]
+              }
+            },
+            "injected_results": {
+              "diff": "diff --git a/src/personal_agent_dal/worker/verification.py b/src/personal_agent_dal/worker/verification.py\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/src/personal_agent_dal/worker/verification.py\n@@ -0,0 +1,3 @@\n+def run_verification(repo, manifest):\n+    return execute_toolchain(repo, manifest)\n+\n",
+              "diff_base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "diff_sha": "f4ce083959b3e28c88c742216d359648352cd3be026390e9d19a8a801923b766",
+              "stage_results": {
+                "build": {
+                  "command": [
+                    "make",
+                    "build"
+                  ],
+                  "exit_code": 0
+                },
+                "diff": {
+                  "command": [
+                    "git",
+                    "diff",
+                    "--binary",
+                    "--no-ext-diff",
+                    "HEAD"
+                  ],
+                  "exit_code": 0
+                },
+                "format": {
+                  "command": [
+                    "make",
+                    "format"
+                  ],
+                  "exit_code": 0
+                },
+                "lint": {
+                  "command": [
+                    "make",
+                    "lint"
+                  ],
+                  "exit_code": 0
+                },
+                "test": {
+                  "command": [
+                    "make",
+                    "test"
+                  ],
+                  "exit_code": 0
+                }
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "verifying",
+              "version": 7
+            }
+          },
+          "operation_id": "all_pass",
+          "operation_spec_id": "OP-VERIFICATION-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.verification-fixture/1.0",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "all_pass"
+    },
+    "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/build_fail/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "verification-adapter",
+          "idempotency_key": "build_fail",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_verification",
+                "contract_version": "dal.verification-report/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "prior_last_verified_sha": null,
+              "registry_commands": {
+                "build": [
+                  "make",
+                  "build"
+                ],
+                "diff": [
+                  "git",
+                  "diff",
+                  "--binary",
+                  "--no-ext-diff",
+                  "HEAD"
+                ],
+                "format": [
+                  "make",
+                  "format"
+                ],
+                "lint": [
+                  "make",
+                  "lint"
+                ],
+                "test": [
+                  "make",
+                  "test"
+                ]
+              }
+            },
+            "injected_results": {
+              "diff": "diff --git a/src/personal_agent_dal/worker/verification.py b/src/personal_agent_dal/worker/verification.py\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/src/personal_agent_dal/worker/verification.py\n@@ -0,0 +1,3 @@\n+def run_verification(repo, manifest):\n+    return execute_toolchain(repo, manifest)\n+\n",
+              "diff_base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "diff_sha": "f4ce083959b3e28c88c742216d359648352cd3be026390e9d19a8a801923b766",
+              "stage_results": {
+                "build": {
+                  "command": [
+                    "make",
+                    "build"
+                  ],
+                  "exit_code": 1
+                },
+                "diff": {
+                  "command": [
+                    "git",
+                    "diff",
+                    "--binary",
+                    "--no-ext-diff",
+                    "HEAD"
+                  ],
+                  "exit_code": 0
+                },
+                "format": {
+                  "command": [
+                    "make",
+                    "format"
+                  ],
+                  "exit_code": 0
+                },
+                "lint": {
+                  "command": [
+                    "make",
+                    "lint"
+                  ],
+                  "exit_code": 0
+                },
+                "test": {
+                  "command": [
+                    "make",
+                    "test"
+                  ],
+                  "exit_code": 0
+                }
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "verifying",
+              "version": 7
+            }
+          },
+          "operation_id": "build_fail",
+          "operation_spec_id": "OP-VERIFICATION-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.verification-fixture/1.0",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "build_fail"
+    },
+    "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/command_not_in_registry/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "verification-adapter",
+          "idempotency_key": "command_not_in_registry",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_verification",
+                "contract_version": "dal.verification-report/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "prior_last_verified_sha": null,
+              "registry_commands": {
+                "build": [
+                  "make",
+                  "build"
+                ],
+                "diff": [
+                  "git",
+                  "diff",
+                  "--binary",
+                  "--no-ext-diff",
+                  "HEAD"
+                ],
+                "format": [
+                  "make",
+                  "format"
+                ],
+                "lint": [
+                  "make",
+                  "lint"
+                ],
+                "test": [
+                  "make",
+                  "test"
+                ]
+              }
+            },
+            "injected_results": {
+              "diff": "diff --git a/src/personal_agent_dal/worker/verification.py b/src/personal_agent_dal/worker/verification.py\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/src/personal_agent_dal/worker/verification.py\n@@ -0,0 +1,3 @@\n+def run_verification(repo, manifest):\n+    return execute_toolchain(repo, manifest)\n+\n",
+              "diff_base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "diff_sha": "f4ce083959b3e28c88c742216d359648352cd3be026390e9d19a8a801923b766",
+              "stage_results": {
+                "build": {
+                  "command": [
+                    "make",
+                    "build"
+                  ],
+                  "exit_code": 0
+                },
+                "diff": {
+                  "command": [
+                    "git",
+                    "diff",
+                    "--binary",
+                    "--no-ext-diff",
+                    "HEAD"
+                  ],
+                  "exit_code": 0
+                },
+                "format": {
+                  "command": [
+                    "make",
+                    "format"
+                  ],
+                  "exit_code": 0
+                },
+                "lint": {
+                  "command": [
+                    "make",
+                    "lint"
+                  ],
+                  "exit_code": 0
+                },
+                "test": {
+                  "command": [
+                    "make",
+                    "test",
+                    "--evil"
+                  ],
+                  "exit_code": 0
+                }
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "verifying",
+              "version": 7
+            }
+          },
+          "operation_id": "command_not_in_registry",
+          "operation_spec_id": "OP-VERIFICATION-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.verification-fixture/1.0",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "command_not_in_registry"
+    },
+    "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/diff_base_mismatch/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "verification-adapter",
+          "idempotency_key": "diff_base_mismatch",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_verification",
+                "contract_version": "dal.verification-report/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "prior_last_verified_sha": null,
+              "registry_commands": {
+                "build": [
+                  "make",
+                  "build"
+                ],
+                "diff": [
+                  "git",
+                  "diff",
+                  "--binary",
+                  "--no-ext-diff",
+                  "HEAD"
+                ],
+                "format": [
+                  "make",
+                  "format"
+                ],
+                "lint": [
+                  "make",
+                  "lint"
+                ],
+                "test": [
+                  "make",
+                  "test"
+                ]
+              }
+            },
+            "injected_results": {
+              "diff": "diff --git a/src/personal_agent_dal/worker/verification.py b/src/personal_agent_dal/worker/verification.py\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/src/personal_agent_dal/worker/verification.py\n@@ -0,0 +1,3 @@\n+def run_verification(repo, manifest):\n+    return execute_toolchain(repo, manifest)\n+\n",
+              "diff_base_sha": "0000000000000000000000000000000000000000",
+              "diff_sha": "f4ce083959b3e28c88c742216d359648352cd3be026390e9d19a8a801923b766",
+              "stage_results": {
+                "build": {
+                  "command": [
+                    "make",
+                    "build"
+                  ],
+                  "exit_code": 0
+                },
+                "diff": {
+                  "command": [
+                    "git",
+                    "diff",
+                    "--binary",
+                    "--no-ext-diff",
+                    "HEAD"
+                  ],
+                  "exit_code": 0
+                },
+                "format": {
+                  "command": [
+                    "make",
+                    "format"
+                  ],
+                  "exit_code": 0
+                },
+                "lint": {
+                  "command": [
+                    "make",
+                    "lint"
+                  ],
+                  "exit_code": 0
+                },
+                "test": {
+                  "command": [
+                    "make",
+                    "test"
+                  ],
+                  "exit_code": 0
+                }
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "verifying",
+              "version": 7
+            }
+          },
+          "operation_id": "diff_base_mismatch",
+          "operation_spec_id": "OP-VERIFICATION-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.verification-fixture/1.0",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "diff_base_mismatch"
+    },
+    "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/diff_empty/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "verification-adapter",
+          "idempotency_key": "diff_empty",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_verification",
+                "contract_version": "dal.verification-report/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "prior_last_verified_sha": null,
+              "registry_commands": {
+                "build": [
+                  "make",
+                  "build"
+                ],
+                "diff": [
+                  "git",
+                  "diff",
+                  "--binary",
+                  "--no-ext-diff",
+                  "HEAD"
+                ],
+                "format": [
+                  "make",
+                  "format"
+                ],
+                "lint": [
+                  "make",
+                  "lint"
+                ],
+                "test": [
+                  "make",
+                  "test"
+                ]
+              }
+            },
+            "injected_results": {
+              "diff": "",
+              "diff_base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "diff_sha": "f4ce083959b3e28c88c742216d359648352cd3be026390e9d19a8a801923b766",
+              "stage_results": {
+                "build": {
+                  "command": [
+                    "make",
+                    "build"
+                  ],
+                  "exit_code": 0
+                },
+                "diff": {
+                  "command": [
+                    "git",
+                    "diff",
+                    "--binary",
+                    "--no-ext-diff",
+                    "HEAD"
+                  ],
+                  "exit_code": 0
+                },
+                "format": {
+                  "command": [
+                    "make",
+                    "format"
+                  ],
+                  "exit_code": 0
+                },
+                "lint": {
+                  "command": [
+                    "make",
+                    "lint"
+                  ],
+                  "exit_code": 0
+                },
+                "test": {
+                  "command": [
+                    "make",
+                    "test"
+                  ],
+                  "exit_code": 0
+                }
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "verifying",
+              "version": 7
+            }
+          },
+          "operation_id": "diff_empty",
+          "operation_spec_id": "OP-VERIFICATION-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.verification-fixture/1.0",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "diff_empty"
+    },
+    "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/diff_hash_drift/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "verification-adapter",
+          "idempotency_key": "diff_hash_drift",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_verification",
+                "contract_version": "dal.verification-report/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "prior_last_verified_sha": null,
+              "registry_commands": {
+                "build": [
+                  "make",
+                  "build"
+                ],
+                "diff": [
+                  "git",
+                  "diff",
+                  "--binary",
+                  "--no-ext-diff",
+                  "HEAD"
+                ],
+                "format": [
+                  "make",
+                  "format"
+                ],
+                "lint": [
+                  "make",
+                  "lint"
+                ],
+                "test": [
+                  "make",
+                  "test"
+                ]
+              }
+            },
+            "injected_results": {
+              "diff": "diff --git a/src/personal_agent_dal/worker/verification.py b/src/personal_agent_dal/worker/verification.py\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/src/personal_agent_dal/worker/verification.py\n@@ -0,0 +1,3 @@\n+def run_verification(repo, manifest):\n+    return execute_toolchain(repo, manifest)\n+\n",
+              "diff_base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "stage_results": {
+                "build": {
+                  "command": [
+                    "make",
+                    "build"
+                  ],
+                  "exit_code": 0
+                },
+                "diff": {
+                  "command": [
+                    "git",
+                    "diff",
+                    "--binary",
+                    "--no-ext-diff",
+                    "HEAD"
+                  ],
+                  "exit_code": 0
+                },
+                "format": {
+                  "command": [
+                    "make",
+                    "format"
+                  ],
+                  "exit_code": 0
+                },
+                "lint": {
+                  "command": [
+                    "make",
+                    "lint"
+                  ],
+                  "exit_code": 0
+                },
+                "test": {
+                  "command": [
+                    "make",
+                    "test"
+                  ],
+                  "exit_code": 0
+                }
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "verifying",
+              "version": 7
+            }
+          },
+          "operation_id": "diff_hash_drift",
+          "operation_spec_id": "OP-VERIFICATION-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.verification-fixture/1.0",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "diff_hash_drift"
+    },
+    "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/fail_preserves_last_verified_sha/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "verification-adapter",
+          "idempotency_key": "fail_preserves_last_verified_sha",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_verification",
+                "contract_version": "dal.verification-report/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "prior_last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+              "registry_commands": {
+                "build": [
+                  "make",
+                  "build"
+                ],
+                "diff": [
+                  "git",
+                  "diff",
+                  "--binary",
+                  "--no-ext-diff",
+                  "HEAD"
+                ],
+                "format": [
+                  "make",
+                  "format"
+                ],
+                "lint": [
+                  "make",
+                  "lint"
+                ],
+                "test": [
+                  "make",
+                  "test"
+                ]
+              }
+            },
+            "injected_results": {
+              "diff": "diff --git a/src/personal_agent_dal/worker/verification.py b/src/personal_agent_dal/worker/verification.py\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/src/personal_agent_dal/worker/verification.py\n@@ -0,0 +1,3 @@\n+def run_verification(repo, manifest):\n+    return execute_toolchain(repo, manifest)\n+\n",
+              "diff_base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "diff_sha": "f4ce083959b3e28c88c742216d359648352cd3be026390e9d19a8a801923b766",
+              "stage_results": {
+                "build": {
+                  "command": [
+                    "make",
+                    "build"
+                  ],
+                  "exit_code": 0
+                },
+                "diff": {
+                  "command": [
+                    "git",
+                    "diff",
+                    "--binary",
+                    "--no-ext-diff",
+                    "HEAD"
+                  ],
+                  "exit_code": 0
+                },
+                "format": {
+                  "command": [
+                    "make",
+                    "format"
+                  ],
+                  "exit_code": 0
+                },
+                "lint": {
+                  "command": [
+                    "make",
+                    "lint"
+                  ],
+                  "exit_code": 0
+                },
+                "test": {
+                  "command": [
+                    "make",
+                    "test"
+                  ],
+                  "exit_code": 1
+                }
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "verifying",
+              "version": 7
+            }
+          },
+          "operation_id": "fail_preserves_last_verified_sha",
+          "operation_spec_id": "OP-VERIFICATION-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.verification-fixture/1.0",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "fail_preserves_last_verified_sha"
+    },
+    "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/format_fail/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "verification-adapter",
+          "idempotency_key": "format_fail",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_verification",
+                "contract_version": "dal.verification-report/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "prior_last_verified_sha": null,
+              "registry_commands": {
+                "build": [
+                  "make",
+                  "build"
+                ],
+                "diff": [
+                  "git",
+                  "diff",
+                  "--binary",
+                  "--no-ext-diff",
+                  "HEAD"
+                ],
+                "format": [
+                  "make",
+                  "format"
+                ],
+                "lint": [
+                  "make",
+                  "lint"
+                ],
+                "test": [
+                  "make",
+                  "test"
+                ]
+              }
+            },
+            "injected_results": {
+              "diff": "diff --git a/src/personal_agent_dal/worker/verification.py b/src/personal_agent_dal/worker/verification.py\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/src/personal_agent_dal/worker/verification.py\n@@ -0,0 +1,3 @@\n+def run_verification(repo, manifest):\n+    return execute_toolchain(repo, manifest)\n+\n",
+              "diff_base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "diff_sha": "f4ce083959b3e28c88c742216d359648352cd3be026390e9d19a8a801923b766",
+              "stage_results": {
+                "build": {
+                  "command": [
+                    "make",
+                    "build"
+                  ],
+                  "exit_code": 0
+                },
+                "diff": {
+                  "command": [
+                    "git",
+                    "diff",
+                    "--binary",
+                    "--no-ext-diff",
+                    "HEAD"
+                  ],
+                  "exit_code": 0
+                },
+                "format": {
+                  "command": [
+                    "make",
+                    "format"
+                  ],
+                  "exit_code": 1
+                },
+                "lint": {
+                  "command": [
+                    "make",
+                    "lint"
+                  ],
+                  "exit_code": 0
+                },
+                "test": {
+                  "command": [
+                    "make",
+                    "test"
+                  ],
+                  "exit_code": 0
+                }
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "verifying",
+              "version": 7
+            }
+          },
+          "operation_id": "format_fail",
+          "operation_spec_id": "OP-VERIFICATION-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.verification-fixture/1.0",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "format_fail"
+    },
+    "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/lint_fail/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "verification-adapter",
+          "idempotency_key": "lint_fail",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_verification",
+                "contract_version": "dal.verification-report/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "prior_last_verified_sha": null,
+              "registry_commands": {
+                "build": [
+                  "make",
+                  "build"
+                ],
+                "diff": [
+                  "git",
+                  "diff",
+                  "--binary",
+                  "--no-ext-diff",
+                  "HEAD"
+                ],
+                "format": [
+                  "make",
+                  "format"
+                ],
+                "lint": [
+                  "make",
+                  "lint"
+                ],
+                "test": [
+                  "make",
+                  "test"
+                ]
+              }
+            },
+            "injected_results": {
+              "diff": "diff --git a/src/personal_agent_dal/worker/verification.py b/src/personal_agent_dal/worker/verification.py\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/src/personal_agent_dal/worker/verification.py\n@@ -0,0 +1,3 @@\n+def run_verification(repo, manifest):\n+    return execute_toolchain(repo, manifest)\n+\n",
+              "diff_base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "diff_sha": "f4ce083959b3e28c88c742216d359648352cd3be026390e9d19a8a801923b766",
+              "stage_results": {
+                "build": {
+                  "command": [
+                    "make",
+                    "build"
+                  ],
+                  "exit_code": 0
+                },
+                "diff": {
+                  "command": [
+                    "git",
+                    "diff",
+                    "--binary",
+                    "--no-ext-diff",
+                    "HEAD"
+                  ],
+                  "exit_code": 0
+                },
+                "format": {
+                  "command": [
+                    "make",
+                    "format"
+                  ],
+                  "exit_code": 0
+                },
+                "lint": {
+                  "command": [
+                    "make",
+                    "lint"
+                  ],
+                  "exit_code": 1
+                },
+                "test": {
+                  "command": [
+                    "make",
+                    "test"
+                  ],
+                  "exit_code": 0
+                }
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "verifying",
+              "version": 7
+            }
+          },
+          "operation_id": "lint_fail",
+          "operation_spec_id": "OP-VERIFICATION-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.verification-fixture/1.0",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "lint_fail"
+    },
+    "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/missing_stage/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "verification-adapter",
+          "idempotency_key": "missing_stage",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_verification",
+                "contract_version": "dal.verification-report/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "prior_last_verified_sha": null,
+              "registry_commands": {
+                "build": [
+                  "make",
+                  "build"
+                ],
+                "diff": [
+                  "git",
+                  "diff",
+                  "--binary",
+                  "--no-ext-diff",
+                  "HEAD"
+                ],
+                "format": [
+                  "make",
+                  "format"
+                ],
+                "lint": [
+                  "make",
+                  "lint"
+                ],
+                "test": [
+                  "make",
+                  "test"
+                ]
+              }
+            },
+            "injected_results": {
+              "diff": "diff --git a/src/personal_agent_dal/worker/verification.py b/src/personal_agent_dal/worker/verification.py\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/src/personal_agent_dal/worker/verification.py\n@@ -0,0 +1,3 @@\n+def run_verification(repo, manifest):\n+    return execute_toolchain(repo, manifest)\n+\n",
+              "diff_base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "diff_sha": "f4ce083959b3e28c88c742216d359648352cd3be026390e9d19a8a801923b766",
+              "stage_results": {
+                "build": {
+                  "command": [
+                    "make",
+                    "build"
+                  ],
+                  "exit_code": 0
+                },
+                "diff": {
+                  "command": [
+                    "git",
+                    "diff",
+                    "--binary",
+                    "--no-ext-diff",
+                    "HEAD"
+                  ],
+                  "exit_code": 0
+                },
+                "format": {
+                  "command": [
+                    "make",
+                    "format"
+                  ],
+                  "exit_code": 0
+                },
+                "lint": {
+                  "command": [
+                    "make",
+                    "lint"
+                  ],
+                  "exit_code": 0
+                }
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "verifying",
+              "version": 7
+            }
+          },
+          "operation_id": "missing_stage",
+          "operation_spec_id": "OP-VERIFICATION-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.verification-fixture/1.0",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "missing_stage"
+    },
+    "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/test_fail/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "verification-adapter",
+          "idempotency_key": "test_fail",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_verification",
+                "contract_version": "dal.verification-report/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "prior_last_verified_sha": null,
+              "registry_commands": {
+                "build": [
+                  "make",
+                  "build"
+                ],
+                "diff": [
+                  "git",
+                  "diff",
+                  "--binary",
+                  "--no-ext-diff",
+                  "HEAD"
+                ],
+                "format": [
+                  "make",
+                  "format"
+                ],
+                "lint": [
+                  "make",
+                  "lint"
+                ],
+                "test": [
+                  "make",
+                  "test"
+                ]
+              }
+            },
+            "injected_results": {
+              "diff": "diff --git a/src/personal_agent_dal/worker/verification.py b/src/personal_agent_dal/worker/verification.py\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/src/personal_agent_dal/worker/verification.py\n@@ -0,0 +1,3 @@\n+def run_verification(repo, manifest):\n+    return execute_toolchain(repo, manifest)\n+\n",
+              "diff_base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "diff_sha": "f4ce083959b3e28c88c742216d359648352cd3be026390e9d19a8a801923b766",
+              "stage_results": {
+                "build": {
+                  "command": [
+                    "make",
+                    "build"
+                  ],
+                  "exit_code": 0
+                },
+                "diff": {
+                  "command": [
+                    "git",
+                    "diff",
+                    "--binary",
+                    "--no-ext-diff",
+                    "HEAD"
+                  ],
+                  "exit_code": 0
+                },
+                "format": {
+                  "command": [
+                    "make",
+                    "format"
+                  ],
+                  "exit_code": 0
+                },
+                "lint": {
+                  "command": [
+                    "make",
+                    "lint"
+                  ],
+                  "exit_code": 0
+                },
+                "test": {
+                  "command": [
+                    "make",
+                    "test"
+                  ],
+                  "exit_code": 1
+                }
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "verifying",
+              "version": 7
+            }
+          },
+          "operation_id": "test_fail",
+          "operation_spec_id": "OP-VERIFICATION-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.verification-fixture/1.0",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "test_fail"
+    }
+  },
+  "registry_sha256": "6811ee79ce77c610fbb59ed6706e5b13b388103015b889cb5a5a697010959793",
+  "schema_version": "dal.verification-fixture-catalog/1.0"
+}

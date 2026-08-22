@@ -1,0 +1,73 @@
+{
+  "block_event": "feature.blocked",
+  "block_write_set": [
+    "aggregate",
+    "audit",
+    "business_event",
+    "decision_create",
+    "decision_projection",
+    "notification_outbox",
+    "transition_receipt"
+  ],
+  "check_stages": [
+    "format",
+    "lint",
+    "build",
+    "test"
+  ],
+  "classification_precedence": [
+    "registry_command_swap",
+    "registry_contract",
+    "diff_integrity",
+    "stage_exit_codes"
+  ],
+  "command_type": "consume_verification",
+  "contract_version": "dal.verification-report/1.0",
+  "evidence_source": "verification-adapter",
+  "fact_fields": [
+    "base_sha",
+    "prior_last_verified_sha",
+    "registry_commands"
+  ],
+  "failure_to_reason": {
+    "contract_failure": "PROVIDER_CONTRACT_FAILURE",
+    "policy_failure": "POLICY_FAILURE",
+    "task_failure": "TEST_BLOCKED"
+  },
+  "feature_transition_receipt_schema": "dal.transition-receipt/1.0",
+  "injected_fields": [
+    "diff",
+    "diff_base_sha",
+    "diff_sha",
+    "stage_results"
+  ],
+  "operation_spec_id": "OP-VERIFICATION-CONTRACT-001",
+  "reason_to_state": {
+    "POLICY_FAILURE": "needs_human",
+    "PROVIDER_CONTRACT_FAILURE": "needs_human",
+    "TEST_BLOCKED": "blocked_test"
+  },
+  "registry_sha256": "6811ee79ce77c610fbb59ed6706e5b13b388103015b889cb5a5a697010959793",
+  "registry_stages": [
+    "diff",
+    "format",
+    "lint",
+    "build",
+    "test"
+  ],
+  "result_status_enum": [
+    "blocked",
+    "failed",
+    "succeeded"
+  ],
+  "schema_version": "dal.verification-registry/1.0",
+  "service_actor": "service",
+  "stage_result_fields": [
+    "command",
+    "exit_code"
+  ],
+  "verified_write_set": [
+    "aggregate",
+    "transition_receipt"
+  ]
+}
