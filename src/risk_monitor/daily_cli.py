@@ -74,6 +74,7 @@ def _card_content(report: dict) -> dict:
         "css": scores.get("css"),
         "afrs": scores.get("afrs"),
         "action": report.get("action"),
+        "quality_status": report.get("quality_status", "ok"),
         "components": report.get("components"),
     }
 
@@ -155,6 +156,7 @@ def main() -> None:
         engine.dispose()
         raise SystemExit(str(exc)) from exc
 
+    seal_failed = False
     try:
         result = daily.run(
             db_path=str(args.risk_database) if args.risk_database else None
@@ -167,6 +169,7 @@ def main() -> None:
             else:
                 logger.info("risk card sealed: %s", event_id)
         except Exception as exc:  # noqa: BLE001 - a failed seal must not drop the push
+            seal_failed = True
             logger.error(
                 "risk card seal failed: %s: %s",
                 type(exc).__name__,
@@ -194,6 +197,12 @@ def main() -> None:
     )
     if sender is None:
         print("no APNs configuration; the report was computed but not pushed")
+    if seal_failed:
+        # The push went out but the card did not land. Exit non-zero so systemd
+        # surfaces a failed unit instead of silently "succeeding" forever while
+        # the app shows no card (a systematic seal failure would otherwise be
+        # invisible in a oneshot job nobody watches).
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

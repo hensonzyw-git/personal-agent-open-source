@@ -138,6 +138,30 @@ def test_collect_breadth_fails_closed_on_signal_coverage():
     assert metrics == {}
 
 
+def test_collect_breadth_fails_closed_on_effective_coverage():
+    """Pull coverage 0.81 and signal coverage 0.80 each pass the old independent
+    0.8 gate, yet their product (~0.65) is well under 80% of the index. The gate
+    must be on the effective coverage, not the two fractions in isolation."""
+    up = _series([100.0] * 200 + [110.0])
+    closes = {}
+    for i in range(65):
+        closes[f"OK{i}"] = up
+    for i in range(16):
+        closes[f"EMPTY{i}"] = []  # pulled, but no 200dma signal
+    assert len(closes) == 81
+    stub = _StubTencent(closes)
+    tickers = list(closes) + [f"UNPULLED{i}" for i in range(19)]  # 100 requested
+    assert len(tickers) == 100
+
+    metrics, meta, bs = collect_breadth(stub, tickers)  # type: ignore[arg-type]
+    # 81/100 pulled = 0.81, 65/81 signalled ≈ 0.80 — both ≥ 0.8 individually.
+    assert meta["pull_coverage"] == 0.81
+    assert meta["coverage"] >= 0.8
+    # Effective coverage ≈ 0.65 < 0.8, so breadth must fail closed.
+    assert meta["below_threshold"] is True
+    assert metrics == {}
+
+
 class _FlakyFred:
     def history(self, series_id):
         if series_id == FRED_SERIES["credit.hy_oas_pct"]:
@@ -339,6 +363,11 @@ def test_run_composition_and_replay_roundtrip(tmp_path, monkeypatch):
     assert result["state"] in ("NORMAL", "RISK_ACCUMULATION", "CREDIT_CONFIRMATION", "DELEVERAGING")
     assert result["action"] == policy["actions"][result["state"]]
     assert result["fred_failures"] == {}
+    assert result["quality_status"] == "ok"
+    # The seam between `_serialise_outcome` and the card formatter is exercised:
+    # the run really emits the per-indicator breakdown the card consumes.
+    assert len(result["mbs_components"]) == 5  # 4 available + fwd_eps_revisions
+    assert len(result["css_components"]) == 5
 
     # The qualitative proxy labels were persisted in value_text, not dropped.
     engine = create_database_engine(tmp_path / "run.db")

@@ -34,6 +34,7 @@ def test_card_content_maps_report_to_contract():
         "css": 40.0,
         "afrs": None,
         "action": "持仓观察",
+        "quality_status": "ok",
         "components": None,
     }
 
@@ -52,6 +53,18 @@ def test_card_content_passes_components_through():
         "components": components,
     }
     assert daily_cli._card_content(report)["components"] == components
+
+
+def test_card_content_passes_quality_status_through():
+    """A degraded day's flag is sealed onto the card, not dropped."""
+    report = {
+        "as_of": "2026-08-22",
+        "state": "NORMAL",
+        "scores": {"mbs": 0.0, "css": 16.25, "afrs": 21.0},
+        "action": "持有（无需操作）",
+        "quality_status": "data_quality_warning",
+    }
+    assert daily_cli._card_content(report)["quality_status"] == "data_quality_warning"
 
 
 def test_card_content_missing_action_is_none():
@@ -137,6 +150,7 @@ def test_seal_risk_event_appends_risk_report(monkeypatch):
         "css": 40.0,
         "afrs": 60.0,
         "action": "持仓观察",
+        "quality_status": "ok",
         "components": None,
     }
 

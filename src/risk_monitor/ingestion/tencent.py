@@ -62,7 +62,12 @@ class TencentClient:
     def closes(self, ticker: str) -> list[tuple[str, Optional[float]]]:
         """Ascending ``[(date_iso, raw_close_or_None), ...]`` for one ticker."""
         code = self._param_code(ticker)
-        params = {"param": f"{code},day,,,{self.count},qfq"}
+        # Empty fq field = 不复权 (raw). ``qfq`` (前复权) would *request* the
+        # forward-adjusted series; Tencent today returns raw `day` bars for US
+        # names regardless, but the request must match the raw-close assumption
+        # (ADR-0001 recalibrates breadth bands to raw), not rest on that
+        # undocumented counterparty behaviour.
+        params = {"param": f"{code},day,,,{self.count},"}
         with self._client() as client:
             resp = client.get(self.base_url, params=params)
         if resp.status_code != 200:

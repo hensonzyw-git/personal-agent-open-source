@@ -175,13 +175,13 @@ def collect_breadth(client: TencentClient, tickers: list[str]) -> tuple[dict[str
     signal_cov = breadth_mod.coverage(closes)  # fraction of pulled names with a 200dma signal
     pull_cov = len(closes) / len(tickers) if tickers else 0.0  # fraction of requested names pulled
 
-    # Fail closed on both coverage shapes (ADR-0001): a pull that returns few
-    # tickers, and a pull that returns tickers but mostly empty/unparseable
-    # series (the source 200s with a blank `day` array for suspended/invalid
-    # codes), both leave breadth unavailable rather than scoring a subset.
-    below_threshold = (
-        pull_cov < MIN_BREADTH_COVERAGE or signal_cov < MIN_BREADTH_COVERAGE
-    )
+    # Fail closed on the *effective* coverage (ADR-0001): the fraction of
+    # requested tickers that actually produced a signal. Two independent gates
+    # (pull coverage, signal coverage) can each pass while their product scores
+    # breadth from 0.8 × 0.8 = 0.64 of the index as if it were market-wide, so
+    # the gate is on the product, not the two fractions in isolation.
+    effective_cov = pull_cov * signal_cov
+    below_threshold = effective_cov < MIN_BREADTH_COVERAGE
     metrics: dict[str, float] = {}
     if not below_threshold:
         if bs:
@@ -195,6 +195,7 @@ def collect_breadth(client: TencentClient, tickers: list[str]) -> tuple[dict[str
         "tickers_failed": len(errors),
         "coverage": signal_cov,
         "pull_coverage": round(pull_cov, 4),
+        "effective_coverage": round(effective_cov, 4),
         "below_threshold": below_threshold,
     }
     return metrics, meta, bs
@@ -377,6 +378,23 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
             "fred_failures": fred_failures,
         }
 
+        # A snapshot is "ok" only when every surface produced a value: both
+        # scores, sector AFRS (EDGAR), no FRED series failure, breadth above the
+        # coverage threshold, and both qualitative proxies resolvable. Any single
+        # gap flips it to data_quality_warning so a partially-failed day can
+        # never be mistaken for a clean one — and the same flag is surfaced on
+        # the card and the push, not just stored in the snapshot.
+        quality_ok = (
+            mbs.score is not None
+            and css.score is not None
+            and afrs is not None
+            and not fred_failures
+            and not breadth_meta.get("below_threshold")
+            and ai_label is not None
+            and term_label is not None
+        )
+        quality_status = "ok" if quality_ok else "data_quality_warning"
+
         # Persist raw artifacts + observations + score snapshot.
         with Session(engine) as session:
             for series_id, obs in _raw_artifact_rows(raw):
@@ -421,20 +439,6 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
             for entity_id, values in per_company.items():
                 for mid, v in values.items():
                     _store_company_observation(session, mid, entity_id, v, as_of)
-            # A snapshot is "ok" only when every surface produced a value:
-            # both scores, sector AFRS (EDGAR), no FRED series failure, breadth
-            # above the coverage threshold, and both qualitative proxies
-            # resolvable. Any single gap flips it to data_quality_warning so a
-            # partially-failed day can never be mistaken for a clean one.
-            quality_ok = (
-                mbs.score is not None
-                and css.score is not None
-                and afrs is not None
-                and not fred_failures
-                and not breadth_meta.get("below_threshold")
-                and ai_label is not None
-                and term_label is not None
-            )
             session.add(ScoreSnapshot(
                 as_of_date=date.fromisoformat(as_of),
                 mbs=mbs.score,
@@ -442,7 +446,7 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
                 afrs=afrs,
                 component_json=json.dumps(component),
                 policy_version=policy["policy_version"],
-                quality_status="ok" if quality_ok else "data_quality_warning",
+                quality_status=quality_status,
                 created_at=_utcnow(),
             ))
             session.commit()
@@ -476,6 +480,7 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
         "css_unavailable": css.unavailable,
         "breadth": breadth_meta,
         "fred_failures": fred_failures,
+        "quality_status": quality_status,
         # Per-indicator breakdown (metric_id/available/band/value) so the daily
         # card can show the indicators *behind* each score, not just the score.
         "mbs_components": _serialise_outcome(mbs),

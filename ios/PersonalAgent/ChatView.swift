@@ -434,6 +434,9 @@ struct ChatView: View {
                 Text("系统性风险 · \(snapshot.asOf)")
                     .font(.callout.weight(.medium))
                 Spacer(minLength: 8)
+                if snapshot.qualityStatus == "data_quality_warning" {
+                    riskQualityBadge()
+                }
                 Text(riskStateLabel(snapshot.state))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -489,6 +492,18 @@ struct ChatView: View {
             return String(format: "%.1f", value)
         }
         return "MBS \(fmt(snapshot.mbs)) / CSS \(fmt(snapshot.css)) / AFRS \(fmt(snapshot.afrs))"
+    }
+
+    /// A small amber capsule flagging a degraded (partially-failed) day, so a
+    /// card with missing data can never masquerade as a clean one.
+    private func riskQualityBadge() -> some View {
+        Text("数据不完整")
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Color.pending.opacity(0.15))
+            .foregroundStyle(Color.pending)
+            .clipShape(Capsule())
     }
 
     /// The band's traffic-light colour for the status dot. Green/orange/red are

@@ -54,14 +54,24 @@ def _component_rows(raw: list[dict]) -> list[dict]:
     Unavailable indicators are skipped — they never contribute to the score
     (their weight is renormalised away), so they are not part of "why the score
     is what it is". This also drops ``market.fwd_eps_revisions``, which is
-    permanently unavailable in MVP."""
+    permanently unavailable in MVP. A metric absent from ``_METRIC_LABELS``
+    (contract drift) still renders its band or raw value rather than a bare "-"."""
     rows: list[dict] = []
     for item in raw:
         if not item.get("available"):
             continue
         mid = item["metric_id"]
-        label, suffix, signed, decimals = _METRIC_LABELS.get(mid, (mid, "", False, 1))
         band = item.get("band")
+        spec = _METRIC_LABELS.get(mid)
+        if spec is None:
+            value = (
+                _BAND_LABEL.get(band or "", band or "未知")
+                if item.get("value") is None
+                else str(item.get("value"))
+            )
+            rows.append({"label": mid, "value": value, "band": band})
+            continue
+        label, suffix, signed, decimals = spec
         if suffix is None:  # qualitative: the band is the value
             value = _BAND_LABEL.get(band or "", band or "未知")
         else:
@@ -93,6 +103,7 @@ def build_report(run: dict) -> dict:
         "mbs_unavailable": run.get("mbs_unavailable") or [],
         "css_unavailable": run.get("css_unavailable") or [],
         "breadth": run.get("breadth") or {},
+        "quality_status": run.get("quality_status", "ok"),
         "components": {
             "mbs": _component_rows(run.get("mbs_components") or []),
             "css": _component_rows(run.get("css_components") or []),
@@ -113,7 +124,9 @@ def push_summary(report: dict) -> str:
     label = _STATE_LABEL.get(state, state)
     action = report.get("action")
     head = f"{action}；系统性风险 {label}" if action else f"系统性风险 {label}"
-    return f"{head} — MBS {mbs} / CSS {css} / AFRS {afrs}"
+    degraded = report.get("quality_status") == "data_quality_warning"
+    prefix = "⚠ 数据不完整 " if degraded else ""
+    return f"{prefix}{head} — MBS {mbs} / CSS {css} / AFRS {afrs}"
 
 
 def render_markdown(report: dict) -> str:

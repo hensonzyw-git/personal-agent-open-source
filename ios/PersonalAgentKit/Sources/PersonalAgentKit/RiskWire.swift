@@ -10,8 +10,12 @@ public struct RiskReportSnapshot: Sendable, Equatable {
     public let css: Double?
     public let afrs: Double?
     public let action: String?
-    /// The per-indicator breakdown behind MBS/CSS. Optional so a card sealed by
-    /// an older backend (before this field existed) still decodes and renders.
+    /// ``ok`` or ``data_quality_warning``. Optional so an older card still
+    /// decodes; when ``data_quality_warning`` the card shows a degradation badge.
+    public let qualityStatus: String?
+    /// The per-indicator breakdown behind MBS/CSS. Optional, and tolerant: an
+    /// absent *or malformed* value degrades to `nil` (a score-only card) rather
+    /// than failing the whole decode.
     public let components: RiskComponents?
 
     public init(
@@ -21,6 +25,7 @@ public struct RiskReportSnapshot: Sendable, Equatable {
         css: Double?,
         afrs: Double?,
         action: String?,
+        qualityStatus: String?,
         components: RiskComponents?
     ) {
         self.asOf = asOf
@@ -29,6 +34,7 @@ public struct RiskReportSnapshot: Sendable, Equatable {
         self.css = css
         self.afrs = afrs
         self.action = action
+        self.qualityStatus = qualityStatus
         self.components = components
     }
 }
@@ -56,6 +62,7 @@ extension RiskReportSnapshot: Decodable {
         case css
         case afrs
         case action
+        case qualityStatus = "quality_status"
         case components
     }
 
@@ -67,7 +74,10 @@ extension RiskReportSnapshot: Decodable {
         css = try container.decodeIfPresent(Double.self, forKey: .css)
         afrs = try container.decodeIfPresent(Double.self, forKey: .afrs)
         action = try container.decodeIfPresent(String.self, forKey: .action)
-        components = try container.decodeIfPresent(RiskComponents.self, forKey: .components)
+        qualityStatus = try container.decodeIfPresent(String.self, forKey: .qualityStatus)
+        // Tolerant: an absent OR malformed components degrades to nil (a
+        // score-only card), never an .unrecognised event.
+        components = try? container.decode(RiskComponents.self, forKey: .components)
         if asOf.isEmpty || state.isEmpty {
             throw DecodingError.dataCorruptedError(
                 forKey: .asOf,

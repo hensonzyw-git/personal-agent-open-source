@@ -21,9 +21,13 @@ WorkingDirectory=/opt/personal-agent
 ExecStart=/opt/personal-agent/.venv/bin/risk-monitor-daily \
     --agent-database /var/lib/personal-agent-api/agent.sqlite \
     --risk-database /var/lib/personal-agent-api/risk_monitor.db
-# The job writes scores into risk_monitor.db and the risk_report event into the
-# Agent database; ProtectSystem=strict plus this one writable path is the same
-# shape as the API and review services.
+# The job writes scores into risk_monitor.db AND appends the risk_report event
+# into the Agent's agent.sqlite (the seal), both under this one directory.
+# ProtectSystem=strict plus this writable path is the same shape as the API and
+# review services. The dir-level grant (not a per-file list) is deliberate:
+# SQLite writes its -journal/-wal siblings in the same directory, so a file list
+# would break the write. This is the Agent's own data dir, distinct from the
+# Finance/MCP data directory, so the grant cannot reach the ledger.
 ReadWritePaths=/var/lib/personal-agent-api
 TimeoutStartSec=600s
 

@@ -1138,6 +1138,51 @@ struct TimelineEventTests {
         #expect(components.css[0].band == "orange")
     }
 
+    @Test("a malformed components degrades to a score-only card, not unrecognised")
+    func riskReportMalformedComponents() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-risk-bad-comp",
+                type: "risk_report",
+                content: [
+                    "as_of": "2026-08-22",
+                    "state": "NORMAL",
+                    "mbs": 35.0,
+                    "components": [
+                        "mbs": [["label": "VIX", "value": "16.0", "band": 123]],
+                    ],
+                ]
+            )
+        )
+        guard case .riskReport(let snapshot) = parsed.kind else {
+            Issue.record("expected a risk report card, got \(parsed.kind)")
+            return
+        }
+        #expect(snapshot.asOf == "2026-08-22")
+        #expect(snapshot.mbs == 35.0)
+        #expect(snapshot.components == nil)  // malformed -> score-only, not a crash
+    }
+
+    @Test("a risk report event carries its data-quality flag")
+    func riskReportQualityStatus() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-risk-quality",
+                type: "risk_report",
+                content: [
+                    "as_of": "2026-08-22",
+                    "state": "NORMAL",
+                    "quality_status": "data_quality_warning",
+                ]
+            )
+        )
+        guard case .riskReport(let snapshot) = parsed.kind else {
+            Issue.record("expected a risk report card, got \(parsed.kind)")
+            return
+        }
+        #expect(snapshot.qualityStatus == "data_quality_warning")
+    }
+
     @Test("a non-string where text belongs is unreadable, not blank")
     func nonStringText() throws {
         let parsed = try decode(chatEvent("ev-7", content: ["text": 18]))

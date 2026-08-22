@@ -116,3 +116,17 @@ def test_build_report_components_skip_unavailable():
     components = build_report(run)["components"]
     assert [r["label"] for r in components["mbs"]] == ["VIX"]
     assert components["css"] == []
+
+
+def test_build_report_carries_quality_status():
+    assert build_report(_run())["quality_status"] == "ok"
+    assert (
+        build_report(_run(quality_status="data_quality_warning"))["quality_status"]
+        == "data_quality_warning"
+    )
+
+
+def test_push_summary_flags_a_degraded_day():
+    degraded = build_report(_run(quality_status="data_quality_warning"))
+    assert push_summary(degraded).startswith("⚠ 数据不完整 ")
+    assert push_summary(build_report(_run())).startswith("系统性风险 正常")
