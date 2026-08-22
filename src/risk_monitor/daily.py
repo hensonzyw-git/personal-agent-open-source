@@ -25,7 +25,7 @@ from risk_monitor import breadth as breadth_mod
 from risk_monitor import derive
 from risk_monitor import proxy as proxy_mod
 from risk_monitor.config import load_dotenv_local
-from risk_monitor.constituents import load_tickers
+from risk_monitor.constituents import load_tencent_codes, load_tickers
 from risk_monitor.domain.models import (
     COMPANY_ENTITIES,
     Observation,
@@ -36,7 +36,7 @@ from risk_monitor.domain.models import (
 from risk_monitor.domain.storage import initialize
 from risk_monitor.ingestion.edgar import EdgarClient
 from risk_monitor.ingestion.fred import FRED_SERIES, FredClient
-from risk_monitor.ingestion.yahoo import YahooClient
+from risk_monitor.ingestion.tencent import TencentClient
 from risk_monitor.scoring import (
     Indication,
     Scores,
@@ -159,7 +159,7 @@ def _latest_as_of(raw: dict[str, object]) -> str:
 MIN_BREADTH_COVERAGE = 0.8  # below this, breadth is not a reliable signal
 
 
-def collect_breadth(client: YahooClient, tickers: list[str]) -> tuple[dict[str, float], dict, list]:
+def collect_breadth(client: TencentClient, tickers: list[str]) -> tuple[dict[str, float], dict, list]:
     """Compute the two breadth metrics from per-ticker daily closes. Returns
     ``(metrics, meta, breadth_series)``; metrics are omitted (not zero) when
     breadth cannot be computed, and ``meta`` carries coverage so the job can
@@ -172,10 +172,16 @@ def collect_breadth(client: YahooClient, tickers: list[str]) -> tuple[dict[str, 
     over the rest, rather than scoring a subset as if it were the whole market."""
     closes, errors = client.collect_closes(tickers)
     bs = breadth_mod.breadth_series(closes)
-    signal_cov = breadth_mod.coverage(closes)  # of pulled names, how many have a 200dma signal
-    pull_cov = len(closes) / len(tickers) if tickers else 0.0  # of requested names, how many we pulled
+    signal_cov = breadth_mod.coverage(closes)  # fraction of pulled names with a 200dma signal
+    pull_cov = len(closes) / len(tickers) if tickers else 0.0  # fraction of requested names pulled
 
-    below_threshold = pull_cov < MIN_BREADTH_COVERAGE
+    # Fail closed on both coverage shapes (ADR-0001): a pull that returns few
+    # tickers, and a pull that returns tickers but mostly empty/unparseable
+    # series (the source 200s with a blank `day` array for suspended/invalid
+    # codes), both leave breadth unavailable rather than scoring a subset.
+    below_threshold = (
+        pull_cov < MIN_BREADTH_COVERAGE or signal_cov < MIN_BREADTH_COVERAGE
+    )
     metrics: dict[str, float] = {}
     if not below_threshold:
         if bs:
@@ -194,10 +200,10 @@ def collect_breadth(client: YahooClient, tickers: list[str]) -> tuple[dict[str, 
     return metrics, meta, bs
 
 
-def collect_ai_basket(client: YahooClient) -> tuple[dict[str, list], dict[str, str]]:
+def collect_ai_basket(client: TencentClient) -> tuple[dict[str, list], dict[str, str]]:
     """Collect the six AI-capex-cycle names' daily closes for the ai_basket
     equity proxy (``proxy.ai_basket_proxy``). Returns ``(closes_by_entity,
-    errors)`` where ``errors`` maps ticker -> failure message; a name Yahoo
+    errors)`` where ``errors`` maps ticker -> failure message; a name the source
     fails on is omitted from the result (fail-closed per name, not zero). The
     errors are surfaced so the job can distinguish "name failed to pull" from
     "no 200dma signal yet" in audit, instead of silently dropping them."""
@@ -311,15 +317,15 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
 
         # Breadth is self-computed (ADR-0001); a failed pull leaves the two
         # breadth metrics unavailable and renormalises MBS, never zero/green.
-        yahoo = YahooClient()
-        breadth_metrics, breadth_meta, breadth_series = collect_breadth(yahoo, load_tickers())
+        tencent = TencentClient(load_tencent_codes())
+        breadth_metrics, breadth_meta, breadth_series = collect_breadth(tencent, load_tickers())
         mbs_values.update(breadth_metrics)
 
         # Qualitative CSS proxies (policy `proxies`): ai_basket <- six-name
         # equity drawdown, term_financing <- 30Y 20d change. A proxy that
         # returns None leaves the indicator unavailable (renormalised), never a
         # fabricated green.
-        ai_basket_closes, ai_basket_errors = collect_ai_basket(yahoo)
+        ai_basket_closes, ai_basket_errors = collect_ai_basket(tencent)
         ai_label, ai_per_name = proxy_mod.ai_basket_proxy(policy, ai_basket_closes)
         if ai_label is not None:
             css_values["credit.ai_basket"] = ai_label
@@ -387,8 +393,8 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
                 bbody = json.dumps({"as_of": as_of, "breadth": breadth_series})
                 session.add(RawArtifact(
                     raw_record_id=uuid.uuid4().hex,
-                    source_id="yahoo",
-                    uri=f"{yahoo.base_url}/v8/finance/chart/{{ticker}}",
+                    source_id="tencent",
+                    uri=f"{tencent.base_url}?param=us{{ticker}}.<exchange>,day,,,{tencent.count},qfq",
                     retrieved_at=_utcnow(),
                     content_sha256=_sha256(bbody),
                     content=bbody,
@@ -404,7 +410,7 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
                     _store_observation(
                         session, mid, _entity_for(mid), None, as_of,
                         value_text=v, unit="band", confidence="proxy",
-                        source_id=("fred" if mid == "credit.term_financing" else "yahoo"),
+                        source_id=("fred" if mid == "credit.term_financing" else "tencent"),
                     )
                 else:
                     _store_observation(session, mid, _entity_for(mid), v, as_of)
@@ -470,6 +476,10 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
         "css_unavailable": css.unavailable,
         "breadth": breadth_meta,
         "fred_failures": fred_failures,
+        # Per-indicator breakdown (metric_id/available/band/value) so the daily
+        # card can show the indicators *behind* each score, not just the score.
+        "mbs_components": _serialise_outcome(mbs),
+        "css_components": _serialise_outcome(css),
     }
 
 

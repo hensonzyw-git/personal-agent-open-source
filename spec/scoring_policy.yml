@@ -8,7 +8,7 @@
 # All thresholds are TRANSPARENT HEURISTICS, not statistically validated
 # (PRD §15.6). They are a risk-review scaffold, not investment advice.
 
-policy_version: "2026-08-21.2"
+policy_version: "2026-08-22.1"
 definition_version: "2026-08-21.1"
 description: >
   First frozen baseline for the US/AI systemic-risk monitor. Bands are
@@ -66,7 +66,7 @@ state_machine:
     DELEVERAGING:
       enter: >
         (css >= 75 AND mbs >= 70)
-        OR (hy_oas > 6.0% AND breadth < 40% AND spx < 200dma)
+        OR (hy_oas > 6.0% AND breadth < 37% AND spx < 200dma)
         OR major_fact_override
       exit_down_to: CREDIT_CONFIRMATION
 
@@ -75,7 +75,7 @@ state_machine:
     rule_id: systemic_red_combo_v1
     when_all:
       - { metric: market.spx_vs_200dma_pct,   op: "<", value: 0 }
-      - { metric: market.spx_pct_above_200dma, op: "<", value: 40 }
+      - { metric: market.spx_pct_above_200dma, op: "<", value: 37 }
       - { metric: credit.hy_oas_pct,          op: ">", value: 6 }
     for_trading_days: 5
     effect: { set_minimum_state: DELEVERAGING, alert_severity: CRITICAL }
@@ -98,11 +98,14 @@ mbs:
       weight: 30
       unit: percent
       note: "breadth: % of S&P 500 constituents above their 200dma"
+      # Raw-close convention (Tencent source): ~3pp below dividend-adjusted;
+      # bands shifted -3pp so labels keep their pre-swap meaning (measured
+      # 2026-08-22, 72.46% adjusted vs 69.26% raw). See ADR-0001.
       bands:
-        green:  { lo: 60.0, hi: null }
-        yellow: { lo: 50.0, hi: 60.0 }
-        orange: { lo: 40.0, hi: 50.0 }
-        red:    { lo: null, hi: 40.0 }
+        green:  { lo: 57.0, hi: null }
+        yellow: { lo: 47.0, hi: 57.0 }
+        orange: { lo: 37.0, hi: 47.0 }
+        red:    { lo: null, hi: 37.0 }
     - metric_id: market.vix
       weight: 15
       unit: index

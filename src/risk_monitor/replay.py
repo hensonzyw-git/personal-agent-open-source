@@ -3,7 +3,7 @@
 PRD §14 requires ``replay --as-of`` to reproduce identical output. The
 *guaranteed-reproducible boundary* is "observations -> score -> state": FRED raw
 is stored verbatim, but breadth stores its derived series (per-ticker closes are
-re-pullable from Yahoo, whose adjusted closes may be revised), so the honest
+re-pullable from Tencent, whose raw closes may be revised), so the honest
 replay re-derives the score from the stored observations and the state from the
 stored score snapshots — never from a fresh network pull.
 """

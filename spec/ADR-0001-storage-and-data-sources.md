@@ -37,15 +37,29 @@ data-source question ("free, no license needed") was resolved with Henson on
 5. **Breadth is self-computed** from a fixed S&P 500 constituent snapshot
    (the public-domain `datasets/s-and-p-500-companies` GitHub mirror, checked in
    as `src/risk_monitor/assets/spx_constituents.json` with a `snapshot_date`) +
-   per-name daily adjusted closes from the **Yahoo Finance chart API**
-   (`query1.finance.yahoo.com/v8/finance/chart`). Yahoo is free, key-less, and
-   reachable from the home machine (validated 2026-08-21), but *unofficial* —
-   it may throttle or change shape. It is used only for breadth; the index-level
+   per-name daily closes from the **Tencent Finance kline API**
+   (`web.ifzq.gtimg.cn/appstock/app/fqkline/get`). Tencent is free, key-less and
+   China-reachable — Yahoo's chart API geo-blocks the production ECS (Aliyun
+   mainland IP) with a hard 403, so Tencent replaces Yahoo as the per-name close
+   source. The `YahooClient` adapter is retained (not deleted) so the swap can be
+   rolled back to Yahoo from the home machine if Tencent throttles or changes
+   shape. Tencent returns *unadjusted* (raw) closes; the raw-vs-adjusted
+   measurement (2026-08-22, `scripts/compare_raw_vs_adj.py`) found a systematic
+   −3.19pp breadth understatement, so the breadth band thresholds are recalibrated
+   (green ≥57 / yellow 47–57 / orange 37–47 / red <37) to keep scoring
+   semantically consistent with the pre-swap adjusted-close convention. Tencent
+   also supplies the six ai_basket names' closes under the same raw-close
+   convention; their per-name raw-vs-adjusted `pct_vs_200dma` delta is ≤0.5pp
+   (NVDA −0.09 / ORCL −0.48 / MSFT −0.49 / META −0.11 / AMZN 0.00 / GOOGL −0.08),
+   far inside the 0/−10/−25 band widths, so the `per_name_bands` thresholds are
+   deliberately *not* recalibrated — no name's band label changes. The index-level
    series stay on FRED. The two breadth metrics (`market.spx_pct_above_200dma`,
-   `market.breadth_20d_change`) fail closed: a throttled/partial pull leaves them
-   `unavailable` and renormalises MBS over the remaining indicators, and the run
-   records a coverage fraction rather than silently computing breadth from a
-   subset.
+   `market.breadth_20d_change`) fail closed on *both* coverage shapes: a pull
+   covering fewer than 80% of requested tickers, **or** a pull whose tickers
+   mostly lack a 200dma signal (e.g. the source returns 200 with a blank `day`
+   array for suspended/invalid codes), leaves them `unavailable` and renormalises
+   MBS over the remaining indicators — the run records both fractions rather than
+   silently computing breadth from a subset.
 
 ## Consequences
 

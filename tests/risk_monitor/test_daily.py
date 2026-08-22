@@ -45,7 +45,7 @@ def test_derive_market_values():
     assert as_of == "2026-08-20"  # latest date across ALL series, not just SPX
 
 
-class _StubYahoo:
+class _StubTencent:
     def __init__(self, closes):
         self._closes = closes
 
@@ -56,7 +56,7 @@ class _StubYahoo:
 def test_collect_breadth_metric_keys():
     up = _series([100.0] * 200 + [110.0])
     down = _series([100.0] * 201)
-    stub = _StubYahoo({"UP": up, "DOWN": down})
+    stub = _StubTencent({"UP": up, "DOWN": down})
     metrics, meta, bs = collect_breadth(stub, ["UP", "DOWN"])  # type: ignore[arg-type]
     assert metrics["market.spx_pct_above_200dma"] == 50.0
     assert "market.breadth_20d_change" not in metrics  # only one signal day -> None
@@ -65,7 +65,7 @@ def test_collect_breadth_metric_keys():
 
 
 def test_collect_breadth_empty_when_no_signal():
-    stub = _StubYahoo({"SHORT": _series([100.0] * 100)})
+    stub = _StubTencent({"SHORT": _series([100.0] * 100)})
     metrics, meta, bs = collect_breadth(stub, ["SHORT"])  # type: ignore[arg-type]
     assert metrics == {}
     assert meta["coverage"] == 0.0
@@ -76,7 +76,7 @@ def test_collect_ai_basket_maps_ticker_to_entity():
     """The six AI names are collected and keyed by entity_id, not ticker."""
     up = _series([100.0] * 200 + [110.0])
     closes = {name: up for name in ("NVDA", "ORCL", "MSFT", "META", "AMZN", "GOOGL")}
-    stub = _StubYahoo(closes)
+    stub = _StubTencent(closes)
     result, errors = collect_ai_basket(stub)  # type: ignore[arg-type]
     assert set(result) == {"NVDA", "ORCL", "MSFT", "META", "AMZN", "GOOGL"}
     assert result["NVDA"] is up
@@ -86,7 +86,7 @@ def test_collect_ai_basket_maps_ticker_to_entity():
 def test_collect_ai_basket_omits_failed_names():
     """A name Yahoo fails on is dropped (fail-closed per name), not zero."""
     up = _series([100.0] * 200 + [110.0])
-    stub = _StubYahoo({"NVDA": up, "ORCL": up})  # 4 names absent
+    stub = _StubTencent({"NVDA": up, "ORCL": up})  # 4 names absent
     result, errors = collect_ai_basket(stub)  # type: ignore[arg-type]
     assert set(result) == {"NVDA", "ORCL"}
     assert errors == {}
@@ -97,13 +97,13 @@ def test_collect_ai_basket_surfaces_failed_names():
     so audit can distinguish 'failed pull' from 'no 200dma signal yet'."""
     up = _series([100.0] * 200 + [110.0])
 
-    class _ErroringYahoo(_StubYahoo):
+    class _ErroringTencent(_StubTencent):
         def collect_closes(self, tickers):
             closes, _ = super().collect_closes(tickers)
             closes.pop("META", None)  # a failed name is absent from closes
             return closes, {"META": "Yahoo META: HTTP 429"}
 
-    stub = _ErroringYahoo({name: up for name in ("NVDA", "ORCL", "MSFT", "META", "AMZN", "GOOGL")})
+    stub = _ErroringTencent({name: up for name in ("NVDA", "ORCL", "MSFT", "META", "AMZN", "GOOGL")})
     result, errors = collect_ai_basket(stub)  # type: ignore[arg-type]
     assert "META" in errors
     assert set(result) == {"NVDA", "ORCL", "MSFT", "AMZN", "GOOGL"}
@@ -114,12 +114,28 @@ def test_collect_breadth_drops_metrics_below_pull_coverage_threshold():
     the subset — the two MBS indicators become unavailable instead."""
     up = _series([100.0] * 200 + [110.0])
     down = _series([100.0] * 201)
-    stub = _StubYahoo({"UP": up, "DOWN": down})
+    stub = _StubTencent({"UP": up, "DOWN": down})
     tickers = ["UP", "DOWN"] + [f"T{i}" for i in range(98)]
     metrics, meta, bs = collect_breadth(stub, tickers)  # type: ignore[arg-type]
     assert metrics == {}
     assert meta["below_threshold"] is True
     assert meta["pull_coverage"] < 0.8
+
+
+def test_collect_breadth_fails_closed_on_signal_coverage():
+    """A full pull whose tickers mostly lack a 200dma signal (blank ``day``
+    arrays for suspended/invalid codes) must fail closed, not score the
+    signal-bearing subset as if it were the whole market."""
+    up = _series([100.0] * 200 + [110.0])
+    closes = {"UP": up}
+    for i in range(99):
+        closes[f"EMPTY{i}"] = []  # pulled, but a blank day array
+    stub = _StubTencent(closes)
+    metrics, meta, bs = collect_breadth(stub, list(closes))  # type: ignore[arg-type]
+    assert meta["pull_coverage"] == 1.0  # every ticker "pulled"
+    assert meta["coverage"] < 0.8  # but almost none has a signal
+    assert meta["below_threshold"] is True
+    assert metrics == {}
 
 
 class _FlakyFred:
@@ -282,10 +298,11 @@ class _RunFred:
         return False
 
 
-class _RunYahoo:
-    base_url = "https://query1.finance.yahoo.com/v8/finance/chart"
+class _RunTencent:
+    base_url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    count = 500
 
-    def __init__(self):
+    def __init__(self, tencent_codes=None):
         self._end = date(2026, 8, 20)
 
     def collect_closes(self, tickers):
@@ -308,7 +325,7 @@ def test_run_composition_and_replay_roundtrip(tmp_path, monkeypatch):
     labels in ``value_text`` (not drop them), and replay the same day back to
     the identical scores."""
     monkeypatch.setattr(daily_mod, "FredClient", _RunFred)
-    monkeypatch.setattr(daily_mod, "YahooClient", _RunYahoo)
+    monkeypatch.setattr(daily_mod, "TencentClient", _RunTencent)
     monkeypatch.setattr(daily_mod, "EdgarClient", _RunEdgar)
     monkeypatch.setattr(daily_mod, "load_tickers", lambda: ["UP", "DOWN", "UP2"])
 

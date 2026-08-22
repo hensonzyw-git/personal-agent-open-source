@@ -44,7 +44,7 @@ def ai_basket_proxy(
 
     Returns ``(label, per_name_pct)``. ``label`` is ``None`` (unavailable) when
     fewer than ``aggregate.min_names`` names produced a signal, so a partial
-    Yahoo pull fails closed instead of scoring a subset. ``per_name_pct`` is the
+    partial pull fails closed instead of scoring a subset. ``per_name_pct`` is the
     per-name ``pct_vs_200dma`` (``None`` for a name with no signal), kept for
     explainability."""
     per_name_bands = policy["proxies"]["ai_basket"]["per_name_bands"]
