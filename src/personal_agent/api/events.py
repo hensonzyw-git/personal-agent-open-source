@@ -308,6 +308,33 @@ def list_timeline(
     return [_entry(keyring, event) for event in events]
 
 
+def event_exists_with(
+    session,
+    keyring: KeyRing,
+    *,
+    event_type: str,
+    content_key: str,
+    content_value: Any,
+) -> bool:
+    """True when an event of ``event_type`` already carries
+    ``content[content_key] == content_value`` (decrypted).
+
+    The idempotency primitive for scheduler-written cards: the risk report is
+    sealed once per ``as_of``, so a repeat fire (a weekend, a holiday, a manual
+    rerun) finds the existing card and adds nothing. Scans only that event type,
+    not the whole Timeline.
+    """
+    rows = (
+        session.query(ConversationEvent)
+        .filter(ConversationEvent.event_type == event_type)
+        .all()
+    )
+    return any(
+        _entry(keyring, event).content.get(content_key) == content_value
+        for event in rows
+    )
+
+
 def read_page(
     session,
     keyring: KeyRing,

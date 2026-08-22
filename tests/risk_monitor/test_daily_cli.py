@@ -83,6 +83,10 @@ def test_seal_risk_event_appends_risk_report(monkeypatch):
             return "turn-1"
 
         @staticmethod
+        def event_exists_with(session, keyring, *, event_type, content_key, content_value):
+            return False
+
+        @staticmethod
         def append_event(
             session, keyring, *, conversation_id, session_id, turn_id,
             event_type, content, operation_id, now,
@@ -180,3 +184,38 @@ def test_seal_risk_event_writes_a_real_timeline_event(tmp_path):
         "band": "green",
     }
     assert entry.content["components"]["css"][0]["band"] == "orange"
+
+
+def test_seal_risk_event_is_idempotent_on_as_of(tmp_path):
+    """Sealing the same as_of twice adds nothing: the second call finds the
+    existing card and returns None, so a weekend/holiday/manual rerun never
+    stacks a duplicate."""
+    engine = create_database_engine(tmp_path / "agent.sqlite")
+    create_all(engine)
+    sessions = session_factory(engine)
+    keyring = KeyRing([generate_key("risk-seal-fixture")], service="personal-agent-api")
+    session_manager = SessionManager(default_context_config())
+
+    report = {
+        "as_of": "2026-08-22",
+        "state": "NORMAL",
+        "scores": {"mbs": 0.0, "css": 16.25, "afrs": 21.0},
+        "action": "持有（无需操作）",
+        "components": {"mbs": [], "css": []},
+    }
+
+    first = daily_cli.seal_risk_event(sessions, keyring, session_manager, report)
+    second = daily_cli.seal_risk_event(sessions, keyring, session_manager, report)
+
+    assert first is not None
+    assert second is None
+
+    with sessions() as session:
+        timeline_id = events.canonical_timeline_id(
+            session, now=datetime.now(timezone.utc)
+        )
+        entries = events.list_timeline(session, keyring, conversation_id=timeline_id)
+    engine.dispose()
+
+    assert [entry.event_type for entry in entries] == ["risk_report"]
+    assert len(entries) == 1

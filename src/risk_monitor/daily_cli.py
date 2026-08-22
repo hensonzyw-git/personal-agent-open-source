@@ -78,20 +78,31 @@ def _card_content(report: dict) -> dict:
     }
 
 
-def seal_risk_event(sessions, keyring, session_manager, report) -> str:
+def seal_risk_event(sessions, keyring, session_manager, report) -> str | None:
     """Seal today's risk card as a frozen ``risk_report`` Timeline event.
 
-    The content is read once from ``build_report`` output — there is no Feishu
-    round-trip, so the read and the append stay in one transaction (§5.2). Each
-    run seals a fresh card: deliberately not idempotent on ``as_of`` (a manual
-    re-run stacks a second card; the production timer runs once a day).
+    Idempotent on ``as_of``: one card per trading day. A repeat fire (a weekend,
+    a holiday, a manual rerun) finds the existing card and returns ``None``
+    without appending, so the Timeline never stacks identical cards. The content
+    is read from ``build_report`` output — no Feishu round-trip — and the
+    existence check plus the append stay inside one ``run_write_transaction``
+    (§5.2), so check-then-append is a single unit.
     """
     now = utc_now()
     content = _card_content(report)
+    as_of = content["as_of"]
 
     with sessions() as session:
 
-        def append_and_mark() -> str:
+        def append_if_absent() -> str | None:
+            if events.event_exists_with(
+                session,
+                keyring,
+                event_type=events.RISK_REPORT,
+                content_key="as_of",
+                content_value=as_of,
+            ):
+                return None
             timeline_id = events.canonical_timeline_id(session, now=now)
             return events.append_event(
                 session,
@@ -107,7 +118,7 @@ def seal_risk_event(sessions, keyring, session_manager, report) -> str:
                 now=now,
             )
 
-        return run_write_transaction(session, append_and_mark)
+        return run_write_transaction(session, append_if_absent)
 
 
 def main() -> None:
@@ -151,7 +162,10 @@ def main() -> None:
         report = build_report(result)
         try:
             event_id = seal_risk_event(sessions, keyring, session_manager, report)
-            logger.info("risk card sealed: %s", event_id)
+            if event_id is None:
+                logger.info("risk card already sealed for %s; skipped", report["as_of"])
+            else:
+                logger.info("risk card sealed: %s", event_id)
         except Exception as exc:  # noqa: BLE001 - a failed seal must not drop the push
             logger.error(
                 "risk card seal failed: %s: %s",
