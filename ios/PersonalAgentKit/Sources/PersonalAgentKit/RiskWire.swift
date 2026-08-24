@@ -13,6 +13,10 @@ public struct RiskReportSnapshot: Sendable, Equatable {
     /// ``ok`` or ``data_quality_warning``. Optional so an older card still
     /// decodes; when ``data_quality_warning`` the card shows a degradation badge.
     public let qualityStatus: String?
+    /// Days ``asOf`` lags today; a value over 7 marks the card as stale. Optional.
+    public let staleDays: Int?
+    /// True when a score jumped suspiciously since the previous day. Optional.
+    public let anomalous: Bool?
     /// The per-indicator breakdown behind MBS/CSS. Optional, and tolerant: an
     /// absent *or malformed* value degrades to `nil` (a score-only card) rather
     /// than failing the whole decode.
@@ -26,6 +30,8 @@ public struct RiskReportSnapshot: Sendable, Equatable {
         afrs: Double?,
         action: String?,
         qualityStatus: String?,
+        staleDays: Int?,
+        anomalous: Bool?,
         components: RiskComponents?
     ) {
         self.asOf = asOf
@@ -35,6 +41,8 @@ public struct RiskReportSnapshot: Sendable, Equatable {
         self.afrs = afrs
         self.action = action
         self.qualityStatus = qualityStatus
+        self.staleDays = staleDays
+        self.anomalous = anomalous
         self.components = components
     }
 }
@@ -63,6 +71,8 @@ extension RiskReportSnapshot: Decodable {
         case afrs
         case action
         case qualityStatus = "quality_status"
+        case staleDays = "stale_days"
+        case anomalous
         case components
     }
 
@@ -75,6 +85,8 @@ extension RiskReportSnapshot: Decodable {
         afrs = try container.decodeIfPresent(Double.self, forKey: .afrs)
         action = try container.decodeIfPresent(String.self, forKey: .action)
         qualityStatus = try container.decodeIfPresent(String.self, forKey: .qualityStatus)
+        staleDays = try container.decodeIfPresent(Int.self, forKey: .staleDays)
+        anomalous = try container.decodeIfPresent(Bool.self, forKey: .anomalous)
         // Tolerant: an absent OR malformed components degrades to nil (a
         // score-only card), never an .unrecognised event.
         components = try? container.decode(RiskComponents.self, forKey: .components)

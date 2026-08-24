@@ -1183,6 +1183,28 @@ struct TimelineEventTests {
         #expect(snapshot.qualityStatus == "data_quality_warning")
     }
 
+    @Test("a risk report event carries freshness and anomaly flags")
+    func riskReportFreshnessAndAnomaly() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-risk-stale",
+                type: "risk_report",
+                content: [
+                    "as_of": "2026-08-22",
+                    "state": "NORMAL",
+                    "stale_days": 10,
+                    "anomalous": true,
+                ]
+            )
+        )
+        guard case .riskReport(let snapshot) = parsed.kind else {
+            Issue.record("expected a risk report card, got \(parsed.kind)")
+            return
+        }
+        #expect(snapshot.staleDays == 10)
+        #expect(snapshot.anomalous == true)
+    }
+
     @Test("a non-string where text belongs is unreadable, not blank")
     func nonStringText() throws {
         let parsed = try decode(chatEvent("ev-7", content: ["text": 18]))

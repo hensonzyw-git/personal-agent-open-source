@@ -434,8 +434,14 @@ struct ChatView: View {
                 Text("系统性风险 · \(snapshot.asOf)")
                     .font(.callout.weight(.medium))
                 Spacer(minLength: 8)
+                if snapshot.anomalous == true {
+                    riskBadge("异常", .danger)
+                }
+                if let stale = snapshot.staleDays, stale > 7 {
+                    riskBadge("数据过期", .pending)
+                }
                 if snapshot.qualityStatus == "data_quality_warning" {
-                    riskQualityBadge()
+                    riskBadge("数据不完整", .pending)
                 }
                 Text(riskStateLabel(snapshot.state))
                     .font(.caption)
@@ -494,15 +500,15 @@ struct ChatView: View {
         return "MBS \(fmt(snapshot.mbs)) / CSS \(fmt(snapshot.css)) / AFRS \(fmt(snapshot.afrs))"
     }
 
-    /// A small amber capsule flagging a degraded (partially-failed) day, so a
-    /// card with missing data can never masquerade as a clean one.
-    private func riskQualityBadge() -> some View {
-        Text("数据不完整")
+    /// A small status capsule for a quality signal (degraded / stale / anomalous)
+    /// so a card with suspicious data can never masquerade as a clean one.
+    private func riskBadge(_ text: String, _ color: Color) -> some View {
+        Text(text)
             .font(.caption)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background(Color.pending.opacity(0.15))
-            .foregroundStyle(Color.pending)
+            .background(color.opacity(0.15))
+            .foregroundStyle(color)
             .clipShape(Capsule())
     }
 
