@@ -130,3 +130,16 @@ def test_push_summary_flags_a_degraded_day():
     degraded = build_report(_run(quality_status="data_quality_warning"))
     assert push_summary(degraded).startswith("⚠ 数据不完整 ")
     assert push_summary(build_report(_run())).startswith("系统性风险 正常")
+
+
+def test_push_summary_flags_stale_and_anomalous():
+    assert push_summary(build_report(_run(stale_days=10))).startswith("⚠ 数据过期 ")
+    assert push_summary(build_report(_run(anomalous=True))).startswith("⚠ 异常 ")
+
+
+def test_build_report_carries_freshness_and_anomaly():
+    r = build_report(_run(stale_days=3, anomalous=False))
+    assert r["stale_days"] == 3
+    assert r["anomalous"] is False
+    assert build_report(_run())["stale_days"] == 0
+    assert build_report(_run())["anomalous"] is False

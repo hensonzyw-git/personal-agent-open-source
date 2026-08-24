@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from risk_monitor import daily as daily_mod
 from risk_monitor.daily import (
+    _anomalous_jump,
     collect_ai_basket,
     collect_breadth,
     collect_fred,
@@ -43,6 +44,15 @@ def test_derive_market_values():
     assert css["credit.hy_oas_20d_change"] == 50.0  # (1.5 - 1.0) * 100 bp
     assert css["credit.bbb_oas_pct"] == 1.0
     assert as_of == "2026-08-20"  # latest date across ALL series, not just SPX
+
+
+def test_anomalous_jump_flags_a_large_single_day_move():
+    """A score move larger than MAX_SCORE_DAY_JUMP is flagged; a small one and a
+    missing previous snapshot are not."""
+    assert _anomalous_jump(None, (30.0, 40.0, 60.0)) is False
+    assert _anomalous_jump((30.0, 40.0, 60.0), (30.0, 40.0, 60.0)) is False
+    assert _anomalous_jump((30.0, 40.0, 60.0), (75.0, 40.0, 60.0)) is True  # MBS +45
+    assert _anomalous_jump((30.0, 40.0, 60.0), (30.0, 40.0, 21.0)) is False  # AFRS -39 < 40
 
 
 class _StubTencent:
@@ -364,6 +374,8 @@ def test_run_composition_and_replay_roundtrip(tmp_path, monkeypatch):
     assert result["action"] == policy["actions"][result["state"]]
     assert result["fred_failures"] == {}
     assert result["quality_status"] == "ok"
+    assert isinstance(result["stale_days"], int)
+    assert result["anomalous"] is False  # fresh db: no prior snapshot to compare
     # The seam between `_serialise_outcome` and the card formatter is exercised:
     # the run really emits the per-indicator breakdown the card consumes.
     assert len(result["mbs_components"]) == 5  # 4 available + fwd_eps_revisions

@@ -157,6 +157,20 @@ def _latest_as_of(raw: dict[str, object]) -> str:
 
 
 MIN_BREADTH_COVERAGE = 0.8  # below this, breadth is not a reliable signal
+# Phase 6 quality signals (heuristics, not in the policy — like the coverage gate).
+MAX_STALE_DAYS = 7  # as_of more than this many calendar days behind today -> stale
+MAX_SCORE_DAY_JUMP = 40.0  # a single-day score move this large is flagged anomalous
+
+
+def _anomalous_jump(
+    prev: tuple[float, float, float] | None,
+    cur: tuple[float, float, float],
+) -> bool:
+    """True when any score moved more than ``MAX_SCORE_DAY_JUMP`` since the
+    previous snapshot — a data error is more likely than a one-day market move."""
+    if prev is None:
+        return False
+    return any(abs(c - p) > MAX_SCORE_DAY_JUMP for c, p in zip(cur, prev))
 
 
 def collect_breadth(client: TencentClient, tickers: list[str]) -> tuple[dict[str, float], dict, list]:
@@ -395,6 +409,28 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
         )
         quality_status = "ok" if quality_ok else "data_quality_warning"
 
+        # Freshness: how far as_of lags today. A normal run is 1-3 days behind
+        # (weekend/holiday); beyond MAX_STALE_DAYS the pipeline or a source has
+        # been stale long enough that the card must say so.
+        stale_days = (date.today() - date.fromisoformat(as_of)).days
+
+        # Anomaly: a single-day score move larger than MAX_SCORE_DAY_JUMP is more
+        # likely a data error than a genuine market move, so it is surfaced for
+        # review rather than passed off as a clean reading.
+        with Session(engine) as session:
+            prev = session.scalars(
+                select(ScoreSnapshot).order_by(ScoreSnapshot.id.desc()).limit(1)
+            ).first()
+        prev_scores = None
+        if prev is not None and None not in (prev.mbs, prev.css, prev.afrs):
+            prev_scores = (prev.mbs, prev.css, prev.afrs)
+        cur_scores = (mbs.score, css.score, afrs)
+        anomalous = (
+            _anomalous_jump(prev_scores, cur_scores)
+            if None not in cur_scores
+            else False
+        )
+
         # Persist raw artifacts + observations + score snapshot.
         with Session(engine) as session:
             for series_id, obs in _raw_artifact_rows(raw):
@@ -481,6 +517,8 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
         "breadth": breadth_meta,
         "fred_failures": fred_failures,
         "quality_status": quality_status,
+        "stale_days": stale_days,
+        "anomalous": anomalous,
         # Per-indicator breakdown (metric_id/available/band/value) so the daily
         # card can show the indicators *behind* each score, not just the score.
         "mbs_components": _serialise_outcome(mbs),

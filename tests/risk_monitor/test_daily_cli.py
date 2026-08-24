@@ -35,6 +35,8 @@ def test_card_content_maps_report_to_contract():
         "afrs": None,
         "action": "持仓观察",
         "quality_status": "ok",
+        "stale_days": 0,
+        "anomalous": False,
         "components": None,
     }
 
@@ -151,6 +153,8 @@ def test_seal_risk_event_appends_risk_report(monkeypatch):
         "afrs": 60.0,
         "action": "持仓观察",
         "quality_status": "ok",
+        "stale_days": 0,
+        "anomalous": False,
         "components": None,
     }
 

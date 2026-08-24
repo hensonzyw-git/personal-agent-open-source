@@ -28,6 +28,7 @@ BACKUP_STATE_DIR=/var/lib/personal-agent-backup
 MARKER="$BACKUP_STATE_DIR/last-successful-backup"
 API_DB_SNAPSHOT="$STAGING/api/agent.latest.sqlite"
 MCP_DB_SNAPSHOT="$STAGING/mcp/finance.latest.sqlite"
+RISK_DB_SNAPSHOT="$STAGING/api/risk_monitor.latest.sqlite"
 # The protected ledger config, staged by personal-data-mcp-db-backup. Read from
 # staging, never from /var/lib/personal-data-mcp: that dir is 0700 and this user
 # is deliberately not able to enter it.
@@ -91,6 +92,7 @@ echo "== DEV-035 backup $(date -u +%FT%TZ) =="
 INPUT_LABELS=(
   "agent snapshot"
   "finance snapshot"
+  "risk snapshot"
   "deletion-manifest export"
   "ledger config"
   "api unit"
@@ -101,6 +103,7 @@ INPUT_LABELS=(
 INPUTS=(
   "$API_DB_SNAPSHOT"
   "$MCP_DB_SNAPSHOT"
+  "$RISK_DB_SNAPSHOT"
   "$DELETION_MANIFEST"
   "$STAGED_LEDGER_CONFIG"
   "$UNIT_DIR/personal-agent-api.service"

@@ -75,6 +75,8 @@ def _card_content(report: dict) -> dict:
         "afrs": scores.get("afrs"),
         "action": report.get("action"),
         "quality_status": report.get("quality_status", "ok"),
+        "stale_days": report.get("stale_days", 0),
+        "anomalous": report.get("anomalous", False),
         "components": report.get("components"),
     }
 

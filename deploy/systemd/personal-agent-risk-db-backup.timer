@@ -1,0 +1,15 @@
+# Snapshot the risk monitor database daily, ahead of the offsite backup.
+#
+# 16:03 Asia/Shanghai, the same minute as the other two db-backup timers: well
+# after the 10:00 risk-monitor run (so the snapshot carries today's scores) and
+# before the 16:07 restic window. Persistent so a box that was down through the
+# window still snapshots on next boot.
+[Unit]
+Description=Personal Agent risk monitor DB snapshot daily
+
+[Timer]
+OnCalendar=*-*-* 16:03:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

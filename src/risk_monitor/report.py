@@ -47,6 +47,8 @@ _BAND_LABEL = {
     "red": "高危",
 }
 
+_STALE_DAYS_THRESHOLD = 7  # as_of more than this many days behind today -> stale
+
 
 def _component_rows(raw: list[dict]) -> list[dict]:
     """Format one score's serialised indicator results into card rows.
@@ -104,6 +106,8 @@ def build_report(run: dict) -> dict:
         "css_unavailable": run.get("css_unavailable") or [],
         "breadth": run.get("breadth") or {},
         "quality_status": run.get("quality_status", "ok"),
+        "stale_days": run.get("stale_days", 0),
+        "anomalous": run.get("anomalous", False),
         "components": {
             "mbs": _component_rows(run.get("mbs_components") or []),
             "css": _component_rows(run.get("css_components") or []),
@@ -124,8 +128,13 @@ def push_summary(report: dict) -> str:
     label = _STATE_LABEL.get(state, state)
     action = report.get("action")
     head = f"{action}；系统性风险 {label}" if action else f"系统性风险 {label}"
-    degraded = report.get("quality_status") == "data_quality_warning"
-    prefix = "⚠ 数据不完整 " if degraded else ""
+    prefix = ""
+    if report.get("anomalous"):
+        prefix += "⚠ 异常 "
+    if report.get("stale_days", 0) > _STALE_DAYS_THRESHOLD:
+        prefix += "⚠ 数据过期 "
+    if report.get("quality_status") == "data_quality_warning":
+        prefix += "⚠ 数据不完整 "
     return f"{prefix}{head} — MBS {mbs} / CSS {css} / AFRS {afrs}"
 
 
