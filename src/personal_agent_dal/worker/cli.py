@@ -76,8 +76,8 @@ def _healthcheck(config: WorkerConfig) -> int:
                     revision = connection.execute(
                         text("SELECT version_num FROM alembic_version")
                     ).scalar_one()
-                if revision != "0005":
-                    problems.append("database schema is not at worker revision 0005")
+                if revision != "0006":
+                    problems.append("database schema is not at worker revision 0006")
             finally:
                 engine.dispose()
         except Exception:  # noqa: BLE001 - healthcheck reports a bounded category

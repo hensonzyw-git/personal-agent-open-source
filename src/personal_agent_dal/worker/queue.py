@@ -385,6 +385,48 @@ def finish_job(
         return run_write_transaction(session, lambda: _body(session))
 
 
+def cancel_job(
+    engine: Engine,
+    *,
+    job_id: str,
+    now: datetime | None = None,
+) -> bool:
+    """Authority action: cancel a live job, terminal and non-retryable.
+
+    Unlike `finish_job`, this is not worker-fenced — it is the ECS lease owner's
+    authority to stop a job regardless of which worker holds it. It moves only
+    an active row to `cancelled` (clearing the lease) and is idempotent for a
+    job already cancelled; any other terminal state is left untouched (False).
+    A cancelled job carries no result receipt.
+    """
+    now = now or utc_now()
+    sessions = session_factory(engine)
+
+    def _body(session: Session) -> bool:
+        table = _jobs_table()
+        result = session.execute(
+            update(table)
+            .where(table.c.job_id == job_id)
+            .where(table.c.state.in_(_ACTIVE_STATES))
+            .values(
+                state="cancelled",
+                worker_id=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
+                updated_at=now,
+            )
+        )
+        if result.rowcount == 1:
+            return True
+        row = session.execute(
+            select(table.c.state).where(table.c.job_id == job_id)
+        ).scalar_one_or_none()
+        return row == "cancelled"
+
+    with sessions() as session:
+        return run_write_transaction(session, lambda: _body(session))
+
+
 class ResultConflictError(RuntimeError):
     """The same job id was replayed with a different result digest."""
 
