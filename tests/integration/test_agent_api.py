@@ -667,6 +667,75 @@ def test_repeated_clarification_is_exact_budgeted_and_not_duplicated(
     assert old.json()["record_id"] is None
 
 
+def test_clarified_explicit_family_expense_keeps_the_expense_tool_requirement(
+    engine, token_ring, keyring
+) -> None:
+    class SequencedInterpreter:
+        def __init__(self):
+            self.calls = []
+            self.results = [
+                Clarification("这笔是昨天发生，还是很久以前发生？", reason="date"),
+                ToolCall(
+                    "finance.log_expense",
+                    {
+                        "name": "晚饭",
+                        "input_amount": "283.99",
+                        "input_currency": "CNY",
+                        "occurred_on": "2026-08-25",
+                        "is_family_expense": True,
+                        "entry_kind": "expense",
+                        "category": "餐饮",
+                    },
+                ),
+            ]
+
+        def interpret(self, *, envelope):
+            self.calls.append(envelope)
+            return self.results.pop(0)
+
+    interpreter = SequencedInterpreter()
+    intent = WriteIntent("finance.log_expense", {"name": "晚饭"})
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=interpreter,
+        dispatcher=FakeDispatcher(
+            resolve=Resolved(intent), commit=Written("recCLARIFIED_EXPENSE")
+        ),
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "昨天晚饭很久以前 283.99 家庭支出",
+        },
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    assert parked.json()["state"] == "waiting_for_clarification"
+
+    resumed = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "昨天",
+            "clarification_of": parked.json()["operation_id"],
+        },
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+
+    assert resumed.json()["record_id"] == "recCLARIFIED_EXPENSE"
+    continuation = interpreter.calls[1]
+    assert continuation.finance_intent_required is True
+    assert continuation.finance_required_tool == "finance.log_expense"
+    context = "\n".join(
+        continuation.texts_of(ComponentKind.CLARIFICATION_CONTEXT)
+    )
+    assert "昨天晚饭很久以前 283.99 家庭支出" in context
+    assert "这笔是昨天发生，还是很久以前发生？" in context
+    assert continuation.user_text == "昨天"
+
+
 def test_explicit_retry_binds_the_latest_zero_write_finance_failure(
     engine, token_ring, keyring
 ) -> None:

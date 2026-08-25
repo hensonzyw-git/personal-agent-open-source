@@ -71,9 +71,11 @@ from personal_agent.context.untrusted import frame_untrusted_data as _frame
 from personal_agent.keys import HmacKey, HmacKeyRing
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.runtime.bookkeeping_intent import (
+    is_expense_write_request,
     is_finance_intent_candidate,
     is_finance_query_request,
     is_finance_retry_request,
+    is_income_write_request,
 )
 from personal_agent.storage.models import (
     TERMINAL_OPERATION_STATES,
@@ -88,7 +90,12 @@ from personal_agent_core.errors import (
     AppError,
     ErrorCode,
 )
-from personal_agent_core.finance_tools import FINANCE_QUERY_TOOL
+from personal_agent_core.finance_tools import (
+    FINANCE_EXPENSE_TOOL,
+    FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS,
+    FINANCE_INCOME_TOOL,
+    FINANCE_QUERY_TOOL,
+)
 from personal_agent_core.manifest import canonical_json
 
 SCHEMA_VERSION: Final[str] = "context_envelope_v1"
@@ -354,12 +361,16 @@ class ContextEnvelope:
             )
         if self.finance_date_default_eligible and (
             not self.finance_intent_required
-            or self.finance_required_tool is not None
+            or (
+                self.finance_required_tool is not None
+                and self.finance_required_tool
+                not in FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
+            )
         ):
             raise AppError(
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail=(
-                    "a Finance date default is only valid for a write intent"
+                    "a Finance date default is only valid for a date-defaultable write"
                 ),
             )
         if self.finance_date_default_retry and not self.finance_intent_required:
@@ -649,11 +660,22 @@ class ContextBuilder:
         finance_required_tool = (
             FINANCE_QUERY_TOOL
             if is_finance_query_request(finance_source_text)
-            else None
+            else (
+                FINANCE_INCOME_TOOL
+                if is_income_write_request(finance_source_text)
+                else (
+                    FINANCE_EXPENSE_TOOL
+                    if is_expense_write_request(finance_source_text)
+                    else None
+                )
+            )
         )
         finance_date_default_eligible = (
             finance_intent_required
-            and finance_required_tool is None
+            and (
+                finance_required_tool is None
+                or finance_required_tool in FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
+            )
             and finance_source_allows_receipt_date_default(finance_source_text)
         )
         finance_retry_unbound = (

@@ -74,6 +74,17 @@ def test_prompt_states_the_output_discipline_the_adapter_enforces() -> None:
     assert "不能唯一确定日期" in prompt
 
 
+def test_prompt_explains_how_a_clarification_answer_resumes_the_original_request() -> None:
+    prompt = build_system_prompt(today="2026-07-24")
+    assert "clarification_context" in prompt
+    assert "original_user_text" in prompt
+    assert "completed_exchanges" in prompt
+    assert "pending_question" in prompt
+    assert "不能把当前短回答当成新的普通对话" in prompt
+    assert "也不能重复" in prompt
+    assert "已被当前回答解决的问题" in prompt
+
+
 def test_prompt_closes_the_expense_clarification_set() -> None:
     prompt = build_system_prompt(today="2026-07-24")
     assert "本工具在以下情形澄清" in prompt

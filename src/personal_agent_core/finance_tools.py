@@ -10,6 +10,8 @@ the contract suite.
 from __future__ import annotations
 
 
+FINANCE_EXPENSE_TOOL = "finance.log_expense"
+FINANCE_INCOME_TOOL = "finance.log_income"
 FINANCE_QUERY_TOOL = "finance.query_expenses"
 
 FINANCE_READ_TOOLS: frozenset[str] = frozenset({FINANCE_QUERY_TOOL})
@@ -19,14 +21,14 @@ FINANCE_READ_TOOLS: frozenset[str] = frozenset({FINANCE_QUERY_TOOL})
 # The MCP server rejects a missing field, so the default can never leak into a
 # direct connector call as an accidental handler error or a different clock.
 FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS: frozenset[str] = frozenset(
-    {"finance.log_expense", "finance.log_income"}
+    {FINANCE_EXPENSE_TOOL, FINANCE_INCOME_TOOL}
 )
 
 FINANCE_WRITE_TOOLS: frozenset[str] = frozenset(
     {
-        "finance.log_expense",
+        FINANCE_EXPENSE_TOOL,
         "finance.log_expense_batch",
-        "finance.log_income",
+        FINANCE_INCOME_TOOL,
         "finance.update_family_fund",
         # A category correction is a write like any other here. It is listed
         # even though the model never calls it -- the route that reaches it is

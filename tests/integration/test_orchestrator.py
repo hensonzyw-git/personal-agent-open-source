@@ -316,6 +316,71 @@ def test_a_finance_query_cannot_be_routed_to_a_finance_write(
     assert dispatcher.resolve_calls == []
 
 
+def test_an_explicit_income_write_cannot_be_routed_to_an_expense(
+    session, keyring
+) -> None:
+    op = _fresh_operation(session)
+    dispatcher = FakeDispatcher(resolve=None)
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            ToolCall(
+                "finance.log_expense",
+                {"name": "公积金", "input_amount": "4000"},
+            )
+        ),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="记收入 公积金 4000",
+    )
+
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
+    assert dispatcher.resolve_calls == []
+
+
+def test_an_explicit_family_expense_cannot_be_routed_to_income(
+    session, keyring
+) -> None:
+    op = _fresh_operation(session)
+    dispatcher = FakeDispatcher(resolve=None)
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            ToolCall(
+                "finance.log_income",
+                {"income_description": "晚饭", "input_amount": "283.99"},
+            )
+        ),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="昨天晚饭很久以前 283.99 家庭支出",
+    )
+
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
+    assert dispatcher.resolve_calls == []
+
+
+def test_an_incomplete_explicit_income_write_cannot_succeed_as_prose(
+    session, keyring
+) -> None:
+    op = _fresh_operation(session)
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(DirectAnswer("请告诉我收入的金额。")),
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        text="记收入",
+    )
+
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
+
+
 def test_a_finance_write_cannot_be_routed_to_a_finance_read(
     session, keyring
 ) -> None:
@@ -680,6 +745,41 @@ def test_date_question_retries_when_model_mislabels_it_as_other(session, keyring
         True,
     ]
     assert dispatcher.resolve_calls[0]["model_args"]["occurred_on"] == "2026-07-24"
+
+
+def test_income_with_an_omitted_date_receives_the_host_receipt_day(session, keyring) -> None:
+    op = _fresh_operation(session)
+    dispatcher = FakeDispatcher(resolve=ResolveFailedSafe(reason="test_stop"))
+
+    _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            ToolCall(
+                "finance.log_income",
+                {
+                    "income_description": "公积金",
+                    "input_amount": "4000",
+                    "input_currency": "CNY",
+                },
+            )
+        ),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="记收入 公积金 4000",
+    )
+
+    assert dispatcher.resolve_calls == [
+        {
+            "tool": "finance.log_income",
+            "model_args": {
+                "income_description": "公积金",
+                "input_amount": "4000",
+                "input_currency": "CNY",
+                "occurred_on": "2026-07-24",
+            },
+        }
+    ]
 
 
 def test_date_question_does_not_override_an_explicit_user_date(session, keyring) -> None:
