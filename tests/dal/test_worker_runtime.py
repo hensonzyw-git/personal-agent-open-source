@@ -18,7 +18,9 @@ not faked):
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import os
 import plistlib
 import subprocess
 import threading
@@ -1360,6 +1362,14 @@ def _make_claude_fake(
     return fake
 
 
+def _coder_config(tmp_path: Path, config: WorkerConfig) -> WorkerConfig:
+    """A worker config carrying a 0600 claude -> CCR appkey file."""
+    token = tmp_path / "coder-token"
+    token.write_text("test-ccr-token\n")
+    os.chmod(token, 0o600)
+    return dataclasses.replace(config, coder_token_path=token)
+
+
 def test_poll_once_provider_coder_succeeds(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
@@ -1371,7 +1381,7 @@ def test_poll_once_provider_coder_succeeds(
         "personal_agent_dal.worker.poll_once.run_coder", _make_claude_fake(base_sha)
     )
 
-    outcome = _poll(engine, config)
+    outcome = _poll(engine, _coder_config(tmp_path, config))
 
     assert outcome.state == "succeeded"
     record = queue.get_job(engine, job_id=job_id)
@@ -1397,7 +1407,7 @@ def test_poll_once_provider_coder_refuses_a_provider_error(
         _make_claude_fake(base_sha, result_error=True),
     )
 
-    outcome = _poll(engine, config)
+    outcome = _poll(engine, _coder_config(tmp_path, config))
 
     assert outcome.state == "failed"
     assert outcome.error.startswith("coder_provider_error")
@@ -1417,10 +1427,10 @@ def test_poll_once_provider_coder_refuses_an_empty_diff(
         _make_claude_fake(base_sha, write=False),
     )
 
-    outcome = _poll(engine, config)
+    outcome = _poll(engine, _coder_config(tmp_path, config))
 
     assert outcome.state == "failed"
-    assert outcome.error in ("coder_failed", "coder_blocked")
+    assert outcome.error.startswith(("coder_failed", "coder_blocked"))
 
 
 def test_poll_once_provider_coder_refuses_unparseable_output(
@@ -1435,7 +1445,7 @@ def test_poll_once_provider_coder_refuses_unparseable_output(
         _make_claude_fake(base_sha, output="not-json\n"),
     )
 
-    outcome = _poll(engine, config)
+    outcome = _poll(engine, _coder_config(tmp_path, config))
 
     assert outcome.state == "failed"
     assert outcome.error == "coder_output_unparseable"

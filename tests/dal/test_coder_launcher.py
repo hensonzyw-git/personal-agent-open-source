@@ -64,10 +64,14 @@ def test_argv_shape_pins_every_flag() -> None:
 def test_environment_is_pinned_and_credential_free() -> None:
     """The child environment is a fresh dict, not an inherited one."""
     env = coder_environment()
-    assert env == {"ANTHROPIC_BASE_URL": CCR_BASE_URL}
+    assert env == {
+        "ANTHROPIC_BASE_URL": CCR_BASE_URL,
+        "HOME": "/var/empty",
+        "PATH": coder_launcher.CHILD_PATH,
+    }
     assert CCR_ENDPOINT == "127.0.0.1:3456"
     assert CCR_BASE_URL == "http://127.0.0.1:3456"
-    for inherited in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "PATH", "HOME"):
+    for inherited in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"):
         assert inherited not in env
 
 
@@ -106,13 +110,17 @@ def test_write_settings_file_is_isolated_and_0600(tmp_path: Path) -> None:
     assert body["env"]["ANTHROPIC_BASE_URL"] == CCR_BASE_URL
 
 
-def test_sandbox_profile_allows_only_the_loopback_proxy() -> None:
+def test_sandbox_profile_allows_only_the_loopback_proxy(tmp_path: Path) -> None:
     """The coder child may dial one destination and nothing else."""
-    profile = coder_sandbox_profile(Path("/tmp/wt"), Path("/tmp/tmp"))
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    profile = coder_sandbox_profile(Path("/tmp/wt"), Path("/tmp/tmp"), run_root)
 
-    assert '(allow network-outbound (literal "127.0.0.1:3456"))' in profile
+    assert '(allow network-outbound (remote tcp "localhost:3456"))' in profile
     assert "(deny network*)" not in profile
     assert "(deny default)" in profile
+    # run_root is readable so the child can read coder-settings.json.
+    assert str(run_root.resolve()) in profile
 
 
 def test_timeout_kills_the_whole_process_group(

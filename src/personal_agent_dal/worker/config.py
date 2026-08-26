@@ -37,6 +37,7 @@ _KNOWN_KEYS: Final[frozenset[str]] = frozenset(
         "lease_ttl_seconds",
         "max_attempts",
         "repos",
+        "coder_token_path",
     }
 )
 _REPO_KEYS: Final[frozenset[str]] = frozenset({"local_path"})
@@ -143,6 +144,9 @@ class WorkerConfig:
     lease_ttl_seconds: int
     max_attempts: int
     repos: dict[str, RepoAllowlistEntry]
+    #: Optional owner-only file holding the claude -> CCR appkey (DAL-R07B).
+    #: Present only when the worker may run the real-coder route.
+    coder_token_path: Path | None = None
 
 
 def load_worker_config(path: Path) -> WorkerConfig:
@@ -193,6 +197,10 @@ def load_worker_config(path: Path) -> WorkerConfig:
             repository_id=repository_id, local_path=str(Path(local_path).resolve())
         )
 
+    coder_token_path = body.get("coder_token_path")
+    if coder_token_path is not None:
+        coder_token_path = _path_field(body, "coder_token_path")
+
     return WorkerConfig(
         worker_id=worker_id,
         transport=transport,
@@ -202,6 +210,7 @@ def load_worker_config(path: Path) -> WorkerConfig:
         lease_ttl_seconds=lease_ttl_seconds,
         max_attempts=max_attempts,
         repos=repos,
+        coder_token_path=coder_token_path,
     )
 
 

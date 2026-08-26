@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -341,6 +342,24 @@ def _claude_error_detail(claude_events: list[dict], returncode: int | None) -> s
     return None
 
 
+def _read_coder_token(path: Path) -> str:
+    """Read the claude -> CCR appkey from an owner-only (0600) file.
+
+    The key is child-scoped: it travels only as `ANTHROPIC_AUTH_TOKEN` in the
+    coder child environment, never to a log or the parent process environment.
+    """
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError as error:
+        raise ValueError("coder token unreadable") from error
+    if mode != 0o600:
+        raise ValueError("coder token must be owner-only (0600)")
+    token = path.read_text("utf-8").strip()
+    if not token:
+        raise ValueError("coder token must be non-empty")
+    return token
+
+
 def _refusal_digest(lease: JobLease, reason: str) -> str:
     """The content-addressed digest of a refusal, so it can be reported at all.
 
@@ -500,12 +519,20 @@ def _execute_job(
             run_root=run_root,
         )
 
+        if config.coder_token_path is None:
+            return _refuse("coder_token_missing")
+        try:
+            upstream_token = _read_coder_token(config.coder_token_path)
+        except ValueError:
+            return _refuse("coder_token_invalid")
+
         def _cancel_event() -> bool:
             return not _lease_guard()
 
         try:
             result = run_coder(
                 spec,
+                upstream_token=upstream_token,
                 cancel_event=_cancel_event,
                 heartbeat_interval_s=max(
                     0.25, min(5.0, config.lease_ttl_seconds / 3)
@@ -595,7 +622,9 @@ def _execute_job(
         if evaluation.result_status != "succeeded":
             # contract/policy/budget failure is a terminal verdict about the
             # coder's output, not a transient fault.
-            return _refuse(f"coder_{evaluation.result_status}")
+            return _refuse(
+                f"coder_{evaluation.result_status}:{evaluation.failure_class}"
+            )
 
         if manifest.registry is None:
             return _refuse("coder_registry_missing")

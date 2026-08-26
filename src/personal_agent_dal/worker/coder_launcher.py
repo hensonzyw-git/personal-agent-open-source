@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Final
 
 from personal_agent_dal.worker.toolchain import (
+    CHILD_PATH,
     METADATA_DENY_PATHS,
     SANDBOX_EXEC,
     SYSTEM_READ_FILES,
@@ -42,8 +43,10 @@ CLAUDE_BIN: Final[str] = "claude"
 CCR_ENDPOINT: Final[str] = "127.0.0.1:3456"
 #: The URL the coder child dials (endpoint + `http://` scheme). `claude` parses
 #: `ANTHROPIC_BASE_URL` as a URL, so a bare `host:port` fails ("cannot be parsed
-#: as a URL"); the sandbox network rule below uses the bare `CCR_ENDPOINT`.
+#: as a URL").
 CCR_BASE_URL: Final[str] = f"http://{CCR_ENDPOINT}"
+#: The loopback port for the sandbox network rule (host must be `localhost`).
+CCR_PORT: Final[str] = CCR_ENDPOINT.rsplit(":", 1)[1]
 OUTPUT_FORMAT: Final[str] = "stream-json"
 SETTINGS_FILENAME: Final[str] = "coder-settings.json"
 #: The upstream credential is injected as a child-scoped environment variable,
@@ -153,7 +156,16 @@ def coder_environment(upstream_token: str | None = None) -> dict[str, str]:
     and, when provided, the upstream token (child-scoped, close-on-exec by way of
     a fresh `env=` mapping — it is never present in the parent's environment).
     """
-    environment = {"ANTHROPIC_BASE_URL": CCR_BASE_URL}
+    environment = {
+        "ANTHROPIC_BASE_URL": CCR_BASE_URL,
+        # node's os.homedir() fails with ENOENT when HOME is unset, and claude
+        # needs a home to resolve its config paths. /var/empty is the same
+        # credential-free home the toolchain child uses. PATH is the same
+        # credential-free path: claude spawns child processes (node, apiKeyHelper)
+        # that must resolve through it.
+        "HOME": "/var/empty",
+        "PATH": CHILD_PATH,
+    }
     if upstream_token is not None:
         environment[ANTHROPIC_TOKEN_VAR] = upstream_token
     return environment
@@ -163,7 +175,7 @@ def _sandbox_literal(path: Path) -> str:
     return json.dumps(str(path.resolve()))
 
 
-def coder_sandbox_profile(cwd: Path, temp_path: Path) -> str:
+def coder_sandbox_profile(cwd: Path, temp_path: Path, run_root: Path) -> str:
     """A coder-specific sandbox profile: default-deny, loopback-only network.
 
     Mirrors `toolchain._sandbox_profile` in every respect except the network
@@ -172,8 +184,11 @@ def coder_sandbox_profile(cwd: Path, temp_path: Path) -> str:
     already denies all other network traffic, so the scoped allow is the only
     outbound channel. Port-level loopback is a known `sandbox-exec` limitation;
     the profile freezes the intent and is re-verified at P2/P3 (§7.2).
+
+    `run_root` is added to the readable set so the child can read the isolated
+    `coder-settings.json` passed via `--settings`; it holds nothing else.
     """
-    readable_paths = (*SYSTEM_READ_PATHS, cwd, temp_path)
+    readable_paths = (*SYSTEM_READ_PATHS, cwd, temp_path, run_root)
     readable_rules = " ".join(
         f"(literal {_sandbox_literal(path)}) (subpath {_sandbox_literal(path)})"
         for path in readable_paths
@@ -207,7 +222,9 @@ def coder_sandbox_profile(cwd: Path, temp_path: Path) -> str:
         "(allow file-read-metadata)\n"
         f"(allow file-read* {readable_rules} {readable_file_rules})\n"
         f"(allow file-write* {writable_rules} {writable_file_rules})\n"
-        f'(allow network-outbound (literal "{CCR_ENDPOINT}"))\n'
+        # sandbox-exec's network filter host is restricted to `localhost` or `*`
+        # (not an IP), so the loopback CCR destination is scoped by port only.
+        f'(allow network-outbound (remote tcp "localhost:{CCR_PORT}"))\n'
         '(deny mach-lookup (global-name "com.apple.securityd"))\n'
         '(deny mach-lookup (global-name "com.apple.securityd.xpc"))\n'
     )
@@ -216,14 +233,16 @@ def coder_sandbox_profile(cwd: Path, temp_path: Path) -> str:
     return profile
 
 
-def sandboxed_coder_argv(argv: list[str], cwd: Path, temp_path: Path) -> list[str]:
+def sandboxed_coder_argv(
+    argv: list[str], cwd: Path, temp_path: Path, run_root: Path
+) -> list[str]:
     """Wrap the coder argv with the coder sandbox profile (darwin-only)."""
     if sys.platform != "darwin" or not Path(SANDBOX_EXEC).is_file():
         raise RuntimeError("darwin sandbox-exec is required for the coder child")
     return [
         SANDBOX_EXEC,
         "-p",
-        coder_sandbox_profile(cwd, temp_path),
+        coder_sandbox_profile(cwd, temp_path, run_root),
         *argv,
     ]
 
@@ -271,7 +290,7 @@ def run_coder(
         temp_path = Path(raw_temp)
         os.chmod(temp_path, 0o700)
         process = subprocess.Popen(
-            sandboxed_coder_argv(argv, spec.cwd, temp_path),
+            sandboxed_coder_argv(argv, spec.cwd, temp_path, spec.run_root),
             cwd=str(spec.cwd),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,

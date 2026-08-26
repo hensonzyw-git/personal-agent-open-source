@@ -170,6 +170,7 @@ def _write_worker_config(
     repo: Path,
     home: Path,
     enrollment_secret_path: Path,
+    coder_token_path: Path,
 ) -> None:
     home.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -192,6 +193,7 @@ def _write_worker_config(
                 "lease_ttl_seconds": LEASE_TTL_SECONDS,
                 "max_attempts": MAX_ATTEMPTS,
                 "repos": {"synthetic": {"local_path": str(repo)}},
+                "coder_token_path": str(coder_token_path),
             }
         )
     )
@@ -269,11 +271,22 @@ def run() -> int:
         if report.failed:
             return 1
 
+        token_value = os.environ.get("DAL_CODER_TOKEN")
+        if not token_value:
+            print(
+                "DAL_CODER_TOKEN is not set; export the claude->CCR appkey first",
+                file=sys.stderr,
+            )
+            return 1
         worker_home = root / "worker"
         config_path = root / "worker-config.json"
+        coder_token = root / "coder-token"
+        coder_token.write_text(token_value + "\n")
+        os.chmod(coder_token, 0o600)
         _write_worker_config(
             config_path, endpoint=endpoint, ca_bundle=cert, worker_id="worker-1",
             repo=repo, home=worker_home, enrollment_secret_path=enrollment_secret,
+            coder_token_path=coder_token,
         )
 
         job_id = queue.enqueue_job(
