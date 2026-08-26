@@ -112,6 +112,49 @@ _FINANCE_QUERY_RE = re.compile(
     rf"|(?:支出|消费|费用|收入|家庭基金|花销).{{0,12}}(?:{_MONEY_QUESTION}|合计|总共|明细|记录)"
 )
 
+# An explicit request to record income is materially different from a generic
+# bookkeeping write: the model must never be offered the expense tool for it.
+# Keep this deliberately narrow.  An opaque "公积金 4000" could still mean a
+# contribution expense, while "记收入 公积金 4000" and "公积金入账" are clear.
+_INCOME_WRITE_RE = re.compile(
+    r"(?:记(?:一笔)?|登记|录入|添加)\s*(?:收入|工资|薪资|薪水)"
+    r"|(?:发工资|发薪|领工资|领薪)"
+    r"|(?:工资|薪资|薪水|公积金|利息|稿费|报销款).{0,24}?(?:入账|到账|进账|收到|已到|到了)"
+)
+
+
+def is_income_write_request(text: str) -> bool:
+    """Whether the source unambiguously asks to record income.
+
+    This is a routing constraint rather than income extraction.  It does not
+    infer a subject, amount, category, or date; those remain the income tool's
+    and policy's responsibility.  A question stays out of this classifier so
+    query semantics retain their existing, separately governed path.
+    """
+    if (
+        not text
+        or not text.strip()
+        or is_finance_query_request(text)
+        or any(token in text for token in ("怎么", "如何", "怎样", "能否", "可以", "？", "?"))
+    ):
+        return False
+    return _INCOME_WRITE_RE.search(text) is not None
+
+
+def is_expense_write_request(text: str) -> bool:
+    """Whether the source unambiguously selects the expense write tool.
+
+    This is intentionally narrower than the general bookkeeping guard.  Only
+    a concrete amount together with the frozen `个人支出` / `家庭支出` wording
+    binds the model to the expense tool.  Other write shapes can still need a
+    resolver or clarification and therefore retain the wider write set.
+    """
+    return (
+        bool(text and _AMOUNT_RE.search(text))
+        and not is_finance_query_request(text)
+        and ("个人支出" in text or "家庭支出" in text)
+    )
+
 
 def is_bookkeeping_write_request(text: str) -> bool:
     """Whether `text` must be handled only by a bookkeeping tool.
@@ -157,6 +200,8 @@ def is_finance_intent_candidate(text: str) -> bool:
     """Whether this turn must not complete as an ordinary direct answer."""
     return (
         is_bookkeeping_write_request(text)
+        or is_expense_write_request(text)
+        or is_income_write_request(text)
         or is_finance_query_request(text)
         or is_finance_retry_request(text)
     )

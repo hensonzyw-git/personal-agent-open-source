@@ -15,6 +15,8 @@ from personal_agent.runtime.bookkeeping_intent import (
     is_finance_query_request,
     is_finance_retry_request,
     is_bookkeeping_write_request,
+    is_expense_write_request,
+    is_income_write_request,
 )
 
 
@@ -52,6 +54,41 @@ from personal_agent.runtime.bookkeeping_intent import (
 )
 def test_bookkeeping_write_requests_are_refused(text: str) -> None:
     assert is_bookkeeping_write_request(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "记收入 公积金 4000",
+        "记收入",
+        "发工资 12000",
+        "公积金入账 4000",
+    ],
+)
+def test_explicit_income_write_requests_are_identified(text: str) -> None:
+    assert is_income_write_request(text) is True
+    assert is_finance_intent_candidate(text) is True
+
+
+def test_an_explicit_family_expense_selects_the_expense_tool() -> None:
+    text = "昨天晚饭很久以前 283.99 家庭支出"
+    assert is_expense_write_request(text) is True
+    assert is_finance_intent_candidate(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "公积金 4000",
+        "查一下今年收入多少",
+        "工资是多少",
+        "怎么记收入",
+    ],
+)
+def test_ambiguous_or_question_income_phrases_do_not_select_the_income_tool(
+    text: str,
+) -> None:
+    assert is_income_write_request(text) is False
 
 
 @pytest.mark.parametrize(

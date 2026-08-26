@@ -646,7 +646,11 @@ def _requires_date_default_retry(
     """
     return (
         envelope.finance_intent_required
-        and envelope.finance_required_tool is None
+        and (
+            envelope.finance_required_tool is None
+            or envelope.finance_required_tool
+            in FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
+        )
         and envelope.finance_date_default_eligible
         and not envelope.finance_date_default_retry
         and isinstance(interpretation, Clarification)

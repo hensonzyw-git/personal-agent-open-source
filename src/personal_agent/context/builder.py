@@ -71,9 +71,11 @@ from personal_agent.context.untrusted import frame_untrusted_data as _frame
 from personal_agent.keys import HmacKey, HmacKeyRing
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.runtime.bookkeeping_intent import (
+    is_expense_write_request,
     is_finance_intent_candidate,
     is_finance_query_request,
     is_finance_retry_request,
+    is_income_write_request,
 )
 from personal_agent.storage.models import (
     TERMINAL_OPERATION_STATES,
@@ -88,7 +90,12 @@ from personal_agent_core.errors import (
     AppError,
     ErrorCode,
 )
-from personal_agent_core.finance_tools import FINANCE_QUERY_TOOL
+from personal_agent_core.finance_tools import (
+    FINANCE_EXPENSE_TOOL,
+    FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS,
+    FINANCE_INCOME_TOOL,
+    FINANCE_QUERY_TOOL,
+)
 from personal_agent_core.manifest import canonical_json
 
 SCHEMA_VERSION: Final[str] = "context_envelope_v1"
@@ -150,6 +157,22 @@ def finance_source_allows_receipt_date_default(source_text: str) -> bool:
     model evaluator so it scores the same Host default boundary as production.
     """
     return not _EXPLICIT_DATE_IN_FINANCE_SOURCE_RE.search(source_text)
+
+
+# A relative date together with “很久以前” has two plausible readings: the
+# latter may be a merchant name, or it may contradict the payment date.  This
+# is a ledger meaning boundary, so the Host requires a clarification instead
+# of trusting the provider to retain every token while extracting the name.
+_RESOLVED_RELATIVE_DAY_RE = re.compile(r"(?:今天|昨天|前天)")
+_AMBIGUOUS_HISTORIC_TIME_RE = re.compile(r"很久以前")
+
+
+def finance_source_requires_time_clarification(source_text: str) -> bool:
+    """Whether a source contains the known date-versus-merchant ambiguity."""
+    return bool(
+        _RESOLVED_RELATIVE_DAY_RE.search(source_text)
+        and _AMBIGUOUS_HISTORIC_TIME_RE.search(source_text)
+    )
 
 #: Recorded when an *ancestor* Session's Checkpoint had to go to fit the budget.
 #: This Session's own Checkpoint is never in that set: it is what replaces this
@@ -260,6 +283,9 @@ class ContextEnvelope:
     #: The exact Finance tool required where the intent is unambiguous. Query
     #: turns use this to prevent a model from turning a read into a write.
     finance_required_tool: str | None = None
+    #: A source has an unresolved date-versus-merchant ambiguity.  The gateway
+    #: permits only a clarification or safe failure until the user answers.
+    finance_clarification_required: bool = False
     #: The trusted Builder derived that the source Finance write contains no
     #: date expression, so the Host may use its receipt-day default if the
     #: provider redundantly asks for one.  This stays separate from the model's
@@ -347,6 +373,11 @@ class ContextEnvelope:
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail="a required Finance tool needs a Finance turn",
             )
+        if self.finance_clarification_required and not self.finance_intent_required:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="a Finance clarification gate needs a Finance turn",
+            )
         if self.finance_retry_unbound and not self.finance_intent_required:
             raise AppError(
                 ErrorCode.INTERNAL_ERROR,
@@ -354,12 +385,16 @@ class ContextEnvelope:
             )
         if self.finance_date_default_eligible and (
             not self.finance_intent_required
-            or self.finance_required_tool is not None
+            or (
+                self.finance_required_tool is not None
+                and self.finance_required_tool
+                not in FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
+            )
         ):
             raise AppError(
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail=(
-                    "a Finance date default is only valid for a write intent"
+                    "a Finance date default is only valid for a date-defaultable write"
                 ),
             )
         if self.finance_date_default_retry and not self.finance_intent_required:
@@ -451,6 +486,7 @@ class ContextEnvelope:
             "checkpoint_rebuild_required": self.checkpoint_rebuild_required,
             "finance_intent_required": self.finance_intent_required,
             "finance_required_tool": self.finance_required_tool,
+            "finance_clarification_required": self.finance_clarification_required,
             "finance_date_default_eligible": self.finance_date_default_eligible,
             "finance_retry_unbound": self.finance_retry_unbound,
             "finance_date_default_retry": self.finance_date_default_retry,
@@ -649,12 +685,28 @@ class ContextBuilder:
         finance_required_tool = (
             FINANCE_QUERY_TOOL
             if is_finance_query_request(finance_source_text)
-            else None
+            else (
+                FINANCE_INCOME_TOOL
+                if is_income_write_request(finance_source_text)
+                else (
+                    FINANCE_EXPENSE_TOOL
+                    if is_expense_write_request(finance_source_text)
+                    else None
+                )
+            )
         )
         finance_date_default_eligible = (
             finance_intent_required
-            and finance_required_tool is None
+            and (
+                finance_required_tool is None
+                or finance_required_tool in FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
+            )
             and finance_source_allows_receipt_date_default(finance_source_text)
+        )
+        finance_clarification_required = (
+            clarification_context is None
+            and finance_intent_required
+            and finance_source_requires_time_clarification(finance_source_text)
         )
         finance_retry_unbound = (
             clarification_context is None
@@ -688,6 +740,7 @@ class ContextBuilder:
                     ),
                     "finance_intent_required": finance_intent_required,
                     "finance_required_tool": finance_required_tool,
+                    "finance_clarification_required": finance_clarification_required,
                     "finance_date_default_eligible": finance_date_default_eligible,
                     "finance_retry_unbound": finance_retry_unbound,
                     "checkpoint_id": checkpoint_id,
@@ -704,6 +757,7 @@ class ContextBuilder:
             ),
             finance_intent_required=finance_intent_required,
             finance_required_tool=finance_required_tool,
+            finance_clarification_required=finance_clarification_required,
             finance_date_default_eligible=finance_date_default_eligible,
             finance_retry_unbound=finance_retry_unbound,
             checkpoint_rebuild_required=checkpoint_rebuild_required,

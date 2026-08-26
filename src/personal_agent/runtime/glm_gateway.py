@@ -216,6 +216,7 @@ def _recorded_context(envelope: ContextEnvelope) -> dict[str, Any]:
         "source_fingerprint": envelope.source_fingerprint,
         "finance_intent_required": envelope.finance_intent_required,
         "finance_required_tool": envelope.finance_required_tool,
+        "finance_clarification_required": envelope.finance_clarification_required,
         "finance_date_default_eligible": envelope.finance_date_default_eligible,
         "finance_date_default_retry": envelope.finance_date_default_retry,
     }
@@ -870,6 +871,15 @@ def _required_function_names(
     if not envelope.finance_intent_required:
         return None
     allowed = {_ASK_CLARIFICATION, _FAIL_SAFELY}
+    if envelope.finance_clarification_required:
+        selected = [
+            item["function"]["name"]
+            for item in declarations
+            if item["function"]["name"] in allowed
+        ]
+        if not selected:  # pragma: no cover - internal declarations are mandatory
+            raise ModelGatewayError("Finance clarification had no allowed declarations")
+        return selected
     if envelope.finance_date_default_retry:
         allowed.remove(_ASK_CLARIFICATION)
     if envelope.finance_required_tool is not None:

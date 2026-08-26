@@ -43,6 +43,16 @@ _EXPENSE = VisibleTool(
     risk_level="R2",
     required_scopes=("finance.write",),
 )
+_INCOME = VisibleTool(
+    alias="finance.log_income",
+    description="记一笔收入",
+    input_schema={
+        "type": "object",
+        "properties": {"income_description": {"type": "string"}},
+    },
+    risk_level="R2",
+    required_scopes=("finance.write",),
+)
 _QUERY = VisibleTool(
     alias="finance.query_expenses",
     description="查询支出",
@@ -349,6 +359,81 @@ def test_a_finance_query_requires_only_the_query_or_safe_internal_calls(tmp_path
     assert built.finance_required_tool == "finance.query_expenses"
     assert generate.kwargs["allowed_function_names"] == [
         "finance.query_expenses",
+        "agent.ask_clarification",
+        "agent.fail_safely",
+    ]
+
+
+def test_an_explicit_income_write_requires_only_income_or_safe_internal_calls(
+    tmp_path,
+) -> None:
+    built = envelope_for(
+        tmp_path,
+        user_text="记收入 公积金 4000",
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.log_income", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    assert built.finance_required_tool == "finance.log_income"
+    assert generate.kwargs["allowed_function_names"] == [
+        "finance.log_income",
+        "agent.ask_clarification",
+        "agent.fail_safely",
+    ]
+
+
+def test_a_clarified_explicit_expense_resumes_with_only_its_tool_or_safe_calls(
+    tmp_path,
+) -> None:
+    original = "昨天晚饭很久以前 283.99 家庭支出"
+    question = "这笔是昨天发生，还是很久以前发生？"
+    built = envelope_for(
+        tmp_path,
+        user_text="昨天",
+        clarification=ClarificationContext(original, question),
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.log_expense", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    assert built.finance_required_tool == "finance.log_expense"
+    assert generate.kwargs["allowed_function_names"] == [
+        "finance.log_expense",
+        "agent.ask_clarification",
+        "agent.fail_safely",
+    ]
+    context_message = generate.kwargs["messages"][0]["content"]
+    assert original in context_message
+    assert question in context_message
+    assert generate.kwargs["messages"][-1] == {"role": "user", "content": "昨天"}
+
+
+def test_a_date_merchant_ambiguity_allows_only_clarification_or_safe_failure(
+    tmp_path,
+) -> None:
+    built = envelope_for(
+        tmp_path,
+        user_text="昨天晚饭很久以前 283.99 家庭支出",
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(
+        _response(
+            _call(
+                "agent.ask_clarification",
+                {"question": "很久以前是商户名还是付款时间？", "reason": "date"},
+            )
+        )
+    )
+
+    _propose(gateway, built)
+
+    assert built.finance_clarification_required is True
+    assert generate.kwargs["allowed_function_names"] == [
         "agent.ask_clarification",
         "agent.fail_safely",
     ]
