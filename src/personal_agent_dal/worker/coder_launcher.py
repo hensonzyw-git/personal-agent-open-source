@@ -40,6 +40,10 @@ CLAUDE_BIN: Final[str] = "claude"
 #: The local Claude-Code-Router (CCR) proxy is the only network destination a
 #: coder child may dial. It never reaches an upstream host directly.
 CCR_ENDPOINT: Final[str] = "127.0.0.1:3456"
+#: The URL the coder child dials (endpoint + `http://` scheme). `claude` parses
+#: `ANTHROPIC_BASE_URL` as a URL, so a bare `host:port` fails ("cannot be parsed
+#: as a URL"); the sandbox network rule below uses the bare `CCR_ENDPOINT`.
+CCR_BASE_URL: Final[str] = f"http://{CCR_ENDPOINT}"
 OUTPUT_FORMAT: Final[str] = "stream-json"
 SETTINGS_FILENAME: Final[str] = "coder-settings.json"
 #: The upstream credential is injected as a child-scoped environment variable,
@@ -98,7 +102,7 @@ def settings_json() -> dict[str, Any]:
     so the alias path returns 400 from the CCR proxy (found live in DAL-R07B).
     The token travels separately in the child environment, never to disk.
     """
-    return {"env": {"ANTHROPIC_BASE_URL": CCR_ENDPOINT}}
+    return {"env": {"ANTHROPIC_BASE_URL": CCR_BASE_URL}}
 
 
 def write_settings_file(run_root: Path) -> Path:
@@ -149,7 +153,7 @@ def coder_environment(upstream_token: str | None = None) -> dict[str, str]:
     and, when provided, the upstream token (child-scoped, close-on-exec by way of
     a fresh `env=` mapping — it is never present in the parent's environment).
     """
-    environment = {"ANTHROPIC_BASE_URL": CCR_ENDPOINT}
+    environment = {"ANTHROPIC_BASE_URL": CCR_BASE_URL}
     if upstream_token is not None:
         environment[ANTHROPIC_TOKEN_VAR] = upstream_token
     return environment

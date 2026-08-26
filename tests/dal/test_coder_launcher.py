@@ -19,6 +19,7 @@ from unittest import mock
 
 from personal_agent_dal.worker import coder_launcher
 from personal_agent_dal.worker.coder_launcher import (
+    CCR_BASE_URL,
     CCR_ENDPOINT,
     CoderRunSpec,
     coder_argv,
@@ -63,8 +64,9 @@ def test_argv_shape_pins_every_flag() -> None:
 def test_environment_is_pinned_and_credential_free() -> None:
     """The child environment is a fresh dict, not an inherited one."""
     env = coder_environment()
-    assert env == {"ANTHROPIC_BASE_URL": CCR_ENDPOINT}
+    assert env == {"ANTHROPIC_BASE_URL": CCR_BASE_URL}
     assert CCR_ENDPOINT == "127.0.0.1:3456"
+    assert CCR_BASE_URL == "http://127.0.0.1:3456"
     for inherited in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "PATH", "HOME"):
         assert inherited not in env
 
@@ -72,14 +74,14 @@ def test_environment_is_pinned_and_credential_free() -> None:
 def test_environment_carries_the_token_only_when_given() -> None:
     """The upstream token is child-scoped and never present otherwise."""
     env = coder_environment(upstream_token="tok")
-    assert env["ANTHROPIC_BASE_URL"] == CCR_ENDPOINT
+    assert env["ANTHROPIC_BASE_URL"] == CCR_BASE_URL
     assert env["ANTHROPIC_AUTH_TOKEN"] == "tok"
 
 
 def test_settings_json_has_pinned_endpoint_and_no_inheritance() -> None:
     """The settings body carries only the pinned endpoint, nothing more."""
     body = settings_json()
-    assert body == {"env": {"ANTHROPIC_BASE_URL": CCR_ENDPOINT}}
+    assert body == {"env": {"ANTHROPIC_BASE_URL": CCR_BASE_URL}}
     for forbidden in (
         "mcpServers",
         "enabledPlugins",
@@ -101,7 +103,7 @@ def test_write_settings_file_is_isolated_and_0600(tmp_path: Path) -> None:
     assert (path.stat().st_mode & 0o777) == 0o600
     body = json.loads(path.read_text(encoding="utf-8"))
     assert "modelOverrides" not in body
-    assert body["env"]["ANTHROPIC_BASE_URL"] == CCR_ENDPOINT
+    assert body["env"]["ANTHROPIC_BASE_URL"] == CCR_BASE_URL
 
 
 def test_sandbox_profile_allows_only_the_loopback_proxy() -> None:
