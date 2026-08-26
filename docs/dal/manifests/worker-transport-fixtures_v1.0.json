@@ -42,6 +42,7 @@
   "response": {
    "schema_version": "dal.worker-transport/1.0",
    "job_id": "job-0001",
+   "feature_id": "0001",
    "repository_id": "repo-private-0001",
    "base_sha": "0123456789abcdef0123456789abcdef01234567",
    "branch_name": "codex/feature-0001",

@@ -22,15 +22,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Final
 
-from sqlalchemy import Engine
-
 from personal_agent_core.manifest import sha256_of
 from personal_agent_core.timeutil import utc_now
 
 from personal_agent_dal.worker import checkpoint as checkpoint_mod
-from personal_agent_dal.worker import queue
 from personal_agent_dal.worker.checkpoint import CheckpointBundle
 from personal_agent_dal.worker.config import WorkerConfig
+from personal_agent_dal.worker.transport import (
+    JobLease,
+    TransportDisabledError,
+    TransportError,
+    WorkerTransport,
+)
 from personal_agent_dal.worker.toolchain import (
     STAGES,
     LeaseLostError,
@@ -62,7 +65,7 @@ class PollOutcome:
 @dataclass(frozen=True)
 class _ExecutionResult:
     state: str  # "succeeded" or "failed"
-    result_sha256: str | None
+    result_sha256: str
     last_error: str | None
 
 
@@ -76,9 +79,15 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def run_poll_once(
-    engine: Engine, config: WorkerConfig, *, now: datetime | None = None
+    transport: WorkerTransport, config: WorkerConfig, *, now: datetime | None = None
 ) -> PollOutcome:
-    """Run one full poll cycle and return a bounded description of what happened."""
+    """Run one full poll cycle and return a bounded description of what happened.
+
+    The cycle talks only to `transport`, so the same composition runs against the
+    local SQLite queue and against the remote Dev Workflow Service. Whichever it
+    is, the authority on the other side decides: this function never treats its
+    own success as the job's outcome.
+    """
     now = now or utc_now()
     if config.kill_switch_path.exists():
         return PollOutcome(
@@ -88,102 +97,142 @@ def run_poll_once(
             error="kill_switch_active",
             reclaimed=(),
         )
-    reclaimed = tuple(
-        queue.reclaim_expired(engine, max_attempts=config.max_attempts, now=now)
-    )
-
-    job_id = queue.claim_job(
-        engine,
-        worker_id=config.worker_id,
-        lease_ttl_seconds=config.lease_ttl_seconds,
-        now=now,
-    )
-    if job_id is None:
+    try:
+        reclaimed = transport.reclaim_expired()
+        lease = transport.claim()
+    except TransportDisabledError as error:
+        return PollOutcome(
+            claimed=False, job_id=None, state=None, error=error.reason, reclaimed=()
+        )
+    except TransportError as error:
+        return PollOutcome(
+            claimed=error.job_id is not None,
+            job_id=error.job_id,
+            state=None,
+            error=error.reason,
+            reclaimed=(),
+        )
+    if lease is None:
         return PollOutcome(
             claimed=False, job_id=None, state=None, error=None, reclaimed=reclaimed
         )
 
-    record = queue.get_job(engine, job_id=job_id)
-    if record is None:
-        return PollOutcome(
-            claimed=True, job_id=job_id, state=None,
-            error="job row missing", reclaimed=reclaimed,
-        )
-
     try:
-        result = _execute_job(engine, config, record, now=now)
+        result = _execute_job(transport, config, lease, now=now)
     except Exception as error:  # noqa: BLE001 - fail closed upward, bounded message
+        reason = f"unexpected:{type(error).__name__}"
         result = _ExecutionResult(
             state="failed",
-            result_sha256=None,
-            last_error=f"unexpected:{type(error).__name__}",
+            result_sha256=_refusal_digest(lease, reason),
+            last_error=reason,
         )
 
     try:
-        finished = queue.finish_job(
-            engine,
-            job_id=job_id,
-            worker_id=config.worker_id,
-            lease_epoch=record.lease_epoch,
+        submitted = transport.submit_result(
+            lease,
             state=result.state,
             result_sha256=result.result_sha256,
             last_error=result.last_error,
-            now=utc_now(),
         )
-    except queue.ResultConflictError:
+    except TransportError as error:
         return PollOutcome(
             claimed=True,
-            job_id=job_id,
+            job_id=lease.job_id,
+            state=None,
+            error=error.reason,
+            reclaimed=reclaimed,
+        )
+    if submitted.conflict:
+        return PollOutcome(
+            claimed=True,
+            job_id=lease.job_id,
             state=None,
             error="result_conflict",
             reclaimed=reclaimed,
         )
-    if not finished:
+    if not submitted.accepted:
         return PollOutcome(
             claimed=True,
-            job_id=job_id,
+            job_id=lease.job_id,
             state=None,
-            error="lease_lost",
+            error="cancelled" if submitted.cancelled else "lease_lost",
             reclaimed=reclaimed,
         )
     return PollOutcome(
         claimed=True,
-        job_id=job_id,
+        job_id=lease.job_id,
         state=result.state,
         error=result.last_error,
         reclaimed=reclaimed,
     )
 
 
+def _refusal_digest(lease: JobLease, reason: str) -> str:
+    """The content-addressed digest of a refusal, so it can be reported at all.
+
+    Every terminal state a worker reports carries a digest: the transport
+    contract requires one, and without it a deterministic refusal
+    (`repo_not_allowlisted` will never succeed on this worker) could only be
+    expressed as a timeout, which loses the diagnosis and burns the whole
+    attempt budget rediscovering it.
+
+    This is not an execution result wearing a different hat. Its field set is
+    disjoint from the executed digest's — it carries `outcome`/`reason` and no
+    `toolchain_manifest_sha256`/`checkpoint_sha256` — so the two can never
+    collide, and a refusal replays to the identical digest.
+    """
+    return sha256_of(
+        {
+            "schema": RESULT_SCHEMA,
+            "job_id": lease.job_id,
+            "feature_id": lease.feature_id,
+            "repository_id": lease.repository_id,
+            "base_sha": lease.base_sha,
+            "branch_name": lease.branch_name,
+            "toolchain_ref": lease.toolchain_ref,
+            "outcome": "refused",
+            "reason": reason,
+        }
+    )
+
+
 def _execute_job(
-    engine: Engine, config: WorkerConfig, record: queue.JobRecord, *, now: datetime
+    transport: WorkerTransport, config: WorkerConfig, lease: JobLease, *, now: datetime
 ) -> _ExecutionResult:
     """Resolve, isolate, run and checkpoint one claimed job.
 
-    Returns `result_sha256` only when the deterministic toolchain actually ran —
-    a pre-execution refusal (unknown repo, bad base SHA, worktree failure) has
-    no result to receipt, only a bounded failure category.
+    A pre-execution refusal (unknown repo, bad base SHA, worktree failure) is
+    reported with a refusal digest rather than an execution digest, so the
+    authority learns the actual category instead of watching the lease expire.
     """
+    record = lease
+
+    def _refuse(reason: str) -> _ExecutionResult:
+        return _ExecutionResult("failed", _refusal_digest(lease, reason), reason)
+
     entry = config.repos.get(record.repository_id)
     if entry is None:
-        return _ExecutionResult("failed", None, "repo_not_allowlisted")
+        return _refuse("repo_not_allowlisted")
 
     repo_path = Path(entry.local_path)
     if not repo_path.is_dir():
-        return _ExecutionResult("failed", None, "repo_path_missing")
+        return _refuse("repo_path_missing")
     if not (repo_path / ".git").exists():
-        return _ExecutionResult("failed", None, "repo_not_a_git_repo")
+        return _refuse("repo_not_a_git_repo")
 
     if not _FEATURE_ID_RE.match(record.feature_id):
-        return _ExecutionResult("failed", None, "invalid_feature_id")
+        return _refuse("invalid_feature_id")
 
+    # The claim carries `feature_id` and `branch_name` independently; they must
+    # agree, or a server-side naming change would silently relocate the worktree
+    # and checkpoint directory this job resumes from.
     expected_branch = f"codex/feature-{record.feature_id}"
     if record.branch_name != expected_branch:
-        return _ExecutionResult("failed", None, "invalid_branch_name")
+        return _refuse("invalid_branch_name")
 
     verify = _git(repo_path, "rev-parse", "--verify", f"{record.base_sha}^{{commit}}")
     if verify.returncode != 0:
-        return _ExecutionResult("failed", None, "base_sha_not_found")
+        return _refuse("base_sha_not_found")
 
     config.worktree_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(config.worktree_root, 0o700)
@@ -191,9 +240,9 @@ def _execute_job(
     if worktree_path.is_relative_to(repo_path) or repo_path.is_relative_to(
         config.worktree_root
     ):
-        return _ExecutionResult("failed", None, "worktree_root_overlaps_repo")
+        return _refuse("worktree_root_overlaps_repo")
     if worktree_path.is_symlink():
-        return _ExecutionResult("failed", None, "worktree_symlink")
+        return _refuse("worktree_symlink")
     if not worktree_path.exists():
         add = _git(
             repo_path,
@@ -205,29 +254,24 @@ def _execute_job(
             record.base_sha,
         )
         if add.returncode != 0:
-            return _ExecutionResult("failed", None, "worktree_add_failed")
+            return _refuse("worktree_add_failed")
 
     worktree_error = _validate_worktree(
         repo_path, worktree_path, base_sha=record.base_sha, branch_name=record.branch_name
     )
     if worktree_error is not None:
-        return _ExecutionResult("failed", None, worktree_error)
+        return _refuse(worktree_error)
 
-    if not queue.mark_running(
-        engine,
-        job_id=record.job_id,
-        worker_id=config.worker_id,
-        lease_epoch=record.lease_epoch,
-        now=now,
-    ):
-        return _ExecutionResult("failed", None, "lease_lost")
+    started = transport.mark_running(lease)
+    if not started.alive:
+        return _refuse("cancelled" if started.cancel_requested else "lease_lost")
 
     try:
         manifest = load_toolchain_manifest(worktree_path)
     except ValueError:
-        return _ExecutionResult("failed", None, "toolchain_manifest_invalid")
+        return _refuse("toolchain_manifest_invalid")
     if record.toolchain_ref != manifest.toolchain_ref:
-        return _ExecutionResult("failed", None, "toolchain_ref_mismatch")
+        return _refuse("toolchain_ref_mismatch")
 
     checkpoint, checkpoint_error = _restore_checkpoint(
         config.checkpoint_root,
@@ -236,12 +280,12 @@ def _execute_job(
         manifest.manifest_sha256,
     )
     if checkpoint_error is not None:
-        return _ExecutionResult("failed", None, checkpoint_error)
+        return _refuse(checkpoint_error)
 
     completed = list(checkpoint.acceptance_progress) if checkpoint else []
     test_results = dict(checkpoint.test_results) if checkpoint else {}
     if checkpoint is None and _changed_files(worktree_path):
-        return _ExecutionResult("failed", None, "worktree_dirty_without_checkpoint")
+        return _refuse("worktree_dirty_without_checkpoint")
 
     guard_failure = "lease_lost"
 
@@ -250,14 +294,10 @@ def _execute_job(
         if config.kill_switch_path.exists():
             guard_failure = "kill_switch_active"
             return False
-        return queue.heartbeat(
-            engine,
-            job_id=record.job_id,
-            worker_id=config.worker_id,
-            lease_epoch=record.lease_epoch,
-            lease_ttl_seconds=config.lease_ttl_seconds,
-            now=utc_now(),
-        )
+        outcome = transport.heartbeat(lease)
+        if outcome.cancel_requested:
+            guard_failure = "cancelled"
+        return outcome.alive
 
     try:
         sibling_worktrees = tuple(
@@ -270,7 +310,10 @@ def _execute_job(
                 stages=(stage,),
                 lease_guard=_lease_guard,
                 forbidden_paths=(
-                    config.database_path,
+                    # Whatever this transport keeps on disk — the workflow
+                    # database locally, the enrollment secret and token cache
+                    # remotely — is off limits to anything the toolchain runs.
+                    *config.transport.protected_paths(),
                     config.checkpoint_root,
                     config.kill_switch_path,
                     *sibling_worktrees,
@@ -285,14 +328,27 @@ def _execute_job(
             checkpoint = _build_checkpoint(
                 worktree_path, record, manifest.manifest_sha256, completed, test_results
             )
-            checkpoint_mod.write_checkpoint(config.checkpoint_root, checkpoint)
+            # `sequence` is the count of stages this checkpoint covers, so a
+            # replay of the same stage carries the same sequence and the
+            # authority can tell a retry from progress.
+            recorded = transport.record_checkpoint(
+                lease, checkpoint, sequence=len(completed)
+            )
+            if not recorded.recorded:
+                # The authority refused the resume point. Continuing would build
+                # work that no recovery could ever find.
+                if recorded.conflict:
+                    return _refuse("checkpoint_conflict")
+                return _refuse("checkpoint_rejected")
     except LeaseLostError:
-        return _ExecutionResult("failed", None, guard_failure)
+        return _refuse(guard_failure)
     except SandboxUnavailableError:
-        return _ExecutionResult("failed", None, "sandbox_unavailable")
+        return _refuse("sandbox_unavailable")
+    except TransportError as error:
+        return _refuse(error.reason)
 
     if checkpoint is None:
-        return _ExecutionResult("failed", None, "checkpoint_missing")
+        return _refuse("checkpoint_missing")
 
     result_sha256 = sha256_of(
         {
@@ -349,7 +405,7 @@ def _validate_worktree(
 
 def _build_checkpoint(
     worktree_path: Path,
-    record: queue.JobRecord,
+    record: JobLease,
     manifest_sha256: str,
     completed: list[str],
     test_results: dict[str, int],
@@ -378,7 +434,7 @@ def _build_checkpoint(
 def _restore_checkpoint(
     checkpoint_root: Path,
     worktree_path: Path,
-    record: queue.JobRecord,
+    record: JobLease,
     manifest_sha256: str,
 ) -> tuple[CheckpointBundle | None, str | None]:
     try:

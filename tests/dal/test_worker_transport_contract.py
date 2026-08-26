@@ -60,6 +60,7 @@ CLOSED: dict[str, tuple[frozenset[str], frozenset[str], str]] = {
             {
                 "schema_version",
                 "job_id",
+                "feature_id",
                 "repository_id",
                 "base_sha",
                 "branch_name",
@@ -73,6 +74,7 @@ CLOSED: dict[str, tuple[frozenset[str], frozenset[str], str]] = {
             {
                 "schema_version",
                 "job_id",
+                "feature_id",
                 "repository_id",
                 "base_sha",
                 "branch_name",
@@ -195,8 +197,12 @@ def _validate_enroll(p: dict[str, Any]) -> None:
 
 def _validate_claim(p: dict[str, Any]) -> None:
     assert p["schema_version"] == SCHEMA_VERSION
-    for key in ("job_id", "repository_id", "branch_name", "toolchain_ref"):
+    for key in ("job_id", "feature_id", "repository_id", "branch_name", "toolchain_ref"):
         assert _nonempty_str(p[key]), key
+    # The branch is derived from the feature, never the other way round: a worker
+    # that had to parse `feature_id` out of `branch_name` would let a server-side
+    # naming change silently relocate its worktree and checkpoint directory.
+    assert p["branch_name"] == f"codex/feature-{p['feature_id']}"
     assert SHA40.match(p["base_sha"])
     assert _nonneg_int(p["lease_epoch"])
     assert _nonneg_int(p["attempt"])

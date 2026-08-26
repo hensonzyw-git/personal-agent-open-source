@@ -58,6 +58,8 @@ LAST_ERROR_MAX_LENGTH = 4096
 TOKEN_TTL_SECONDS = 3600
 RATE_LIMIT_MAX_REQUESTS = 120
 RATE_LIMIT_WINDOW_SECONDS = 60.0
+LEASE_TTL_SECONDS = 60
+MAX_ATTEMPTS = 3
 
 BODY_DIGEST_HEADER: Final[str] = "x-transport-body-digest"
 ENROLLMENT_SECRET_HEADER: Final[str] = "x-enrollment-secret"
@@ -336,16 +338,26 @@ class Service:
         enrollment_secret: bytes,
         kill_switch_path: Path | None,
         rate_limiter: RateLimiter,
+        lease_ttl_seconds: int = LEASE_TTL_SECONDS,
+        max_attempts: int = MAX_ATTEMPTS,
     ) -> None:
         if not service_key:
             raise ValueError("service key must be non-empty")
         if not enrollment_secret:
             raise ValueError("enrollment secret must be non-empty")
+        if lease_ttl_seconds <= 0:
+            raise ValueError("lease_ttl_seconds must be positive")
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
         self.engine = engine
         self.service_key = service_key
         self.enrollment_secret = enrollment_secret
         self.kill_switch_path = kill_switch_path
         self.rate_limiter = rate_limiter
+        # Lease duration and attempt budget are ECS authority: a worker never
+        # proposes its own TTL, and never decides when its own lease expires.
+        self.lease_ttl_seconds = lease_ttl_seconds
+        self.max_attempts = max_attempts
 
     @property
     def kill_switch(self) -> bool:
@@ -402,6 +414,8 @@ def create_app(
     kill_switch_path: Path | None = None,
     token_ttl_seconds: int = TOKEN_TTL_SECONDS,
     rate_limiter: RateLimiter | None = None,
+    lease_ttl_seconds: int = LEASE_TTL_SECONDS,
+    max_attempts: int = MAX_ATTEMPTS,
 ) -> FastAPI:
     service = Service(
         engine,
@@ -409,6 +423,8 @@ def create_app(
         enrollment_secret=enrollment_secret,
         kill_switch_path=kill_switch_path,
         rate_limiter=rate_limiter or RateLimiter(RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECONDS),
+        lease_ttl_seconds=lease_ttl_seconds,
+        max_attempts=max_attempts,
     )
     app = FastAPI(title="DAL Worker Transport", version="1.0.0")
 
@@ -469,7 +485,14 @@ def create_app(
             raise _http(403, "worker_mismatch")
         if service.kill_switch:
             raise _http(503, "kill_switch_active")
-        job_id = queue.claim_job(engine, worker_id=worker_id, lease_ttl_seconds=60)
+        # Lease reclamation is ECS authority and this is its only trigger: a remote
+        # worker has no reclaim endpoint and must never expire another worker's
+        # lease. Reclaiming before the CAS claim is what lets a job whose worker
+        # was killed become claimable again without a shared SQLite file.
+        queue.reclaim_expired(engine, max_attempts=service.max_attempts)
+        job_id = queue.claim_job(
+            engine, worker_id=worker_id, lease_ttl_seconds=service.lease_ttl_seconds
+        )
         if job_id is None:
             return Response(status_code=204)
         record = queue.get_job(engine, job_id=job_id)
@@ -478,6 +501,7 @@ def create_app(
         return {
             "schema_version": SCHEMA_VERSION,
             "job_id": record.job_id,
+            "feature_id": record.feature_id,
             "repository_id": record.repository_id,
             "base_sha": record.base_sha,
             "branch_name": record.branch_name,
@@ -500,7 +524,7 @@ def create_app(
             job_id=job_id,
             worker_id=worker_id,
             lease_epoch=body.lease_epoch,
-            lease_ttl_seconds=60,
+            lease_ttl_seconds=service.lease_ttl_seconds,
         )
         if ok:
             return {"schema_version": SCHEMA_VERSION, "cancel_requested": False}

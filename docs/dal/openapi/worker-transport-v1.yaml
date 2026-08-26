@@ -88,6 +88,10 @@ paths:
   /jobs/claim:
     post:
       summary: 出站 poll/claim 下一个 pending job（CAS，双工唯一赢家）
+      description: >
+        1.0 修订（DAL-R06）：服务端在 CAS claim 之前先回收过期 lease。lease 回收是 ECS
+        权威，远程 Worker 既没有回收端点也不得自行回收；本端点是唯一的回收触发点，
+        attempt 预算由服务端 max_attempts 决定，耗尽即终态 expired。
       parameters:
         - $ref: "#/components/parameters/BodyDigest"
       requestBody:
@@ -265,11 +269,15 @@ components:
       type: object
       additionalProperties: false
       required:
-        [schema_version, job_id, repository_id, base_sha, branch_name,
+        [schema_version, job_id, feature_id, repository_id, base_sha, branch_name,
          toolchain_ref, lease_epoch, attempt, deadline]
       properties:
         schema_version: { const: "dal.worker-transport/1.0" }
         job_id: { type: string, minLength: 1, maxLength: 256 }
+        # 1.0 修订（DAL-R06）：feature_id 由 ECS 下发，不再由 worker 从 branch_name 反解。
+        # worktree 路径、checkpoint 目录和 checkpoint 绑定都以它为准；worker 仍校验
+        # branch_name == "codex/feature-{feature_id}"，不一致 fail closed。
+        feature_id: { type: string, minLength: 1, maxLength: 256 }
         repository_id: { type: string, minLength: 1 }
         base_sha: { type: string, pattern: "^[0-9a-f]{40}$" }
         branch_name: { type: string, minLength: 1 }

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import uvicorn
 
-from personal_agent_dal.service.app import create_app
+from personal_agent_dal.service.app import LEASE_TTL_SECONDS, MAX_ATTEMPTS, create_app
 from personal_agent_dal.storage.engine import create_database_engine
 
 
@@ -45,7 +45,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--kill-switch-path", type=Path, default=None)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
+    # Lease TTL and attempt budget are ECS authority (a worker never proposes
+    # either); reclamation of an expired lease happens on `/jobs/claim`.
+    parser.add_argument("--lease-ttl-seconds", type=int, default=LEASE_TTL_SECONDS)
+    parser.add_argument("--max-attempts", type=int, default=MAX_ATTEMPTS)
+    # TLS is terminated here only for the same-machine acceptance; production
+    # terminates at Nginx and passes plain HTTP over loopback.
+    parser.add_argument("--ssl-certfile", type=Path, default=None)
+    parser.add_argument("--ssl-keyfile", type=Path, default=None)
     args = parser.parse_args(argv)
+
+    if (args.ssl_certfile is None) != (args.ssl_keyfile is None):
+        print("--ssl-certfile and --ssl-keyfile must be given together", file=sys.stderr)
+        return 1
+    if args.lease_ttl_seconds <= 0 or args.max_attempts < 1:
+        print("--lease-ttl-seconds and --max-attempts must be positive", file=sys.stderr)
+        return 1
 
     if not args.database.exists():
         print("database missing: run the DAL migration first", file=sys.stderr)
@@ -67,8 +82,17 @@ def main(argv: list[str] | None = None) -> int:
             service_key=service_key,
             enrollment_secret=enrollment_secret,
             kill_switch_path=args.kill_switch_path,
+            lease_ttl_seconds=args.lease_ttl_seconds,
+            max_attempts=args.max_attempts,
         )
-        uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level="warning",
+            ssl_certfile=str(args.ssl_certfile) if args.ssl_certfile else None,
+            ssl_keyfile=str(args.ssl_keyfile) if args.ssl_keyfile else None,
+        )
     finally:
         engine.dispose()
     return 0

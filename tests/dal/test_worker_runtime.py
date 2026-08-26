@@ -37,8 +37,13 @@ from personal_agent_dal.worker import checkpoint as checkpoint_mod
 from personal_agent_dal.worker import queue
 from personal_agent_dal.worker import toolchain
 from personal_agent_dal.worker.checkpoint import CheckpointBundle
-from personal_agent_dal.worker.config import RepoAllowlistEntry, WorkerConfig
+from personal_agent_dal.worker.config import (
+    LocalTransportConfig,
+    RepoAllowlistEntry,
+    WorkerConfig,
+)
 from personal_agent_dal.worker.poll_once import run_poll_once
+from personal_agent_dal.worker.transport import LocalSQLiteAdapter
 from personal_agent_dal.worker.toolchain import (
     TIMEOUT_RETURNCODE,
     load_toolchain_manifest,
@@ -61,7 +66,7 @@ def engine(tmp_path: Path):
 def config(tmp_path: Path) -> WorkerConfig:
     return WorkerConfig(
         worker_id="test-worker",
-        database_path=tmp_path / "worker.db",
+        transport=LocalTransportConfig(database_path=tmp_path / "worker.db"),
         worktree_root=tmp_path / "worktrees",
         checkpoint_root=tmp_path / "checkpoints",
         kill_switch_path=tmp_path / "worker.disabled",
@@ -72,6 +77,21 @@ def config(tmp_path: Path) -> WorkerConfig:
                 repository_id="synthetic", local_path=str(tmp_path / "repo")
             )
         },
+    )
+
+
+
+def _poll(engine, config: WorkerConfig):
+    """Run one cycle through the local adapter, as the worker CLI composes it."""
+    return run_poll_once(
+        LocalSQLiteAdapter(
+            engine,
+            worker_id=config.worker_id,
+            lease_ttl_seconds=config.lease_ttl_seconds,
+            max_attempts=config.max_attempts,
+            checkpoint_root=config.checkpoint_root,
+        ),
+        config,
     )
 
 
@@ -760,9 +780,9 @@ def test_config_loader_fails_closed_on_unknown_key(tmp_path: Path) -> None:
     path.write_text(
         json.dumps(
             {
-                "schema_version": "dal.worker-config/1.0",
+                "schema_version": "dal.worker-config/1.1",
                 "worker_id": "w1",
-                "database_path": str(tmp_path / "db"),
+                "transport": {"mode": "local", "database_path": str(tmp_path / "db")},
                 "worktree_root": str(tmp_path / "wt"),
                 "checkpoint_root": str(tmp_path / "cp"),
                 "kill_switch_path": str(tmp_path / "disabled"),
@@ -816,7 +836,7 @@ def test_poll_once_succeeds_end_to_end(engine, config, tmp_path: Path) -> None:
     base_sha = _make_synthetic_repo(repo)
     job_id = _seed_job_for(engine, base_sha)
 
-    outcome = run_poll_once(engine, config)
+    outcome = _poll(engine, config)
 
     assert outcome.claimed
     assert outcome.state == "succeeded"
@@ -849,7 +869,7 @@ def test_poll_once_heartbeats_during_long_stage(
     _seed_job_for(engine, base_sha)
     config = WorkerConfig(
         worker_id=config.worker_id,
-        database_path=config.database_path,
+        transport=config.transport,
         worktree_root=config.worktree_root,
         checkpoint_root=config.checkpoint_root,
         kill_switch_path=config.kill_switch_path,
@@ -866,7 +886,7 @@ def test_poll_once_heartbeats_during_long_stage(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(queue, "heartbeat", counted)
-    outcome = run_poll_once(engine, config)
+    outcome = _poll(engine, config)
 
     assert outcome.state == "succeeded"
     assert calls >= 5
@@ -924,7 +944,7 @@ def test_poll_once_resumes_from_bound_checkpoint(engine, config, tmp_path: Path)
     )
     _seed_job_for(engine, base_sha)
 
-    outcome = run_poll_once(engine, config)
+    outcome = _poll(engine, config)
 
     assert outcome.state == "succeeded"
     assert not (worktree / "format-reran").exists()
@@ -945,7 +965,7 @@ def test_poll_once_restores_nonempty_patch_after_supervisor_crash(
     _seed_job_for(engine, base_sha)
     config = WorkerConfig(
         worker_id=config.worker_id,
-        database_path=config.database_path,
+        transport=config.transport,
         worktree_root=config.worktree_root,
         checkpoint_root=config.checkpoint_root,
         kill_switch_path=config.kill_switch_path,
@@ -972,7 +992,7 @@ def test_poll_once_restores_nonempty_patch_after_supervisor_crash(
 
     monkeypatch.setattr(checkpoint_mod, "write_checkpoint", crash_after_first_checkpoint)
     with pytest.raises(KeyboardInterrupt, match="synthetic supervisor crash"):
-        run_poll_once(engine, config)
+        _poll(engine, config)
 
     worktree = config.worktree_root / "feature-feat-demo"
     crashed = checkpoint_mod.load_checkpoint(config.checkpoint_root, "feat-demo")
@@ -991,7 +1011,7 @@ def test_poll_once_restores_nonempty_patch_after_supervisor_crash(
     monkeypatch.setattr(checkpoint_mod, "write_checkpoint", original_write)
     time.sleep(1.1)
 
-    outcome = run_poll_once(engine, config)
+    outcome = _poll(engine, config)
 
     assert outcome.state == "succeeded"
     restored = checkpoint_mod.load_checkpoint(config.checkpoint_root, "feat-demo")
@@ -1009,12 +1029,14 @@ def test_poll_once_rejects_precreated_non_worktree(engine, config, tmp_path: Pat
     fake = config.worktree_root / "feature-feat-demo"
     _write_manifest(fake)
 
-    outcome = run_poll_once(engine, config)
+    outcome = _poll(engine, config)
 
     assert outcome.state == "failed"
     assert outcome.error == "worktree_not_registered"
     assert queue.get_job(engine, job_id=job_id).state == "failed"
-    assert _count(engine, "worker_result_receipts") == 0
+    # A refusal receipt, not a toolchain receipt: the refusal digest is what
+    # lets this reach the authority as a category instead of a lease timeout.
+    assert _count(engine, "worker_result_receipts") == 1
 
 
 def test_kill_switch_prevents_claim(engine, config, tmp_path: Path) -> None:
@@ -1023,7 +1045,7 @@ def test_kill_switch_prevents_claim(engine, config, tmp_path: Path) -> None:
     job_id = _seed_job_for(engine, base_sha)
     config.kill_switch_path.write_text("disabled\n")
 
-    outcome = run_poll_once(engine, config)
+    outcome = _poll(engine, config)
 
     assert not outcome.claimed
     assert outcome.error == "kill_switch_active"
@@ -1047,12 +1069,14 @@ def test_kill_switch_stops_an_active_toolchain(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(queue, "heartbeat", engage_switch)
-    outcome = run_poll_once(engine, config)
+    outcome = _poll(engine, config)
 
     assert outcome.state == "failed"
     assert outcome.error == "kill_switch_active"
     assert queue.get_job(engine, job_id=job_id).state == "failed"
-    assert _count(engine, "worker_result_receipts") == 0
+    # The stop is reported rather than left as silence, and its digest is a
+    # refusal digest — no toolchain result is claimed for a run that was cut off.
+    assert _count(engine, "worker_result_receipts") == 1
 
 
 def test_launchd_template_runs_as_login_user() -> None:
@@ -1073,7 +1097,7 @@ def test_poll_once_toolchain_failure_records_receipt(engine, config, tmp_path: P
     base_sha = _make_synthetic_repo(repo, test_cmd=("false",))
     job_id = _seed_job_for(engine, base_sha)
 
-    outcome = run_poll_once(engine, config)
+    outcome = _poll(engine, config)
 
     assert outcome.state == "failed"
     assert outcome.error == "toolchain_failed"
@@ -1088,7 +1112,7 @@ def test_poll_once_toolchain_failure_records_receipt(engine, config, tmp_path: P
 def test_poll_once_refuses_unallowlisted_repo(engine, config) -> None:
     job_id = _seed_job_for(engine, BASE_SHA, repository_id="other")
 
-    outcome = run_poll_once(engine, config)
+    outcome = _poll(engine, config)
 
     assert outcome.state == "failed"
     assert outcome.error == "repo_not_allowlisted"
@@ -1096,11 +1120,14 @@ def test_poll_once_refuses_unallowlisted_repo(engine, config) -> None:
     record = queue.get_job(engine, job_id=job_id)
     assert record.state == "failed"
     assert record.last_error == "repo_not_allowlisted"
-    # no toolchain ran, so no result receipt
-    assert _count(engine, "worker_result_receipts") == 0
+    # No toolchain ran, but the refusal is still a fact the authority receipts:
+    # without a digest this deterministic failure could only be reported as a
+    # timeout, and the transport contract has no way to carry it at all.
+    assert _count(engine, "worker_result_receipts") == 1
+    assert record.result_sha256 is not None
 
 
 def test_poll_once_no_pending_job_is_a_noop(engine, config) -> None:
-    outcome = run_poll_once(engine, config)
+    outcome = _poll(engine, config)
     assert not outcome.claimed
     assert outcome.state is None
