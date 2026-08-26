@@ -52,10 +52,11 @@ def test_argv_shape_pins_every_flag() -> None:
     assert argv[0] == "claude"
     assert "-p" in argv
     assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in argv
     assert argv[argv.index("--max-turns") + 1] == "16"
     assert argv[argv.index("--allowedTools") + 1] == "read,edit,bash"
     assert argv[argv.index("--settings") + 1] == str(settings)
-    assert argv[argv.index("--model") + 1] == "ccr-deepseek"
+    assert argv[argv.index("--model") + 1] == coder_launcher.DEEPSEEK_MODEL_ID
     assert argv[-1] == "fix the flaky test"
 
 
@@ -75,26 +76,31 @@ def test_environment_carries_the_token_only_when_given() -> None:
     assert env["ANTHROPIC_AUTH_TOKEN"] == "tok"
 
 
-def test_settings_json_has_override_and_no_inheritance() -> None:
-    """The settings body carries the override and nothing an override could pull."""
-    body = settings_json("ccr-deepseek")
-    assert body["env"]["ANTHROPIC_BASE_URL"] == CCR_ENDPOINT
-    assert body["modelOverrides"] == {"ccr-deepseek": coder_launcher.DEEPSEEK_MODEL_ID}
-    for forbidden in ("mcpServers", "enabledPlugins", "permissions", "hooks"):
+def test_settings_json_has_pinned_endpoint_and_no_inheritance() -> None:
+    """The settings body carries only the pinned endpoint, nothing more."""
+    body = settings_json()
+    assert body == {"env": {"ANTHROPIC_BASE_URL": CCR_ENDPOINT}}
+    for forbidden in (
+        "mcpServers",
+        "enabledPlugins",
+        "permissions",
+        "hooks",
+        "modelOverrides",
+    ):
         assert forbidden not in body
 
 
 def test_write_settings_file_is_isolated_and_0600(tmp_path: Path) -> None:
-    """The settings file lands in the run root, mode 0600, override intact."""
+    """The settings file lands in the run root, mode 0600, pinned endpoint only."""
     run_root = tmp_path / "run"
     run_root.mkdir()
-    path = write_settings_file(run_root, "ccr-deepseek")
+    path = write_settings_file(run_root)
 
     assert path == run_root / "coder-settings.json"
     assert path.parent == run_root
     assert (path.stat().st_mode & 0o777) == 0o600
     body = json.loads(path.read_text(encoding="utf-8"))
-    assert "modelOverrides" in body
+    assert "modelOverrides" not in body
     assert body["env"]["ANTHROPIC_BASE_URL"] == CCR_ENDPOINT
 
 

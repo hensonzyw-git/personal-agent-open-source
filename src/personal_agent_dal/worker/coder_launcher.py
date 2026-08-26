@@ -88,27 +88,27 @@ class CoderRunResult:
     duration_s: float
 
 
-def settings_json(model_alias: str) -> dict[str, Any]:
-    """The isolated settings body: model override + pinned endpoint only.
+def settings_json() -> dict[str, Any]:
+    """The isolated settings body: the pinned endpoint only.
 
-    Nothing else is carried — no `mcpServers`, no plugin or project-local
-    override, no upstream token. The token travels separately in the child
-    environment, so it is never written to disk inside the settings file.
+    Nothing else is carried — no model override, no `mcpServers`, no plugin or
+    project-local override, no upstream token. The model is pinned on the command
+    line (`--model DEEPSEEK_MODEL_ID`) rather than through a `modelOverrides`
+    alias: a non-standard alias key is not recognised by this Claude Code build,
+    so the alias path returns 400 from the CCR proxy (found live in DAL-R07B).
+    The token travels separately in the child environment, never to disk.
     """
-    return {
-        "env": {"ANTHROPIC_BASE_URL": CCR_ENDPOINT},
-        "modelOverrides": {model_alias: DEEPSEEK_MODEL_ID},
-    }
+    return {"env": {"ANTHROPIC_BASE_URL": CCR_ENDPOINT}}
 
 
-def write_settings_file(run_root: Path, model_alias: str) -> Path:
+def write_settings_file(run_root: Path) -> Path:
     """Write the isolated `settings.json` as mode ``0600``, return its path.
 
     ``run_root`` is the caller's one-shot directory; the settings file is the
     only thing written there and is never Henson's real settings file.
     """
     path = run_root / SETTINGS_FILENAME
-    payload = json.dumps(settings_json(model_alias), sort_keys=True, indent=2)
+    payload = json.dumps(settings_json(), sort_keys=True, indent=2)
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(payload + "\n")
     os.chmod(path, 0o600)
@@ -127,6 +127,8 @@ def coder_argv(spec: CoderRunSpec, settings_path: Path) -> list[str]:
         "-p",
         "--output-format",
         OUTPUT_FORMAT,
+        # stream-json over --print is rejected without --verbose by this build.
+        "--verbose",
         "--max-turns",
         str(spec.max_turns),
         "--allowedTools",
@@ -134,7 +136,7 @@ def coder_argv(spec: CoderRunSpec, settings_path: Path) -> list[str]:
         "--settings",
         str(settings_path),
         "--model",
-        spec.model_alias,
+        DEEPSEEK_MODEL_ID,
         spec.prompt,
     ]
 
@@ -256,7 +258,7 @@ def run_coder(
     survives either path. The command itself comes only from `spec`, never from
     a model, issue text or the environment.
     """
-    settings_path = write_settings_file(spec.run_root, spec.model_alias)
+    settings_path = write_settings_file(spec.run_root)
     argv = coder_argv(spec, settings_path)
     environment = coder_environment(upstream_token)
     started = monotonic()
@@ -269,7 +271,11 @@ def run_coder(
             cwd=str(spec.cwd),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            # stderr is discarded, not merged: `--output-format stream-json` is a
+            # newline-delimited JSON stream on stdout, and claude under the
+            # sandbox emits timestamped xcodebuild/DVT noise on stderr that would
+            # corrupt the stream. Provider errors surface in the `result` event.
+            stderr=subprocess.DEVNULL,
             text=True,
             env=environment,
             close_fds=True,

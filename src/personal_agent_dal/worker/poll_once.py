@@ -264,6 +264,76 @@ def _parse_coder_stream(output: str) -> list[dict] | None:
     return events
 
 
+def _adapt_claude_stream(
+    claude_events: list[dict],
+    *,
+    changed_files: tuple[str, ...],
+    base_sha: str,
+    context_envelope_sha256: str,
+) -> list[dict]:
+    """Translate claude native stream-json into the coder_contract vocabulary.
+
+    Real `claude -p --output-format stream-json` emits `system`/`assistant`/`user`/
+    `result` events; tool calls are `tool_use` blocks inside `assistant.message.
+    content`, and the `result` event carries no `changed_files`. The classifier only
+    knows `final`/`text`/`tool_call`/..., so this maps the native events onto that
+    vocabulary and appends exactly one `final` bound to the request and the actual
+    worktree diff (which the worker derives separately via `_changed_files`).
+    """
+    events: list[dict] = []
+    for event in claude_events:
+        if event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type == "text":
+                text = block.get("text")
+                if isinstance(text, str) and text:
+                    events.append({"type": "text", "content": text})
+            elif block_type == "tool_use":
+                name = block.get("name")
+                if isinstance(name, str) and name:
+                    arguments = block.get("input")
+                    events.append(
+                        {
+                            "type": "tool_call",
+                            "name": name,
+                            "arguments": arguments if isinstance(arguments, dict) else {},
+                        }
+                    )
+    events.append(
+        {
+            "type": "final",
+            "content": "dal.patch-artifact/1.0:ref",
+            "base_sha": base_sha,
+            "context_envelope_sha256": context_envelope_sha256,
+            "changed_files": list(changed_files),
+        }
+    )
+    return events
+
+
+def _claude_result_is_error(claude_events: list[dict], returncode: int | None) -> bool:
+    """True when the run's claude `result` event reports a provider error.
+
+    A clean run ends with a `result` event of `subtype=success`; an error run
+    ends with `subtype=error` (or `is_error`). No `result` at all means the child
+    died without a clean summary, which only counts as clean on a zero exit code.
+    """
+    for event in reversed(claude_events):
+        if event.get("type") == "result":
+            return event.get("subtype") == "error" or bool(event.get("is_error"))
+    return returncode != 0
+
+
 def _refusal_digest(lease: JobLease, reason: str) -> str:
     """The content-addressed digest of a refusal, so it can be reported at all.
 
@@ -444,12 +514,23 @@ def _execute_job(
         if result.cancelled:
             _abandon(guard_failure)
 
-        events = _parse_coder_stream(result.output)
-        if events is None:
+        claude_events = _parse_coder_stream(result.output)
+        if claude_events is None:
             return _refuse("coder_output_unparseable")
+        if not result.timed_out and _claude_result_is_error(
+            claude_events, result.returncode
+        ):
+            return _refuse("coder_provider_error")
 
         envelope_sha256 = _context_envelope_sha256(record, coder_spec)
         classifier_digest = _classifier_digest()
+        changed_files = tuple(sorted(_changed_files(worktree_path)))
+        events = _adapt_claude_stream(
+            claude_events,
+            changed_files=changed_files,
+            base_sha=record.base_sha,
+            context_envelope_sha256=envelope_sha256,
+        )
         command = {
             "schema_version": "dal.test-operation-command/1.0",
             "operation_id": f"code:{record.feature_id}",

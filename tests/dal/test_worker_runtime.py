@@ -43,15 +43,10 @@ from personal_agent_dal.worker.config import (
     WorkerConfig,
 )
 from personal_agent_dal.worker.coder_launcher import CoderRunResult
-from personal_agent_dal.worker.poll_once import (
-    _classifier_digest,
-    _context_envelope_sha256,
-    run_poll_once,
-)
-from personal_agent_dal.worker.transport import JobLease, LocalSQLiteAdapter
+from personal_agent_dal.worker.poll_once import run_poll_once
+from personal_agent_dal.worker.transport import LocalSQLiteAdapter
 from personal_agent_dal.worker.toolchain import (
     TIMEOUT_RETURNCODE,
-    CoderSpec,
     load_toolchain_manifest,
     execute_toolchain,
     run_sandboxed_command,
@@ -387,7 +382,7 @@ def _write_manifest(
     if coder:
         body["coder"] = {
             "model_alias": "dal-ccr-primary",
-            "allowed_tools": ["read", "edit", "bash"],
+            "allowed_tools": ["Read", "Edit", "Bash"],
             "max_turns": 8,
             "max_wall_seconds": 900,
             "max_patch_bytes": 1048576,
@@ -1257,7 +1252,7 @@ def test_poll_once_fixture_slice_leaves_a_lost_lease_to_reclaim(
 
 _CODER_MANIFEST = {
     "model_alias": "dal-ccr-primary",
-    "allowed_tools": ("read", "edit", "bash"),
+    "allowed_tools": ("Read", "Edit", "Bash"),
     "max_turns": 8,
     "max_wall_seconds": 900,
     "max_patch_bytes": 1048576,
@@ -1267,54 +1262,95 @@ _CODER_MANIFEST = {
 }
 
 
-def _coder_spec() -> CoderSpec:
-    return CoderSpec(**{k: v for k, v in _CODER_MANIFEST.items()})
-
-
-def _coder_envelope(base_sha: str) -> str:
-    lease = JobLease(
-        job_id="job",
-        feature_id="feat-demo",
-        repository_id="synthetic",
-        base_sha=base_sha,
-        branch_name="codex/feature-feat-demo",
-        toolchain_ref=".personal-agent/toolchain.json",
-        lease_epoch=1,
-        attempt=0,
-        deadline=None,
-    )
-    return _context_envelope_sha256(lease, _coder_spec())
-
-
-def _make_coder_fake(
+def _make_claude_fake(
     base_sha: str,
     *,
-    changed_files=("README.md",),
-    envelope: str | None = None,
+    write: bool = True,
+    result_error: bool = False,
     output: str | None = None,
 ):
-    envelope = envelope or _coder_envelope(base_sha)
+    """A fake `run_coder` emitting claude's native stream-json, not the
+    coder_contract vocabulary — so the adapter under test is actually exercised."""
 
     def fake(spec, **kw):
-        # Simulate the coder's edit tool writing into the worktree.
-        (spec.cwd / "README.md").write_text("coder change\n")
-        if output is None:
-            output_text = (
+        if write:
+            (spec.cwd / "README.md").write_text("coder change\n")
+        if output is not None:
+            output_text = output
+        else:
+            lines = [
                 json.dumps(
                     {
-                        "type": "final",
-                        "content": "dal.patch-artifact/1.0:ref",
-                        "base_sha": base_sha,
-                        "context_envelope_sha256": envelope,
-                        "changed_files": list(changed_files),
+                        "type": "system",
+                        "subtype": "init",
+                        "session_id": "s",
+                        "model": "DeepSeek/deepseek-v4-pro",
                     }
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {"type": "text", "text": "I'll make the change."},
+                                {
+                                    "type": "tool_use",
+                                    "id": "toolu_1",
+                                    "name": "Edit",
+                                    "input": {
+                                        "file_path": "README.md",
+                                        "new_string": "coder change\n",
+                                    },
+                                },
+                            ],
+                        },
+                        "stop_reason": "tool_use",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "user",
+                        "message": {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "toolu_1",
+                                    "content": "ok",
+                                }
+                            ],
+                        },
+                    }
+                ),
+            ]
+            if result_error:
+                lines.append(
+                    json.dumps(
+                        {
+                            "type": "result",
+                            "subtype": "error",
+                            "is_error": True,
+                            "result": "",
+                            "error": "boom",
+                        }
+                    )
                 )
-                + "\n"
-            )
-        else:
-            output_text = output
+            else:
+                lines.append(
+                    json.dumps(
+                        {
+                            "type": "result",
+                            "subtype": "success",
+                            "is_error": False,
+                            "result": "done",
+                            "num_turns": 1,
+                        }
+                    )
+                )
+            output_text = "\n".join(lines) + "\n"
         return CoderRunResult(
-            returncode=0,
+            returncode=1 if result_error else 0,
             output=output_text,
             timed_out=False,
             cancelled=False,
@@ -1332,7 +1368,7 @@ def test_poll_once_provider_coder_succeeds(
     job_id = _seed_job_for(engine, base_sha)
 
     monkeypatch.setattr(
-        "personal_agent_dal.worker.poll_once.run_coder", _make_coder_fake(base_sha)
+        "personal_agent_dal.worker.poll_once.run_coder", _make_claude_fake(base_sha)
     )
 
     outcome = _poll(engine, config)
@@ -1347,37 +1383,38 @@ def test_poll_once_provider_coder_succeeds(
     assert "coder change" in bundle.patch
 
 
-def test_poll_once_provider_coder_refuses_an_out_of_scope_diff(
+def test_poll_once_provider_coder_refuses_a_provider_error(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
     repo = tmp_path / "repo"
     base_sha = _make_synthetic_repo(repo, coder=True)
     job_id = _seed_job_for(engine, base_sha)
 
-    # The classifier refuses a final whose changed_files escape allowed_paths.
+    # claude's result event reports subtype=error: the worker refuses before
+    # fabricating a final event.
     monkeypatch.setattr(
         "personal_agent_dal.worker.poll_once.run_coder",
-        _make_coder_fake(base_sha, changed_files=("outside.txt",)),
+        _make_claude_fake(base_sha, result_error=True),
     )
 
     outcome = _poll(engine, config)
 
     assert outcome.state == "failed"
-    assert outcome.error in ("coder_failed", "coder_blocked")
+    assert outcome.error == "coder_provider_error"
 
 
-def test_poll_once_provider_coder_refuses_a_tampered_context_envelope(
+def test_poll_once_provider_coder_refuses_an_empty_diff(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
     repo = tmp_path / "repo"
     base_sha = _make_synthetic_repo(repo, coder=True)
     job_id = _seed_job_for(engine, base_sha)
 
-    # The final event echoes a context envelope that does not match the request:
-    # the classifier refuses it rather than trusting the stream's own claim.
+    # The coder ran cleanly but wrote nothing: the adapter's final declares an
+    # empty changed_files list, which the classifier refuses.
     monkeypatch.setattr(
         "personal_agent_dal.worker.poll_once.run_coder",
-        _make_coder_fake(base_sha, envelope="0" * 64),
+        _make_claude_fake(base_sha, write=False),
     )
 
     outcome = _poll(engine, config)
@@ -1395,7 +1432,7 @@ def test_poll_once_provider_coder_refuses_unparseable_output(
 
     monkeypatch.setattr(
         "personal_agent_dal.worker.poll_once.run_coder",
-        _make_coder_fake(base_sha, output="not-json\n"),
+        _make_claude_fake(base_sha, output="not-json\n"),
     )
 
     outcome = _poll(engine, config)
