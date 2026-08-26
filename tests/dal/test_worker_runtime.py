@@ -1071,12 +1071,36 @@ def test_kill_switch_stops_an_active_toolchain(
     monkeypatch.setattr(queue, "heartbeat", engage_switch)
     outcome = _poll(engine, config)
 
-    assert outcome.state == "failed"
+    assert outcome.state is None
     assert outcome.error == "kill_switch_active"
-    assert queue.get_job(engine, job_id=job_id).state == "failed"
-    # The stop is reported rather than left as silence, and its digest is a
-    # refusal digest — no toolchain result is claimed for a run that was cut off.
-    assert _count(engine, "worker_result_receipts") == 1
+    # An operator stop is not a job failure. The lease is left active so that a
+    # restart after the switch clears can reclaim and retry, rather than the job
+    # dying terminal to what was, from its point of view, an interrupt.
+    assert queue.get_job(engine, job_id=job_id).state in queue.ACTIVE_JOB_STATES
+    assert _count(engine, "worker_result_receipts") == 0
+
+
+def test_poll_once_leaves_a_lost_lease_to_reclaim(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    """A lost lease is not a terminal failure — it is the reclaim path's job.
+
+    The worker stops without writing a result, leaving the lease active so the
+    authority can reclaim it and retry. Writing `failed` here would skip the
+    recovery that already exists and kill the job on a fence loss.
+    """
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, test_cmd=("sleep", "0.5"))
+    job_id = _seed_job_for(engine, base_sha)
+
+    monkeypatch.setattr(queue, "heartbeat", lambda *args, **kwargs: False)
+
+    outcome = _poll(engine, config)
+
+    assert outcome.state is None
+    assert outcome.error == "lease_lost"
+    assert queue.get_job(engine, job_id=job_id).state in queue.ACTIVE_JOB_STATES
+    assert _count(engine, "worker_result_receipts") == 0
 
 
 def test_launchd_template_runs_as_login_user() -> None:

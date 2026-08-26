@@ -67,6 +67,13 @@ _DEFAULT_RETRY_ATTEMPTS: Final[int] = 4
 _DEFAULT_BACKOFF_BASE_SECONDS: Final[float] = 1.0
 _DEFAULT_BACKOFF_MAX_SECONDS: Final[float] = 30.0
 
+#: Upper bounds so a config typo cannot turn a one-shot poll into a multi-hour
+#: hang (launchd does not start a second poll of the same label while one runs).
+_MAX_TIMEOUT_SECONDS: Final[float] = 300.0
+_MAX_RETRY_ATTEMPTS: Final[int] = 10
+_MAX_BACKOFF_BASE_SECONDS: Final[float] = 60.0
+_MAX_BACKOFF_MAX_SECONDS: Final[float] = 300.0
+
 
 @dataclass(frozen=True)
 class RepoAllowlistEntry:
@@ -242,16 +249,25 @@ def _transport_field(body: dict) -> TransportConfig:
             token_cache_path=_path_field(transport, "token_cache_path"),
             ca_bundle_path=Path(ca_bundle).resolve() if ca_bundle else None,
             request_timeout_seconds=_positive_number(
-                transport, "request_timeout_seconds", _DEFAULT_TIMEOUT_SECONDS
+                transport,
+                "request_timeout_seconds",
+                _DEFAULT_TIMEOUT_SECONDS,
+                _MAX_TIMEOUT_SECONDS,
             ),
             retry_attempts=_bounded_int(
-                transport, "retry_attempts", _DEFAULT_RETRY_ATTEMPTS
+                transport, "retry_attempts", _DEFAULT_RETRY_ATTEMPTS, _MAX_RETRY_ATTEMPTS
             ),
             backoff_base_seconds=_positive_number(
-                transport, "backoff_base_seconds", _DEFAULT_BACKOFF_BASE_SECONDS
+                transport,
+                "backoff_base_seconds",
+                _DEFAULT_BACKOFF_BASE_SECONDS,
+                _MAX_BACKOFF_BASE_SECONDS,
             ),
             backoff_max_seconds=_positive_number(
-                transport, "backoff_max_seconds", _DEFAULT_BACKOFF_MAX_SECONDS
+                transport,
+                "backoff_max_seconds",
+                _DEFAULT_BACKOFF_MAX_SECONDS,
+                _MAX_BACKOFF_MAX_SECONDS,
             ),
         )
     raise ValueError(f"transport mode must be 'local' or 'remote', not {mode!r}")
@@ -290,19 +306,23 @@ def _positive_int(body: dict, key: str) -> int:
     return value
 
 
-def _bounded_int(body: dict, key: str, default: int) -> int:
+def _bounded_int(body: dict, key: str, default: int, maximum: int) -> int:
     if key not in body:
         return default
     value = body.get(key)
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError(f"{key} must be a non-negative integer")
+    if value > maximum:
+        raise ValueError(f"{key} must be at most {maximum}")
     return value
 
 
-def _positive_number(body: dict, key: str, default: float) -> float:
+def _positive_number(body: dict, key: str, default: float, maximum: float) -> float:
     if key not in body:
         return default
     value = body.get(key)
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         raise ValueError(f"{key} must be a positive number")
+    if value > maximum:
+        raise ValueError(f"{key} must be at most {maximum:g}")
     return float(value)

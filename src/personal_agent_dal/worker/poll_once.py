@@ -20,7 +20,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Final
+from typing import Final, NoReturn
 
 from personal_agent_core.manifest import sha256_of
 from personal_agent_core.timeutil import utc_now
@@ -67,6 +67,21 @@ class _ExecutionResult:
     state: str  # "succeeded" or "failed"
     result_sha256: str
     last_error: str | None
+
+
+class _Abandoned(Exception):
+    """The job must be left to the authority's reclaim, not terminal-reported.
+
+    A transient transport failure, a lost lease, a cancel, or a kill switch is
+    not a fact about the job's content — it is a reason the worker stopped. A
+    terminal `failed` here would burn the attempt budget on a single network
+    blip and bypass the recovery path that already exists (lease expiry ->
+    reclaim -> attempt+1 -> retry). Only deterministic refusals may go terminal.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -119,6 +134,16 @@ def run_poll_once(
 
     try:
         result = _execute_job(transport, config, lease, now=now)
+    except _Abandoned as abandoned:
+        # Not a terminal result: leave the lease active and let the authority
+        # reclaim it, so the job retries instead of dying to a transient blip.
+        return PollOutcome(
+            claimed=True,
+            job_id=lease.job_id,
+            state=None,
+            error=abandoned.reason,
+            reclaimed=reclaimed,
+        )
     except Exception as error:  # noqa: BLE001 - fail closed upward, bounded message
         reason = f"unexpected:{type(error).__name__}"
         result = _ExecutionResult(
@@ -210,6 +235,9 @@ def _execute_job(
     def _refuse(reason: str) -> _ExecutionResult:
         return _ExecutionResult("failed", _refusal_digest(lease, reason), reason)
 
+    def _abandon(reason: str) -> NoReturn:
+        raise _Abandoned(reason)
+
     entry = config.repos.get(record.repository_id)
     if entry is None:
         return _refuse("repo_not_allowlisted")
@@ -264,7 +292,7 @@ def _execute_job(
 
     started = transport.mark_running(lease)
     if not started.alive:
-        return _refuse("cancelled" if started.cancel_requested else "lease_lost")
+        _abandon("cancelled" if started.cancel_requested else "lease_lost")
 
     try:
         manifest = load_toolchain_manifest(worktree_path)
@@ -336,16 +364,18 @@ def _execute_job(
             )
             if not recorded.recorded:
                 # The authority refused the resume point. Continuing would build
-                # work that no recovery could ever find.
+                # work that no recovery could ever find. A conflict is a real
+                # integrity failure (terminal); a stale lease is a lost fence
+                # (reclaim, not terminal).
                 if recorded.conflict:
                     return _refuse("checkpoint_conflict")
-                return _refuse("checkpoint_rejected")
+                _abandon("checkpoint_rejected")
     except LeaseLostError:
-        return _refuse(guard_failure)
+        _abandon(guard_failure)
     except SandboxUnavailableError:
-        return _refuse("sandbox_unavailable")
+        _abandon("sandbox_unavailable")
     except TransportError as error:
-        return _refuse(error.reason)
+        _abandon(error.reason)
 
     if checkpoint is None:
         return _refuse("checkpoint_missing")

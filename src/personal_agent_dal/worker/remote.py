@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import time
 from collections.abc import Callable
@@ -76,6 +77,12 @@ TOKEN_REFRESH_SKEW_SECONDS: Final[int] = 60
 
 #: A `/enroll` is attempted at most once per request; a second 401 is a refusal.
 _MAX_REAUTH: Final[int] = 1
+
+#: The only shapes accepted off the wire for values that will reach a `git`
+#: argv, a URL path or a filesystem path. The 40-hex base SHA is the frozen
+#: contract's own pattern; the id charset covers the service's UUIDs.
+_SHA40_RE: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{40}")
+_SAFE_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 #: The exact field set of every response this client accepts.
 _CLAIM_FIELDS: Final[frozenset[str]] = frozenset(
@@ -250,6 +257,11 @@ def _error_code(response: httpx.Response) -> str:
     code = body.get("code")
     if not isinstance(code, str) or not code or len(code) > 64:
         return "unparseable"
+    # The code is printed into logs and exception text. Restrict it to printable
+    # ASCII so a control character or ANSI escape in a hostile response cannot
+    # forge log lines.
+    if not code.isascii() or not code.isprintable():
+        return "unparseable"
     return code
 
 
@@ -295,6 +307,9 @@ class RemoteHttpAdapter(WorkerTransport):
             verify=str(settings.ca_bundle_path) if settings.ca_bundle_path else True,
             follow_redirects=False,
             timeout=settings.request_timeout_seconds,
+            # A tampered HTTPS_PROXY / *_PROXY env var must not reroute the
+            # connection (CLAUDE.md §5.1): trust_env=False ignores them.
+            trust_env=False,
         )
         self._token: CachedToken | None = None
 
@@ -374,13 +389,27 @@ class RemoteHttpAdapter(WorkerTransport):
         return response
 
     def _authenticated(
-        self, path: str, body: dict[str, Any], *, job_id: str | None = None
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        job_id: str | None = None,
+        retry_server_errors: bool = True,
     ) -> httpx.Response:
         """Send an authenticated request with bounded retries.
 
         `body` is built once by the caller and reused verbatim across retries,
         so a retry after a lost response is the identical fact — the same
         `request_id`, the same digest — rather than a new one.
+
+        `retry_server_errors=False` is reserved for `/jobs/claim`, the one
+        endpoint where replay is *not* idempotent: a 5xx after the server
+        committed a claim and lost the response would make a retry claim a
+        second job and strand the first. Claim therefore fails on a server
+        error and lets the next poll cycle (or lease expiry) recover. The 401
+        re-auth path stays in place for every endpoint because it happens before
+        any handler runs, so re-sending a claim after a rejected token has not
+        claimed anything yet.
         """
         attempts = 0
         reauths = 0
@@ -405,6 +434,8 @@ class RemoteHttpAdapter(WorkerTransport):
             if status == 503 and _error_code(response) == "kill_switch_active":
                 raise TransportDisabledError("kill_switch_active", job_id=job_id)
             if status == 429 or status >= 500:
+                if not retry_server_errors:
+                    raise TransportError(f"unavailable:{status}", job_id=job_id)
                 attempts += 1
                 if attempts > self._settings.retry_attempts:
                     raise TransportError(f"unavailable:{status}", job_id=job_id)
@@ -433,7 +464,7 @@ class RemoteHttpAdapter(WorkerTransport):
             "request_id": new_id(),
             "worker_id": self._settings.worker_id,
         }
-        response = self._authenticated("/jobs/claim", body)
+        response = self._authenticated("/jobs/claim", body, retry_server_errors=False)
         if response.status_code == 204:
             return None
         if response.status_code != 200:
@@ -557,7 +588,14 @@ class RemoteHttpAdapter(WorkerTransport):
             raise TransportError("result_digest_mismatch", job_id=lease.job_id)
         replay = payload["replay"]
         receipt_id = payload["receipt_id"]
-        if not isinstance(replay, bool) or not isinstance(receipt_id, str):
+        if (
+            not isinstance(replay, bool)
+            or not isinstance(receipt_id, str)
+            or not receipt_id
+        ):
+            # An empty receipt is not evidence: the worker must not accept a
+            # result it cannot point at. Fail closed rather than trust the
+            # server's assertion that a receipt exists.
             raise TransportError("result_shape", job_id=lease.job_id)
         return ResultOutcome(
             accepted=True,
@@ -581,12 +619,25 @@ def _json(response: httpx.Response) -> Any:
 
 
 def _lease_from(payload: dict[str, Any]) -> JobLease:
-    """Build a lease from a validated claim response, refusing bad field types."""
-    for key in ("job_id", "feature_id", "repository_id", "base_sha", "branch_name",
+    """Build a lease from a validated claim response, refusing bad field types.
+
+    The pattern gates here are the adapter's own fail-closed boundary: a value
+    that is about to reach a `git` argv (`base_sha`), a URL path (`job_id`) or a
+    filesystem path (`feature_id`) is refused the moment it arrives, rather than
+    being let through to be caught by whichever downstream call trips over it.
+    """
+    for key in ("job_id", "feature_id", "repository_id", "branch_name",
                 "toolchain_ref", "deadline"):
         value = payload[key]
         if not isinstance(value, str) or not value:
             raise TransportError(f"claim_field:{key}")
+    if _SAFE_ID_RE.fullmatch(payload["job_id"]) is None:
+        raise TransportError("claim_field:job_id")
+    if _SAFE_ID_RE.fullmatch(payload["feature_id"]) is None:
+        raise TransportError("claim_field:feature_id")
+    base_sha = payload["base_sha"]
+    if not isinstance(base_sha, str) or _SHA40_RE.fullmatch(base_sha) is None:
+        raise TransportError("claim_field:base_sha")
     for key in ("lease_epoch", "attempt"):
         value = payload[key]
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
@@ -595,6 +646,11 @@ def _lease_from(payload: dict[str, Any]) -> JobLease:
         deadline = datetime.fromisoformat(payload["deadline"])
     except ValueError as error:
         raise TransportError("claim_field:deadline") from error
+    if deadline.tzinfo is None:
+        # A naive deadline cannot fence against clock skew. The authority emits
+        # UTC (the `isoformat()` of a tz-aware `utc_now()`), so anything else is
+        # off-shape, not a value to repair.
+        raise TransportError("claim_field:deadline")
     return JobLease(
         job_id=payload["job_id"],
         feature_id=payload["feature_id"],

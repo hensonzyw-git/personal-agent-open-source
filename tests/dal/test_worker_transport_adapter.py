@@ -770,8 +770,11 @@ def test_a_persistent_429_is_retried_a_bounded_number_of_times(
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal attempts
-        if request.url.path.endswith("/enroll"):
+        path = request.url.path
+        if path.endswith("/enroll"):
             return httpx.Response(200, json=_enroll_body())
+        if path.endswith("/jobs/claim"):
+            return httpx.Response(200, json=_GOOD_CLAIM)
         attempts += 1
         return httpx.Response(
             429,
@@ -783,8 +786,11 @@ def test_a_persistent_429_is_retried_a_bounded_number_of_times(
         )
 
     client = httpx.Client(base_url=PINNED, transport=httpx.MockTransport(handler))
+    adapter = _adapter(tmp_path, client, retry_attempts=2)
+    lease = adapter.claim()
+    assert lease is not None
     with pytest.raises(TransportError) as caught:
-        _adapter(tmp_path, client, retry_attempts=2).claim()
+        adapter.heartbeat(lease)
     assert caught.value.reason == "unavailable:429"
     assert attempts == 3  # the first try plus exactly two retries
 
@@ -796,8 +802,11 @@ def test_a_retry_replays_the_identical_request_not_a_new_one(
     bodies: list[bytes] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/enroll"):
+        path = request.url.path
+        if path.endswith("/enroll"):
             return httpx.Response(200, json=_enroll_body())
+        if path.endswith("/jobs/claim"):
+            return httpx.Response(200, json=_GOOD_CLAIM)
         bodies.append(request.read())
         if len(bodies) < 3:
             return httpx.Response(
@@ -808,10 +817,20 @@ def test_a_retry_replays_the_identical_request_not_a_new_one(
                     "detail": "unavailable",
                 },
             )
-        return httpx.Response(204)
+        return httpx.Response(
+            200,
+            json={
+                "schema_version": "dal.worker-transport/1.0",
+                "cancel_requested": False,
+            },
+        )
 
     client = httpx.Client(base_url=PINNED, transport=httpx.MockTransport(handler))
-    assert _adapter(tmp_path, client, retry_attempts=3).claim() is None
+    adapter = _adapter(tmp_path, client, retry_attempts=3)
+    lease = adapter.claim()
+    assert lease is not None
+    outcome = adapter.heartbeat(lease)
+    assert outcome.alive and not outcome.cancel_requested
     assert len(bodies) == 3
     assert len(set(bodies)) == 1
 
@@ -856,6 +875,16 @@ def test_a_kill_switch_503_is_not_retried_as_an_outage(tmp_path: Path) -> None:
         ),
         pytest.param(lambda body: {**body, "lease_epoch": -1}, id="negative_epoch"),
         pytest.param(lambda body: {**body, "deadline": "not-a-time"}, id="bad_deadline"),
+        pytest.param(
+            lambda body: {**body, "base_sha": "abc1234"}, id="non_40hex_base_sha"
+        ),
+        pytest.param(
+            lambda body: {**body, "job_id": "../jobs/claim"}, id="unsafe_job_id"
+        ),
+        pytest.param(
+            lambda body: {**body, "deadline": "2026-08-26T12:00:00"},
+            id="naive_deadline",
+        ),
     ],
 )
 def test_a_claim_response_off_contract_is_refused(tmp_path: Path, mutate) -> None:
@@ -998,3 +1027,121 @@ def test_remote_healthcheck_fails_on_a_world_readable_secret(
     os.chmod(config.transport.enrollment_secret_path, 0o644)
     assert cli._healthcheck(config) == 1  # noqa: SLF001
     assert "owner-only" in capsys.readouterr().err
+
+
+# --- review findings F1 / F4 / F5 / F6 regressions ---------------------------
+
+_GOOD_CLAIM = {
+    "schema_version": "dal.worker-transport/1.0",
+    "job_id": "job-1",
+    "feature_id": "demo",
+    "repository_id": "synthetic",
+    "base_sha": BASE_SHA,
+    "branch_name": "codex/feature-demo",
+    "toolchain_ref": "toolchain-v1",
+    "lease_epoch": 1,
+    "attempt": 0,
+    "deadline": "2026-08-26T12:00:00+00:00",
+}
+
+
+def test_claim_does_not_retry_a_server_error(tmp_path: Path) -> None:
+    """F1: a 5xx after a committed claim must not become a second claim.
+
+    Retrying claim with the same body would claim the next pending job and
+    strand the first. It must fail and let the next poll cycle recover instead.
+    """
+    claims = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal claims
+        if request.url.path.endswith("/enroll"):
+            return httpx.Response(200, json=_enroll_body())
+        claims += 1
+        return httpx.Response(
+            500,
+            json={
+                "schema_version": "dal.worker-transport/1.0",
+                "code": "boom",
+                "detail": "boom",
+            },
+        )
+
+    client = httpx.Client(base_url=PINNED, transport=httpx.MockTransport(handler))
+    with pytest.raises(TransportError) as caught:
+        _adapter(tmp_path, client, retry_attempts=5).claim()
+    assert caught.value.reason == "unavailable:500"
+    assert claims == 1
+
+
+def test_a_control_character_in_the_error_code_is_not_echoed(tmp_path: Path) -> None:
+    """F4: a control character in `code` must not forge a log line."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/enroll"):
+            return httpx.Response(200, json=_enroll_body())
+        return httpx.Response(
+            403,
+            json={
+                "schema_version": "dal.worker-transport/1.0",
+                "code": "bad\ncode",
+                "detail": "bad\ncode",
+            },
+        )
+
+    client = httpx.Client(base_url=PINNED, transport=httpx.MockTransport(handler))
+    with pytest.raises(TransportDisabledError) as caught:
+        _adapter(tmp_path, client).claim()
+    assert "\n" not in caught.value.reason
+    assert caught.value.reason == "forbidden:unparseable"
+
+
+def test_an_empty_receipt_id_is_refused(tmp_path: Path) -> None:
+    """F5: an empty receipt is not evidence; the worker must not accept it."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/enroll"):
+            return httpx.Response(200, json=_enroll_body())
+        if path.endswith("/jobs/claim"):
+            return httpx.Response(200, json=_GOOD_CLAIM)
+        if path.endswith("/result"):
+            return httpx.Response(
+                200,
+                json={
+                    "schema_version": "dal.worker-transport/1.0",
+                    "job_id": "job-1",
+                    "result_sha256": "c" * 64,
+                    "receipt_id": "",
+                    "replay": True,
+                },
+            )
+        return httpx.Response(404)
+
+    client = httpx.Client(base_url=PINNED, transport=httpx.MockTransport(handler))
+    adapter = _adapter(tmp_path, client)
+    lease = adapter.claim()
+    assert lease is not None
+    with pytest.raises(TransportError) as caught:
+        adapter.submit_result(
+            lease, state="succeeded", result_sha256="c" * 64, last_error=None
+        )
+    assert caught.value.reason == "result_shape"
+
+
+def test_remote_retry_attempts_have_an_upper_bound(tmp_path: Path) -> None:
+    """F6: a retry_attempts typo must not turn one poll into a multi-hour hang."""
+    path = _config_body(
+        tmp_path,
+        {
+            "mode": "remote",
+            "endpoint": PINNED,
+            "machine_id": "m1",
+            "capabilities": ["coding"],
+            "enrollment_secret_path": str(tmp_path / "s"),
+            "token_cache_path": str(tmp_path / "t"),
+            "retry_attempts": 400,
+        },
+    )
+    with pytest.raises(ValueError, match="at most"):
+        load_worker_config(path)
