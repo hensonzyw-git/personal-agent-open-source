@@ -31,10 +31,12 @@ def upgrade() -> None:
     op.create_table(
         'worker_enrollments',
         sa.Column('worker_id', sa.Text(), nullable=False),
+        sa.Column('machine_id', sa.Text(), nullable=False),
         sa.Column('capabilities', sa.Text(), nullable=False),
         sa.Column('created_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
         sa.Column('revoked_at', personal_agent_core.sqlite.UtcTimestamp(), nullable=True),
         sa.CheckConstraint("length(worker_id) >= 1", name='ck_worker_enrollments_worker_id_nonempty'),
+        sa.CheckConstraint("length(machine_id) >= 1", name='ck_worker_enrollments_machine_id_nonempty'),
         sa.PrimaryKeyConstraint('worker_id', name='pk_worker_enrollments'),
     )
 

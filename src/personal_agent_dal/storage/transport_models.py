@@ -4,9 +4,10 @@ These are the server-side (DWS) records the thin-http transport needs, kept
 separate from the state-machine tables and from `worker_models`:
 
 - `worker_enrollments` is the durable "which machine may call this transport"
-  registry. A worker is enrolled by `POST /enroll`; revocation is a `revoked_at`
-  timestamp the auth check refuses. The capability list is the closed transport
-  vocabulary, not a business authority.
+  registry. A worker is enrolled by `POST /enroll` under the ECS-held
+  enrollment secret (never self-service); revocation is a `revoked_at`
+  timestamp the auth check refuses. The capability list is the closed
+  transport vocabulary, not a business authority.
 - `worker_checkpoints` is the ECS-side recovery evidence: checkpoint metadata +
   content-addressed artifact reference, fenced by `(job_id, lease_epoch,
   sequence)` and idempotent on `(job_id, sequence)`. The artifact bytes are not
@@ -39,12 +40,14 @@ class WorkerEnrollment(Base):
     __tablename__ = "worker_enrollments"
 
     worker_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    machine_id: Mapped[str] = mapped_column(Text, nullable=False)
     capabilities: Mapped[str] = mapped_column(Text, nullable=False)  # JSON array
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
 
     __table_args__ = (
         CheckConstraint("length(worker_id) >= 1", name="worker_id_nonempty"),
+        CheckConstraint("length(machine_id) >= 1", name="machine_id_nonempty"),
     )
 
 

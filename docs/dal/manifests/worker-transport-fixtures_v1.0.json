@@ -1,250 +1,384 @@
 {
-  "$comment": "DAL-R04 Worker Transport v1 fixtures. 每个 fixture 有一个闭合 schema 名（对应 docs/dal/openapi/worker-transport-v1.yaml 的 components.schemas）、一个 worker→ECS 请求体（或 ECS→worker 响应体）、可选 authoritative_facts（ECS 侧用于判定 fail-closed 的当前态）与 expected（HTTP 状态 + 结果码）。正向 + adversarial 全覆盖八个必测形状：expired epoch、duplicate same result、duplicate conflicting result、checkpoint tamper、cancel race、response loss、oversized artifact、unknown capability。",
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/enroll_ok/1.0": {
-    "variant_id": "enroll_ok",
-    "schema_name": "EnrollRequest",
-    "request": {
-      "schema_version": "dal.worker-transport/1.0",
-      "request_id": "req-enroll-0001",
-      "worker_id": "worker-macmini-001",
-      "machine_id": "macmini-serial-0001",
-      "capabilities": ["coding", "verification", "checkpoint"]
-    },
-    "expected": { "http": 200, "outcome": "accepted" }
+ "$comment": "DAL-R04 Worker Transport v1 fixtures. 每个 fixture 有一个闭合 schema 名（对应 docs/dal/openapi/worker-transport-v1.yaml 的 components.schemas）、一个 worker→ECS 请求体（或 ECS→worker 响应体）、可选 authoritative_facts（ECS 侧用于判定 fail-closed 的当前态）与 expected（HTTP 状态 + 结果码）。正向 + adversarial 全覆盖八个必测形状：expired epoch、duplicate same result、duplicate conflicting result、checkpoint tamper、cancel race、response loss、oversized artifact、unknown capability。",
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/enroll_ok/1.0": {
+  "variant_id": "enroll_ok",
+  "schema_name": "EnrollRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-enroll-0001",
+   "worker_id": "worker-macmini-001",
+   "machine_id": "macmini-serial-0001",
+   "capabilities": [
+    "coding",
+    "verification",
+    "checkpoint"
+   ]
   },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/enroll_unknown_capability/1.0": {
-    "variant_id": "enroll_unknown_capability",
-    "schema_name": "EnrollRequest",
-    "request": {
-      "schema_version": "dal.worker-transport/1.0",
-      "request_id": "req-enroll-0002",
-      "worker_id": "worker-macmini-001",
-      "machine_id": "macmini-serial-0001",
-      "capabilities": ["gpu"]
-    },
-    "expected": { "http": 403, "outcome": "unknown_capability" }
-  },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/claim_ok/1.0": {
-    "variant_id": "claim_ok",
-    "schema_name": "ClaimResponse",
-    "response": {
-      "schema_version": "dal.worker-transport/1.0",
-      "job_id": "job-0001",
-      "repository_id": "repo-private-0001",
-      "base_sha": "0123456789abcdef0123456789abcdef01234567",
-      "branch_name": "codex/feature-0001",
-      "toolchain_ref": "toolchain-v1",
-      "lease_epoch": 1,
-      "attempt": 0,
-      "deadline": "2026-08-26T12:00:00Z"
-    },
-    "expected": { "http": 200, "outcome": "accepted" }
-  },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/heartbeat_ok/1.0": {
-    "variant_id": "heartbeat_ok",
-    "schema_name": "HeartbeatRequest",
-    "request": {
-      "schema_version": "dal.worker-transport/1.0",
-      "request_id": "req-hb-0001",
-      "job_id": "job-0001",
-      "worker_id": "worker-macmini-001",
-      "lease_epoch": 1
-    },
-    "authoritative_facts": { "current_lease_epoch": 1, "current_job_state": "running" },
-    "expected": { "http": 200, "outcome": "accepted" }
-  },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/heartbeat_expired_epoch/1.0": {
-    "variant_id": "heartbeat_expired_epoch",
-    "schema_name": "HeartbeatRequest",
-    "request": {
-      "schema_version": "dal.worker-transport/1.0",
-      "request_id": "req-hb-0002",
-      "job_id": "job-0001",
-      "worker_id": "worker-macmini-001",
-      "lease_epoch": 4
-    },
-    "authoritative_facts": { "current_lease_epoch": 5, "current_job_state": "running" },
-    "expected": { "http": 409, "outcome": "stale" }
-  },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/checkpoint_ok/1.0": {
-    "variant_id": "checkpoint_ok",
-    "schema_name": "CheckpointRequest",
-    "request": {
-      "schema_version": "dal.worker-transport/1.0",
-      "request_id": "req-ckpt-0001",
-      "job_id": "job-0001",
-      "worker_id": "worker-macmini-001",
-      "lease_epoch": 1,
-      "sequence": 1,
-      "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "artifact_size_bytes": 4096,
-      "changed_files": ["src/lib.rs"],
-      "sensitivity": "checkpoint"
-    },
-    "authoritative_facts": { "current_lease_epoch": 1, "current_job_state": "running" },
-    "expected": { "http": 200, "outcome": "accepted" }
-  },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/checkpoint_tamper/1.0": {
-    "variant_id": "checkpoint_tamper",
-    "schema_name": "CheckpointRequest",
-    "request": {
-      "schema_version": "dal.worker-transport/1.0",
-      "request_id": "req-ckpt-0002",
-      "job_id": "job-0001",
-      "worker_id": "worker-macmini-001",
-      "lease_epoch": 1,
-      "sequence": 1,
-      "artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "artifact_size_bytes": 4096,
-      "changed_files": ["src/lib.rs"],
-      "sensitivity": "checkpoint"
-    },
-    "authoritative_facts": { "current_lease_epoch": 1, "current_job_state": "running", "expected_artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
-    "expected": { "http": 400, "outcome": "invalid" }
-  },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/checkpoint_oversized/1.0": {
-    "variant_id": "checkpoint_oversized",
-    "schema_name": "CheckpointRequest",
-    "request": {
-      "schema_version": "dal.worker-transport/1.0",
-      "request_id": "req-ckpt-0003",
-      "job_id": "job-0001",
-      "worker_id": "worker-macmini-001",
-      "lease_epoch": 1,
-      "sequence": 1,
-      "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "artifact_size_bytes": 104857601,
-      "changed_files": ["src/lib.rs"],
-      "sensitivity": "checkpoint"
-    },
-    "authoritative_facts": { "current_lease_epoch": 1, "current_job_state": "running" },
-    "expected": { "http": 413, "outcome": "oversized" }
-  },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/result_ok/1.0": {
-    "variant_id": "result_ok",
-    "schema_name": "ResultRequest",
-    "request": {
-      "schema_version": "dal.worker-transport/1.0",
-      "request_id": "req-result-0001",
-      "job_id": "job-0001",
-      "worker_id": "worker-macmini-001",
-      "lease_epoch": 1,
-      "result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-      "state": "succeeded",
-      "last_error": null
-    },
-    "authoritative_facts": { "current_lease_epoch": 1, "current_job_state": "running", "existing_result_sha256": null },
-    "expected": { "http": 200, "outcome": "accepted" }
-  },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/result_duplicate_same/1.0": {
-    "variant_id": "result_duplicate_same",
-    "schema_name": "ResultRequest",
-    "request": {
-      "schema_version": "dal.worker-transport/1.0",
-      "request_id": "req-result-0002",
-      "job_id": "job-0001",
-      "worker_id": "worker-macmini-001",
-      "lease_epoch": 1,
-      "result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-      "state": "succeeded",
-      "last_error": null
-    },
-    "authoritative_facts": { "current_lease_epoch": 1, "current_job_state": "succeeded", "existing_result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
-    "expected": { "http": 200, "outcome": "replay" }
-  },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/result_duplicate_conflicting/1.0": {
-    "variant_id": "result_duplicate_conflicting",
-    "schema_name": "ResultRequest",
-    "request": {
-      "schema_version": "dal.worker-transport/1.0",
-      "request_id": "req-result-0003",
-      "job_id": "job-0001",
-      "worker_id": "worker-macmini-001",
-      "lease_epoch": 1,
-      "result_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-      "state": "succeeded",
-      "last_error": null
-    },
-    "authoritative_facts": { "current_lease_epoch": 1, "current_job_state": "succeeded", "existing_result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
-    "expected": { "http": 409, "outcome": "conflict" }
-  },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/result_response_loss_replay/1.0": {
-    "variant_id": "result_response_loss_replay",
-    "schema_name": "ResultRequest",
-    "request": {
-      "schema_version": "dal.worker-transport/1.0",
-      "request_id": "req-result-0004",
-      "job_id": "job-0001",
-      "worker_id": "worker-macmini-001",
-      "lease_epoch": 1,
-      "result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-      "state": "succeeded",
-      "last_error": null
-    },
-    "authoritative_facts": { "current_lease_epoch": 1, "current_job_state": "succeeded", "existing_result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
-    "expected": { "http": 200, "outcome": "replay" }
-  },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/result_cancel_race/1.0": {
-    "variant_id": "result_cancel_race",
-    "schema_name": "ResultRequest",
-    "request": {
-      "schema_version": "dal.worker-transport/1.0",
-      "request_id": "req-result-0005",
-      "job_id": "job-0001",
-      "worker_id": "worker-macmini-001",
-      "lease_epoch": 1,
-      "result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-      "state": "succeeded",
-      "last_error": null
-    },
-    "authoritative_facts": { "current_lease_epoch": 1, "current_job_state": "cancelled", "existing_result_sha256": null },
-    "expected": { "http": 409, "outcome": "cancelled" }
-  },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/checkpoint_expired_epoch/1.0": {
-    "variant_id": "checkpoint_expired_epoch",
-    "schema_name": "CheckpointRequest",
-    "request": {
-      "schema_version": "dal.worker-transport/1.0",
-      "request_id": "req-ckpt-0004",
-      "job_id": "job-0001",
-      "worker_id": "worker-macmini-001",
-      "lease_epoch": 4,
-      "sequence": 2,
-      "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "artifact_size_bytes": 4096,
-      "changed_files": ["src/lib.rs"],
-      "sensitivity": "checkpoint"
-    },
-    "authoritative_facts": { "current_lease_epoch": 5, "current_job_state": "running" },
-    "expected": { "http": 409, "outcome": "stale" }
-  },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/result_failed/1.0": {
-    "variant_id": "result_failed",
-    "schema_name": "ResultRequest",
-    "request": {
-      "schema_version": "dal.worker-transport/1.0",
-      "request_id": "req-result-0006",
-      "job_id": "job-0002",
-      "worker_id": "worker-macmini-001",
-      "lease_epoch": 1,
-      "result_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-      "state": "failed",
-      "last_error": "contract_failure: diff exit code non-zero"
-    },
-    "authoritative_facts": { "current_lease_epoch": 1, "current_job_state": "running", "existing_result_sha256": null },
-    "expected": { "http": 200, "outcome": "accepted" }
-  },
-  "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/result_replay_receipt_stable/1.0": {
-    "variant_id": "result_replay_receipt_stable",
-    "schema_name": "ResultResponse",
-    "response": {
-      "schema_version": "dal.worker-transport/1.0",
-      "job_id": "job-0001",
-      "result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-      "receipt_id": "receipt-original-0001",
-      "replay": true
-    },
-    "authoritative_facts": { "existing_receipt_id": "receipt-original-0001" },
-    "expected": { "http": 200, "outcome": "replay" }
+  "expected": {
+   "http": 200,
+   "outcome": "accepted"
   }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/enroll_unknown_capability/1.0": {
+  "variant_id": "enroll_unknown_capability",
+  "schema_name": "EnrollRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-enroll-0002",
+   "worker_id": "worker-macmini-001",
+   "machine_id": "macmini-serial-0001",
+   "capabilities": [
+    "gpu"
+   ]
+  },
+  "expected": {
+   "http": 403,
+   "outcome": "unknown_capability"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/claim_ok/1.0": {
+  "variant_id": "claim_ok",
+  "schema_name": "ClaimResponse",
+  "response": {
+   "schema_version": "dal.worker-transport/1.0",
+   "job_id": "job-0001",
+   "repository_id": "repo-private-0001",
+   "base_sha": "0123456789abcdef0123456789abcdef01234567",
+   "branch_name": "codex/feature-0001",
+   "toolchain_ref": "toolchain-v1",
+   "lease_epoch": 1,
+   "attempt": 0,
+   "deadline": "2026-08-26T12:00:00Z"
+  },
+  "expected": {
+   "http": 200,
+   "outcome": "accepted"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/heartbeat_ok/1.0": {
+  "variant_id": "heartbeat_ok",
+  "schema_name": "HeartbeatRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-hb-0001",
+   "job_id": "job-0001",
+   "worker_id": "worker-macmini-001",
+   "lease_epoch": 1
+  },
+  "authoritative_facts": {
+   "current_lease_epoch": 1,
+   "current_job_state": "running"
+  },
+  "expected": {
+   "http": 200,
+   "outcome": "accepted"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/heartbeat_expired_epoch/1.0": {
+  "variant_id": "heartbeat_expired_epoch",
+  "schema_name": "HeartbeatRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-hb-0002",
+   "job_id": "job-0001",
+   "worker_id": "worker-macmini-001",
+   "lease_epoch": 4
+  },
+  "authoritative_facts": {
+   "current_lease_epoch": 5,
+   "current_job_state": "running"
+  },
+  "expected": {
+   "http": 409,
+   "outcome": "stale"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/checkpoint_ok/1.0": {
+  "variant_id": "checkpoint_ok",
+  "schema_name": "CheckpointRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-ckpt-0001",
+   "job_id": "job-0001",
+   "worker_id": "worker-macmini-001",
+   "lease_epoch": 1,
+   "sequence": 1,
+   "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "artifact_size_bytes": 4096,
+   "changed_files": [
+    "src/lib.rs"
+   ],
+   "sensitivity": "checkpoint"
+  },
+  "authoritative_facts": {
+   "current_lease_epoch": 1,
+   "current_job_state": "running"
+  },
+  "expected": {
+   "http": 200,
+   "outcome": "accepted"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/checkpoint_tamper/1.0": {
+  "variant_id": "checkpoint_tamper",
+  "schema_name": "CheckpointRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-ckpt-0002",
+   "job_id": "job-0001",
+   "worker_id": "worker-macmini-001",
+   "lease_epoch": 1,
+   "sequence": 1,
+   "artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "artifact_size_bytes": 4096,
+   "changed_files": [
+    "src/lib.rs"
+   ],
+   "sensitivity": "checkpoint"
+  },
+  "authoritative_facts": {
+   "current_lease_epoch": 1,
+   "current_job_state": "running",
+   "expected_artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "expected": {
+   "http": 400,
+   "outcome": "invalid"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/checkpoint_oversized/1.0": {
+  "variant_id": "checkpoint_oversized",
+  "schema_name": "CheckpointRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-ckpt-0003",
+   "job_id": "job-0001",
+   "worker_id": "worker-macmini-001",
+   "lease_epoch": 1,
+   "sequence": 1,
+   "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "artifact_size_bytes": 104857601,
+   "changed_files": [
+    "src/lib.rs"
+   ],
+   "sensitivity": "checkpoint"
+  },
+  "authoritative_facts": {
+   "current_lease_epoch": 1,
+   "current_job_state": "running"
+  },
+  "expected": {
+   "http": 413,
+   "outcome": "oversized"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/result_ok/1.0": {
+  "variant_id": "result_ok",
+  "schema_name": "ResultRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-result-0001",
+   "job_id": "job-0001",
+   "worker_id": "worker-macmini-001",
+   "lease_epoch": 1,
+   "result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+   "state": "succeeded",
+   "last_error": null
+  },
+  "authoritative_facts": {
+   "current_lease_epoch": 1,
+   "current_job_state": "running",
+   "existing_result_sha256": null
+  },
+  "expected": {
+   "http": 200,
+   "outcome": "accepted"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/result_duplicate_same/1.0": {
+  "variant_id": "result_duplicate_same",
+  "schema_name": "ResultRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-result-0002",
+   "job_id": "job-0001",
+   "worker_id": "worker-macmini-001",
+   "lease_epoch": 1,
+   "result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+   "state": "succeeded",
+   "last_error": null
+  },
+  "authoritative_facts": {
+   "current_lease_epoch": 1,
+   "current_job_state": "succeeded",
+   "existing_result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "expected": {
+   "http": 200,
+   "outcome": "replay"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/result_duplicate_conflicting/1.0": {
+  "variant_id": "result_duplicate_conflicting",
+  "schema_name": "ResultRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-result-0003",
+   "job_id": "job-0001",
+   "worker_id": "worker-macmini-001",
+   "lease_epoch": 1,
+   "result_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+   "state": "succeeded",
+   "last_error": null
+  },
+  "authoritative_facts": {
+   "current_lease_epoch": 1,
+   "current_job_state": "succeeded",
+   "existing_result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "expected": {
+   "http": 409,
+   "outcome": "conflict"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/result_response_loss_replay/1.0": {
+  "variant_id": "result_response_loss_replay",
+  "schema_name": "ResultRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-result-0004",
+   "job_id": "job-0001",
+   "worker_id": "worker-macmini-001",
+   "lease_epoch": 1,
+   "result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+   "state": "succeeded",
+   "last_error": null
+  },
+  "authoritative_facts": {
+   "current_lease_epoch": 1,
+   "current_job_state": "succeeded",
+   "existing_result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "expected": {
+   "http": 200,
+   "outcome": "replay"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/result_cancel_race/1.0": {
+  "variant_id": "result_cancel_race",
+  "schema_name": "ResultRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-result-0005",
+   "job_id": "job-0001",
+   "worker_id": "worker-macmini-001",
+   "lease_epoch": 1,
+   "result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+   "state": "succeeded",
+   "last_error": null
+  },
+  "authoritative_facts": {
+   "current_lease_epoch": 1,
+   "current_job_state": "cancelled",
+   "existing_result_sha256": null
+  },
+  "expected": {
+   "http": 409,
+   "outcome": "cancelled"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/checkpoint_expired_epoch/1.0": {
+  "variant_id": "checkpoint_expired_epoch",
+  "schema_name": "CheckpointRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-ckpt-0004",
+   "job_id": "job-0001",
+   "worker_id": "worker-macmini-001",
+   "lease_epoch": 4,
+   "sequence": 2,
+   "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "artifact_size_bytes": 4096,
+   "changed_files": [
+    "src/lib.rs"
+   ],
+   "sensitivity": "checkpoint"
+  },
+  "authoritative_facts": {
+   "current_lease_epoch": 5,
+   "current_job_state": "running"
+  },
+  "expected": {
+   "http": 409,
+   "outcome": "stale"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/result_failed/1.0": {
+  "variant_id": "result_failed",
+  "schema_name": "ResultRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-result-0006",
+   "job_id": "job-0002",
+   "worker_id": "worker-macmini-001",
+   "lease_epoch": 1,
+   "result_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+   "state": "failed",
+   "last_error": "contract_failure: diff exit code non-zero"
+  },
+  "authoritative_facts": {
+   "current_lease_epoch": 1,
+   "current_job_state": "running",
+   "existing_result_sha256": null
+  },
+  "expected": {
+   "http": 200,
+   "outcome": "accepted"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/result_replay_receipt_stable/1.0": {
+  "variant_id": "result_replay_receipt_stable",
+  "schema_name": "ResultResponse",
+  "response": {
+   "schema_version": "dal.worker-transport/1.0",
+   "job_id": "job-0001",
+   "result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+   "receipt_id": "receipt-original-0001",
+   "replay": true
+  },
+  "authoritative_facts": {
+   "existing_receipt_id": "receipt-original-0001"
+  },
+  "expected": {
+   "http": 200,
+   "outcome": "replay"
+  }
+ },
+ "dal.worker-transport.fixture/DAL-T-TRANSPORT-001/checkpoint_duplicate_conflicting/1.0": {
+  "variant_id": "checkpoint_duplicate_conflicting",
+  "schema_name": "CheckpointRequest",
+  "request": {
+   "schema_version": "dal.worker-transport/1.0",
+   "request_id": "req-ckpt-0005",
+   "job_id": "job-0001",
+   "worker_id": "worker-macmini-001",
+   "lease_epoch": 1,
+   "sequence": 1,
+   "artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "artifact_size_bytes": 4096,
+   "changed_files": [
+    "src/lib.rs"
+   ],
+   "sensitivity": "checkpoint"
+  },
+  "authoritative_facts": {
+   "current_lease_epoch": 1,
+   "current_job_state": "running",
+   "existing_checkpoint_artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "expected": {
+   "http": 409,
+   "outcome": "conflict"
+  }
+ }
 }

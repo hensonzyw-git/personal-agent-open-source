@@ -286,6 +286,11 @@ def _derive_outcome(fixture: dict[str, Any]) -> str:
             return "invalid"
         if fixture["request"]["lease_epoch"] != facts["current_lease_epoch"]:
             return "stale"
+        # Idempotent on (job_id, sequence): identical replay is accepted; a
+        # different digest for the same sequence is a conflict, never an overwrite.
+        existing = facts.get("existing_checkpoint_artifact_sha256")
+        if existing is not None:
+            return "accepted" if existing == fixture["request"]["artifact_sha256"] else "conflict"
         return "accepted"
     if schema == "ResultRequest":
         if facts.get("current_job_state") == "cancelled":
@@ -355,6 +360,7 @@ def test_eight_adversarial_shapes_are_present(fixtures: dict[str, Any]) -> None:
         "heartbeat_expired_epoch",
         "checkpoint_tamper",
         "checkpoint_oversized",
+        "checkpoint_duplicate_conflicting",
         "result_duplicate_same",
         "result_duplicate_conflicting",
         "result_response_loss_replay",

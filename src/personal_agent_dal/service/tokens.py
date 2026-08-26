@@ -4,7 +4,8 @@ A token is `base64url(canonical payload).hmac_sha256(payload, service_key)`.
 The payload is `{worker_id, capabilities, exp}` where `exp` is epoch seconds.
 Verification is fail-closed: an undecodable, unverifiable, or expired token is
 a refusal, never a partial identity. The token is opaque and short-lived; it is
-never logged or echoed back in a response.
+returned exactly once, in the `/enroll` response body, and is never logged or
+echoed by any other endpoint.
 """
 
 from __future__ import annotations

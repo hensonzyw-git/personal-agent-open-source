@@ -29,8 +29,9 @@ from personal_agent_dal.storage.worker_models import WorkerJob, WorkerResultRece
 RECEIPT_SCHEMA: Final[str] = "dal.worker-result-receipt/1.0"
 
 #: The states a live lease may occupy. `pending` has no lease; terminal states
-#: are never heartbeated or reclaimed.
-_ACTIVE_STATES: Final[tuple[str, str]] = ("leased", "running")
+#: are never heartbeated or reclaimed. Public so the transport layer can fence
+#: its own writes (checkpoint) against the same set instead of duplicating it.
+ACTIVE_JOB_STATES: Final[tuple[str, str]] = ("leased", "running")
 
 
 def _jobs_table():
@@ -228,7 +229,7 @@ def heartbeat(
         result = session.execute(
             update(table)
             .where(table.c.job_id == job_id)
-            .where(table.c.state.in_(_ACTIVE_STATES))
+            .where(table.c.state.in_(ACTIVE_JOB_STATES))
             .where(table.c.worker_id == worker_id)
             .where(table.c.lease_epoch == lease_epoch)
             .values(heartbeat_at=now, lease_expires_at=expires_at, updated_at=now)
@@ -256,7 +257,7 @@ def reclaim_expired(
         table = _jobs_table()
         stale = session.execute(
             select(table.c.job_id, table.c.attempt_count)
-            .where(table.c.state.in_(_ACTIVE_STATES))
+            .where(table.c.state.in_(ACTIVE_JOB_STATES))
             .where(table.c.lease_expires_at < now)
         ).all()
         if not stale:
@@ -343,7 +344,7 @@ def finish_job(
         if existing_result is not None and existing_result != result_sha256:
             raise ResultConflictError(job_id)
 
-        if row.state not in _ACTIVE_STATES:
+        if row.state not in ACTIVE_JOB_STATES:
             return (
                 row.state == state
                 and row.result_sha256 == result_sha256
@@ -366,7 +367,7 @@ def finish_job(
         result = session.execute(
             update(table)
             .where(table.c.job_id == job_id)
-            .where(table.c.state.in_(_ACTIVE_STATES))
+            .where(table.c.state.in_(ACTIVE_JOB_STATES))
             .where(table.c.worker_id == worker_id)
             .where(table.c.lease_epoch == lease_epoch)
             .values(
@@ -407,7 +408,7 @@ def cancel_job(
         result = session.execute(
             update(table)
             .where(table.c.job_id == job_id)
-            .where(table.c.state.in_(_ACTIVE_STATES))
+            .where(table.c.state.in_(ACTIVE_JOB_STATES))
             .values(
                 state="cancelled",
                 worker_id=None,
