@@ -25,6 +25,7 @@ the environment. The check-stage observed command is read from the `StageResult`
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final
 
@@ -74,9 +75,10 @@ def _capture_diff(
     read_only_paths: tuple[Path, ...] = (),
 ) -> tuple[str, int]:
     """Run the declared diff command under the sandbox and return
-    `(bounded_output, exit_code)`. stderr is merged into stdout, so a failed
-    `git diff` yields error text as `diff` — the classifier's diff-exit-code and
-    integrity checks (not the worker) own the verdict."""
+    `(bounded_output, exit_code)`. stderr is discarded (not merged): git through
+    the Xcode shim under the sandbox emits timestamped diagnostics on stderr that
+    would corrupt the diff bytes and break replay. A failed `git diff` is still
+    refused by the classifier's diff-exit-code and empty-diff checks."""
     return run_sandboxed_command(
         diff_command, repo_path, read_only_paths=read_only_paths, capture_stderr=False
     )
@@ -93,6 +95,8 @@ def run_verification(
     version: int = 0,
     operation_id: str = "verify-feature",
     read_only_paths: tuple[Path, ...] = (),
+    lease_guard: Callable[[], bool] | None = None,
+    heartbeat_interval_s: float = 5.0,
 ) -> VerificationEvaluation:
     """Capture the diff, run the checks, and consume the verification.
 
@@ -130,7 +134,13 @@ def run_verification(
     head_after = _head_sha(repo_path, read_only_paths=read_only_paths)
     diff_base_sha = head_before if head_before == head_after else ""
 
-    toolchain = execute_toolchain(repo_path, manifest, stages=CHECK_STAGES)
+    toolchain = execute_toolchain(
+        repo_path,
+        manifest,
+        stages=CHECK_STAGES,
+        lease_guard=lease_guard,
+        heartbeat_interval_s=heartbeat_interval_s,
+    )
     stage_results: dict[str, dict[str, Any]] = {
         "diff": {"command": list(diff_command), "exit_code": diff_exit_code},
     }

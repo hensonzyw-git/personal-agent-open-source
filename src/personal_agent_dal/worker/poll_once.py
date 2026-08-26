@@ -329,6 +329,18 @@ def _execute_job(
     if checkpoint_error is not None:
         return _refuse(checkpoint_error)
 
+    guard_failure = "lease_lost"
+
+    def _lease_guard() -> bool:
+        nonlocal guard_failure
+        if config.kill_switch_path.exists():
+            guard_failure = "kill_switch_active"
+            return False
+        outcome = transport.heartbeat(lease)
+        if outcome.cancel_requested:
+            guard_failure = "cancelled"
+        return outcome.alive
+
     if manifest.fixture_coder is not None:
         # DAL-R07A fixture slice: a deterministic no-model coder writes one
         # tracked file, then the deterministic verification runs the diff and
@@ -342,6 +354,10 @@ def _execute_job(
             )
         except ValueError:
             return _refuse("fixture_path_invalid")
+        except OSError:
+            # An environmental write failure (disk full, EACCES) is not a fact
+            # about the job: leave the lease for reclaim and retry.
+            _abandon("fixture_write_failed")
         # The verification contract wants all five registered stages declared
         # (diff + the four checks). The check stages' execution source is the
         # pinned manifest, so their declared argv comes from it; the diff is the
@@ -362,7 +378,16 @@ def _execute_job(
                 # read-only roots for the sandboxed capture (same as the toolchain
                 # loop's `read_only_paths`).
                 read_only_paths=(repo_path, worktree_path / ".git"),
+                # The four check stages run under the same lease fence as the
+                # toolchain path: heartbeats and the kill switch keep working
+                # while a long verification runs.
+                lease_guard=_lease_guard,
+                heartbeat_interval_s=max(
+                    0.25, min(5.0, config.lease_ttl_seconds / 3)
+                ),
             )
+        except LeaseLostError:
+            _abandon(guard_failure)
         except SandboxUnavailableError:
             _abandon("sandbox_unavailable")
         except TransportError as error:
@@ -414,18 +439,6 @@ def _execute_job(
     test_results = dict(checkpoint.test_results) if checkpoint else {}
     if checkpoint is None and _changed_files(worktree_path):
         return _refuse("worktree_dirty_without_checkpoint")
-
-    guard_failure = "lease_lost"
-
-    def _lease_guard() -> bool:
-        nonlocal guard_failure
-        if config.kill_switch_path.exists():
-            guard_failure = "kill_switch_active"
-            return False
-        outcome = transport.heartbeat(lease)
-        if outcome.cancel_requested:
-            guard_failure = "cancelled"
-        return outcome.alive
 
     try:
         sibling_worktrees = tuple(

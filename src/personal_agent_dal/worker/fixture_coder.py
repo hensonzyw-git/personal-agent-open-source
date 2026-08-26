@@ -29,6 +29,26 @@ def _validate_path(path: str) -> None:
         raise ValueError("fixture_coder.path is not a safe repo-relative path")
 
 
+def _resolve_without_symlinks(worktree_path: Path, rel: str) -> Path:
+    """Resolve the write target, refusing any symlink in the way.
+
+    The fixture writes inside the worker process rather than through the
+    default-deny sandbox, so it is the one worker write path that a hostile
+    repo (a base commit carrying a symlink) could otherwise use to escape the
+    worktree. `Path.write_text` and `Path.mkdir(parents=True)` both follow
+    symlinks, so lexical checks alone are not enough: every component of the
+    resolved path, from the worktree down, must be a real (non-symlink) entry.
+    """
+    if worktree_path.is_symlink():
+        raise ValueError("worktree path is a symlink")
+    current = worktree_path
+    for part in PurePosixPath(rel).parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("fixture_coder.path traverses a symlink")
+    return current
+
+
 def apply_fixture_change(
     worktree_path: Path, spec: FixtureCoderSpec, feature_id: str
 ) -> tuple[str, ...]:
@@ -39,7 +59,7 @@ def apply_fixture_change(
     same feature replays to the same bytes and the same changed path.
     """
     _validate_path(spec.path)
-    target = worktree_path / spec.path
+    target = _resolve_without_symlinks(worktree_path, spec.path)
     if target.is_dir():
         raise ValueError("fixture_coder.path must name a file, not a directory")
     target.parent.mkdir(parents=True, exist_ok=True)

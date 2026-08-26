@@ -63,3 +63,40 @@ def test_refuses_a_path_that_names_a_directory(tmp_path: Path) -> None:
     spec = FixtureCoderSpec(path="d", template="x\n")
     with pytest.raises(ValueError):
         apply_fixture_change(tmp_path, spec, "f")
+
+
+# --- symlink escape (DAL-R07A review N2) -------------------------------------
+
+
+def test_refuses_a_symlinked_file(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n")
+    (tmp_path / "README.md").symlink_to(outside)
+    spec = FixtureCoderSpec(path="README.md", template="x\n")
+
+    with pytest.raises(ValueError):
+        apply_fixture_change(tmp_path, spec, "f")
+    # The write never followed the symlink out of the worktree.
+    assert outside.read_text() == "secret\n"
+
+
+def test_refuses_a_symlinked_parent_directory(tmp_path: Path) -> None:
+    outside = tmp_path / "outside-dir"
+    outside.mkdir()
+    (tmp_path / "docs").symlink_to(outside, target_is_directory=True)
+    spec = FixtureCoderSpec(path="docs/note.md", template="x\n")
+
+    with pytest.raises(ValueError):
+        apply_fixture_change(tmp_path, spec, "f")
+    assert not (outside / "note.md").exists()
+
+
+def test_refuses_a_symlinked_worktree_root(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    spec = FixtureCoderSpec(path="README.md", template="x\n")
+
+    with pytest.raises(ValueError):
+        apply_fixture_change(link, spec, "f")

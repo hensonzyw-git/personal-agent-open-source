@@ -1204,6 +1204,28 @@ def test_poll_once_fixture_slice_refuses_a_missing_registry(
     assert queue.get_job(engine, job_id=job_id).state == "failed"
 
 
+def test_poll_once_fixture_slice_leaves_a_lost_lease_to_reclaim(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    """The fixture slice's verification runs under the same lease fence.
+
+    A lease lost mid-verification is abandoned for reclaim, not terminal, exactly
+    like the toolchain path.
+    """
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, fixture=True, test_cmd=("sleep", "0.5"))
+    job_id = _seed_job_for(engine, base_sha)
+
+    monkeypatch.setattr(queue, "heartbeat", lambda *args, **kwargs: False)
+
+    outcome = _poll(engine, config)
+
+    assert outcome.state is None
+    assert outcome.error == "lease_lost"
+    assert queue.get_job(engine, job_id=job_id).state in queue.ACTIVE_JOB_STATES
+    assert _count(engine, "worker_result_receipts") == 0
+
+
 def test_launchd_template_runs_as_login_user() -> None:
     path = (
         Path(__file__).parents[2]
