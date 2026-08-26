@@ -28,6 +28,7 @@ from personal_agent_core.timeutil import utc_now
 from personal_agent_dal.worker import checkpoint as checkpoint_mod
 from personal_agent_dal.worker.checkpoint import CheckpointBundle
 from personal_agent_dal.worker.config import WorkerConfig
+from personal_agent_dal.worker.fixture_coder import apply_fixture_change
 from personal_agent_dal.worker.transport import (
     JobLease,
     TransportDisabledError,
@@ -41,6 +42,7 @@ from personal_agent_dal.worker.toolchain import (
     execute_toolchain,
     load_toolchain_manifest,
 )
+from personal_agent_dal.worker.verification import CHECK_STAGES, run_verification
 
 RESULT_SCHEMA: Final[str] = "dal.worker-result/1.0"
 
@@ -192,6 +194,11 @@ def run_poll_once(
     )
 
 
+def _stage_exit_code(value: object) -> int:
+    """Normalise a verification report exit code to an int (None/odd -> 1)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else 1
+
+
 def _refusal_digest(lease: JobLease, reason: str) -> str:
     """The content-addressed digest of a refusal, so it can be reported at all.
 
@@ -282,7 +289,19 @@ def _execute_job(
             record.base_sha,
         )
         if add.returncode != 0:
-            return _refuse("worktree_add_failed")
+            # A prior worker may have created the branch and then crashed before
+            # recording a result (branch names are repo-global, worktree paths
+            # are worker-local). Attach a worktree to the existing branch, whose
+            # HEAD is still `base_sha` because the worker never commits.
+            add = _git(
+                repo_path,
+                "worktree",
+                "add",
+                str(worktree_path),
+                record.branch_name,
+            )
+            if add.returncode != 0:
+                return _refuse("worktree_add_failed")
 
     worktree_error = _validate_worktree(
         repo_path, worktree_path, base_sha=record.base_sha, branch_name=record.branch_name
@@ -309,6 +328,87 @@ def _execute_job(
     )
     if checkpoint_error is not None:
         return _refuse(checkpoint_error)
+
+    if manifest.fixture_coder is not None:
+        # DAL-R07A fixture slice: a deterministic no-model coder writes one
+        # tracked file, then the deterministic verification runs the diff and
+        # the four check stages. There is no provider stream and no per-stage
+        # checkpoint loop — the slice is one atomic verification + checkpoint.
+        if manifest.registry is None:
+            return _refuse("fixture_registry_missing")
+        try:
+            apply_fixture_change(
+                worktree_path, manifest.fixture_coder, record.feature_id
+            )
+        except ValueError:
+            return _refuse("fixture_path_invalid")
+        # The verification contract wants all five registered stages declared
+        # (diff + the four checks). The check stages' execution source is the
+        # pinned manifest, so their declared argv comes from it; the diff is the
+        # only stage the manifest's `registry` must name.
+        registry_commands = {
+            "diff": manifest.registry["diff"],
+            **{stage: manifest.stages[stage].command for stage in STAGES},
+        }
+        try:
+            evaluation = run_verification(
+                repo_path=worktree_path,
+                base_sha=record.base_sha,
+                registry_commands=registry_commands,
+                manifest=manifest,
+                entity_id=record.feature_id,
+                # The worktree's `.git` file points back into the main repo; git
+                # needs to read both to resolve HEAD and take a diff, so both are
+                # read-only roots for the sandboxed capture (same as the toolchain
+                # loop's `read_only_paths`).
+                read_only_paths=(repo_path, worktree_path / ".git"),
+            )
+        except SandboxUnavailableError:
+            _abandon("sandbox_unavailable")
+        except TransportError as error:
+            _abandon(error.reason)
+
+        completed = list(CHECK_STAGES)
+        test_results = {
+            stage: _stage_exit_code(evaluation.report.exit_codes.get(stage))
+            for stage in CHECK_STAGES
+        }
+        checkpoint = _build_checkpoint(
+            worktree_path, record, manifest.manifest_sha256, completed, test_results
+        )
+        try:
+            recorded = transport.record_checkpoint(
+                lease, checkpoint, sequence=len(completed)
+            )
+        except TransportError as error:
+            _abandon(error.reason)
+        if not recorded.recorded:
+            if recorded.conflict:
+                return _refuse("checkpoint_conflict")
+            _abandon("checkpoint_rejected")
+
+        result_sha256 = sha256_of(
+            {
+                "schema": RESULT_SCHEMA,
+                "job_id": record.job_id,
+                "feature_id": record.feature_id,
+                "repository_id": record.repository_id,
+                "base_sha": record.base_sha,
+                "branch_name": record.branch_name,
+                "toolchain_ref": record.toolchain_ref,
+                "toolchain_manifest_sha256": manifest.manifest_sha256,
+                "checkpoint_sha256": checkpoint_mod.checkpoint_sha256(checkpoint),
+                # The verification report is the authority on whether the diff
+                # is a real, non-empty, correctly-based change; bind the result
+                # to it, not only to the patch bytes.
+                "verification_report_hash": evaluation.report.report_hash,
+            }
+        )
+        if evaluation.result_status == "succeeded":
+            return _ExecutionResult("succeeded", result_sha256, None)
+        return _ExecutionResult(
+            "failed", result_sha256, f"verification_{evaluation.result_status}"
+        )
 
     completed = list(checkpoint.acceptance_progress) if checkpoint else []
     test_results = dict(checkpoint.test_results) if checkpoint else {}

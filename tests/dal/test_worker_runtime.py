@@ -354,22 +354,30 @@ def test_conflicting_result_is_not_idempotent(engine) -> None:
 
 
 def _write_manifest(
-    repo: Path, *, format_cmd=("true",), test_cmd=("true",)
+    repo: Path,
+    *,
+    format_cmd=("true",),
+    test_cmd=("true",),
+    fixture: bool = False,
+    fixture_path: str = "README.md",
+    template: str = "fixture {feature_id}\n",
 ) -> None:
+    body = {
+        "schema_version": "dal.toolchain-manifest/1.0",
+        "stages": {
+            "format": {"cmd": list(format_cmd)},
+            "lint": {"cmd": ["true"]},
+            "build": {"cmd": ["true"]},
+            "test": {"cmd": list(test_cmd)},
+        },
+    }
+    if fixture:
+        body["fixture_coder"] = {"path": fixture_path, "template": template}
+        body["registry"] = {
+            "diff": ["git", "diff", "--binary", "--no-ext-diff", "HEAD"]
+        }
     (repo / ".personal-agent").mkdir(parents=True, exist_ok=True)
-    (repo / ".personal-agent" / "toolchain.json").write_text(
-        json.dumps(
-            {
-                "schema_version": "dal.toolchain-manifest/1.0",
-                "stages": {
-                    "format": {"cmd": list(format_cmd)},
-                    "lint": {"cmd": ["true"]},
-                    "build": {"cmd": ["true"]},
-                    "test": {"cmd": list(test_cmd)},
-                },
-            }
-        )
-    )
+    (repo / ".personal-agent" / "toolchain.json").write_text(json.dumps(body))
 
 
 def test_manifest_schema_is_closed(tmp_path: Path) -> None:
@@ -801,7 +809,13 @@ def test_config_loader_fails_closed_on_unknown_key(tmp_path: Path) -> None:
 
 
 def _make_synthetic_repo(
-    repo: Path, *, format_cmd=("true",), test_cmd=("true",)
+    repo: Path,
+    *,
+    format_cmd=("true",),
+    test_cmd=("true",),
+    fixture: bool = False,
+    fixture_path: str = "README.md",
+    template: str = "fixture {feature_id}\n",
 ) -> str:
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -810,7 +824,14 @@ def _make_synthetic_repo(
         check=True,
     )
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-    _write_manifest(repo, format_cmd=format_cmd, test_cmd=test_cmd)
+    _write_manifest(
+        repo,
+        format_cmd=format_cmd,
+        test_cmd=test_cmd,
+        fixture=fixture,
+        fixture_path=fixture_path,
+        template=template,
+    )
     (repo / "README.md").write_text("synthetic\n")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"], check=True)
@@ -1101,6 +1122,86 @@ def test_poll_once_leaves_a_lost_lease_to_reclaim(
     assert outcome.error == "lease_lost"
     assert queue.get_job(engine, job_id=job_id).state in queue.ACTIVE_JOB_STATES
     assert _count(engine, "worker_result_receipts") == 0
+
+
+# --- DAL-R07A fixture slice --------------------------------------------------
+
+
+def test_poll_once_fixture_slice_succeeds(engine, config, tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, fixture=True)
+    job_id = _seed_job_for(engine, base_sha)
+
+    outcome = _poll(engine, config)
+
+    assert outcome.state == "succeeded"
+    record = queue.get_job(engine, job_id=job_id)
+    assert record.result_sha256 is not None
+    assert _count(engine, "worker_result_receipts") == 1
+    # The fixture wrote README.md, so the checkpoint carries the real diff.
+    bundle = checkpoint_mod.load_checkpoint(config.checkpoint_root, "feat-demo")
+    assert bundle is not None
+    assert bundle.changed_files == ("README.md",)
+    assert "fixture feat-demo" in bundle.patch
+
+
+def test_poll_once_fixture_slice_fails_on_a_failed_test(
+    engine, config, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, fixture=True, test_cmd=("false",))
+    job_id = _seed_job_for(engine, base_sha)
+
+    outcome = _poll(engine, config)
+
+    assert outcome.state == "failed"
+    assert outcome.error in ("verification_blocked", "verification_failed")
+    record = queue.get_job(engine, job_id=job_id)
+    assert record.state == "failed"
+    assert record.result_sha256 is not None
+
+
+def test_poll_once_fixture_slice_fails_on_an_empty_diff(
+    engine, config, tmp_path: Path
+) -> None:
+    # The fixture rewrites README.md to the same bytes it already holds, so
+    # `git diff HEAD` is empty and the verification refuses the unbound patch.
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, fixture=True, template="synthetic\n")
+    job_id = _seed_job_for(engine, base_sha)
+
+    outcome = _poll(engine, config)
+
+    assert outcome.state == "failed"
+    assert outcome.error in ("verification_blocked", "verification_failed")
+
+
+def test_poll_once_fixture_slice_refuses_a_missing_registry(
+    engine, config, tmp_path: Path
+) -> None:
+    repo = tmp_path / "repo"
+    _make_synthetic_repo(repo, fixture=True)
+    # Keep fixture_coder but drop the registry: the slice must refuse rather
+    # than invent a diff command.
+    manifest_path = repo / ".personal-agent" / "toolchain.json"
+    body = json.loads(manifest_path.read_text())
+    del body["registry"]
+    manifest_path.write_text(json.dumps(body))
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", "drop registry"], check=True
+    )
+    base_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    job_id = _seed_job_for(engine, base_sha)
+
+    outcome = _poll(engine, config)
+
+    assert outcome.state == "failed"
+    assert outcome.error == "fixture_registry_missing"
+    assert queue.get_job(engine, job_id=job_id).state == "failed"
 
 
 def test_launchd_template_runs_as_login_user() -> None:

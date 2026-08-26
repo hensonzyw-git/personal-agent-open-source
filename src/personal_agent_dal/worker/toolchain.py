@@ -30,6 +30,13 @@ TOOLCHAIN_SCHEMA: Final[str] = "dal.toolchain-manifest/1.0"
 #: The fixed, repo-checked-in manifest path. Never derived from issue text.
 TOOLCHAIN_PATH: Final[str] = ".personal-agent/toolchain.json"
 
+#: Closed top-level keys. `registry` and `fixture_coder` are optional and absent
+#: in the historical manifest, so their absence is not an error — only an
+#: unexpected key is.
+_TOP_KEYS: Final[frozenset[str]] = frozenset(
+    {"schema_version", "stages", "registry", "fixture_coder"}
+)
+
 #: The stages, in the order a worker always runs them.
 STAGES: Final[tuple[str, ...]] = ("format", "lint", "build", "test")
 
@@ -143,13 +150,32 @@ class StageSpec:
 
 
 @dataclass(frozen=True)
+class FixtureCoderSpec:
+    """The manifest's deterministic no-model coder declaration (DAL-R07A).
+
+    `path` is a single repo-relative tracked file the fixture writes; `template`
+    is the deterministic content with an optional `{feature_id}` placeholder.
+    """
+
+    path: str
+    template: str
+
+
+@dataclass(frozen=True)
 class ToolchainManifest:
-    """The parsed, validated manifest. `stages` is keyed by stage name."""
+    """The parsed, validated manifest. `stages` is keyed by stage name.
+
+    `registry` and `fixture_coder` are optional: a manifest without them drives
+    the existing toolchain-only path; a manifest with `fixture_coder` drives the
+    DAL-R07A fixture slice (where `registry` becomes required).
+    """
 
     schema_version: str
     toolchain_ref: str
     manifest_sha256: str
     stages: dict[str, StageSpec]
+    registry: dict[str, tuple[str, ...]] | None = None
+    fixture_coder: FixtureCoderSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -207,6 +233,11 @@ def load_toolchain_manifest(repo_path: Path) -> ToolchainManifest:
         raise ValueError(
             f"unsupported toolchain schema: {body.get('schema_version')!r}"
         )
+    unknown_top = set(body) - _TOP_KEYS
+    if unknown_top:
+        raise ValueError(
+            f"unknown toolchain manifest keys: {sorted(unknown_top)!r}"
+        )
     raw_stages = body.get("stages")
     if not isinstance(raw_stages, dict):
         raise ValueError("toolchain manifest 'stages' must be an object")
@@ -245,7 +276,48 @@ def load_toolchain_manifest(repo_path: Path) -> ToolchainManifest:
             canonical_json(body).encode("utf-8")
         ).hexdigest(),
         stages=stages,
+        registry=_load_registry(body),
+        fixture_coder=_load_fixture_coder(body),
     )
+
+
+def _load_registry(body: dict) -> dict[str, tuple[str, ...]] | None:
+    """Parse the optional `registry` declaration (the verification diff argv)."""
+    raw = body.get("registry")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("toolchain 'registry' must be a non-empty object")
+    unknown = set(raw) - {"diff"}
+    if unknown:
+        raise ValueError(f"unknown registry keys: {sorted(unknown)!r}")
+    diff = raw.get("diff")
+    if (
+        not isinstance(diff, list)
+        or not diff
+        or not all(isinstance(token, str) and token for token in diff)
+    ):
+        raise ValueError("toolchain 'registry.diff' must be a non-empty argv")
+    return {"diff": tuple(diff)}
+
+
+def _load_fixture_coder(body: dict) -> FixtureCoderSpec | None:
+    """Parse the optional `fixture_coder` declaration (DAL-R07A no-model coder)."""
+    raw = body.get("fixture_coder")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("toolchain 'fixture_coder' must be an object")
+    unknown = set(raw) - {"path", "template"}
+    if unknown:
+        raise ValueError(f"unknown fixture_coder keys: {sorted(unknown)!r}")
+    path = raw.get("path")
+    template = raw.get("template")
+    if not isinstance(path, str) or not path:
+        raise ValueError("fixture_coder.path must be a non-empty string")
+    if not isinstance(template, str) or not template:
+        raise ValueError("fixture_coder.template must be a non-empty string")
+    return FixtureCoderSpec(path=path, template=template)
 
 
 class LeaseLostError(RuntimeError):
@@ -453,6 +525,7 @@ def run_sandboxed_command(
     read_only_paths: tuple[Path, ...] = (),
     timeout_s: float = DEFAULT_TIMEOUT_S,
     monotonic=time.monotonic,
+    capture_stderr: bool = True,
 ) -> tuple[str, int]:
     """Run one command under the same default-deny sandbox, credential-free env
     and output bound that `execute_toolchain` stages use, returning
@@ -462,6 +535,12 @@ def run_sandboxed_command(
     Exists so the diff capture — which is *not* a toolchain manifest stage — gets
     the identical subprocess boundary instead of a bare `subprocess.run`. It has
     no lease/heartbeat semantics; callers that need those use `execute_toolchain`.
+
+    `capture_stderr=False` discards stderr instead of merging it. Git run through
+    the Xcode CommandLineTools shim under the sandbox emits noisy, timestamped
+    `xcodebuild`/DVT diagnostics on stderr; a caller that only wants git's clean
+    stdout (a SHA, a diff) must opt out of merging or that noise corrupts the
+    output and breaks replay.
     """
     with tempfile.TemporaryDirectory(prefix="personal-agent-dal-cmd-") as raw_temp:
         temp_path = Path(raw_temp)
@@ -471,7 +550,7 @@ def run_sandboxed_command(
             cwd=str(repo_path),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.STDOUT if capture_stderr else subprocess.DEVNULL,
             text=True,
             env=_child_environment(temp_path),
             close_fds=True,

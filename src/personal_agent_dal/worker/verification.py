@@ -51,21 +51,35 @@ def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _head_sha(repo_path: Path) -> str:
+def _head_sha(
+    repo_path: Path, *, read_only_paths: tuple[Path, ...] = ()
+) -> str:
     """The worktree HEAD, read under the sandbox. Reported as the diff base so
     the classifier can refuse a diff that was not taken against the requested
     base. A failed `rev-parse` returns an empty/non-sha string, which the
     classifier's binding check refuses."""
-    output, _code = run_sandboxed_command(("git", "rev-parse", "HEAD"), repo_path)
+    output, _code = run_sandboxed_command(
+        ("git", "rev-parse", "HEAD"),
+        repo_path,
+        read_only_paths=read_only_paths,
+        capture_stderr=False,
+    )
     return output.strip()
 
 
-def _capture_diff(repo_path: Path, diff_command: tuple[str, ...]) -> tuple[str, int]:
+def _capture_diff(
+    repo_path: Path,
+    diff_command: tuple[str, ...],
+    *,
+    read_only_paths: tuple[Path, ...] = (),
+) -> tuple[str, int]:
     """Run the declared diff command under the sandbox and return
     `(bounded_output, exit_code)`. stderr is merged into stdout, so a failed
     `git diff` yields error text as `diff` — the classifier's diff-exit-code and
     integrity checks (not the worker) own the verdict."""
-    return run_sandboxed_command(diff_command, repo_path)
+    return run_sandboxed_command(
+        diff_command, repo_path, read_only_paths=read_only_paths, capture_stderr=False
+    )
 
 
 def run_verification(
@@ -78,6 +92,7 @@ def run_verification(
     entity_id: str = "feature",
     version: int = 0,
     operation_id: str = "verify-feature",
+    read_only_paths: tuple[Path, ...] = (),
 ) -> VerificationEvaluation:
     """Capture the diff, run the checks, and consume the verification.
 
@@ -108,9 +123,11 @@ def run_verification(
     # Read the baseline before and after the diff; a concurrent HEAD move during
     # the capture makes the two disagree, and we report an unbound base so the
     # classifier fails closed rather than binding the patch to the wrong SHA.
-    head_before = _head_sha(repo_path)
-    diff_text, diff_exit_code = _capture_diff(repo_path, diff_command)
-    head_after = _head_sha(repo_path)
+    head_before = _head_sha(repo_path, read_only_paths=read_only_paths)
+    diff_text, diff_exit_code = _capture_diff(
+        repo_path, diff_command, read_only_paths=read_only_paths
+    )
+    head_after = _head_sha(repo_path, read_only_paths=read_only_paths)
     diff_base_sha = head_before if head_before == head_after else ""
 
     toolchain = execute_toolchain(repo_path, manifest, stages=CHECK_STAGES)

@@ -58,9 +58,15 @@ def _install_fakes(
 ) -> None:
     """Install mocked HEAD, diff capture and toolchain; record what each saw."""
 
-    monkeypatch.setattr(verification, "_head_sha", lambda repo_path: BASE_SHA)
+    monkeypatch.setattr(
+        verification,
+        "_head_sha",
+        lambda repo_path, *, read_only_paths=(): BASE_SHA,
+    )
 
-    def fake_capture_diff(repo_path: Path, diff_command: tuple[str, ...]):
+    def fake_capture_diff(
+        repo_path: Path, diff_command: tuple[str, ...], *, read_only_paths=()
+    ):
         capture["diff_command"] = diff_command
         return DIFF_TEXT, 0
 
@@ -214,7 +220,11 @@ def test_head_move_during_diff_fails_closed(monkeypatch) -> None:
     _install_fakes(monkeypatch, returncodes={}, capture=capture)
 
     heads = iter([BASE_SHA, "f" * 40])
-    monkeypatch.setattr(verification, "_head_sha", lambda repo_path: next(heads))
+    monkeypatch.setattr(
+        verification,
+        "_head_sha",
+        lambda repo_path, *, read_only_paths=(): next(heads),
+    )
 
     outcome = verification.run_verification(
         repo_path=REPO,
