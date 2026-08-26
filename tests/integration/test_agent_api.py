@@ -713,6 +713,7 @@ def test_clarified_explicit_family_expense_keeps_the_expense_tool_requirement(
         headers=_auth(token_ring, key=REQUEST_ID_1),
     )
     assert parked.json()["state"] == "waiting_for_clarification"
+    assert interpreter.calls[0].finance_clarification_required is True
 
     resumed = client.post(
         "/v1/chat/messages",
@@ -728,6 +729,7 @@ def test_clarified_explicit_family_expense_keeps_the_expense_tool_requirement(
     continuation = interpreter.calls[1]
     assert continuation.finance_intent_required is True
     assert continuation.finance_required_tool == "finance.log_expense"
+    assert continuation.finance_clarification_required is False
     context = "\n".join(
         continuation.texts_of(ComponentKind.CLARIFICATION_CONTEXT)
     )

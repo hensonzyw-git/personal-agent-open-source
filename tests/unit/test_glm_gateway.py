@@ -413,6 +413,32 @@ def test_a_clarified_explicit_expense_resumes_with_only_its_tool_or_safe_calls(
     assert generate.kwargs["messages"][-1] == {"role": "user", "content": "昨天"}
 
 
+def test_a_date_merchant_ambiguity_allows_only_clarification_or_safe_failure(
+    tmp_path,
+) -> None:
+    built = envelope_for(
+        tmp_path,
+        user_text="昨天晚饭很久以前 283.99 家庭支出",
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(
+        _response(
+            _call(
+                "agent.ask_clarification",
+                {"question": "很久以前是商户名还是付款时间？", "reason": "date"},
+            )
+        )
+    )
+
+    _propose(gateway, built)
+
+    assert built.finance_clarification_required is True
+    assert generate.kwargs["allowed_function_names"] == [
+        "agent.ask_clarification",
+        "agent.fail_safely",
+    ]
+
+
 def test_every_envelope_data_component_reaches_the_provider_in_fixed_order() -> None:
     kinds = (
         ComponentKind.CAPABILITY_SUMMARY,

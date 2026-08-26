@@ -28,6 +28,7 @@ def test_prompt_keeps_original_finance_boundaries() -> None:
     assert "没有默认值" in prompt
     assert "不要提供个人/家庭属性或收入分类" in prompt
     assert "绝不能为“个人还是家庭收入”或日期缺失发起澄清" in prompt
+    assert "商户名还是付款时间" in prompt
     assert "不执行银行转账" in prompt
     assert "不要自行读取旧余额" in prompt
     assert "全量分页" in prompt
