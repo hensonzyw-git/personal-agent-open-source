@@ -42,10 +42,16 @@ from personal_agent_dal.worker.config import (
     RepoAllowlistEntry,
     WorkerConfig,
 )
-from personal_agent_dal.worker.poll_once import run_poll_once
-from personal_agent_dal.worker.transport import LocalSQLiteAdapter
+from personal_agent_dal.worker.coder_launcher import CoderRunResult
+from personal_agent_dal.worker.poll_once import (
+    _classifier_digest,
+    _context_envelope_sha256,
+    run_poll_once,
+)
+from personal_agent_dal.worker.transport import JobLease, LocalSQLiteAdapter
 from personal_agent_dal.worker.toolchain import (
     TIMEOUT_RETURNCODE,
+    CoderSpec,
     load_toolchain_manifest,
     execute_toolchain,
     run_sandboxed_command,
@@ -361,6 +367,8 @@ def _write_manifest(
     fixture: bool = False,
     fixture_path: str = "README.md",
     template: str = "fixture {feature_id}\n",
+    coder: bool = False,
+    coder_allowed_paths=("README.md",),
 ) -> None:
     body = {
         "schema_version": "dal.toolchain-manifest/1.0",
@@ -373,6 +381,20 @@ def _write_manifest(
     }
     if fixture:
         body["fixture_coder"] = {"path": fixture_path, "template": template}
+        body["registry"] = {
+            "diff": ["git", "diff", "--binary", "--no-ext-diff", "HEAD"]
+        }
+    if coder:
+        body["coder"] = {
+            "model_alias": "dal-ccr-primary",
+            "allowed_tools": ["read", "edit", "bash"],
+            "max_turns": 8,
+            "max_wall_seconds": 900,
+            "max_patch_bytes": 1048576,
+            "prompt": "In {feature_id}, add one tracked change.",
+            "allowed_paths": list(coder_allowed_paths),
+            "pinned_endpoint": "127.0.0.1:3456",
+        }
         body["registry"] = {
             "diff": ["git", "diff", "--binary", "--no-ext-diff", "HEAD"]
         }
@@ -816,6 +838,8 @@ def _make_synthetic_repo(
     fixture: bool = False,
     fixture_path: str = "README.md",
     template: str = "fixture {feature_id}\n",
+    coder: bool = False,
+    coder_allowed_paths=("README.md",),
 ) -> str:
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -831,6 +855,8 @@ def _make_synthetic_repo(
         fixture=fixture,
         fixture_path=fixture_path,
         template=template,
+        coder=coder,
+        coder_allowed_paths=coder_allowed_paths,
     )
     (repo / "README.md").write_text("synthetic\n")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
@@ -1224,6 +1250,158 @@ def test_poll_once_fixture_slice_leaves_a_lost_lease_to_reclaim(
     assert outcome.error == "lease_lost"
     assert queue.get_job(engine, job_id=job_id).state in queue.ACTIVE_JOB_STATES
     assert _count(engine, "worker_result_receipts") == 0
+
+
+# --- DAL-R07B provider-coder route (offline, fake run_coder) ----------------
+
+
+_CODER_MANIFEST = {
+    "model_alias": "dal-ccr-primary",
+    "allowed_tools": ("read", "edit", "bash"),
+    "max_turns": 8,
+    "max_wall_seconds": 900,
+    "max_patch_bytes": 1048576,
+    "prompt": "In {feature_id}, add one tracked change.",
+    "allowed_paths": ("README.md",),
+    "pinned_endpoint": "127.0.0.1:3456",
+}
+
+
+def _coder_spec() -> CoderSpec:
+    return CoderSpec(**{k: v for k, v in _CODER_MANIFEST.items()})
+
+
+def _coder_envelope(base_sha: str) -> str:
+    lease = JobLease(
+        job_id="job",
+        feature_id="feat-demo",
+        repository_id="synthetic",
+        base_sha=base_sha,
+        branch_name="codex/feature-feat-demo",
+        toolchain_ref=".personal-agent/toolchain.json",
+        lease_epoch=1,
+        attempt=0,
+        deadline=None,
+    )
+    return _context_envelope_sha256(lease, _coder_spec())
+
+
+def _make_coder_fake(
+    base_sha: str,
+    *,
+    changed_files=("README.md",),
+    envelope: str | None = None,
+    output: str | None = None,
+):
+    envelope = envelope or _coder_envelope(base_sha)
+
+    def fake(spec, **kw):
+        # Simulate the coder's edit tool writing into the worktree.
+        (spec.cwd / "README.md").write_text("coder change\n")
+        if output is None:
+            output_text = (
+                json.dumps(
+                    {
+                        "type": "final",
+                        "content": "dal.patch-artifact/1.0:ref",
+                        "base_sha": base_sha,
+                        "context_envelope_sha256": envelope,
+                        "changed_files": list(changed_files),
+                    }
+                )
+                + "\n"
+            )
+        else:
+            output_text = output
+        return CoderRunResult(
+            returncode=0,
+            output=output_text,
+            timed_out=False,
+            cancelled=False,
+            duration_s=0.01,
+        )
+
+    return fake
+
+
+def test_poll_once_provider_coder_succeeds(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, coder=True)
+    job_id = _seed_job_for(engine, base_sha)
+
+    monkeypatch.setattr(
+        "personal_agent_dal.worker.poll_once.run_coder", _make_coder_fake(base_sha)
+    )
+
+    outcome = _poll(engine, config)
+
+    assert outcome.state == "succeeded"
+    record = queue.get_job(engine, job_id=job_id)
+    assert record.result_sha256 is not None
+    assert _count(engine, "worker_result_receipts") == 1
+    # The coder wrote the worktree; the checkpoint captures that diff.
+    bundle = checkpoint_mod.load_checkpoint(config.checkpoint_root, "feat-demo")
+    assert bundle is not None
+    assert "coder change" in bundle.patch
+
+
+def test_poll_once_provider_coder_refuses_an_out_of_scope_diff(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, coder=True)
+    job_id = _seed_job_for(engine, base_sha)
+
+    # The classifier refuses a final whose changed_files escape allowed_paths.
+    monkeypatch.setattr(
+        "personal_agent_dal.worker.poll_once.run_coder",
+        _make_coder_fake(base_sha, changed_files=("outside.txt",)),
+    )
+
+    outcome = _poll(engine, config)
+
+    assert outcome.state == "failed"
+    assert outcome.error in ("coder_failed", "coder_blocked")
+
+
+def test_poll_once_provider_coder_refuses_a_tampered_context_envelope(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, coder=True)
+    job_id = _seed_job_for(engine, base_sha)
+
+    # The final event echoes a context envelope that does not match the request:
+    # the classifier refuses it rather than trusting the stream's own claim.
+    monkeypatch.setattr(
+        "personal_agent_dal.worker.poll_once.run_coder",
+        _make_coder_fake(base_sha, envelope="0" * 64),
+    )
+
+    outcome = _poll(engine, config)
+
+    assert outcome.state == "failed"
+    assert outcome.error in ("coder_failed", "coder_blocked")
+
+
+def test_poll_once_provider_coder_refuses_unparseable_output(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, coder=True)
+    job_id = _seed_job_for(engine, base_sha)
+
+    monkeypatch.setattr(
+        "personal_agent_dal.worker.poll_once.run_coder",
+        _make_coder_fake(base_sha, output="not-json\n"),
+    )
+
+    outcome = _poll(engine, config)
+
+    assert outcome.state == "failed"
+    assert outcome.error == "coder_output_unparseable"
 
 
 def test_launchd_template_runs_as_login_user() -> None:

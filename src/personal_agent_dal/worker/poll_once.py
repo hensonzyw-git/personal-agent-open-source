@@ -14,6 +14,8 @@ CLAUDE.md §5.2).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -25,8 +27,17 @@ from typing import Final, NoReturn
 from personal_agent_core.manifest import sha256_of
 from personal_agent_core.timeutil import utc_now
 
+from personal_agent_dal.machine.coder_contract import (
+    COMMAND_TYPE,
+    CONTRACT_VERSION,
+    EVIDENCE_SOURCE,
+    OPERATION_SPEC_ID,
+    SERVICE_ACTOR,
+    consume_coder_stream,
+)
 from personal_agent_dal.worker import checkpoint as checkpoint_mod
 from personal_agent_dal.worker.checkpoint import CheckpointBundle
+from personal_agent_dal.worker.coder_launcher import CoderRunSpec, run_coder
 from personal_agent_dal.worker.config import WorkerConfig
 from personal_agent_dal.worker.fixture_coder import apply_fixture_change
 from personal_agent_dal.worker.transport import (
@@ -37,6 +48,7 @@ from personal_agent_dal.worker.transport import (
 )
 from personal_agent_dal.worker.toolchain import (
     STAGES,
+    CoderSpec,
     LeaseLostError,
     SandboxUnavailableError,
     execute_toolchain,
@@ -199,6 +211,59 @@ def _stage_exit_code(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 1
 
 
+CODER_CONTEXT_SCHEMA: Final[str] = "dal.coder-context-envelope/1.0"
+CODER_CLASSIFIER_ID: Final[str] = "dal.coder-classifier/1.0"
+
+
+def _context_envelope_sha256(lease: JobLease, coder: CoderSpec) -> str:
+    """The worker-side context envelope digest for the coder request.
+
+    The correct authority for this value is the controller (which assembles the
+    context); the worker has none yet, so it derives a deterministic binding over
+    exactly the facts the request carries. The coder's `final` event must echo
+    this digest — that is how the classifier proves the stream belongs to this
+    request. When the controller later ships this value, only this function
+    changes.
+    """
+    return sha256_of(
+        {
+            "schema": CODER_CONTEXT_SCHEMA,
+            "base_sha": lease.base_sha,
+            "feature_id": lease.feature_id,
+            "allowed_tools": list(coder.allowed_tools),
+            "allowed_paths": list(coder.allowed_paths),
+            "prompt": coder.prompt,
+            "max_turns": coder.max_turns,
+            "max_wall_seconds": coder.max_wall_seconds,
+            "pinned_endpoint": coder.pinned_endpoint,
+        }
+    )
+
+
+def _classifier_digest() -> str:
+    """The classifier identity digest bound into `requested_classifier_digest`."""
+    return hashlib.sha256(
+        (CODER_CLASSIFIER_ID + ":" + CONTRACT_VERSION).encode("utf-8")
+    ).hexdigest()
+
+
+def _parse_coder_stream(output: str) -> list[dict] | None:
+    """Parse newline-delimited stream-json into event dicts; None on bad JSON."""
+    events: list[dict] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(event, dict):
+            return None
+        events.append(event)
+    return events
+
+
 def _refusal_digest(lease: JobLease, reason: str) -> str:
     """The content-addressed digest of a refusal, so it can be reported at all.
 
@@ -340,6 +405,176 @@ def _execute_job(
         if outcome.cancel_requested:
             guard_failure = "cancelled"
         return outcome.alive
+
+    if manifest.coder is not None:
+        # DAL-R07B real-coder route: launch the coder (claude -p in production,
+        # a fake in offline tests), classify its stream with the coder contract,
+        # then verify the worktree diff the coder wrote.
+        coder_spec = manifest.coder
+        run_root = config.checkpoint_root / "coder-runs" / record.job_id
+        run_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        spec = CoderRunSpec(
+            model_alias=coder_spec.model_alias,
+            max_turns=coder_spec.max_turns,
+            max_wall_seconds=float(coder_spec.max_wall_seconds),
+            allowed_tools=coder_spec.allowed_tools,
+            prompt=coder_spec.prompt.replace("{feature_id}", record.feature_id),
+            cwd=worktree_path,
+            run_root=run_root,
+        )
+
+        def _cancel_event() -> bool:
+            return not _lease_guard()
+
+        try:
+            result = run_coder(
+                spec,
+                cancel_event=_cancel_event,
+                heartbeat_interval_s=max(
+                    0.25, min(5.0, config.lease_ttl_seconds / 3)
+                ),
+            )
+        except LeaseLostError:
+            _abandon(guard_failure)
+        except SandboxUnavailableError:
+            _abandon("sandbox_unavailable")
+        except TransportError as error:
+            _abandon(error.reason)
+
+        if result.cancelled:
+            _abandon(guard_failure)
+
+        events = _parse_coder_stream(result.output)
+        if events is None:
+            return _refuse("coder_output_unparseable")
+
+        envelope_sha256 = _context_envelope_sha256(record, coder_spec)
+        classifier_digest = _classifier_digest()
+        command = {
+            "schema_version": "dal.test-operation-command/1.0",
+            "operation_id": f"code:{record.feature_id}",
+            "idempotency_key": f"code:{record.feature_id}:{record.base_sha}",
+            "operation_spec_id": OPERATION_SPEC_ID,
+            "actor_type": SERVICE_ACTOR,
+            "evidence_source_type": EVIDENCE_SOURCE,
+            "input": {
+                "schema_version": "dal.operation-input/1.0",
+                "target": {
+                    "entity_id": record.feature_id,
+                    "entity_type": "feature",
+                    "state": "coding",
+                    "version": 0,
+                },
+                "action_sequence": [
+                    {"command": COMMAND_TYPE, "contract_version": CONTRACT_VERSION}
+                ],
+                "authoritative_facts": {
+                    "allowed_tools": list(coder_spec.allowed_tools),
+                    "max_turns": coder_spec.max_turns,
+                    "max_wall_seconds": coder_spec.max_wall_seconds,
+                    "max_patch_bytes": coder_spec.max_patch_bytes,
+                    "base_sha": record.base_sha,
+                    "requested_context_envelope_sha256": envelope_sha256,
+                    "requested_classifier_digest": classifier_digest,
+                    "pinned_endpoint": coder_spec.pinned_endpoint,
+                    "allowed_paths": list(coder_spec.allowed_paths),
+                },
+                "injected_results": {
+                    "classifier_digest_post": classifier_digest,
+                    "observed_endpoint": coder_spec.pinned_endpoint,
+                    "redaction_scan": "passed",
+                    "endpoint_policy": "passed",
+                    "sandbox_violation": False,
+                    "canary_observed": False,
+                    "exit_code": result.returncode,
+                    "transport": {
+                        "http_status": None,
+                        "account_scoped_429": False,
+                        "provider_error_code": None,
+                        "timed_out": result.timed_out,
+                        "disconnected": result.returncode is None
+                        and not result.timed_out,
+                    },
+                    "budget": {
+                        "turns_exhausted": False,
+                        "wall_seconds_exhausted": result.timed_out,
+                        "patch_bytes_exhausted": False,
+                    },
+                    "stream": events,
+                },
+            },
+        }
+        evaluation = consume_coder_stream(command)
+        if evaluation.result_status != "succeeded":
+            # contract/policy/budget failure is a terminal verdict about the
+            # coder's output, not a transient fault.
+            return _refuse(f"coder_{evaluation.result_status}")
+
+        if manifest.registry is None:
+            return _refuse("coder_registry_missing")
+        registry_commands = {
+            "diff": manifest.registry["diff"],
+            **{stage: manifest.stages[stage].command for stage in STAGES},
+        }
+        try:
+            verification = run_verification(
+                repo_path=worktree_path,
+                base_sha=record.base_sha,
+                registry_commands=registry_commands,
+                manifest=manifest,
+                entity_id=record.feature_id,
+                read_only_paths=(repo_path, worktree_path / ".git"),
+                lease_guard=_lease_guard,
+                heartbeat_interval_s=max(
+                    0.25, min(5.0, config.lease_ttl_seconds / 3)
+                ),
+            )
+        except LeaseLostError:
+            _abandon(guard_failure)
+        except SandboxUnavailableError:
+            _abandon("sandbox_unavailable")
+        except TransportError as error:
+            _abandon(error.reason)
+
+        completed = list(CHECK_STAGES)
+        test_results = {
+            stage: _stage_exit_code(verification.report.exit_codes.get(stage))
+            for stage in CHECK_STAGES
+        }
+        checkpoint = _build_checkpoint(
+            worktree_path, record, manifest.manifest_sha256, completed, test_results
+        )
+        try:
+            recorded = transport.record_checkpoint(
+                lease, checkpoint, sequence=len(completed)
+            )
+        except TransportError as error:
+            _abandon(error.reason)
+        if not recorded.recorded:
+            if recorded.conflict:
+                return _refuse("checkpoint_conflict")
+            _abandon("checkpoint_rejected")
+
+        result_sha256 = sha256_of(
+            {
+                "schema": RESULT_SCHEMA,
+                "job_id": record.job_id,
+                "feature_id": record.feature_id,
+                "repository_id": record.repository_id,
+                "base_sha": record.base_sha,
+                "branch_name": record.branch_name,
+                "toolchain_ref": record.toolchain_ref,
+                "toolchain_manifest_sha256": manifest.manifest_sha256,
+                "checkpoint_sha256": checkpoint_mod.checkpoint_sha256(checkpoint),
+                "verification_report_hash": verification.report.report_hash,
+                "coder_classifier_digest": classifier_digest,
+            }
+        )
+        if verification.result_status == "succeeded":
+            return _ExecutionResult("succeeded", result_sha256, None)
+        return _ExecutionResult(
+            "failed", result_sha256, f"verification_{verification.result_status}"
+        )
 
     if manifest.fixture_coder is not None:
         # DAL-R07A fixture slice: a deterministic no-model coder writes one

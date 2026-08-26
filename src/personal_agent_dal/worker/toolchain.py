@@ -34,7 +34,7 @@ TOOLCHAIN_PATH: Final[str] = ".personal-agent/toolchain.json"
 #: in the historical manifest, so their absence is not an error — only an
 #: unexpected key is.
 _TOP_KEYS: Final[frozenset[str]] = frozenset(
-    {"schema_version", "stages", "registry", "fixture_coder"}
+    {"schema_version", "stages", "registry", "fixture_coder", "coder"}
 )
 
 #: The stages, in the order a worker always runs them.
@@ -162,12 +162,31 @@ class FixtureCoderSpec:
 
 
 @dataclass(frozen=True)
+class CoderSpec:
+    """The manifest's real-coder declaration (DAL-R07B).
+
+    These values feed both `CoderRunSpec` (the launch) and `consume_coder_stream`
+    (the authoritative facts). `prompt` supports a `{feature_id}` placeholder.
+    """
+
+    model_alias: str
+    allowed_tools: tuple[str, ...]
+    max_turns: int
+    max_wall_seconds: int
+    max_patch_bytes: int
+    prompt: str
+    allowed_paths: tuple[str, ...]
+    pinned_endpoint: str
+
+
+@dataclass(frozen=True)
 class ToolchainManifest:
     """The parsed, validated manifest. `stages` is keyed by stage name.
 
-    `registry` and `fixture_coder` are optional: a manifest without them drives
-    the existing toolchain-only path; a manifest with `fixture_coder` drives the
-    DAL-R07A fixture slice (where `registry` becomes required).
+    `registry`, `fixture_coder` and `coder` are optional. A manifest without any
+    coder drives the existing toolchain-only path; `fixture_coder` drives the
+    DAL-R07A no-model slice, `coder` drives the DAL-R07B real-coder slice. The
+    two coder declarations are mutually exclusive.
     """
 
     schema_version: str
@@ -176,6 +195,7 @@ class ToolchainManifest:
     stages: dict[str, StageSpec]
     registry: dict[str, tuple[str, ...]] | None = None
     fixture_coder: FixtureCoderSpec | None = None
+    coder: CoderSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -269,6 +289,12 @@ def load_toolchain_manifest(repo_path: Path) -> ToolchainManifest:
             timeout_s = MAX_TIMEOUT_S
         stages[stage] = StageSpec(command=tuple(command), timeout_s=float(timeout_s))
 
+    fixture_coder = _load_fixture_coder(body)
+    coder = _load_coder(body)
+    if fixture_coder is not None and coder is not None:
+        raise ValueError(
+            "toolchain 'fixture_coder' and 'coder' are mutually exclusive"
+        )
     return ToolchainManifest(
         schema_version=TOOLCHAIN_SCHEMA,
         toolchain_ref=TOOLCHAIN_PATH,
@@ -277,7 +303,8 @@ def load_toolchain_manifest(repo_path: Path) -> ToolchainManifest:
         ).hexdigest(),
         stages=stages,
         registry=_load_registry(body),
-        fixture_coder=_load_fixture_coder(body),
+        fixture_coder=fixture_coder,
+        coder=coder,
     )
 
 
@@ -318,6 +345,69 @@ def _load_fixture_coder(body: dict) -> FixtureCoderSpec | None:
     if not isinstance(template, str) or not template:
         raise ValueError("fixture_coder.template must be a non-empty string")
     return FixtureCoderSpec(path=path, template=template)
+
+
+def _load_coder(body: dict) -> CoderSpec | None:
+    """Parse the optional `coder` declaration (DAL-R07B real-coder route)."""
+    raw = body.get("coder")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("toolchain 'coder' must be an object")
+    unknown = set(raw) - {
+        "model_alias",
+        "allowed_tools",
+        "max_turns",
+        "max_wall_seconds",
+        "max_patch_bytes",
+        "prompt",
+        "allowed_paths",
+        "pinned_endpoint",
+    }
+    if unknown:
+        raise ValueError(f"unknown coder keys: {sorted(unknown)!r}")
+
+    model_alias = raw.get("model_alias")
+    if not isinstance(model_alias, str) or not model_alias:
+        raise ValueError("coder.model_alias must be a non-empty string")
+    prompt = raw.get("prompt")
+    if not isinstance(prompt, str) or not prompt:
+        raise ValueError("coder.prompt must be a non-empty string")
+    pinned_endpoint = raw.get("pinned_endpoint")
+    if not isinstance(pinned_endpoint, str) or not pinned_endpoint:
+        raise ValueError("coder.pinned_endpoint must be a non-empty string")
+
+    allowed_tools = _non_empty_str_list(raw, "allowed_tools")
+    allowed_paths = _non_empty_str_list(raw, "allowed_paths")
+
+    return CoderSpec(
+        model_alias=model_alias,
+        allowed_tools=tuple(allowed_tools),
+        max_turns=_positive_int_field(raw, "max_turns"),
+        max_wall_seconds=_positive_int_field(raw, "max_wall_seconds"),
+        max_patch_bytes=_positive_int_field(raw, "max_patch_bytes"),
+        prompt=prompt,
+        allowed_paths=tuple(allowed_paths),
+        pinned_endpoint=pinned_endpoint,
+    )
+
+
+def _non_empty_str_list(raw: dict, key: str) -> list[str]:
+    value = raw.get(key)
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"coder.{key} must be a non-empty array")
+    if not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"coder.{key} must be non-empty strings")
+    if len(set(value)) != len(value):
+        raise ValueError(f"coder.{key} must not repeat")
+    return value
+
+
+def _positive_int_field(raw: dict, key: str) -> int:
+    value = raw.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"coder.{key} must be a positive integer")
+    return value
 
 
 class LeaseLostError(RuntimeError):
