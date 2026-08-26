@@ -1400,7 +1400,7 @@ def test_poll_once_provider_coder_refuses_a_provider_error(
     outcome = _poll(engine, config)
 
     assert outcome.state == "failed"
-    assert outcome.error == "coder_provider_error"
+    assert outcome.error.startswith("coder_provider_error")
 
 
 def test_poll_once_provider_coder_refuses_an_empty_diff(

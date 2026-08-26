@@ -321,17 +321,24 @@ def _adapt_claude_stream(
     return events
 
 
-def _claude_result_is_error(claude_events: list[dict], returncode: int | None) -> bool:
-    """True when the run's claude `result` event reports a provider error.
+def _claude_error_detail(claude_events: list[dict], returncode: int | None) -> str | None:
+    """Return a bounded error detail when the claude run failed, else None.
 
-    A clean run ends with a `result` event of `subtype=success`; an error run
-    ends with `subtype=error` (or `is_error`). No `result` at all means the child
-    died without a clean summary, which only counts as clean on a zero exit code.
+    A clean run ends with a `result` event of `subtype=success` and `is_error`
+    falsy; an error run carries `subtype=error` or `is_error:true`. The detail is
+    the `result`/`error` text (or the raw return code when no result event
+    exists), truncated so a provider message never lands verbatim in a log line.
     """
     for event in reversed(claude_events):
         if event.get("type") == "result":
-            return event.get("subtype") == "error" or bool(event.get("is_error"))
-    return returncode != 0
+            if event.get("subtype") == "error" or bool(event.get("is_error")):
+                text = event.get("result") or event.get("error") or ""
+                text = text if isinstance(text, str) else str(text)
+                return text[:200] if text else "unknown"
+            return None
+    if returncode != 0:
+        return f"returncode={returncode}"
+    return None
 
 
 def _refusal_digest(lease: JobLease, reason: str) -> str:
@@ -517,10 +524,9 @@ def _execute_job(
         claude_events = _parse_coder_stream(result.output)
         if claude_events is None:
             return _refuse("coder_output_unparseable")
-        if not result.timed_out and _claude_result_is_error(
-            claude_events, result.returncode
-        ):
-            return _refuse("coder_provider_error")
+        error_detail = _claude_error_detail(claude_events, result.returncode)
+        if not result.timed_out and error_detail is not None:
+            return _refuse(f"coder_provider_error:{error_detail}")
 
         envelope_sha256 = _context_envelope_sha256(record, coder_spec)
         classifier_digest = _classifier_digest()
