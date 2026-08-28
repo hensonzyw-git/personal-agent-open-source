@@ -60,17 +60,26 @@ operator_id, hours = sys.argv[1], int(sys.argv[2])
 capabilities = sys.argv[3:]
 
 key_b64 = open("/etc/personal-agent/dal.env.d/service-key").read().strip()
-key = base64.urlsafe_b64decode(key_b64)
-payload = {
-    "schema_version": "dal.operator-token/1.0",
-    "operator_id": operator_id,
-    "capabilities": capabilities,
-    "issued_at_epoch": int(time.time()),
-    "expires_at_epoch": int(time.time()) + hours * 3600,
-}
-body = base64.urlsafe_b64encode(
-    json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-).decode().rstrip("=")
+# The service reads this same file via service.cli._read_secret_file and uses
+# the file's raw bytes (the base64 text itself) as the HMAC key — no decoding.
+# The issuer must do exactly the same or the signatures will never verify.
+key = key_b64.encode("ascii")
+# The payload shape is the product's, not an invention: exactly the fields
+# verify_operator_token reads, serialised the same way canonical_json does
+# (sort_keys, compact separators) — duplicated inline because this script runs
+# with the system python, not the venv.
+payload = json.dumps(
+    {
+        "schema": "dal.operator-token/1.0",
+        "operator_id": operator_id,
+        "capabilities": sorted(capabilities),
+        "exp": int(time.time()) + hours * 3600,
+    },
+    ensure_ascii=False,
+    sort_keys=True,
+    separators=(",", ":"),
+)
+body = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
 sig = hmac.new(key, body.encode("ascii"), hashlib.sha256).hexdigest()
 print(f"{body}.{sig}")
 PY
@@ -91,5 +100,5 @@ payload = json.loads(base64.urlsafe_b64decode(body))
 print(f"token written to {sys.argv[1]} (mode 0600)")
 print(f"  operator_id:   {payload['operator_id']}")
 print(f"  capabilities:  {', '.join(payload['capabilities'])}")
-print(f"  expires_at:    {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(payload['expires_at_epoch']))}")
+print(f"  expires_at:    {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(payload['exp']))}")
 PY
