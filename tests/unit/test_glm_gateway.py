@@ -81,6 +81,15 @@ def _call(name, args):
     )
 
 
+def _thinking_call(name, args):
+    """One ADK Part carrying reasoning text AND a tool call (the GLM 5.3 shape)."""
+    return SimpleNamespace(
+        text="hidden reasoning",
+        thought=True,
+        function_call=SimpleNamespace(name=name, args=args),
+    )
+
+
 def _call_with_unsupported_content(name, args):
     return types.Part(
         function_call=types.FunctionCall(name=name, args=args),
@@ -793,6 +802,48 @@ def test_thought_beside_a_plain_answer_is_skipped(envelope) -> None:
     assert _propose(gateway, envelope) == ProposedAnswer("你好")
 
 
+def test_a_thought_part_that_also_carries_a_call_is_validated(envelope) -> None:
+    """A single Part can carry reasoning text and a call: the call is counted
+    and the reasoning text is not treated as untrusted prose."""
+    gateway, _ = _gateway(
+        _response(_thinking_call("finance.log_expense", {"name": "午饭"}))
+    )
+    proposal = _propose(gateway, envelope)
+    assert proposal == ProposedToolCall("finance.log_expense", {"name": "午饭"})
+
+
+def test_a_thought_part_with_an_unsupported_payload_still_fails_closed(
+    envelope,
+) -> None:
+    gateway, _ = _gateway(
+        _response(
+            types.Part(
+                text="hidden reasoning",
+                thought=True,
+                inline_data=types.Blob(
+                    mime_type="application/octet-stream",
+                    data=b"unsupported",
+                ),
+            )
+        )
+    )
+    with pytest.raises(ModelGatewayError, match="unsupported content"):
+        _propose(gateway, envelope)
+
+
+def test_a_thought_part_that_carries_a_call_still_counts_toward_multiple_calls(
+    envelope,
+) -> None:
+    gateway, _ = _gateway(
+        _response(
+            _thinking_call("finance.log_expense", {"name": "午饭"}),
+            _call("finance.log_expense", {"name": "咖啡"}),
+        )
+    )
+    with pytest.raises(ModelGatewayError, match="multiple tool calls"):
+        _propose(gateway, envelope)
+
+
 def test_transport_failure_is_a_gateway_error(envelope) -> None:
     gateway, _ = _gateway(raises=RuntimeError("connection reset"))
     with pytest.raises(ModelGatewayError):
@@ -1000,8 +1051,10 @@ def test_production_generator_uses_the_adk_model_contract(monkeypatch) -> None:
     ("model", "expected_extra_body"),
     [
         ("openai/glm-5.3-flash", {"reasoning_effort": "low"}),
+        ("openai/glm-5.3", {"reasoning_effort": "low"}),
         ("openai/glm-5.2", {"thinking": {"type": "disabled"}}),
         ("openai/glm-4.7-flashx", {"thinking": {"type": "disabled"}}),
+        ("openai/glm-6.0", {"thinking": {"type": "disabled"}}),
         ("openai/glm-fast-placeholder", {"thinking": {"type": "disabled"}}),
     ],
 )

@@ -3,8 +3,10 @@
 Covers F-H1..F-H11 (`docs/CAP-001失败集_v0.1.md` §7.5). The provider is a
 non-deterministic boundary, so these are the failure shapes first: prose instead
 of a call, several calls, another function, non-object arguments, an unsupported
-part payload, a provider error. A `thought` part is skipped (GLM 5.3-class
-models always reason); a thought-only response still fails as no call.
+part payload, a provider error. The reasoning text of a `thought` part is
+excluded (GLM 5.3-class models always reason); the part itself is still
+validated and its call counted, and a thought-only response still fails as no
+call.
 
 What these cannot show is whether a real GLM produces those shapes -- that is
 F-H12, the live evidence.
@@ -60,6 +62,15 @@ def _call(name, args):
 
 def _text(value, *, thought=False):
     return SimpleNamespace(text=value, thought=thought, function_call=None)
+
+
+def _thinking_call(name, args):
+    """One ADK Part carrying reasoning text AND the structured call."""
+    return SimpleNamespace(
+        text="hidden reasoning",
+        thought=True,
+        function_call=SimpleNamespace(name=name, args=args),
+    )
 
 
 def _client(response=None, *, raises=None):
@@ -161,6 +172,38 @@ def test_thought_content_is_skipped_beside_the_structured_call() -> None:
 def test_a_thought_only_structured_response_fails_closed() -> None:
     client, _ = _client(_response(_text("hidden reasoning", thought=True)))
     with pytest.raises(StructuredCallError):
+        client.call(_request())
+
+
+def test_a_thought_part_that_also_carries_the_structured_call_is_accepted() -> None:
+    """A single Part can carry reasoning text and the call: the call is counted
+    and the reasoning text is not treated as prose."""
+    client, _ = _client(_response(_thinking_call("decide", {"ok": True})))
+    assert client.call(_request()) == {"ok": True}
+
+
+def test_a_thought_part_with_an_unsupported_payload_still_fails_closed() -> None:
+    client, _ = _client(
+        _response(
+            types.Part(
+                text="hidden reasoning",
+                thought=True,
+                inline_data=types.Blob(
+                    mime_type="application/octet-stream",
+                    data=b"unsupported",
+                ),
+            )
+        )
+    )
+    with pytest.raises(StructuredCallError, match="unsupported content"):
+        client.call(_request())
+
+
+def test_a_thought_part_that_carries_a_call_still_counts_toward_multiple_calls() -> None:
+    client, _ = _client(
+        _response(_thinking_call("decide", {}), _call("decide", {}))
+    )
+    with pytest.raises(StructuredCallError, match="carried 2 function calls"):
         client.call(_request())
 
 

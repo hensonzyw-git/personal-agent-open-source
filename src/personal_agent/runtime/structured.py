@@ -11,9 +11,10 @@ different function name, arguments that are not an object, an unsupported part
 payload, a partial or errored response, a timeout: all raise
 `StructuredCallError`, and each caller turns that into its own safe outcome --
 `continue_session` for the classifier, `provider_failed` for the Compactor.
-A `thought` part is skipped (GLM 5.3-class models always reason; the raw
-response stays in the audit transcript), but a thought-only response still
-fails as "no call".
+The reasoning text of a `thought` part is excluded (GLM 5.3-class models
+always reason; the raw response stays in the audit transcript); the part
+itself is still validated and its call counted, and a thought-only response
+still fails as "no call".
 
 What this module does *not* do is repair a payload. A returned object is handed
 to the caller's own validators untouched, because a provider that repaired its
@@ -339,11 +340,12 @@ def _parse(response: Any, *, expected: str) -> dict[str, Any]:
 
     calls: list[Any] = []
     for part in parts:
-        if getattr(part, "thought", False):
-            # GLM 5.3-class models always reason (same policy as the Chat
-            # gateway): the thought part is private process, not the structured
-            # answer. Skip it; a thought-only response still fails below.
-            continue
+        # GLM 5.3-class models always reason (same policy as the Chat
+        # gateway): a `thought` part's text is private reasoning, not prose,
+        # but the part is still fully validated and its call counted, so an
+        # unsupported payload or an extra call on a thought part still fails
+        # closed.
+        thought = bool(getattr(part, "thought", False))
         unsupported = _unsupported_fields(part)
         if unsupported:
             raise StructuredCallError(
@@ -354,7 +356,7 @@ def _parse(response: Any, *, expected: str) -> dict[str, Any]:
         if call is not None:
             calls.append(call)
         text = getattr(part, "text", None)
-        if isinstance(text, str) and text.strip():
+        if isinstance(text, str) and text.strip() and not thought:
             # Prose beside a structured answer is not a second opinion to pick
             # from; it means the contract was not followed.
             raise StructuredCallError("structured response contained prose")

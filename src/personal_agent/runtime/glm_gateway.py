@@ -561,14 +561,14 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
     calls: list[Any] = []
     text_parts: list[str] = []
     for part in parts:
-        if getattr(part, "thought", False):
-            # GLM 5.3-class models always reason; the provider refuses to
-            # disable it (error 1210) and `reasoning_effort` only lowers it.
-            # The thought part is the model's private process, not user-facing
-            # output, untrusted prose or evidence: skip it and apply every
-            # other fail-closed rule to the remainder. The raw response is
-            # still recorded in the transcript, so nothing is lost to audit.
-            continue
+        # GLM 5.3-class models always reason; the provider refuses to disable
+        # it (error 1210) and `reasoning_effort` only lowers it. The reasoning
+        # text of a `thought` part is the model's private process, never
+        # user-facing output, untrusted prose or evidence, so it is excluded
+        # from `text_parts` below. The part itself is still fully validated
+        # and its tool call counted: an unsupported payload or an extra call
+        # on a thought part must fail closed, not disappear.
+        thought = bool(getattr(part, "thought", False))
         unsupported = _unsupported_part_fields(part)
         if unsupported:
             names = ", ".join(sorted(unsupported))
@@ -581,7 +581,7 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
         if call is not None:
             calls.append(call)
         text = getattr(part, "text", None)
-        if isinstance(text, str) and text.strip() and not getattr(part, "thought", False):
+        if isinstance(text, str) and text.strip() and not thought:
             text_parts.append(text)
 
     if calls:
@@ -760,16 +760,17 @@ def require_env(name: str) -> str:
     return value
 
 
-#: GLM 5.3-class models always reason; the endpoint refuses `thinking: disabled`
-#: (error 1210 "该模型始终思考，不支持关闭思考") and `reasoning_effort` is the
-#: accepted minimum. Older GLM models do not think by default and keep the
-#: historical `thinking: disabled` guard. The parameter must be model-conditional:
-#: sending `reasoning_effort` to a 5.2-class model *enables* thinking there
-#: (verified live 2026-08-29).
+#: The only GLM family verified (live 2026-08-29) to always reason and to
+#: accept `reasoning_effort`: glm-5.3 (e.g. glm-5.3-flash). A future
+#: always-thinking family must be added here only after the same verification;
+#: until then it keeps `thinking: disabled`, and if the provider refuses that
+#: (error 1210) the request fails closed instead of guessing a parameter.
+_ALWAYS_THINKING_GLM_FAMILY = re.compile(r"glm-5\.3[A-Za-z0-9._-]*")
+
+
 def _thinking_request_params(model: str) -> dict[str, Any]:
     base = model.rsplit("/", 1)[-1]
-    match = re.fullmatch(r"glm-(\d+)\.(\d+)[A-Za-z0-9._-]*", base)
-    if match is not None and (int(match.group(1)), int(match.group(2))) >= (5, 3):
+    if _ALWAYS_THINKING_GLM_FAMILY.fullmatch(base):
         return {"reasoning_effort": "low"}
     return {"thinking": {"type": "disabled"}}
 
