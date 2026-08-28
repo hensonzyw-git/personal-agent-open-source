@@ -31,12 +31,16 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, func, select
 
 from personal_agent_core.ids import new_id
 from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import utc_now
 
+from personal_agent_dal.service.operator_tokens import (
+    OperatorTokenError,
+    verify_operator_token,
+)
 from personal_agent_dal.service.tokens import TokenError, issue_token, verify_token
 from personal_agent_dal.storage.audit import append_audit_event
 from personal_agent_dal.storage.engine import session_factory
@@ -45,10 +49,19 @@ from personal_agent_dal.storage.transport_models import (
     WorkerCheckpoint,
     WorkerEnrollment,
 )
+from personal_agent_dal.storage.worker_models import WORKER_JOB_STATES
 from personal_agent_dal.worker import queue
 from personal_agent_dal.worker.queue import ACTIVE_JOB_STATES
 
 SCHEMA_VERSION = "dal.worker-transport/1.0"
+OPERATOR_SCHEMA_VERSION = "dal.operator-transport/1.0"
+OPERATOR_TOKEN_TTL_SECONDS = 3600
+#: The single mutating operator action of this slice; pause/resume/
+#: request-human/accept-result await the controller-side dispatch executor and
+#: are contract-declared 501s (`operator_action_not_available`), not silent
+#: gaps.
+OPERATOR_MUTATIONS: Final[tuple[str, ...]] = ("cancel",)
+OPERATOR_JOBS_PAGE_MAX = 100
 MAX_BODY_BYTES = 1_048_576  # 1 MiB transport envelope cap, distinct from artifact cap
 ARTIFACT_MAX_BYTES = 104_857_600
 CHANGED_FILES_MAX = 10_000
@@ -139,11 +152,11 @@ def _http(status: int, detail: str) -> HTTPException:
     return HTTPException(status_code=status, detail=detail)
 
 
-def _error_envelope(status: int, code: str) -> JSONResponse:
+def _error_envelope(status: int, code: str, schema_version: str = SCHEMA_VERSION) -> JSONResponse:
     """The contract's closed `Error` shape; `code` carries the fail-closed reason."""
     return JSONResponse(
         status_code=status,
-        content={"schema_version": SCHEMA_VERSION, "code": code, "detail": code},
+        content={"schema_version": schema_version, "code": code, "detail": code},
     )
 
 
@@ -403,6 +416,104 @@ def _check_worker(body: BaseModel, token_worker_id: str, path_job_id: str) -> No
         raise _http(400, "job_mismatch")
 
 
+# --- operator identity and endpoints (DAL-R08, first slice) ------------------
+#
+# The operator plane is a separate identity domain on the same service: worker
+# tokens and operator tokens are different schemas, each verifier refuses the
+# foreign schema first, and no endpoint accepts both. Operator reads are
+# paginated server-side; the only mutation of this slice is `cancel`, which is
+# the existing ECS authority action (`queue.cancel_job`), bound to the job's
+# live state by a CAS so a stale operator view cannot cancel a job that has
+# already terminalized.
+
+
+class OperatorActionRequest(_Closed):
+    schema_version: Literal["dal.operator-transport/1.0"]
+    request_id: _Id
+    job_id: _Id
+    action: Literal["cancel"]
+    # State binding: the caller asserts the state its view showed; a mismatch
+    # is 409, never a write based on a stale projection.
+    expected_state: Literal["pending", "leased", "running"]
+
+
+class OperatorTokenIssueRequest(_Closed):
+    schema_version: Literal["dal.operator-transport/1.0"]
+    request_id: _Id
+    operator_id: _Id
+    capabilities: list[Annotated[str, Field(min_length=1)]] = Field(min_length=1)
+
+
+class _OperatorAuth:
+    """Auth dependency for operator endpoints (schema-separated, fail-closed)."""
+
+    def __init__(self, service: "Service", required_capability: str) -> None:
+        self._service = service
+        self._required = required_capability
+
+    def __call__(self, request: Request) -> str:
+        header = request.headers.get("authorization", "")
+        if not header.startswith("Bearer "):
+            raise _http(401, "missing_bearer_token")
+        token = header[len("Bearer "):].strip()
+        try:
+            operator_id, capabilities = verify_operator_token(
+                token, key=self._service.service_key, now_epoch=int(time.time())
+            )
+        except OperatorTokenError as exc:
+            raise _http(401, "token_invalid") from exc
+        if self._required not in capabilities:
+            raise _http(403, "capability_missing")
+        if not self._service.rate_limiter.allow(f"operator:{operator_id}", time.time()):
+            raise _http(429, "rate_limited")
+        return operator_id
+
+
+def _operator_identity_rows(engine: Engine, *, limit: int, offset: int) -> tuple[int, list[dict[str, Any]]]:
+    """Server-side paginated job listing (count + one page), fresh reads."""
+    sessions = session_factory(engine)
+    with sessions() as session:
+        table = queue.WorkerJob.__table__
+        total = session.execute(
+            select(func.count()).select_from(table)
+        ).scalar_one()
+        rows = session.execute(
+            select(
+                table.c.job_id,
+                table.c.feature_id,
+                table.c.repository_id,
+                table.c.branch_name,
+                table.c.state,
+                table.c.attempt_count,
+                table.c.lease_epoch,
+                table.c.worker_id,
+                table.c.result_sha256,
+                table.c.updated_at,
+            )
+            .order_by(table.c.created_at.desc(), table.c.job_id.desc())
+            .limit(limit)
+            .offset(offset)
+        ).all()
+        return (
+            total,
+            [
+                {
+                    "job_id": r.job_id,
+                    "feature_id": r.feature_id,
+                    "repository_id": r.repository_id,
+                    "branch_name": r.branch_name,
+                    "state": r.state,
+                    "attempt": r.attempt_count,
+                    "lease_epoch": r.lease_epoch,
+                    "worker_id": r.worker_id,
+                    "result_sha256": r.result_sha256,
+                    "updated_at": r.updated_at.isoformat(),
+                }
+                for r in rows
+            ],
+        )
+
+
 # --- app factory ------------------------------------------------------------
 
 
@@ -428,15 +539,22 @@ def create_app(
     )
     app = FastAPI(title="DAL Worker Transport", version="1.0.0")
 
+    def _envelope_for(request: Request) -> str:
+        # Operator endpoints answer with the operator envelope; everything else
+        # (including unmatched paths) with the worker transport envelope.
+        if request.url.path.startswith("/operator"):
+            return OPERATOR_SCHEMA_VERSION
+        return SCHEMA_VERSION
+
     @app.exception_handler(HTTPException)
     async def _http_error(request: Request, exc: HTTPException) -> JSONResponse:
-        return _error_envelope(exc.status_code, str(exc.detail))
+        return _error_envelope(exc.status_code, str(exc.detail), _envelope_for(request))
 
     @app.exception_handler(RequestValidationError)
     async def _invalid(request: Request, exc: RequestValidationError) -> JSONResponse:
         # A body that is not the closed shape (wrong schema_version included) is
         # the contract's `Invalid` outcome: 400, never a partial parse.
-        return _error_envelope(400, "invalid")
+        return _error_envelope(400, "invalid", _envelope_for(request))
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -614,6 +732,136 @@ def create_app(
         if record is not None and record.state == "cancelled":
             raise _http(409, "cancelled")
         raise _http(409, "stale")
+
+    # --- operator plane (DAL-R08 first slice) ---------------------------------
+    #
+    # Same body-digest fence and rate limiter as the worker plane; a separate
+    # token schema and capability check. Read endpoints are GET (no body, so
+    # the digest fence does not apply); the single mutation re-verifies the
+    # job's live state inside one CAS write.
+
+    operator_read = _OperatorAuth(service, "read")
+    operator_control = _OperatorAuth(service, "control")
+
+    @app.get("/operator/jobs")
+    def operator_jobs(
+        limit: int = 20,
+        offset: int = 0,
+        _: str = Depends(operator_read),
+    ) -> dict[str, Any]:
+        if limit < 1 or limit > OPERATOR_JOBS_PAGE_MAX or offset < 0:
+            raise _http(400, "invalid")
+        total, rows = _operator_identity_rows(engine, limit=limit, offset=offset)
+        return {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "jobs": rows,
+        }
+
+    @app.get("/operator/jobs/{job_id}")
+    def operator_job_detail(
+        job_id: str, _: str = Depends(operator_read)
+    ) -> dict[str, Any]:
+        record = queue.get_job(engine, job_id=job_id)
+        if record is None:
+            raise _http(404, "job_not_found")
+        return {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "job_id": record.job_id,
+            "feature_id": record.feature_id,
+            "repository_id": record.repository_id,
+            "base_sha": record.base_sha,
+            "branch_name": record.branch_name,
+            "state": record.state,
+            "attempt": record.attempt_count,
+            "lease_epoch": record.lease_epoch,
+            "worker_id": record.worker_id,
+            "lease_expires_at": (
+                record.lease_expires_at.isoformat() if record.lease_expires_at else None
+            ),
+            "result_sha256": record.result_sha256,
+            "last_error": record.last_error,
+            "created_at": record.created_at.isoformat(),
+            "updated_at": record.updated_at.isoformat(),
+        }
+
+    @app.get("/operator/jobs/{job_id}/checkpoints")
+    def operator_job_checkpoints(
+        job_id: str, _: str = Depends(operator_read)
+    ) -> dict[str, Any]:
+        if queue.get_job(engine, job_id=job_id) is None:
+            raise _http(404, "job_not_found")
+        sessions = session_factory(engine)
+        with sessions() as session:
+            rows = session.execute(
+                select(
+                    WorkerCheckpoint.sequence,
+                    WorkerCheckpoint.lease_epoch,
+                    WorkerCheckpoint.artifact_sha256,
+                    WorkerCheckpoint.artifact_size_bytes,
+                    WorkerCheckpoint.changed_files,
+                    WorkerCheckpoint.sensitivity,
+                    WorkerCheckpoint.recorded_at,
+                )
+                .where(WorkerCheckpoint.job_id == job_id)
+                .order_by(WorkerCheckpoint.sequence.asc())
+            ).all()
+        return {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "job_id": job_id,
+            "checkpoints": [
+                {
+                    "sequence": r.sequence,
+                    "lease_epoch": r.lease_epoch,
+                    "artifact_sha256": r.artifact_sha256,
+                    "artifact_size_bytes": r.artifact_size_bytes,
+                    "changed_files": json.loads(r.changed_files),
+                    "sensitivity": r.sensitivity,
+                    "recorded_at": r.recorded_at.isoformat(),
+                }
+                for r in rows
+            ],
+        }
+
+    @app.post("/operator/jobs/{job_id}/{action}")
+    def operator_action(
+        job_id: str,
+        action: str,
+        body: OperatorActionRequest,
+        operator_id: str = Depends(operator_control),
+        _: None = Depends(transport_body_guard),
+    ) -> dict[str, Any]:
+        if action not in OPERATOR_MUTATIONS:
+            # pause/resume/request-human/accept-result await the controller
+            # dispatch executor; the contract declares them 501, not silent.
+            raise _http(501, "operator_action_not_available")
+        if body.job_id != job_id:
+            raise _http(400, "job_mismatch")
+        if service.kill_switch:
+            raise _http(503, "kill_switch_active")
+        record = queue.get_job(engine, job_id=job_id)
+        if record is None:
+            raise _http(404, "job_not_found")
+        if record.state != body.expected_state:
+            # Stale operator projection: refuse before any write.
+            raise _http(409, "state_mismatch")
+        ok = queue.cancel_job(engine, job_id=job_id)
+        if not ok:
+            # Lost a race between the pre-read and the CAS write.
+            raise _http(409, "state_mismatch")
+        _append_redacted_audit(
+            engine,
+            event_type="operator.action",
+            outcome=f"{operator_id}:cancel",
+        )
+        return {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "job_id": job_id,
+            "action": action,
+            "state": "cancelled",
+        }
 
     return app
 

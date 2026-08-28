@@ -1,0 +1,276 @@
+openapi: 3.1.0
+info:
+  title: DAL Operator Transport v1
+  version: 0.1.0
+  description: >
+    Operator 操作面合同（DAL-R08 第一刀，极简 Console 先行决策 2026-08-28）。与 Worker
+    Transport v1（worker-transport-v1.yaml）共享同一 Dev Workflow Service 进程与数据库，
+    但身份域完全分离：operator token（`dal.operator-token/1.0`）与 worker token
+    （`dal.worker-token/1.0`）是不同 schema，各自 verifier 先拒绝外来 schema——worker token
+    打 operator 端点是 401，operator token 打 worker 端点也是 401。
+
+    第一刀范围（冻结，2026-08-28 Henson 决策「按建议范围」）：
+    - 只读：`GET /operator/jobs`（服务端分页）、`GET /operator/jobs/{job_id}`、
+      `GET /operator/jobs/{job_id}/checkpoints`（digest 级 artifact/diff 引用；
+      diff 实体在 Worker 文件系统，ECS 只有元数据，这是 R07A 后的事实）。
+    - mutate：仅 `cancel`（job 级）。pause/resume/request-human/accept-result 在
+      业务状态机的权威动作尚未接入 controller dispatch executor（R07B 挂账项）之前，
+      按本合同显式声明为 501 `operator_action_not_available`——诚实标注，不假装可用，
+      也不预建业务层。
+    - mutate 请求绑定 `expected_state`（调用方视图的状态）：与 DB 实时状态不一致即
+      409 零写；预读与 CAS 写之间的竞态失败同样 409。取消动作复用队列权威原语
+      `cancel_job`（pending/leased/running → cancelled，幂等于已取消）。
+
+    固定安全规则（与 Worker Transport 同源）：
+    - `Authorization: Bearer <operator token>`；token 绑定 operator_id、closed
+      capability 集（`read`/`control`）与 expiry；短 TTL；不进日志、不回显。
+    - 端点授权依赖 capability：读端点要 `read`，mutate 端点要 `control`。
+      （Worker 端点的 capabilities 是描述性注册；operator 端点的 capabilities 参与授权，
+      这是两个合同刻意的不对称。）
+    - mutate POST 必须带 `X-Transport-Body-Digest`（与 worker 面同一 fence）；GET 无 body，
+      不适用。
+    - rate limit 与 worker 面共享限流器，bucket 按 `operator:{operator_id}` 隔离。
+    - kill switch 同样封锁 operator mutate（503 `kill_switch_active`）；读不受影响。
+    - 错误信封统一闭合 `Error` 形状，schema_version 为 `dal.operator-transport/1.0`
+      （与 worker 面信封按路径区分）。
+servers:
+  - url: https://agent.example.invalid/dal/transport/v1
+    description: ECS Dev Workflow Service（生产，pinned；占位，实际以部署配置为准）
+security:
+  - OperatorToken: []
+tags:
+  - name: operator
+paths:
+  /operator/jobs:
+    get:
+      summary: 分页列出 job（服务端分页；不提供"全量"）
+      parameters:
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        "200":
+          description: 一页 job 概要 + 总数
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobPage" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "401":
+          $ref: "#/components/responses/TokenInvalid"
+        "403":
+          $ref: "#/components/responses/CapabilityMissing"
+  /operator/jobs/{job_id}:
+    get:
+      summary: 单个 job 详情（status、attempt、lease、last_error）
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: job 详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobDetail" }
+        "401":
+          $ref: "#/components/responses/TokenInvalid"
+        "403":
+          $ref: "#/components/responses/CapabilityMissing"
+        "404":
+          $ref: "#/components/responses/JobNotFound"
+  /operator/jobs/{job_id}/checkpoints:
+    get:
+      summary: 该 job 的 checkpoint 元数据（digest/changed_files/sensitivity）
+      description: >
+        只返回元数据引用，不返回 diff 实体——实体在 Worker 文件系统，ECS 只有
+        content-addressed 引用。`sensitivity` 原样透出，Console 据此决定是否展示。
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: checkpoint 列表（按 sequence 升序）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CheckpointPage" }
+        "401":
+          $ref: "#/components/responses/TokenInvalid"
+        "403":
+          $ref: "#/components/responses/CapabilityMissing"
+        "404":
+          $ref: "#/components/responses/JobNotFound"
+  /operator/jobs/{job_id}/{action}:
+    post:
+      summary: 对 job 执行一个 operator 动作（第一刀仅 cancel；其余 501）
+      description: >
+        `action` 为 path 段。`cancel` 是本合同唯一的可用 mutate；
+        `pause`/`resume`/`request-human`/`accept-result` 返回
+        501 `operator_action_not_available`，待 controller dispatch executor 落地后
+        按同一合同扩展，不得静默扩展 path 集合。
+      security:
+        - OperatorToken: [control]
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+        - { name: action, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/BodyDigest"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OperatorActionRequest" }
+      responses:
+        "200":
+          description: 动作已执行
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OperatorActionResponse" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "401":
+          $ref: "#/components/responses/TokenInvalid"
+        "403":
+          $ref: "#/components/responses/CapabilityMissing"
+        "404":
+          $ref: "#/components/responses/JobNotFound"
+        "409":
+          description: state_mismatch——expected_state 与 DB 实时状态不一致（零写）或 CAS 竞态失败
+        "501":
+          description: operator_action_not_available——动作存在但权威层未接入
+        "503":
+          description: kill_switch_active
+components:
+  parameters:
+    BodyDigest:
+      name: X-Transport-Body-Digest
+      in: header
+      required: true
+      description: 与 Worker Transport 同一 fence：原始请求体字节的 sha256（64 hex）。
+      schema: { type: string, pattern: "^[0-9a-f]{64}$" }
+  securitySchemes:
+    OperatorToken:
+      type: http
+      scheme: bearer
+      description: >
+        Operator 短期 token（`dal.operator-token/1.0`），与 worker token 不同 schema；
+        绑定 operator_id + capabilities（read/control）+ expiry。签发通道在本合同之外
+        （部署侧手工/后续管理端点），值不得进日志或回显。
+  responses:
+    Invalid:
+      description: 请求不闭合 / 分页参数越界 / body digest 不匹配
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TokenInvalid:
+      description: token 缺失/无效/过期/外来 schema（含 worker token）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    CapabilityMissing:
+      description: token 有效但缺所需 capability（read/control）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    JobNotFound:
+      description: job_id 不存在（404，与 stale 409 区分）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    JobPage:
+      type: object
+      additionalProperties: false
+      required: [schema_version, total, offset, limit, jobs]
+      properties:
+        schema_version: { const: "dal.operator-transport/1.0" }
+        total: { type: integer, minimum: 0 }
+        offset: { type: integer, minimum: 0 }
+        limit: { type: integer, minimum: 1, maximum: 100 }
+        jobs:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/JobSummary" }
+    JobSummary:
+      type: object
+      additionalProperties: false
+      required: [job_id, feature_id, repository_id, branch_name, state, attempt, lease_epoch, updated_at]
+      properties:
+        job_id: { type: string, minLength: 1, maxLength: 256 }
+        feature_id: { type: string, minLength: 1, maxLength: 256 }
+        repository_id: { type: string, minLength: 1 }
+        branch_name: { type: string, minLength: 1 }
+        state: { type: string, enum: [pending, leased, running, succeeded, failed, expired, cancelled] }
+        attempt: { type: integer, minimum: 0 }
+        lease_epoch: { type: integer, minimum: 0 }
+        worker_id: { type: [string, "null"] }
+        result_sha256: { type: [string, "null"], pattern: "^[0-9a-f]{64}$" }
+        updated_at: { type: string, format: date-time }
+    JobDetail:
+      type: object
+      additionalProperties: false
+      required: [schema_version, job_id, feature_id, repository_id, base_sha, branch_name, state, attempt, lease_epoch, created_at, updated_at]
+      properties:
+        schema_version: { const: "dal.operator-transport/1.0" }
+        job_id: { type: string, minLength: 1, maxLength: 256 }
+        feature_id: { type: string, minLength: 1, maxLength: 256 }
+        repository_id: { type: string, minLength: 1 }
+        base_sha: { type: string, pattern: "^[0-9a-f]{40}$" }
+        branch_name: { type: string, minLength: 1 }
+        state: { type: string, enum: [pending, leased, running, succeeded, failed, expired, cancelled] }
+        attempt: { type: integer, minimum: 0 }
+        lease_epoch: { type: integer, minimum: 0 }
+        worker_id: { type: [string, "null"] }
+        lease_expires_at: { type: [string, "null"], format: date-time }
+        result_sha256: { type: [string, "null"], pattern: "^[0-9a-f]{64}$" }
+        last_error: { type: [string, "null"], maxLength: 4096 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CheckpointPage:
+      type: object
+      additionalProperties: false
+      required: [schema_version, job_id, checkpoints]
+      properties:
+        schema_version: { const: "dal.operator-transport/1.0" }
+        job_id: { type: string, minLength: 1, maxLength: 256 }
+        checkpoints:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [sequence, lease_epoch, artifact_sha256, artifact_size_bytes, changed_files, sensitivity, recorded_at]
+            properties:
+              sequence: { type: integer, minimum: 0 }
+              lease_epoch: { type: integer, minimum: 0 }
+              artifact_sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+              artifact_size_bytes: { type: integer, minimum: 1 }
+              changed_files:
+                type: array
+                items: { type: string, minLength: 1, maxLength: 512 }
+              sensitivity: { type: string, enum: [checkpoint, diff, log] }
+              recorded_at: { type: string, format: date-time }
+    OperatorActionRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, request_id, job_id, action, expected_state]
+      properties:
+        schema_version: { const: "dal.operator-transport/1.0" }
+        request_id: { type: string, minLength: 1, maxLength: 256 }
+        job_id: { type: string, minLength: 1, maxLength: 256 }
+        action: { type: string, enum: [cancel] }
+        expected_state:
+          type: string
+          enum: [pending, leased, running]
+          description: 调用方视图中的状态；不一致即 409 零写（stale projection fence）
+    OperatorActionResponse:
+      type: object
+      additionalProperties: false
+      required: [schema_version, job_id, action, state]
+      properties:
+        schema_version: { const: "dal.operator-transport/1.0" }
+        job_id: { type: string, minLength: 1, maxLength: 256 }
+        action: { type: string, enum: [cancel] }
+        state: { type: string, const: cancelled }
+    Error:
+      type: object
+      additionalProperties: false
+      required: [schema_version, code, detail]
+      properties:
+        schema_version: { const: "dal.operator-transport/1.0" }
+        code: { type: string, minLength: 1 }
+        detail: { type: string }

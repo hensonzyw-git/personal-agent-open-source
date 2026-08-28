@@ -392,13 +392,14 @@ def cancel_job(
     job_id: str,
     now: datetime | None = None,
 ) -> bool:
-    """Authority action: cancel a live job, terminal and non-retryable.
+    """Authority action: cancel a cancellable job, terminal and non-retryable.
 
     Unlike `finish_job`, this is not worker-fenced — it is the ECS lease owner's
-    authority to stop a job regardless of which worker holds it. It moves only
-    an active row to `cancelled` (clearing the lease) and is idempotent for a
-    job already cancelled; any other terminal state is left untouched (False).
-    A cancelled job carries no result receipt.
+    authority to stop a job regardless of which worker holds it. It moves only a
+    `pending` or active (`leased`/`running`) row to `cancelled` (clearing the
+    lease; a `pending` row has none, and never had a worker) and is idempotent
+    for a job already cancelled; any other terminal state is left untouched
+    (False). A cancelled job carries no result receipt.
     """
     now = now or utc_now()
     sessions = session_factory(engine)
@@ -408,7 +409,7 @@ def cancel_job(
         result = session.execute(
             update(table)
             .where(table.c.job_id == job_id)
-            .where(table.c.state.in_(ACTIVE_JOB_STATES))
+            .where(table.c.state.in_(("pending",) + ACTIVE_JOB_STATES))
             .values(
                 state="cancelled",
                 worker_id=None,
