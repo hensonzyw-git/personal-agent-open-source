@@ -10,6 +10,7 @@ scope here and is a separate `external-live` gate.
 from __future__ import annotations
 
 import argparse
+import os
 import stat
 import sys
 from pathlib import Path
@@ -21,14 +22,31 @@ from personal_agent_dal.storage.engine import create_database_engine
 
 
 def _read_secret_file(path: Path, label: str) -> bytes | None:
-    """Read a 0600 owner-only secret file; None (with stderr) on any failure."""
+    """Read a secret file; None (with stderr) on any failure.
+
+    Two shapes are accepted, both from the DEV-032 deployment convention:
+    0600 owned by the service user itself, or 0640 owned by root with the
+    service user as the sole group (root:<service>, so the service cannot
+    rewrite its own configuration and no other user shares the group).
+    Anything wider than that — or a group-readable file not owned by root —
+    is refused, never trimmed to a weaker check.
+    """
     try:
-        mode = stat.S_IMODE(path.stat().st_mode)
+        info = path.stat()
+        mode = stat.S_IMODE(info.st_mode)
     except OSError as error:
         print(f"{label} unreadable: {type(error).__name__}", file=sys.stderr)
         return None
-    if mode != 0o600:
-        print(f"{label} must be owner-only (0600)", file=sys.stderr)
+    if info.st_uid == 0:
+        owner_ok = mode == 0o640
+    else:
+        owner_ok = info.st_uid == os.getuid() and mode == 0o600
+    if not owner_ok:
+        print(
+            f"{label} must be 0600 owned by the service user "
+            f"or 0640 owned by root (got mode {mode:04o})",
+            file=sys.stderr,
+        )
         return None
     value = path.read_bytes().strip()
     if not value:

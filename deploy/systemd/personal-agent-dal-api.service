@@ -1,0 +1,57 @@
+[Unit]
+# DAL-R08 ECS baseline. The Dev Workflow Service is a separate trust domain
+# from the Finance/Agent production: its own user, its own 0700 data
+# directory, its own loopback TCP port (8820). Unlike personal-agent-api it
+# has no dependency on the Finance MCP and no UDS for Nginx's group: Nginx
+# reaches it over 127.0.0.1:8820, so the port is loopback-only by construction
+# and dal-verify.sh asserts no non-loopback listener exists.
+Description=Personal Agent DAL Dev Workflow Service (R05 transport + R08 operator plane)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=personal-agent-dal
+Group=personal-agent-dal
+UMask=0077
+# DAL-R07B/R08: the service-level kill switch. Unlike the Finance write
+# switch (which starts disabled and is enabled deliberately), the DAL switch
+# starts PRESENT, which makes every claim and every operator mutation answer
+# 503 kill_switch_active. Deployment must not open the job queue by accident;
+# removing the file is the explicit go-live action. Read-only operator and
+# worker endpoints keep working either way.
+Environment=PERSONAL_AGENT_DAL_KILL_SWITCH_FILE=/etc/personal-agent/dal-kill-switch.json
+EnvironmentFile=/etc/personal-agent/dal.env
+ExecStart=/opt/personal-agent/.venv/bin/personal-agent-dal-api \
+    --database /var/lib/personal-agent-dal/dal.sqlite \
+    --service-key-file /etc/personal-agent/dal.env.d/service-key \
+    --enrollment-secret-file /etc/personal-agent/dal.env.d/enrollment-secret \
+    --kill-switch-path /etc/personal-agent/dal-kill-switch.json \
+    --host 127.0.0.1 \
+    --port 8820
+Restart=on-failure
+RestartSec=5s
+
+# Created by deploy/install.sh as personal-agent-dal:personal-agent-dal 0700.
+ReadWritePaths=/var/lib/personal-agent-dal
+
+# Technical design §10.1 sandbox baseline, same as the Finance units.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

@@ -499,8 +499,108 @@ It **preserves** users, `/var/lib` data, `/etc/personal-agent` secrets and
 `/opt` code — removing any of those is a separate explicit decision, not part
 of a rollback.
 
+## DAL Dev Workflow Service (R05 transport + R08 operator plane)
+
+A **separate trust domain** from the Finance/Agent production: its own
+systemd unit, user, 0700 data directory, secrets and database. No dependency
+on the Finance MCP. Order matters in three places, as below.
+
+| Path / name | Owner | Mode | Purpose |
+|---|---|---|---|
+| user `personal-agent-dal` | — | nologin | runs the DAL service |
+| `/var/lib/personal-agent-dal` | dal:dal | 0700 | `dal.sqlite` |
+| `/etc/personal-agent/dal.env` | root:dal | 0640 | non-secret env lines |
+| `/etc/personal-agent/dal.env.d/service-key` | root:dal | 0640 | HMAC key (worker + operator tokens) |
+| `/etc/personal-agent/dal.env.d/enrollment-secret` | root:dal | 0640 | gates `/enroll` |
+| `/etc/personal-agent/dal-kill-switch.json` | root:root | 0644 | PRESENT at install → claims/mutations answer 503 |
+| listener `127.0.0.1:8820` | — | loopback | Nginx proxies `/dal/` to it |
+
+The kill switch is the opposite polarity from the Finance write switch, on
+purpose: for the write switch, "missing" must mean "writes off"; for the DAL
+queue, `absent` means the queue is OPEN. The install lays the file down
+present (fail-closed), and **go-live is deliberately removing it**. Read-only
+operator endpoints and `/health` work either way; every `/jobs/claim` and
+operator mutation answers `503 kill_switch_active` while the file exists.
+
+### Rollout (first time)
+
+```sh
+# 1. Ship the deploy directory (same as step 1 above), then:
+sudo bash ~/personal-agent-deploy/install.sh          # adds the dal user/dir/unit
+sudo bash ~/personal-agent-deploy/provision_dal_keys.sh  # mint secrets + kill switch
+
+# 2. Application code + migration (after deploy_code.sh has run on the Mac):
+sudo -u personal-agent-dal /opt/personal-agent/.venv/bin/personal-agent-dal-db \
+  --database /var/lib/personal-agent-dal/dal.sqlite upgrade
+
+# 3. Enable (order: unit only; no timers exist for DAL yet):
+sudo systemctl enable --now personal-agent-dal-api
+
+# 4. Nginx: add the /dal/ locations to agent.example.invalid-ssl.conf
+#    (snippet below), then:
+sudo nginx -t && sudo systemctl reload nginx
+
+# 5. Acceptance:
+sudo bash ~/personal-agent-deploy/dal-verify.sh
+```
+
+Nginx locations to add inside the existing `agent.example.invalid` 443 server
+block, before the catch-all `location /`:
+
+```nginx
+    # DAL Dev Workflow Service (R08): loopback 8820, snippet dal-upstream.conf.
+    location /dal/transport/v1/jobs/ {
+        limit_req zone=pa_poll burst=30 nodelay;
+        include /etc/nginx/snippets/dal-upstream.conf;
+    }
+
+    location /dal/transport/v1/ {
+        limit_req zone=pa_auth burst=3 nodelay;
+        include /etc/nginx/snippets/dal-upstream.conf;
+    }
+
+    location /dal/ {
+        limit_req zone=pa_default burst=10 nodelay;
+        include /etc/nginx/snippets/dal-upstream.conf;
+    }
+```
+
+### Operator token issuing channel
+
+```sh
+bash /opt/personal-agent/deploy/issue_dal_operator_token.sh \
+  --operator-id example-operator --capabilities read control --hours 1
+# writes ~/.dal-operator-token (0600, owner deploy), prints identity+expiry
+```
+
+Then from the MacBook Air console (Let's Encrypt CA is in the system store,
+so no `--ca-bundle` needed against the real Nginx TLS):
+
+```sh
+/opt/personal-agent/.venv/bin/personal-agent-dal-console \
+  --base-url https://agent.example.invalid/dal/transport/v1 \
+  --token-file ~/.dal-operator-token list
+```
+
+Copy the 0600 token file to the MacBook Air with `scp -p` (preserves 0600);
+the token value never appears in a command line or log.
+
+### DAL rollback
+
+`deploy/rollback.sh` does not know the DAL unit; stop and remove it explicitly
+(preserving users, `/var/lib/personal-agent-dal`, and `/etc/personal-agent/dal*`
+exactly like every other rollback does):
+
+```sh
+sudo systemctl disable --now personal-agent-dal-api
+sudo rm /etc/systemd/system/personal-agent-dal-api.service && sudo systemctl daemon-reload
+# then remove the /dal/ locations from the Nginx vhost; personal site re-check applies
+```
+
 ## Current boundaries
 
+- The DAL service (R05+R08) baseline deployment is a separate rollout from the
+  Finance units above; its runbook is the DAL section in this file.
 - DEV-036 ECS enablement and live review/cleanup/backup-age verification are
   complete. DEV-039 exercised the rollback sequence above on 2026-08-03,
   including full unit removal/reinstall and Nginx removal/restore while the
