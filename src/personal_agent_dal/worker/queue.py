@@ -390,6 +390,7 @@ def cancel_job(
     engine: Engine,
     *,
     job_id: str,
+    expected_state: str | None = None,
     now: datetime | None = None,
 ) -> bool:
     """Authority action: cancel a cancellable job, terminal and non-retryable.
@@ -400,17 +401,34 @@ def cancel_job(
     lease; a `pending` row has none, and never had a worker) and is idempotent
     for a job already cancelled; any other terminal state is left untouched
     (False). A cancelled job carries no result receipt.
+
+    When `expected_state` is given, the UPDATE is fenced to it: the CAS only
+    fires when the row's state still equals the caller's view, so any state
+    change between the caller's pre-read and this write loses with False
+    instead of succeeding through an active→active transition. Callers that
+    want the old semantics (cancel whichever active state holds now) pass
+    None; the operator plane always binds `expected_state`.
     """
     now = now or utc_now()
     sessions = session_factory(engine)
 
     def _body(session: Session) -> bool:
         table = _jobs_table()
+        update_stmt = update(table).where(table.c.job_id == job_id)
+        if expected_state is None:
+            update_stmt = update_stmt.where(
+                table.c.state.in_(("pending",) + ACTIVE_JOB_STATES)
+            )
+        else:
+            # Fenced CAS: the caller's view, not "any active state", gates the
+            # write. A state that moved after the caller's pre-read (including
+            # active→active pending→leased) is a lost race, not a success.
+            update_stmt = update_stmt.where(
+                table.c.state == expected_state,
+                table.c.state.in_(("pending",) + ACTIVE_JOB_STATES),
+            )
         result = session.execute(
-            update(table)
-            .where(table.c.job_id == job_id)
-            .where(table.c.state.in_(("pending",) + ACTIVE_JOB_STATES))
-            .values(
+            update_stmt.values(
                 state="cancelled",
                 worker_id=None,
                 lease_expires_at=None,
@@ -420,6 +438,12 @@ def cancel_job(
         )
         if result.rowcount == 1:
             return True
+        if expected_state is not None:
+            # Fenced: the row no longer matches the caller's view (any state
+            # change after the pre-read, including another authority's cancel),
+            # so this caller loses the race — the operator plane maps False to
+            # a 409. Unfenced callers keep the idempotent read-back below.
+            return False
         row = session.execute(
             select(table.c.state).where(table.c.job_id == job_id)
         ).scalar_one_or_none()

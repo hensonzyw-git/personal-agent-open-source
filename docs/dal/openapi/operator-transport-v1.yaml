@@ -46,7 +46,7 @@ paths:
       summary: 分页列出 job（服务端分页；不提供"全量"）
       parameters:
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
-        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0, maximum: 10000, default: 0 } }
       responses:
         "200":
           description: 一页 job 概要 + 总数
@@ -98,17 +98,23 @@ paths:
           $ref: "#/components/responses/JobNotFound"
   /operator/jobs/{job_id}/{action}:
     post:
-      summary: 对 job 执行一个 operator 动作（第一刀仅 cancel；其余 501）
+      summary: 对 job 执行一个 operator 动作（词表闭合：cancel 可用；4 个延迟动作 501；其余 404）
       description: >
-        `action` 为 path 段。`cancel` 是本合同唯一的可用 mutate；
-        `pause`/`resume`/`request-human`/`accept-result` 返回
+        `action` 为 path 段，词表闭合。`cancel` 是本合同唯一的可用 mutate；
+        `pause`/`resume`/`request-human`/`accept-result` 四个合同声明的延迟动作返回
         501 `operator_action_not_available`，待 controller dispatch executor 落地后
-        按同一合同扩展，不得静默扩展 path 集合。
+        按同一合同扩展；任何其他值返回 404 `unknown_action`，不得静默扩展 path 集合。
       security:
         - OperatorToken: [control]
       parameters:
         - { name: job_id, in: path, required: true, schema: { type: string } }
-        - { name: action, in: path, required: true, schema: { type: string } }
+        - {
+            name: action, in: path, required: true,
+            schema: {
+              type: string,
+              enum: [cancel, pause, resume, request-human, accept-result]
+            }
+          }
         - $ref: "#/components/parameters/BodyDigest"
       requestBody:
         required: true
@@ -180,7 +186,7 @@ components:
       properties:
         schema_version: { const: "dal.operator-transport/1.0" }
         total: { type: integer, minimum: 0 }
-        offset: { type: integer, minimum: 0 }
+        offset: { type: integer, minimum: 0, maximum: 10000 }
         limit: { type: integer, minimum: 1, maximum: 100 }
         jobs:
           type: array

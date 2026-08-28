@@ -50,7 +50,16 @@ def issue_operator_token(
     expires_at_epoch: int,
     key: bytes,
 ) -> str:
-    """Issue an HMAC-signed, expiring operator token."""
+    """Issue an HMAC-signed, expiring operator token.
+
+    The issuer enforces the same closed rules the verifier applies, so a
+    token that passes here can never be rejected by the verifier for payload
+    shape (duplicates, unknown capabilities, non-string id).
+    """
+    if not isinstance(operator_id, str) or not operator_id:
+        raise ValueError("operator_id must be a non-empty string")
+    if sorted(capabilities) != sorted(set(capabilities)):
+        raise ValueError("duplicate operator capability")
     unknown = [c for c in capabilities if c not in OPERATOR_CAPABILITIES]
     if unknown:
         raise ValueError(f"unknown operator capability: {unknown!r}")
@@ -84,6 +93,10 @@ def verify_operator_token(
         payload = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
     except (ValueError, json.JSONDecodeError) as exc:
         raise OperatorTokenError("undecodable payload") from exc
+    # A validly-signed payload whose top level is not an object (list, string,
+    # null) is a refusal, not a 500: nothing about it may be read as fields.
+    if not isinstance(payload, dict):
+        raise OperatorTokenError("payload is not an object")
     # Schema check precedes field checks: a worker token is a foreign identity
     # domain, and its fields must never be read as operator fields.
     if payload.get("schema") != TOKEN_SCHEMA:

@@ -324,6 +324,59 @@ def test_cancel_with_stale_expected_state_is_409_zero_write(client, engine) -> N
     assert queue.get_job(engine, job_id=job_id).state == "pending"
 
 
+def test_cancel_race_active_to_active_after_pre_read_is_409(client, engine) -> None:
+    """A worker advances the job between the operator's pre-read and the CAS.
+
+    The pre-read passes (view said leased, job was leased); the fenced CAS
+    must still lose to the leased→running transition and return 409
+    zero-write — the expected_state fence binds the real UPDATE, not just the
+    pre-read.
+    """
+    job_id = _seed_job(engine, state="leased")
+    payload = {
+        "schema_version": OPERATOR_SCHEMA_VERSION,
+        "request_id": "r1",
+        "job_id": job_id,
+        "action": "cancel",
+        "expected_state": "leased",
+    }
+    real_get_job = queue.get_job
+    raced = {"fired": False}
+
+    def _racing_get_job(engine_arg, *, job_id: str):
+        record = real_get_job(engine_arg, job_id=job_id)
+        # Simulate the worker winning the race: after the endpoint's pre-read
+        # observes `leased`, the worker's mark_running advances the row before
+        # the authority CAS fires. This is the same transition the service
+        # performs when a running worker heartbeats in.
+        if not raced["fired"] and record is not None and record.state == "leased":
+            raced["fired"] = True
+            table = queue._jobs_table()
+            with queue.session_factory(engine_arg)() as session:
+                session.execute(
+                    queue.update(table)
+                    .where(table.c.job_id == job_id)
+                    .where(table.c.state == "leased")
+                    .values(state="running")
+                )
+                session.commit()
+        return record
+
+    original = queue.get_job
+    queue.get_job = _racing_get_job
+    try:
+        response = _post_json(
+            client, f"/operator/jobs/{job_id}/cancel", payload, _operator_token()
+        )
+    finally:
+        queue.get_job = original
+    assert raced["fired"]
+    assert response.status_code == 409
+    assert response.json()["code"] == "state_mismatch"
+    # Zero-write: the job kept its worker-won state, never cancelled.
+    assert queue.get_job(engine, job_id=job_id).state == "running"
+
+
 def test_cancel_terminal_job_is_409(client, engine) -> None:
     job_id = _seed_job(engine)
     assert queue.cancel_job(engine, job_id=job_id)
@@ -461,3 +514,55 @@ def test_operator_cancel_survives_restart(client, tmp_path: Path) -> None:
         assert queue.get_job(engine, job_id=job_id).state == "cancelled"
     finally:
         engine.dispose()
+
+
+def test_unknown_action_path_is_404_not_501(client, engine) -> None:
+    """The action vocabulary is closed: garbage verbs are 404, not 501."""
+    job_id = _seed_job(engine)
+    for action in ("Delete", "Cancel", "restart", "bogus"):
+        payload = {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "request_id": "r1",
+            "job_id": job_id,
+            "action": "cancel",
+            "expected_state": "pending",
+        }
+        response = _post_json(
+            client, f"/operator/jobs/{job_id}/{action}", payload, _operator_token()
+        )
+        assert response.status_code == 404, action
+        assert response.json()["code"] == "unknown_action"
+    # Deferred but declared actions keep their contract 501.
+    for action in ("pause", "resume", "request-human", "accept-result"):
+        payload = {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "request_id": "r1",
+            "job_id": job_id,
+            "action": "cancel",
+            "expected_state": "pending",
+        }
+        response = _post_json(
+            client, f"/operator/jobs/{job_id}/{action}", payload, _operator_token()
+        )
+        assert response.status_code == 501, action
+
+
+def test_jobs_offset_is_capped(client) -> None:
+    """An oversized offset is a closed 400, not a driver overflow."""
+    response = client.get(
+        f"/operator/jobs?limit=20&offset={10**100}",
+        headers={"Authorization": f"Bearer {_operator_token()}"},
+    )
+    assert response.status_code == 400
+
+
+def test_rate_limit_buckets_do_not_collide(engine) -> None:
+    """Worker and operator identity domains use disjoint rate buckets."""
+    from personal_agent_dal.service.app import RateLimiter
+
+    limiter = RateLimiter(max_requests=1, window_seconds=60.0)
+    assert limiter.allow(("worker", "henson"), now=1.0) is True
+    # Same string id in the other domain is a different bucket.
+    assert limiter.allow(("operator", "henson"), now=1.0) is True
+    assert limiter.allow(("worker", "henson"), now=1.0) is False
+    assert limiter.allow(("operator", "henson"), now=1.0) is False

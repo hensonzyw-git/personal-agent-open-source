@@ -26,6 +26,14 @@ for arg in "$@"; do
 done
 
 if [ -f "$TOKEN_FILE" ]; then
+  # Fail closed on a loose source file: the coders' launcher requires 0600 on
+  # the file it reads, and a loose token file here would silently widen the
+  # credential's exposure before it is ever copied.
+  perms=$(stat -f '%Lp' "$TOKEN_FILE")
+  if [ "$perms" != "600" ]; then
+    echo "token source file must be owner-only (0600), got $perms" >&2
+    exit 1
+  fi
   export DAL_CODER_TOKEN="$(tr -d ' \n\r' < "$TOKEN_FILE")"
 else
   printf 'token file %s not found; enter appkey: ' "$TOKEN_FILE" >&2

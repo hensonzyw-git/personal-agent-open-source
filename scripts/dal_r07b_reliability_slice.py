@@ -214,17 +214,45 @@ def write_worker_config(
 
 
 def run_worker(config_path: Path, timeout: int) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    """Run one poll-once in its own process group; reclaim the whole tree.
+
+    The coder child (claude -> CCR) spawns in the worker's process group, so
+    an outer timeout that killed only the worker process would leave the
+    model call running and burning the authorised call budget. Start the
+    worker in a fresh session and, on timeout, TERM then KILL the entire
+    group and reap it. The worker env drops DAL_CODER_TOKEN: the credential
+    travels only through its 0600 token file, never through the process
+    environment of the worker/service children.
+    """
+    worker_env = {
+        key: value for key, value in os.environ.items() if key != "DAL_CODER_TOKEN"
+    }
+    process = subprocess.Popen(
         [
             sys.executable, "-m", "personal_agent_dal.worker.cli",
             "--config", str(config_path), "poll-once",
         ],
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
-        capture_output=True,
+        env={**worker_env, "PYTHONPATH": str(REPO_ROOT / "src")},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=timeout,
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+        raise SystemExit(
+            f"worker exceeded the {timeout}s outer budget; process group "
+            f"{process.pid} reaped — real call budget must be re-accounted"
+        )
+    return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
 
 
 def start_service(root: Path) -> tuple[subprocess.Popen, object, str, Path]:
@@ -250,7 +278,14 @@ def start_service(root: Path) -> tuple[subprocess.Popen, object, str, Path]:
             "--ssl-certfile", str(cert), "--ssl-keyfile", str(key),
         ],
         cwd=REPO_ROOT,
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        env={
+            **{
+                key: value
+                for key, value in os.environ.items()
+                if key != "DAL_CODER_TOKEN"
+            },
+            "PYTHONPATH": str(REPO_ROOT / "src"),
+        },
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )

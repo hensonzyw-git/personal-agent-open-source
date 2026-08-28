@@ -1,26 +1,32 @@
 """Operator Console CLI (`personal-agent-dal-console`) — DAL-R08 first slice.
 
-A minimal read-only console over the operator plane of the Dev Workflow
-Service. The MacBook is the Operator Console (frozen Roadmap decision 4):
-this CLI observes jobs from a distance and offers exactly one mutation,
-`cancel`, which goes through the operator identity (a separate token from any
-worker token) and carries the job's `expected_state` as a stale-projection
-fence — the CLI reads the state, shows it, and binds the action to it.
+A minimal console over the operator plane of the Dev Workflow Service: the
+read commands `list`/`show`/`checkpoints`/`whoami` plus exactly one mutation,
+`cancel`. The MacBook is the Operator Console (frozen Roadmap decision 4):
+this CLI observes jobs from a distance and cancels through the operator
+identity (a separate token from any worker token), carrying the job's
+`expected_state` as a stale-projection fence — the CLI reads the state, shows
+it, and binds the action to it.
 
 Token handling: the operator token arrives via `--token-file` (owner-only
-0600, one line, no trailing newline handling beyond strip). The token value is
-never printed; only its operator identity prefix and expiry are echoed, and
-only when `--show-token-info` is given.
+0600 regular file, read through `O_NOFOLLOW` and verified on the same file
+descriptor to close the stat/read race). The token value is never printed;
+only its operator identity prefix and expiry are echoed, and only by the
+`whoami` command.
 
-Mutations require an explicit second confirmation (typo-guard), print the
-server's error envelope verbatim on failure, and never retry on their own —
-a lost response is resolved by re-reading state, not by blind resend.
+Mutations require an explicit second confirmation (typo-guard). Failures
+print the server's error envelope fields (code, detail) and never a
+traceback; requests are never retried or re-sent on redirect — an HTTP
+redirect is refused instead of followed, so the bearer token never leaves
+the configured origin.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import stat
 import sys
 import time
@@ -35,17 +41,55 @@ READ_COMMANDS = ("list", "show", "checkpoints", "whoami")
 
 
 def _read_token_file(path: Path) -> str:
-    """Read a 0600 owner-only token file; refuse anything else."""
+    """Read a 0600 owner-only regular token file, race-free.
+
+    The fd is opened with `O_NOFOLLOW` and the ownership/mode checks run on
+    that same fd (`fstat`), so the file verified is exactly the file read —
+    no stat/read TOCTOU window, no symlink swap.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     try:
-        mode = stat.S_IMODE(path.stat().st_mode)
+        fd = os.open(path, flags)
     except OSError as error:
-        raise SystemExit(f"token file unreadable: {type(error).__name__}")
-    if mode != 0o600:
-        raise SystemExit("token file must be owner-only (0600)")
-    value = path.read_text(encoding="utf-8").strip()
+        raise SystemExit(f"token file unreadable: {type(error).__name__}") from None
+    try:
+        info = os.fstat(fd)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise SystemExit("token file must be a regular file")
+        if info.st_uid != os.getuid():
+            raise SystemExit("token file must be owned by the current user")
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            raise SystemExit("token file must be owner-only (0600)")
+        chunks = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    except OSError as error:
+        raise SystemExit(f"token file unreadable: {type(error).__name__}") from None
+    finally:
+        os.close(fd)
+    value = b"".join(chunks).decode("utf-8", errors="strict").strip()
     if not value:
         raise SystemExit("token file must be non-empty")
     return value
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect instead of following it.
+
+    The default handler would re-send the Authorization header to whatever
+    host the redirect names; for a credential-bearing operator client that is
+    a credential leak by design. A redirect response therefore surfaces as a
+    normal HTTPError status for `_fail_with_envelope`.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def _request(
@@ -61,17 +105,20 @@ def _request(
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
-        headers["X-Transport-Body-Digest"] = __import__("hashlib").sha256(data).hexdigest()
+        headers["X-Transport-Body-Digest"] = hashlib.sha256(data).hexdigest()
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _OPENER.open(request, timeout=timeout) as response:
             body = response.read()
             status = response.status
     except urllib.error.HTTPError as error:
         body = error.read()
         status = error.code
     except urllib.error.URLError as error:
-        raise SystemExit(f"connection failed: {error.reason}")
+        reason = getattr(error, "reason", error)
+        raise SystemExit(f"connection failed: {type(reason).__name__}") from None
+    except (TimeoutError, OSError) as error:
+        raise SystemExit(f"connection failed: {type(error).__name__}") from None
     try:
         return status, json.loads(body)
     except (ValueError, json.JSONDecodeError):
@@ -97,6 +144,9 @@ def _token_expiry(token: str) -> str:
 
 
 def _print_jobs(page: dict) -> None:
+    for key in ("total", "jobs", "offset"):
+        if key not in page or not isinstance(page[key], (int, list)):
+            raise SystemExit(f"malformed success response: missing {key!r}")
     print(f"total={page['total']} showing={len(page['jobs'])} offset={page['offset']}")
     for job in page["jobs"]:
         print(
@@ -107,8 +157,18 @@ def _print_jobs(page: dict) -> None:
 
 def _fail_with_envelope(status: int, body: object) -> None:
     if isinstance(body, dict):
-        raise SystemExit(f"HTTP {status}: {body.get('code')} ({body.get('detail')})")
+        # The full envelope minus non-display fields — schema_version included,
+        # so what the server said is what the operator sees.
+        printable = {k: v for k, v in body.items() if k != "request_id"}
+        raise SystemExit(f"HTTP {status}: {json.dumps(printable, ensure_ascii=False)}")
     raise SystemExit(f"HTTP {status}: {body!r}")
+
+
+def _require_dict(body: object) -> dict:
+    """A 2xx body that is not a JSON object is a protocol error, fail closed."""
+    if not isinstance(body, dict):
+        raise SystemExit("malformed success response: expected a JSON object")
+    return body
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -149,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if status != 200:
             _fail_with_envelope(status, body)
-        _print_jobs(body)
+        _print_jobs(_require_dict(body))
         return 0
 
     if args.command == "show":
@@ -170,7 +230,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         if status != 200:
             _fail_with_envelope(status, body)
-        for cp in body["checkpoints"]:
+        page = _require_dict(body)
+        for cp in page.get("checkpoints", []):
             print(
                 f"  seq={cp['sequence']} epoch={cp['lease_epoch']} "
                 f"{cp['sensitivity']:<10} {cp['artifact_sha256']} "
@@ -184,7 +245,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         if status != 200:
             _fail_with_envelope(status, detail)
-        state = detail["state"]
+        state = _require_dict(detail).get("state")
+        if not isinstance(state, str):
+            raise SystemExit("malformed success response: missing 'state'")
         if state not in ("pending", "leased", "running"):
             raise SystemExit(f"job is terminal ({state}); nothing to cancel")
         if not args.yes:
@@ -208,7 +271,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         if status != 200:
             _fail_with_envelope(status, body)
-        print(f"cancelled: {body['job_id']}")
+        cancelled = _require_dict(body)
+        print(f"cancelled: {cancelled.get('job_id', '?')}")
         return 0
 
     parser.error(f"unknown command: {args.command}")

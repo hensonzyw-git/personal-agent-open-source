@@ -61,7 +61,17 @@ OPERATOR_TOKEN_TTL_SECONDS = 3600
 #: are contract-declared 501s (`operator_action_not_available`), not silent
 #: gaps.
 OPERATOR_MUTATIONS: Final[tuple[str, ...]] = ("cancel",)
+#: Contract-declared 501s: these actions exist in the operator vocabulary but
+#: await the controller-side dispatch executor. Any other action path is an
+#: unknown verb and gets a closed 404, not a 501.
+OPERATOR_DEFERRED_ACTIONS: Final[tuple[str, ...]] = (
+    "pause",
+    "resume",
+    "request-human",
+    "accept-result",
+)
 OPERATOR_JOBS_PAGE_MAX = 100
+OPERATOR_JOBS_OFFSET_MAX = 10_000
 MAX_BODY_BYTES = 1_048_576  # 1 MiB transport envelope cap, distinct from artifact cap
 ARTIFACT_MAX_BYTES = 104_857_600
 CHANGED_FILES_MAX = 10_000
@@ -76,7 +86,7 @@ MAX_ATTEMPTS = 3
 
 BODY_DIGEST_HEADER: Final[str] = "x-transport-body-digest"
 ENROLLMENT_SECRET_HEADER: Final[str] = "x-enrollment-secret"
-_ENROLL_BUCKET: Final[str] = "__enroll__"  # global rate-limit bucket for /enroll
+_ENROLL_BUCKET: Final[tuple[str, str]] = ("enroll", "__global__")  # /enroll rate bucket
 
 _SHA64_HEX = re.compile(r"[0-9a-f]{64}")
 
@@ -322,15 +332,21 @@ async def transport_body_guard(request: Request) -> None:
 
 
 class RateLimiter:
-    """In-memory per-worker sliding window. Offline-slice stand-in for Nginx."""
+    """In-memory sliding window keyed by a structured identity bucket.
+
+    The key is a tuple (identity domain, id), e.g. ``("worker", id)`` or
+    ``("operator", id)``, so the two identity domains can never collide on
+    one bucket string (a worker literally named like an operator id, or vice
+    versa). Offline-slice stand-in for Nginx.
+    """
 
     def __init__(self, max_requests: int, window_seconds: float) -> None:
         self._max = max_requests
         self._window = window_seconds
-        self._hits: dict[str, deque[float]] = defaultdict(deque)
+        self._hits: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 
-    def allow(self, worker_id: str, now: float) -> bool:
-        hits = self._hits[worker_id]
+    def allow(self, bucket: tuple[str, str], now: float) -> bool:
+        hits = self._hits[bucket]
         cutoff = now - self._window
         while hits and hits[0] < cutoff:
             hits.popleft()
@@ -404,7 +420,7 @@ class Service:
         if enrollment.revoked_at is not None:
             # Revocation is observed here, fail-closed at the auth boundary.
             raise _http(403, "worker_revoked")
-        if not self.rate_limiter.allow(worker_id, time.time()):
+        if not self.rate_limiter.allow(("worker", worker_id), time.time()):
             raise _http(429, "rate_limited")
         return worker_id, capabilities
 
@@ -464,7 +480,7 @@ class _OperatorAuth:
             raise _http(401, "token_invalid") from exc
         if self._required not in capabilities:
             raise _http(403, "capability_missing")
-        if not self._service.rate_limiter.allow(f"operator:{operator_id}", time.time()):
+        if not self._service.rate_limiter.allow(("operator", operator_id), time.time()):
             raise _http(429, "rate_limited")
         return operator_id
 
@@ -749,7 +765,12 @@ def create_app(
         offset: int = 0,
         _: str = Depends(operator_read),
     ) -> dict[str, Any]:
-        if limit < 1 or limit > OPERATOR_JOBS_PAGE_MAX or offset < 0:
+        if (
+            limit < 1
+            or limit > OPERATOR_JOBS_PAGE_MAX
+            or offset < 0
+            or offset > OPERATOR_JOBS_OFFSET_MAX
+        ):
             raise _http(400, "invalid")
         total, rows = _operator_identity_rows(engine, limit=limit, offset=offset)
         return {
@@ -833,10 +854,14 @@ def create_app(
         operator_id: str = Depends(operator_control),
         _: None = Depends(transport_body_guard),
     ) -> dict[str, Any]:
-        if action not in OPERATOR_MUTATIONS:
+        if action in OPERATOR_DEFERRED_ACTIONS:
             # pause/resume/request-human/accept-result await the controller
             # dispatch executor; the contract declares them 501, not silent.
             raise _http(501, "operator_action_not_available")
+        if action not in OPERATOR_MUTATIONS:
+            # A closed vocabulary: unknown verbs are a contract violation
+            # (404), not "implemented someday" (501).
+            raise _http(404, "unknown_action")
         if body.job_id != job_id:
             raise _http(400, "job_mismatch")
         if service.kill_switch:
@@ -847,9 +872,11 @@ def create_app(
         if record.state != body.expected_state:
             # Stale operator projection: refuse before any write.
             raise _http(409, "state_mismatch")
-        ok = queue.cancel_job(engine, job_id=job_id)
+        ok = queue.cancel_job(engine, job_id=job_id, expected_state=body.expected_state)
         if not ok:
-            # Lost a race between the pre-read and the CAS write.
+            # Lost a race between the pre-read and the CAS write: the fenced
+            # CAS returns False for any post-pre-read state change, including
+            # an active→active transition or another authority's cancel.
             raise _http(409, "state_mismatch")
         _append_redacted_audit(
             engine,

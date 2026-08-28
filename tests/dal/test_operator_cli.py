@@ -195,3 +195,89 @@ def test_token_file_permissions_are_enforced(live_server, tmp_path: Path) -> Non
     with pytest.raises(SystemExit) as excinfo:
         _run(live_server, loose, "list")
     assert "0600" in str(excinfo.value)
+
+
+def test_redirect_is_refused_not_followed(tmp_path: Path, token_file: Path) -> None:
+    """A cross-origin redirect must surface as an error, never be followed.
+
+    The default urllib handler would re-send the Authorization header to the
+    redirect target; the operator CLI must refuse every redirect so the
+    bearer token never leaves the configured origin.
+    """
+    import http.server
+
+    seen_auth: list[str | None] = []
+
+    class _Redirector(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            seen_auth.append(self.headers.get("Authorization"))
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:1/operator/jobs")
+            self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            return
+
+    redirector = http.server.HTTPServer(("127.0.0.1", 0), _Redirector)
+    thread = threading.Thread(target=redirector.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{redirector.server_address[1]}"
+        with pytest.raises(SystemExit) as excinfo:
+            _run((base_url, None), token_file, "list")
+        message = str(excinfo.value)
+        assert "HTTP 302" in message
+    finally:
+        redirector.shutdown()
+        redirector.server_close()
+        thread.join(timeout=5)
+    # Exactly one request was made — to the redirector, with the token. No
+    # follow-up request left the origin (nothing contacted 127.0.0.1:1, and
+    # the token-bearing request count stays at one).
+    assert len(seen_auth) == 1
+
+
+def test_malformed_success_response_fails_closed(live_server, token_file, monkeypatch) -> None:
+    """A 200 with a non-JSON-object body must be a clean failure, no traceback."""
+
+    class _LyingResponse:
+        status = 200
+
+        def read(self) -> bytes:
+            return b"\xff not-json-at-all"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        operator_cli._OPENER, "open", lambda req, timeout=None: _LyingResponse()
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        _run(live_server, token_file, "list")
+    assert "malformed" in str(excinfo.value) or "expected a JSON object" in str(excinfo.value)
+
+
+def test_timeout_surfaces_as_clean_error_not_traceback(
+    live_server, token_file, monkeypatch
+) -> None:
+    """A transport timeout becomes a clean SystemExit, never a traceback."""
+
+    def _hanging_open(req: object, timeout: float | None = None):
+        raise TimeoutError("read timed out")
+
+    monkeypatch.setattr(operator_cli._OPENER, "open", _hanging_open)
+    with pytest.raises(SystemExit) as excinfo:
+        _run(live_server, token_file, "list")
+    assert "TimeoutError" in str(excinfo.value)
+
+
+def test_token_file_symlink_is_refused(tmp_path: Path, token_file: Path) -> None:
+    """A symlink to a valid 0600 token file must be refused (O_NOFOLLOW)."""
+    link = tmp_path / "token-link"
+    link.symlink_to(token_file)
+    with pytest.raises(SystemExit) as excinfo:
+        operator_cli._read_token_file(link)
+    assert "regular file" in str(excinfo.value) or "unreadable" in str(excinfo.value)
