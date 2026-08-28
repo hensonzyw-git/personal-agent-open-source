@@ -234,7 +234,7 @@ def glm_gateway_from_env(
 
     api_key = require_env("ZAI_API_KEY")
     api_base = os.environ.get("GLM_OPENAI_BASE_URL", ZHIPU_API_BASE)
-    model = os.environ.get("GLM_MODEL", "glm-5.2")
+    model = os.environ.get("GLM_MODEL", "glm-5.3-flash")
     return GlmGateway(
         model=f"openai/{model}",
         api_key=api_key,
@@ -562,11 +562,13 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
     text_parts: list[str] = []
     for part in parts:
         if getattr(part, "thought", False):
-            raise _invalid_model_response(
-                "ADK model response contained unsupported thought content",
-                reason=ModelFailureReason.RESPONSE_UNSUPPORTED_CONTENT,
-                response_shape="thought",
-            )
+            # GLM 5.3-class models always reason; the provider refuses to
+            # disable it (error 1210) and `reasoning_effort` only lowers it.
+            # The thought part is the model's private process, not user-facing
+            # output, untrusted prose or evidence: skip it and apply every
+            # other fail-closed rule to the remainder. The raw response is
+            # still recorded in the transcript, so nothing is lost to audit.
+            continue
         unsupported = _unsupported_part_fields(part)
         if unsupported:
             names = ", ".join(sorted(unsupported))
@@ -758,6 +760,20 @@ def require_env(name: str) -> str:
     return value
 
 
+#: GLM 5.3-class models always reason; the endpoint refuses `thinking: disabled`
+#: (error 1210 "该模型始终思考，不支持关闭思考") and `reasoning_effort` is the
+#: accepted minimum. Older GLM models do not think by default and keep the
+#: historical `thinking: disabled` guard. The parameter must be model-conditional:
+#: sending `reasoning_effort` to a 5.2-class model *enables* thinking there
+#: (verified live 2026-08-29).
+def _thinking_request_params(model: str) -> dict[str, Any]:
+    base = model.rsplit("/", 1)[-1]
+    match = re.fullmatch(r"glm-(\d+)\.(\d+)[A-Za-z0-9._-]*", base)
+    if match is not None and (int(match.group(1)), int(match.group(2))) >= (5, 3):
+        return {"reasoning_effort": "low"}
+    return {"thinking": {"type": "disabled"}}
+
+
 def generate_with_adk(
     *,
     model: str,
@@ -817,7 +833,7 @@ def generate_with_adk(
         api_base=api_base,
         timeout=timeout,
         num_retries=0,
-        extra_body={"thinking": {"type": "disabled"}},
+        extra_body=_thinking_request_params(model),
     )
     request = LlmRequest(
         contents=[

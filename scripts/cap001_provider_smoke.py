@@ -452,7 +452,7 @@ def check_model() -> int:
     fail-closed behaviour it is supposed to be tested against.
     """
     model = os.environ.get(CLASSIFIER_MODEL_ENV) or os.environ.get(
-        "GLM_MODEL", "glm-5.2"
+        "GLM_MODEL", "glm-5.3-flash"
     )
     print(f"classifier model: {model}")
     classifier = GlmBoundaryClassifier(
@@ -558,9 +558,9 @@ def main(argv: list[str] | None = None) -> int:
         report = {
             "kind": "cap001_provider_smoke",
             "generated_at": utc_now().isoformat(),
-            "model": os.environ.get("GLM_MODEL", "glm-5.2"),
+            "model": os.environ.get("GLM_MODEL", "glm-5.3-flash"),
             "classifier_model": os.environ.get(CLASSIFIER_MODEL_ENV)
-            or os.environ.get("GLM_MODEL", "glm-5.2"),
+            or os.environ.get("GLM_MODEL", "glm-5.3-flash"),
             "classifier_timeout_seconds": CLASSIFIER_TIMEOUT_SECONDS,
             "endpoint_pinning_refused_tampered_host": pinned,
             "cases": [

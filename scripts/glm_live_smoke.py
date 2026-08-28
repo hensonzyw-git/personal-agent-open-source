@@ -767,7 +767,7 @@ def main(argv: list[str] | None = None) -> int:
             "kind": "glm_live_smoke",
             "generated_at": now.isoformat(),
             "ledger_today": today,
-            "model": os.environ.get("GLM_MODEL", "glm-5.2"),
+            "model": os.environ.get("GLM_MODEL", "glm-5.3-flash"),
             "catalog": list(COMPOSED_ALIASES),
             "endpoint_pinning_refused_tampered_host": pinned,
             # The same statement the console makes, in the artifact. A saved

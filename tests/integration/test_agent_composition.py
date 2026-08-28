@@ -765,7 +765,7 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
             )
 
         return StructuredModelClient(
-            model="openai/glm-5.2",
+            model="openai/glm-5.3-flash",
             api_key="k",
             api_base="https://open.bigmodel.cn/api/paas/v4/",
             generate=generate,

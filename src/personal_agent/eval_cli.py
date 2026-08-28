@@ -501,7 +501,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("unknown case(s): " + ", ".join(sorted(unknown)))
         cases = [case for case in cases if case.id in wanted]
 
-    evaluator = "google-adk:" + os.environ.get("GLM_MODEL", "glm-5.2")
+    evaluator = "google-adk:" + os.environ.get("GLM_MODEL", "glm-5.3-flash")
     interpreter = ModelInterpreter(glm_gateway_from_env())
     outcomes: list[EvalOutcome] = []
     tools = visible_tools()

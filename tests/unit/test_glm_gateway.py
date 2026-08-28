@@ -101,7 +101,7 @@ def _gateway(response=None, *, raises=None):
     generate.kwargs = None
     return (
         GlmGateway(
-            model="openai/glm-5.2",
+            model="openai/glm-5.3-flash",
             api_key="k",
             api_base=_PINNED,
             generate=generate,
@@ -198,7 +198,7 @@ def test_the_request_is_bounded_and_declares_business_and_internal_tools(envelop
     gateway, generate = _gateway(_response(_text("ok")))
     _propose(gateway, envelope)
     kwargs = generate.kwargs
-    assert kwargs["model"] == "openai/glm-5.2"
+    assert kwargs["model"] == "openai/glm-5.3-flash"
     assert kwargs["api_base"] == _PINNED
     assert kwargs["timeout"] == 25.0
     assert kwargs["allowed_function_names"] == [
@@ -749,15 +749,48 @@ def test_a_partial_response_fails_closed_even_if_it_contains_a_tool_call(envelop
         _propose(gateway, envelope)
 
 
-def test_thought_content_is_not_silently_dropped_beside_a_tool_call(envelope) -> None:
+def test_thought_content_is_skipped_beside_a_tool_call(envelope) -> None:
+    """GLM 5.3-class models always reason: the thought part is private process,
+    not untrusted prose, so it is skipped and the single call is accepted."""
     gateway, _ = _gateway(
         _response(
             _text("hidden reasoning", thought=True),
             _call("finance.log_expense", {"name": "午饭"}),
         )
     )
-    with pytest.raises(ModelGatewayError, match="thought content"):
+    proposal = _propose(gateway, envelope)
+    assert proposal == ProposedToolCall("finance.log_expense", {"name": "午饭"})
+
+
+def test_thought_with_real_prose_and_a_call_still_suppresses_the_prose(
+    envelope,
+) -> None:
+    gateway, _ = _gateway(
+        _response(
+            _text("hidden reasoning", thought=True),
+            _text("这段文字不是工具参数，也不是给用户的结果。"),
+            _call("finance.log_expense", {"name": "午饭"}),
+        )
+    )
+    proposal = _propose(gateway, envelope)
+    assert proposal == ProposedToolCall(
+        "finance.log_expense",
+        {"name": "午饭"},
+        suppressed_untrusted_text=True,
+    )
+
+
+def test_a_thought_only_response_fails_closed_as_blank(envelope) -> None:
+    gateway, _ = _gateway(_response(_text("hidden reasoning", thought=True)))
+    with pytest.raises(ModelGatewayError, match="blank"):
         _propose(gateway, envelope)
+
+
+def test_thought_beside_a_plain_answer_is_skipped(envelope) -> None:
+    gateway, _ = _gateway(
+        _response(_text("hidden reasoning", thought=True), _text("你好"))
+    )
+    assert _propose(gateway, envelope) == ProposedAnswer("你好")
 
 
 def test_transport_failure_is_a_gateway_error(envelope) -> None:
@@ -883,7 +916,7 @@ def test_from_env_requires_a_key_and_rejects_a_credential_exfiltration_host(
 def test_model_timeout_cannot_exceed_the_design_budget(envelope) -> None:
     with pytest.raises(ModelGatewayError):
         GlmGateway(
-            model="openai/glm-5.2",
+            model="openai/glm-5.3-flash",
             api_key="k",
             api_base=_PINNED,
             generate=lambda **kwargs: None,
@@ -923,7 +956,7 @@ def test_production_generator_uses_the_adk_model_contract(monkeypatch) -> None:
         FakeLiteLlm,
     )
     actual = generate_with_adk(
-        model="openai/glm-5.2",
+        model="openai/glm-5.3-flash",
         api_key="secret",
         api_base=_PINNED,
         system="SYS",
@@ -964,13 +997,54 @@ def test_production_generator_uses_the_adk_model_contract(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
+    ("model", "expected_extra_body"),
+    [
+        ("openai/glm-5.3-flash", {"reasoning_effort": "low"}),
+        ("openai/glm-5.2", {"thinking": {"type": "disabled"}}),
+        ("openai/glm-4.7-flashx", {"thinking": {"type": "disabled"}}),
+        ("openai/glm-fast-placeholder", {"thinking": {"type": "disabled"}}),
+    ],
+)
+def test_the_adk_request_carries_model_conditional_thinking_params(
+    monkeypatch, model, expected_extra_body
+) -> None:
+    """GLM 5.3-class models refuse `thinking: disabled`; older models must not
+    receive `reasoning_effort`, which would *enable* thinking for them."""
+    captured = {}
+
+    class FakeLiteLlm:
+        def __init__(self, **kwargs):
+            captured["init"] = kwargs
+
+        async def generate_content_async(self, request, stream=False):
+            yield _response(_text("ok"))
+
+    monkeypatch.setattr(
+        "google.adk.models.lite_llm.LiteLlm",
+        FakeLiteLlm,
+    )
+    generate_with_adk(
+        model=model,
+        api_key="secret",
+        api_base=_PINNED,
+        system="SYS",
+        messages=[{"role": "user", "content": "hi"}],
+        declarations=[],
+        temperature=0.1,
+        max_tokens=512,
+        timeout=25.0,
+    )
+    assert captured["init"]["extra_body"] == expected_extra_body
+
+
+@pytest.mark.parametrize(
     "allowed", [[], ["unknown"], ["meta.capabilities", "meta.capabilities"]]
 )
 def test_production_generator_rejects_an_invalid_required_subset(allowed) -> None:
     """The trusted provider mode cannot name an undeclared or duplicate tool."""
     with pytest.raises(ModelGatewayError, match="non-empty declared subset"):
         generate_with_adk(
-            model="openai/glm-5.2",
+            model="openai/glm-5.3-flash",
             api_key="secret",
             api_base=_PINNED,
             system="SYS",

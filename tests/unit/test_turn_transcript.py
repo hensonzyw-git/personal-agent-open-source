@@ -209,12 +209,12 @@ def test_secret_in_a_nested_payload_is_scrubbed(tmp_path: Path) -> None:
     recorder = _recorder(tmp_path, secrets=frozenset({secret}))
     recorder.record(
         transcript.MODEL_REQUEST,
-        {"headers": {"authorization": f"Bearer {secret}"}, "model": "glm-5.2"},
+        {"headers": {"authorization": f"Bearer {secret}"}, "model": "glm-5.3-flash"},
     )
     (record,) = _lines(recorder)
     assert secret not in json.dumps(record)
     assert REDACTED in record["payload"]["headers"]["authorization"]
-    assert record["payload"]["model"] == "glm-5.2"
+    assert record["payload"]["model"] == "glm-5.3-flash"
 
 
 def test_secret_is_scrubbed_in_its_json_escaped_form(tmp_path: Path) -> None:
@@ -492,7 +492,7 @@ def _gateway(tmp_path: Path, generate, recorder):
     from personal_agent.runtime.glm_gateway import GlmGateway
 
     return GlmGateway(
-        model="openai/glm-5.2",
+        model="openai/glm-5.3-flash",
         api_key="zai-secret-0123456789",
         generate=generate,
         recorder=recorder,
@@ -606,7 +606,7 @@ def test_structured_model_request_and_raw_response_are_recorded(tmp_path: Path) 
         ),
     )
     client = StructuredModelClient(
-        model="openai/glm-5.2",
+        model="openai/glm-5.3-flash",
         api_key="zai-secret-0123456789",
         input_budget_tokens=10_000,
         generate=lambda **kwargs: response,
@@ -644,7 +644,7 @@ def test_structured_model_failure_is_recorded(tmp_path: Path) -> None:
         raise RuntimeError("provider unavailable")
 
     client = StructuredModelClient(
-        model="openai/glm-5.2",
+        model="openai/glm-5.3-flash",
         api_key="zai-secret-0123456789",
         input_budget_tokens=10_000,
         generate=fail,

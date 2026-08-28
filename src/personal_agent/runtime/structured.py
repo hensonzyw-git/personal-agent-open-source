@@ -7,10 +7,13 @@ gateway uses, and the answer is required to arrive as a function call so the
 schema is enforced by the provider rather than by parsing free text.
 
 Everything here fails closed. Prose instead of a call, several calls, a
-different function name, arguments that are not an object, a `thought` part, an
-unsupported part payload, a partial or errored response, a timeout: all raise
+different function name, arguments that are not an object, an unsupported part
+payload, a partial or errored response, a timeout: all raise
 `StructuredCallError`, and each caller turns that into its own safe outcome --
 `continue_session` for the classifier, `provider_failed` for the Compactor.
+A `thought` part is skipped (GLM 5.3-class models always reason; the raw
+response stays in the audit transcript), but a thought-only response still
+fails as "no call".
 
 What this module does *not* do is repair a payload. A returned object is handed
 to the caller's own validators untouched, because a provider that repaired its
@@ -310,7 +313,7 @@ def structured_client_from_env(
     """
     import os
 
-    model = os.environ.get(model_env) or os.environ.get("GLM_MODEL", "glm-5.2")
+    model = os.environ.get(model_env) or os.environ.get("GLM_MODEL", "glm-5.3-flash")
     return StructuredModelClient(
         model=f"openai/{model}",
         api_key=require_env("ZAI_API_KEY"),
@@ -337,9 +340,10 @@ def _parse(response: Any, *, expected: str) -> dict[str, Any]:
     calls: list[Any] = []
     for part in parts:
         if getattr(part, "thought", False):
-            raise StructuredCallError(
-                "structured response contained thought content"
-            )
+            # GLM 5.3-class models always reason (same policy as the Chat
+            # gateway): the thought part is private process, not the structured
+            # answer. Skip it; a thought-only response still fails below.
+            continue
         unsupported = _unsupported_fields(part)
         if unsupported:
             raise StructuredCallError(

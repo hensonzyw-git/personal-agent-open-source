@@ -48,7 +48,7 @@ def _client(answer_for):
         )
 
     return StructuredModelClient(
-        model="openai/glm-5.2",
+        model="openai/glm-5.3-flash",
         api_key="k",
         input_budget_tokens=32_768,
         api_base=PINNED,
@@ -82,7 +82,7 @@ def test_a_refusing_provider_is_recorded_not_scored_as_a_defect() -> None:
 
     classifier = GlmBoundaryClassifier(
         StructuredModelClient(
-            model="openai/glm-5.2",
+            model="openai/glm-5.3-flash",
             api_key="k",
             input_budget_tokens=32_768,
             api_base=PINNED,
