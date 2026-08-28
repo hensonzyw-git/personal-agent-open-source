@@ -90,6 +90,22 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
+#: Path to a private CA bundle the operator explicitly trusts, set once by
+#: `main` from `--ca-bundle`. Never a downgrade: verification is always on,
+#: this only swaps which anchors verify the server certificate.
+_CA_BUNDLE: Path | None = None
+
+
+def _opener() -> urllib.request.OpenerDirector:
+    """The no-redirect opener, rebuilt when a private CA bundle is set."""
+    if _CA_BUNDLE is None:
+        return _OPENER
+    import ssl
+
+    context = ssl.create_default_context(cafile=str(_CA_BUNDLE))
+    return urllib.request.build_opener(
+        _NoRedirect, urllib.request.HTTPSHandler(context=context)
+    )
 
 
 def _request(
@@ -108,7 +124,7 @@ def _request(
         headers["X-Transport-Body-Digest"] = hashlib.sha256(data).hexdigest()
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with _OPENER.open(request, timeout=timeout) as response:
+        with _opener().open(request, timeout=timeout) as response:
             body = response.read()
             status = response.status
     except urllib.error.HTTPError as error:
@@ -178,6 +194,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--base-url", required=True, help="e.g. https://agent.example.invalid/dal/transport/v1")
     parser.add_argument("--token-file", type=Path, required=True, help="0600 file holding the operator token")
+    parser.add_argument(
+        "--ca-bundle", type=Path, default=None,
+        help="PEM bundle of a private CA to verify the server certificate "
+        "(verification is always on; without this the system trust store is used)",
+    )
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -194,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
     cancel_parser.add_argument("--yes", action="store_true", help="skip the interactive confirmation")
     args = parser.parse_args(argv)
 
+    global _CA_BUNDLE
+    _CA_BUNDLE = args.ca_bundle
     token = _read_token_file(args.token_file)
 
     if args.command == "whoami":
