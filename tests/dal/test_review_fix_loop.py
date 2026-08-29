@@ -1,18 +1,25 @@
 """Adversarial tests for the bounded review/fix loop policy (DAL-030, R09-A2).
 
 The loop module is a pure judge in the ``patch_policy`` family: no I/O, no
-fixture composition, no manifest registration. The matrix below follows the
-plan groups: (A) trusted-envelope drift, (B) the round budget boundary,
-(C) the cross-round independence matrix, (D) chain consistency, (E) the
-composed close outcome, (F) module hygiene.
+fixture composition, no manifest registration. The matrix follows the plan
+groups — (A) trusted-envelope drift, (B) the round budget boundary, (C) the
+cross-round independence matrix, (D) chain consistency, (E) the composed
+close outcome, (F) module hygiene — restructured for the round-1 review's
+call-timing split: ``open_review_fix_round`` is the call-before gate (budget,
+verification precondition), ``admit_round_reviewer`` is the call-after gate
+(independence matrix against the attested binding), ``close_review_fix_round``
+composes the frozen evaluators.
 
 Counting convention B and the POLICY_FAILURE exhaustion landing are Henson's
 2026-08-29 decisions; the boundary pair (count=2 opens round 3, count=3
 refuses round 4 through the frozen BLK-POLICY semantics) is asserted
-explicitly. The close tests compose the frozen ``post_fix_verdict`` and
-``open_finding_set`` evaluators for real: the golden facts are shaped so both
-evaluators run their full validation, so a pass-through assertion proves the
-loop did not swallow or rewrite their outcomes.
+explicitly — including that the refusal does not require any
+reviewer-binding field, so it lands before a fourth provider call could be
+spent (round-1 review B1). The close tests compose the frozen
+``post_fix_verdict`` and ``open_finding_set`` evaluators for real: the golden
+facts are shaped so both evaluators run their full validation, so a
+pass-through assertion proves the loop did not swallow or rewrite their
+outcomes.
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ import pytest
 from personal_agent_dal.errors import DalError, DalErrorCode
 from personal_agent_dal.machine import review_fix_loop as loop_policy
 from personal_agent_dal.machine.review_fix_loop import (
+    admit_round_reviewer,
     close_review_fix_round,
     open_review_fix_round,
 )
@@ -126,32 +134,45 @@ def _anchors(count: int) -> list[dict]:
     ]
 
 
+def _history(count: int) -> dict:
+    """The history facts shared by all three gates (call-before legal)."""
+    return {
+        "review_fix_cycle_count": count,
+        "round_records": _records(count),
+        "round_anchors": _anchors(count),
+        "original_review_result_sha": CAND,
+        "original_coder_session_id": "sess-coder-original",
+        "original_coder_context_sha256": _ctx("coder-original"),
+        "original_coder_independence_key": _key("coder-original"),
+    }
+
+
 def _open_facts(
     count: int,
     *,
     status: str = "succeeded",
-    proposed: str = "reviewer-proposed",
-    records: list[dict] | None = None,
-    anchors: list[dict] | None = None,
     target: dict | None = None,
 ) -> dict:
-    """Golden open facts. At count=0 the last verification is the candidate's
-    own deterministic verification (coding -> verifying -> reviewing), so
-    `succeeded` is the true round-1 entry fact, not a synthetic one."""
+    """Golden open facts — call-before only: no reviewer-binding field exists
+    at this stage (round-1 review B1). At count=0 the last verification is
+    the candidate's own deterministic verification (coding -> verifying ->
+    reviewing), so `succeeded` is the true round-1 entry fact."""
     return {
         "target": target if target is not None else _target(),
-        "review_fix_cycle_count": count,
-        "round_records": records if records is not None else _records(count),
-        "round_anchors": anchors if anchors is not None else _anchors(count),
-        "original_review_result_sha": CAND,
+        **_history(count),
         "latest_verification_status": status,
-        "original_coder_session_id": "sess-coder-original",
-        "original_coder_context_sha256": _ctx("coder-original"),
-        "original_coder_independence_key": _key("coder-original"),
+    }
+
+
+def _admit_facts(count: int, *, proposed: str = "reviewer-proposed") -> dict:
+    """Golden admit facts — call-after: the controller has attested the
+    reviewer's binding and the gate judges the independence matrix."""
+    return {
+        "target": _target(),
+        **_history(count),
         "proposed_reviewer_session_id": f"sess-{proposed}",
         "proposed_reviewer_context_sha256": _ctx(proposed),
         "proposed_reviewer_independence_key": _key(proposed),
-        "proposed_reviewer_identity": f"identity:{proposed}",
     }
 
 
@@ -246,7 +267,9 @@ def _chains(count: int, new_findings: list[dict]) -> tuple[list[dict], list[dict
     return pfv_chain, openset_chain
 
 
-def _pfv_facts(count: int, anchors: dict, chain: list[dict], finding_ids: list[str]) -> dict:
+def _pfv_facts(
+    count: int, anchors: dict, chain: list[dict], finding_ids: list[str]
+) -> dict:
     return {
         "manifest_roles": {E_FIX: "fix_diff"},
         "original_review": {
@@ -276,7 +299,13 @@ def _pfv_facts(count: int, anchors: dict, chain: list[dict], finding_ids: list[s
     }
 
 
-def _openset_facts(count: int, anchors: dict, chain: list[dict], recomputed: str, finding_ids: list[str]) -> dict:
+def _openset_facts(
+    count: int,
+    anchors: dict,
+    chain: list[dict],
+    recomputed: str,
+    finding_ids: list[str],
+) -> dict:
     return {
         "manifest_roles": {E_FIX: "fix_diff"},
         "original_review": {"acceptance_gap_ids": [], "finding_ids": finding_ids},
@@ -302,7 +331,9 @@ def _close_facts(
     """Golden close facts. The sub-fact anchors default to the current round
     anchor r(count-1), the binding the opener's contract produced."""
     finding_ids = finding_ids if finding_ids is not None else ["F-001"]
-    verdict_sha = verdict_sha if verdict_sha is not None else [FIX1, FIX2, FIX3, FIX4][count - 1]
+    verdict_sha = verdict_sha if verdict_sha is not None else [FIX1, FIX2, FIX3, FIX4][
+        count - 1
+    ]
     current = CAND if count == 1 else FIX1
     expected = {"anchor_sha": current, "previous_result_sha": current}
     new_findings = new_findings if new_findings is not None else [
@@ -311,12 +342,12 @@ def _close_facts(
     pfv_chain, openset_chain = _chains(count, new_findings)
     return {
         "target": _target(),
-        "review_fix_cycle_count": count,
-        "round_records": _records(count),
-        "round_anchors": _anchors(count),
-        "original_review_result_sha": CAND,
+        **_history(count),
         "post_fix_verdict_facts": _pfv_facts(
-            count, pfv_anchors if pfv_anchors is not None else expected, pfv_chain, finding_ids
+            count,
+            pfv_anchors if pfv_anchors is not None else expected,
+            pfv_chain,
+            finding_ids,
         ),
         "open_finding_set_facts": _openset_facts(
             count,
@@ -352,9 +383,33 @@ def test_open_facts_shape_is_closed() -> None:
         open_review_fix_round({**deepcopy(facts), "junk": True})
     assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
     dropped = deepcopy(facts)
-    del dropped["proposed_reviewer_identity"]
+    del dropped["latest_verification_status"]
     with pytest.raises(DalError) as raised:
         open_review_fix_round(dropped)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
+def test_open_facts_carry_no_reviewer_binding_field() -> None:
+    """B1: the call-before facts must not require any reviewer identity —
+    the exhaustion refusal lands without one, so no fourth call is spent."""
+    facts = _open_facts(3)
+    assert not any(
+        field.startswith("proposed_reviewer") for field in facts
+    )
+    result = open_review_fix_round(facts)
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "POLICY_FAILURE"
+
+
+def test_admit_facts_shape_is_closed() -> None:
+    facts = _admit_facts(1)
+    with pytest.raises(DalError) as raised:
+        admit_round_reviewer({**deepcopy(facts), "junk": True})
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+    dropped = deepcopy(facts)
+    del dropped["proposed_reviewer_independence_key"]
+    with pytest.raises(DalError) as raised:
+        admit_round_reviewer(dropped)
     assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
 
 
@@ -397,11 +452,10 @@ def test_open_rejects_drifted_target(mutation: str) -> None:
 @pytest.mark.parametrize(
     "field, value",
     [
-        ("proposed_reviewer_session_id", ""),
-        ("proposed_reviewer_context_sha256", "nothex"),
-        ("proposed_reviewer_independence_key", ""),
-        ("proposed_reviewer_identity", ""),
+        ("original_coder_session_id", ""),
         ("original_coder_context_sha256", _ctx("coder-original")[:63]),
+        ("original_coder_independence_key", "zzz-not-hex"),
+        ("original_coder_independence_key", _key("coder-original")[:40]),
     ],
 )
 def test_open_rejects_malformed_identity_fields(field: str, value: str) -> None:
@@ -413,8 +467,33 @@ def test_open_rejects_malformed_identity_fields(field: str, value: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "field",
+    [
+        "proposed_reviewer_session_id",
+        "proposed_reviewer_context_sha256",
+        "proposed_reviewer_independence_key",
+    ],
+)
+def test_admit_rejects_malformed_reviewer_binding(field: str) -> None:
+    facts = _admit_facts(0)
+    facts[field] = "" if field.endswith("session_id") else "not-hex"
+    with pytest.raises(DalError) as raised:
+        admit_round_reviewer(facts)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
+@pytest.mark.parametrize(
     "mutation",
-    ["extra_field", "bool_cycle_no", "wrong_cycle_no", "blocked_verification", "bad_result_sha"],
+    [
+        "extra_field",
+        "bool_cycle_no",
+        "wrong_cycle_no",
+        "blocked_verification",
+        "bad_result_sha",
+        "short_record_key",
+        "record_verdict_verified",
+        "record_verification_failed",
+    ],
 )
 def test_open_rejects_malformed_records(mutation: str) -> None:
     facts = _open_facts(1)
@@ -429,6 +508,12 @@ def test_open_rejects_malformed_records(mutation: str) -> None:
         record["verification_status"] = "blocked"
     elif mutation == "bad_result_sha":
         record["result_sha"] = _ctx("not-a-git-sha")
+    elif mutation == "short_record_key":
+        del record["verdict"]
+    elif mutation == "record_verdict_verified":
+        record["verdict"] = "verified"
+    elif mutation == "record_verification_failed":
+        record["verification_status"] = "failed"
     with pytest.raises(DalError) as raised:
         open_review_fix_round(facts)
     assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
@@ -439,7 +524,7 @@ def test_open_rejects_malformed_records(mutation: str) -> None:
     [(True, "succeeded"), (-1, "succeeded"), (0, "unknown"), (0, "blocked")],
 )
 def test_open_rejects_bad_count_and_status(count: int, status: str) -> None:
-    facts = _open_facts(0 if not isinstance(count, bool) else 0, status=status)
+    facts = _open_facts(0, status=status)
     facts["review_fix_cycle_count"] = count
     with pytest.raises(DalError) as raised:
         open_review_fix_round(facts)
@@ -451,9 +536,7 @@ def test_open_rejects_bad_count_and_status(count: int, status: str) -> None:
 
 def test_count_zero_opens_the_original_review_round() -> None:
     result = open_review_fix_round(_open_facts(0))
-    assert _shape(result) == _shape(
-        open_review_fix_round(_open_facts(0))
-    )  # sanity for the golden itself
+    assert _shape(result) == _shape(open_review_fix_round(_open_facts(0)))
     assert result.receipt.code is ReceiptCode.APPLIED
     assert result.final_state == "reviewing"
     assert result.state_trace == ("reviewing",)
@@ -464,7 +547,7 @@ def test_count_zero_opens_the_original_review_round() -> None:
 
 
 def test_count_two_opens_round_three() -> None:
-    result = open_review_fix_round(_open_facts(2, proposed="reviewer-r3"))
+    result = open_review_fix_round(_open_facts(2))
     assert result.receipt.code is ReceiptCode.APPLIED
     assert result.final_state == "reviewing"
     assert result.declared_write_set == ()
@@ -473,7 +556,7 @@ def test_count_two_opens_round_three() -> None:
 
 
 def test_count_three_refuses_round_four_with_policy_failure() -> None:
-    result = open_review_fix_round(_open_facts(3, proposed="reviewer-r4"))
+    result = open_review_fix_round(_open_facts(3))
     assert result.receipt.code is ReceiptCode.APPLIED
     assert result.state_trace == ("reviewing", "needs_human")
     assert result.final_state == "needs_human"
@@ -487,11 +570,21 @@ def test_count_three_refuses_round_four_with_policy_failure() -> None:
 
 
 def test_count_beyond_limit_blocks_the_same_way() -> None:
-    result = open_review_fix_round(_open_facts(4, proposed="reviewer-r5"))
+    result = open_review_fix_round(_open_facts(4))
     assert result.receipt.code is ReceiptCode.APPLIED
     assert result.final_state == "needs_human"
     assert result.final_reason_code == "POLICY_FAILURE"
     assert result.final_reason_owner == "policy-engine"
+    assert result.declared_write_set == BLOCK_WRITE_SET
+
+
+def test_exhaustion_precedes_verification_drift() -> None:
+    """B3: the budget is judged before the verification precondition — even
+    a drifted status value must not reorder the landing. The count=3 block
+    fires regardless of what the status field says."""
+    result = open_review_fix_round(_open_facts(3, status="failed"))
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "POLICY_FAILURE"
     assert result.declared_write_set == BLOCK_WRITE_SET
 
 
@@ -517,7 +610,7 @@ def test_close_requires_a_closable_round() -> None:
         assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
 
 
-# --- C. cross-round independence matrix --------------------------------------
+# --- C. cross-round independence matrix (admit gate) -------------------------
 
 
 @pytest.mark.parametrize(
@@ -537,22 +630,21 @@ def test_close_requires_a_closable_round() -> None:
 def test_reusing_any_historical_identity_field_is_denied(
     historical: str, field: str
 ) -> None:
-    """The proposed reviewer must differ on every binding field from every
+    """The attested reviewer must differ on every binding field from every
     historical reviewer and coder, including the original candidate's coder."""
-    facts = _open_facts(1)
-    if field == "session":
-        source = "session_id"
-    elif field == "context":
-        source = "context_sha256"
-    else:
-        source = "independence_key"
+    facts = _admit_facts(1)
+    source = {
+        "session": "session_id",
+        "context": "context_sha256",
+        "independence key": "independence_key",
+    }[field]
     if historical == "original coder":
         facts[f"proposed_reviewer_{source}"] = facts[f"original_coder_{source}"]
     else:
         record = facts["round_records"][0]
         prefix = "reviewer" if historical.endswith("reviewer") else "coder"
         facts[f"proposed_reviewer_{source}"] = record[f"{prefix}_{source}"]
-    result = open_review_fix_round(facts)
+    result = admit_round_reviewer(facts)
     assert result.receipt.code is ReceiptCode.POLICY_DENIED
     assert result.final_state == "reviewing"
     assert result.state_trace == ("reviewing",)
@@ -565,17 +657,27 @@ def test_reusing_any_historical_identity_field_is_denied(
 
 
 def test_all_reuse_violations_are_collected() -> None:
-    facts = _open_facts(1)
+    facts = _admit_facts(1)
     record = facts["round_records"][0]
     facts["proposed_reviewer_session_id"] = record["reviewer_session_id"]
     facts["proposed_reviewer_context_sha256"] = record["reviewer_context_sha256"]
     facts["proposed_reviewer_independence_key"] = record["reviewer_independence_key"]
-    result = open_review_fix_round(facts)
+    result = admit_round_reviewer(facts)
     assert result.receipt.code is ReceiptCode.POLICY_DENIED
     assert result.loop_violations == (
         "proposed reviewer reuses the cycle 1 reviewer session",
         "proposed reviewer reuses the cycle 1 reviewer context",
         "proposed reviewer reuses the cycle 1 reviewer independence key",
+    )
+
+
+def test_admit_at_count_zero_checks_only_the_original_coder() -> None:
+    facts = _admit_facts(0)
+    facts["proposed_reviewer_session_id"] = facts["original_coder_session_id"]
+    result = admit_round_reviewer(facts)
+    assert result.receipt.code is ReceiptCode.POLICY_DENIED
+    assert result.loop_violations == (
+        "proposed reviewer reuses the original coder session",
     )
 
 
@@ -606,8 +708,29 @@ def test_forged_history_repeat_reviewer_fails_closed() -> None:
     assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
 
 
+def test_coder_may_repeat_across_cycles() -> None:
+    """S1: the frozen contract imposes novelty on reviewers only. A coder
+    producing successive fixes is a legal history, not forged drift."""
+    facts = _open_facts(2)
+    second = facts["round_records"][1]
+    first = facts["round_records"][0]
+    for field in ("session_id", "context_sha256", "independence_key"):
+        second[f"coder_{field}"] = first[f"coder_{field}"]
+    result = open_review_fix_round(facts)
+    assert result.receipt.code is ReceiptCode.APPLIED
+    assert result.round_no == 3
+    assert result.loop_violations == ()
+    # The same history admits a fresh reviewer on the matrix too.
+    admit = _admit_facts(2, proposed="reviewer-r3")
+    admit_second = admit["round_records"][1]
+    admit_first = admit["round_records"][0]
+    for field in ("session_id", "context_sha256", "independence_key"):
+        admit_second[f"coder_{field}"] = admit_first[f"coder_{field}"]
+    assert admit_round_reviewer(admit).receipt.code is ReceiptCode.APPLIED
+
+
 def test_fully_distinct_matrix_at_count_two_passes() -> None:
-    result = open_review_fix_round(_open_facts(2, proposed="reviewer-r3"))
+    result = admit_round_reviewer(_admit_facts(2, proposed="reviewer-r3"))
     assert result.receipt.code is ReceiptCode.APPLIED
     assert result.round_no == 3
     assert result.loop_violations == ()
@@ -685,7 +808,9 @@ def test_clean_verified_closes_through_verbatim() -> None:
 
 def test_clean_changes_requested_returns_to_fixing() -> None:
     result = close_review_fix_round(
-        _close_facts(1, decl="changes_requested", resolutions=[_resolution("F-001", "remaining")])
+        _close_facts(
+            1, decl="changes_requested", resolutions=[_resolution("F-001", "remaining")]
+        )
     )
     assert result.receipt.code is ReceiptCode.APPLIED
     assert result.state_trace == ("reviewing", "fixing")
@@ -698,7 +823,9 @@ def test_clean_changes_requested_returns_to_fixing() -> None:
 
 def test_changes_requested_at_count_two_is_still_legal() -> None:
     result = close_review_fix_round(
-        _close_facts(2, decl="changes_requested", resolutions=[_resolution("F-001", "remaining")])
+        _close_facts(
+            2, decl="changes_requested", resolutions=[_resolution("F-001", "remaining")]
+        )
     )
     assert result.receipt.code is ReceiptCode.APPLIED
     assert result.final_state == "fixing"
@@ -741,7 +868,9 @@ def test_verdict_must_be_bound_to_the_recorded_fix_result() -> None:
 def test_verified_with_unresolved_carried_finding_blocks() -> None:
     git_result = _git_result()
     git_result["increment_diff"] = "@@ -5,2 +5,2 @@\n-old5\n-old7\n+new5\n+new7"
-    git_result["anchor_translation_diff"] = "@@ -5,2 +5,2 @@\n-old5\n-old7\n+old5\n+old7"
+    git_result["anchor_translation_diff"] = (
+        "@@ -5,2 +5,2 @@\n-old5\n-old7\n+old5\n+old7"
+    )
     result = close_review_fix_round(
         _close_facts(
             1,
@@ -758,19 +887,99 @@ def test_verified_with_unresolved_carried_finding_blocks() -> None:
     assert any("not fully resolved" in reason for reason in result.reasons)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "resolution_not_object",
+        "resolution_extra_field",
+        "resolution_empty_evidence",
+        "resolution_non_hex_evidence",
+        "gap_resolution_not_object",
+        "new_finding_not_object",
+        "new_finding_extra_field",
+    ],
+)
+def test_crash_shaped_verdict_members_fail_closed(mutation: str) -> None:
+    """B5: the frozen evaluators dereference verdict members directly, so
+    crash-shaped output must land the frozen contract block here, never
+    raise out of a policy boundary."""
+    resolutions = [_resolution("F-001", "closed")]
+    gap_resolutions: list[dict] = []
+    new_findings: list[dict] = []
+    if mutation == "resolution_not_object":
+        resolutions = [None]  # type: ignore[list-item]
+    elif mutation == "resolution_extra_field":
+        resolutions[0]["junk"] = 1
+    elif mutation == "resolution_empty_evidence":
+        resolutions[0]["evidence_sha256"] = []
+    elif mutation == "resolution_non_hex_evidence":
+        resolutions[0]["evidence_sha256"] = ["not-a-digest"]
+    elif mutation == "gap_resolution_not_object":
+        gap_resolutions = [None]  # type: ignore[list-item]
+    elif mutation == "new_finding_not_object":
+        new_findings = [None]  # type: ignore[list-item]
+    elif mutation == "new_finding_extra_field":
+        new_findings = [_finding("F-100", FIX1, 5)]
+        new_findings[0]["junk"] = 1
+
+    facts = _close_facts(1, resolutions=resolutions)
+    verdict = facts["reviewer_result"]["verdict"]
+    verdict["acceptance_gap_resolutions"] = gap_resolutions
+    verdict["new_findings"] = new_findings
+    result = close_review_fix_round(facts)
+    assert result.receipt.code is ReceiptCode.APPLIED
+    assert result.state_trace == ("reviewing", "needs_human")
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+    assert result.final_reason_owner == "feature"
+    assert result.declared_write_set == BLOCK_WRITE_SET
+    assert result.event_trace == ("feature.blocked",)
+    assert len(result.reasons) == 1
+
+
+def test_close_revalidates_history_drift() -> None:
+    """B6: the closer is a separate judge call — it must not trust that an
+    opener already validated the same facts. A cycle whose coder equals its
+    own reviewer fails closed here too."""
+    facts = _close_facts(1)
+    record = facts["round_records"][0]
+    for field in ("session_id", "context_sha256", "independence_key"):
+        record[f"coder_{field}"] = record[f"reviewer_{field}"]
+    with pytest.raises(DalError) as raised:
+        close_review_fix_round(facts)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
+def test_close_rejects_malformed_original_coder_identity() -> None:
+    facts = _close_facts(1)
+    facts["original_coder_independence_key"] = "zzz-not-hex"
+    with pytest.raises(DalError) as raised:
+        close_review_fix_round(facts)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
 # --- F. module hygiene -------------------------------------------------------
 
 
 def test_dependency_surface_is_closed() -> None:
-    """The pure policy cannot acquire an unguarded I/O dependency."""
+    """The pure policy cannot acquire an unguarded I/O dependency — via
+    from-imports, plain imports, dynamic import calls or attribute calls
+    into imported modules (round-1 review S2)."""
     source_path = Path(loop_policy.__file__)
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
-    imports = {
+    source_text = source_path.read_text(encoding="utf-8")
+    tree = ast.parse(source_text)
+    from_imports = {
         node.module
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and node.module is not None
     }
-    assert imports == {
+    plain_imports = {
+        name.name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for name in node.names
+    }
+    assert from_imports == {
         "__future__",
         "dataclasses",
         "typing",
@@ -779,13 +988,55 @@ def test_dependency_surface_is_closed() -> None:
         "personal_agent_dal.machine.post_fix_verdict",
         "personal_agent_dal.receipt",
     }
-    forbidden_calls = {"open", "exec", "eval", "compile", "__import__"}
+    assert plain_imports == set()
+
     called_names = {
         node.func.id
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
+    forbidden_calls = {"open", "exec", "eval", "compile", "__import__"}
     assert not (called_names & forbidden_calls)
+    # Attribute calls resolve either to a local binding (a Store name or a
+    # function parameter — locals cannot reach I/O) or to a module-level
+    # name (a from-imported symbol or a module constant; the module-level
+    # set is closed over the from-imports above, none of which exposes an
+    # I/O surface). A receiver outside both sets means a new import smuggled
+    # in under a fresh name.
+    local_names = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    } | {
+        arg.arg
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for arg in node.args.args + node.args.kwonlyargs
+        if isinstance(arg, ast.arg)
+    }
+    from_symbol_names = {
+        node.module.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    } | {
+        alias.asname or alias.name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    module_constants = {
+        node.targets[0].id
+        for node in tree.body
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+    }
+    attribute_calls = {
+        node.func.value.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+    }
+    assert attribute_calls <= local_names | from_symbol_names | module_constants
 
 
 def test_no_operation_spec_id_and_no_dispatch_graph_import() -> None:
@@ -823,6 +1074,9 @@ def test_mirrored_budget_matches_the_frozen_dispatch_graph_limit() -> None:
 def test_decisions_are_deterministic_and_echo_nothing() -> None:
     open_result = open_review_fix_round(_open_facts(1))
     assert _shape(open_result) == _shape(open_review_fix_round(_open_facts(1)))
+
+    admit_result = admit_round_reviewer(_admit_facts(1))
+    assert _shape(admit_result) == _shape(admit_round_reviewer(_admit_facts(1)))
 
     close_facts = _close_facts(1)
     assert _shape(close_review_fix_round(deepcopy(close_facts))) == _shape(
