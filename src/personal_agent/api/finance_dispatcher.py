@@ -32,10 +32,11 @@ Where the contract has gaps, this module fails closed rather than inventing:
   is said only on the evidence of Finance's own execution row -- which is
   committed before any network call, so its absence is proof. An unreachable
   control plane or an unrecognised state is `CommitUnknown`;
-- a clarification carries only the stable code's catalogue text, because
-  `ErrorEnvelope` has nowhere to put the resolver's reason. The question is
-  therefore generic today; making it specific needs a contract or control-plane
-  change, and guessing the reason here would put words in Finance's mouth.
+- a clarification may carry one Finance-selected value from the closed
+  `ClarificationQuestion` enum. The exact question persists with the pending
+  operation; arbitrary resolver detail, ledger candidate names and connector
+  diagnostics remain outside the MCP error envelope. An older or malformed
+  connector response keeps the generic stable-code message.
 """
 
 from __future__ import annotations
@@ -329,7 +330,11 @@ class McpFinanceDispatcher:
             )
         if error.code is ErrorCode.CLARIFICATION_REQUIRED:
             return CommitClarificationZeroWrite(
-                question=error.to_envelope().message
+                question=(
+                    error.clarification_question.value
+                    if error.clarification_question is not None
+                    else error.to_envelope().message
+                )
             )
         if error.code in _ASSERTS_MAY_HAVE_WRITTEN:
             # Finance has already stated the outcome may have reached the source.

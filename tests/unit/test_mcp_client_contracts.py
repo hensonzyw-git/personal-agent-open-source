@@ -13,7 +13,7 @@ from personal_agent.mcp_client.core import (
     StdioTransport,
     _validate_protocol_version,
 )
-from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.errors import AppError, ClarificationQuestion, ErrorCode
 from personal_agent_core.mcp_protocol import FINANCE_PROTOCOL_VERSIONS
 
 
@@ -58,6 +58,30 @@ def test_an_unknown_or_malformed_error_fails_closed() -> None:
         asyncio.run(client_with(Session()).call_tool("finance.log_expense", {}))
     assert excinfo.value.code is ErrorCode.INTERNAL_ERROR
     assert "PROVIDER_SECRET_ERROR" not in str(excinfo.value.to_envelope())
+
+
+def test_only_a_closed_clarification_question_survives_the_mcp_boundary() -> None:
+    class Session:
+        async def call_tool(self, *args, **kwargs):
+            return SimpleNamespace(
+                is_error=True,
+                structured_content={
+                    "error": {
+                        "code": "CLARIFICATION_REQUIRED",
+                        "clarification_question": (
+                            ClarificationQuestion.EXPENSE_CATEGORY.value
+                        ),
+                    }
+                },
+                content=[],
+            )
+
+    with pytest.raises(AppError) as excinfo:
+        asyncio.run(client_with(Session()).call_tool("finance.log_expense", {}))
+    assert (
+        excinfo.value.clarification_question
+        is ClarificationQuestion.EXPENSE_CATEGORY
+    )
 
 
 def test_resources_list_is_followed_to_exhaustion() -> None:

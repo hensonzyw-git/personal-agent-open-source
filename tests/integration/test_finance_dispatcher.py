@@ -50,7 +50,7 @@ from personal_agent.policy.bridge import (
     BridgeExecutionResult,
     DeviceAuthorization,
 )
-from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.errors import AppError, ClarificationQuestion, ErrorCode
 from personal_agent_core.host_context import (
     ServiceKey,
     ServiceKeyRing,
@@ -405,6 +405,22 @@ def test_a_clarification_parks_without_a_write() -> None:
 
     assert isinstance(outcome, CommitClarificationZeroWrite)
     assert outcome.question
+
+
+def test_a_closed_finance_question_is_preserved_for_the_continuation() -> None:
+    bridge = FakeBridge(
+        error=AppError(
+            ErrorCode.CLARIFICATION_REQUIRED,
+            clarification_question=ClarificationQuestion.EXPENSE_CATEGORY,
+        )
+    )
+    outcome = dispatcher(bridge).commit(
+        intent=INTENT, idempotency_key="idem-1", duplicate_override=None
+    )
+
+    assert outcome == CommitClarificationZeroWrite(
+        ClarificationQuestion.EXPENSE_CATEGORY.value
+    )
 
 
 @pytest.mark.parametrize(

@@ -327,6 +327,7 @@ def run_operation(
     keyring: KeyRing,
     now: Clock,
     pre_resolved: bool = False,
+    prior_clarification_question: str | None = None,
     recorder: Recorder | None = None,
 ) -> RunResult:
     """Drive one freshly-accepted operation to its outcome.
@@ -351,6 +352,7 @@ def run_operation(
             keyring=keyring,
             now=now,
             pre_resolved=pre_resolved,
+            prior_clarification_question=prior_clarification_question,
         )
     except Exception as exc:
         sink.record(
@@ -377,6 +379,7 @@ def _run_operation(
     keyring: KeyRing,
     now: Clock,
     pre_resolved: bool = False,
+    prior_clarification_question: str | None = None,
 ) -> RunResult:
     # An operation that already knows its write skips interpretation entirely:
     # a `write anyway` override, or a deterministic user action such as the
@@ -600,7 +603,15 @@ def _run_operation(
 
     _step(session, operation, "dispatching", now, tool=interpretation.tool)
     outcome = dispatcher.resolve(tool=interpretation.tool, model_args=cleaned)
-    return _apply_resolve(session, operation, outcome, dispatcher, keyring, now)
+    return _apply_resolve(
+        session,
+        operation,
+        outcome,
+        dispatcher,
+        keyring,
+        now,
+        prior_clarification_question=prior_clarification_question,
+    )
 
 
 def _with_host_defaulted_occurred_on(
@@ -689,6 +700,8 @@ def _apply_resolve(
     dispatcher: Dispatcher,
     keyring: KeyRing,
     now: Clock,
+    *,
+    prior_clarification_question: str | None = None,
 ) -> RunResult:
     if isinstance(outcome, ReadCompleted):
         _step(session, operation, "succeeded", now, safe_result=outcome.result)
@@ -742,6 +755,7 @@ def _apply_resolve(
             duplicate_override=None,
             keyring=keyring,
             now=now,
+            prior_clarification_question=prior_clarification_question,
         )
 
     raise AppError(  # pragma: no cover - the union is exhaustive above
@@ -785,6 +799,7 @@ def _commit(
     duplicate_override: str | None,
     keyring: KeyRing,
     now: Clock,
+    prior_clarification_question: str | None = None,
 ) -> RunResult:
     # Commit `source_in_progress` before the write can occur: from here a cancel
     # can no longer be reported as a clean pre-submit cancellation.
@@ -883,6 +898,15 @@ def _commit(
             duplicate_existing=outcome.existing_summary,
         )
     if isinstance(outcome, CommitClarificationZeroWrite):
+        if _same_clarification_question(
+            outcome.question, prior_clarification_question
+        ):
+            # Finance has proved zero writes, but parking the exact same
+            # question after the user answered it creates an unbounded loop.
+            # It is an honest safe failure, never a third parked operation.
+            reason = ErrorCode.CLARIFICATION_REPEATED.value
+            _step(session, operation, "failed_safe", now, failure_reason=reason)
+            return RunResult(state="failed_safe", failure_reason=reason)
         _step(
             session,
             operation,
@@ -898,6 +922,14 @@ def _commit(
         ErrorCode.INTERNAL_ERROR,
         internal_detail=f"unhandled commit outcome {type(outcome).__name__}",
     )
+
+
+def _same_clarification_question(current: str, previous: str | None) -> bool:
+    """Compare a Finance question without turning wording noise into a loop."""
+    if previous is None:
+        return False
+    normalize = lambda value: re.sub(r"[\s，,。.!！？?、]", "", value).casefold()
+    return bool(normalize(current)) and normalize(current) == normalize(previous)
 
 
 def _is_override_operation(operation: Operation) -> bool:

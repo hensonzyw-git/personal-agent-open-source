@@ -38,6 +38,7 @@ class ErrorCode(StrEnum):
 
     # Finance semantics
     CLARIFICATION_REQUIRED = "CLARIFICATION_REQUIRED"
+    CLARIFICATION_REPEATED = "CLARIFICATION_REPEATED"
     CATEGORY_NOT_ALLOWED = "CATEGORY_NOT_ALLOWED"
     #: A category correction was refused because the row no longer holds the
     #: category the caller believed it held. Deliberately distinct from a plain
@@ -73,6 +74,23 @@ class ErrorCode(StrEnum):
 
     # Internal
     INTERNAL_ERROR = "INTERNAL_ERROR"
+
+
+class ClarificationQuestion(StrEnum):
+    """Closed Finance questions that may cross the MCP error boundary.
+
+    A connector is never allowed to put a resolver's arbitrary detail on the
+    wire.  These are deliberately fixed product questions, selected only from
+    the small enum below.  The Host persists one of them as the exact pending
+    question, so a later answer has a meaningful continuation context instead
+    of the generic ``CLARIFICATION_REQUIRED`` catalogue message.
+    """
+
+    EXPENSE_CATEGORY = "这笔支出属于哪个分类？"
+    TRIP = "这笔旅行支出对应哪一趟行程？"
+    ORIGINAL_EXPENSE = "这笔退款或 AA 对应哪一笔原消费？"
+    TRIP_CATEGORY_CONFLICT = "这笔应按旅行还是原分类记录？"
+    INCOME_SUBJECT = "这笔收入的事项是什么？"
 
 
 class ModelFailureReason(StrEnum):
@@ -124,6 +142,9 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
         "这是账务查询，但未调用 Finance 工具，未返回账本结果"
     ),
     ErrorCode.CLARIFICATION_REQUIRED: "信息不完整，需要先确认后才能记账",
+    ErrorCode.CLARIFICATION_REPEATED: (
+        "同一项信息已回答但仍无法完成，未写入任何记录"
+    ),
     ErrorCode.CATEGORY_NOT_ALLOWED: "分类不在账本的合法选项内",
     ErrorCode.CATEGORY_CHANGED_ELSEWHERE: (
         "这笔的分类已被其他地方改过，未覆盖；请确认账本当前的分类后再决定"
@@ -170,6 +191,7 @@ class ErrorEnvelope(BaseModel):
     retryable: bool
     operation_id: str | None = None
     trace_id: str | None = None
+    clarification_question: ClarificationQuestion | None = None
 
 
 class AppError(Exception):
@@ -184,11 +206,20 @@ class AppError(Exception):
         code: ErrorCode,
         *,
         internal_detail: str | None = None,
+        clarification_question: ClarificationQuestion | None = None,
     ) -> None:
         if code not in ERROR_MESSAGES:
             raise ValueError(f"error code has no outward message: {code!r}")
+        if (
+            clarification_question is not None
+            and code is not ErrorCode.CLARIFICATION_REQUIRED
+        ):
+            raise ValueError(
+                "clarification_question is valid only for CLARIFICATION_REQUIRED"
+            )
         self.code = code
         self.internal_detail = internal_detail
+        self.clarification_question = clarification_question
         super().__init__(code.value)
 
     @property
@@ -208,6 +239,7 @@ class AppError(Exception):
             retryable=self.retryable,
             operation_id=operation_id,
             trace_id=trace_id,
+            clarification_question=self.clarification_question,
         )
 
     def __str__(self) -> str:

@@ -32,6 +32,7 @@ from personal_agent.api.finance_query_projection import (
 from personal_agent.api.finance_record_projection import FinanceExpenseRecord
 from personal_agent.api.orchestrator import (
     Clarification,
+    CommitClarificationZeroWrite,
     CommitFailedSafe,
     DirectAnswer,
     InterpreterError,
@@ -665,6 +666,110 @@ def test_repeated_clarification_is_exact_budgeted_and_not_duplicated(
     )
     assert old.json()["state"] == "cancelled_pre_submit"
     assert old.json()["record_id"] is None
+
+
+def test_finance_commit_question_is_persisted_for_the_next_continuation(
+    engine, token_ring, keyring
+) -> None:
+    class SequencedInterpreter:
+        def __init__(self):
+            self.calls = []
+
+        def interpret(self, *, envelope):
+            self.calls.append(envelope)
+            return ToolCall("finance.log_expense", {"name": "午饭"})
+
+    class SequencedDispatcher:
+        def __init__(self):
+            self.commits = [
+                CommitClarificationZeroWrite("这笔支出属于哪个分类？"),
+                Written("recCOMMITCLARIFICATION"),
+            ]
+
+        def resolve(self, *, tool, model_args):
+            return Resolved(WriteIntent(tool, model_args))
+
+        def commit(self, *, intent, idempotency_key, duplicate_override):
+            return self.commits.pop(0)
+
+    interpreter = SequencedInterpreter()
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=interpreter,
+        dispatcher=SequencedDispatcher(),
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    assert parked.json()["state"] == "waiting_for_clarification"
+    assert parked.json()["clarification"] == "这笔支出属于哪个分类？"
+
+    resumed = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "餐饮",
+            "clarification_of": parked.json()["operation_id"],
+        },
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+
+    assert resumed.json()["record_id"] == "recCOMMITCLARIFICATION"
+    context = "\n".join(
+        interpreter.calls[1].texts_of(ComponentKind.CLARIFICATION_CONTEXT)
+    )
+    assert "这笔支出属于哪个分类？" in context
+    assert interpreter.calls[1].finance_intent_required is True
+
+
+def test_a_repeated_finance_commit_question_fails_safe_instead_of_reparking(
+    engine, token_ring, keyring
+) -> None:
+    class Interpreter:
+        def interpret(self, *, envelope):
+            return ToolCall("finance.log_expense", {"name": "午饭"})
+
+    class Dispatcher:
+        def __init__(self):
+            self.commits = [
+                CommitClarificationZeroWrite("这笔支出属于哪个分类？"),
+                CommitClarificationZeroWrite("这笔支出属于哪个分类？"),
+            ]
+
+        def resolve(self, *, tool, model_args):
+            return Resolved(WriteIntent(tool, model_args))
+
+        def commit(self, *, intent, idempotency_key, duplicate_override):
+            return self.commits.pop(0)
+
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=Interpreter(),
+        dispatcher=Dispatcher(),
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    repeated = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "餐饮",
+            "clarification_of": parked.json()["operation_id"],
+        },
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+
+    assert repeated.json()["state"] == "failed_safe"
+    assert repeated.json()["failure_reason"] == "CLARIFICATION_REPEATED"
 
 
 def test_clarified_explicit_family_expense_keeps_the_expense_tool_requirement(

@@ -52,7 +52,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from personal_agent_core.crypto import KeyRing
-from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.errors import AppError, ClarificationQuestion, ErrorCode
 from personal_agent_core.fault_breakpoint import FaultBreakpoint
 from personal_agent_core.money import format_cny
 from personal_agent_core.timeutil import parse_ledger_date, to_rfc3339, utc_now
@@ -165,9 +165,24 @@ async def _refusing_bad_override(awaitable):
 
 
 def _clarification_refusal(reason: str) -> AppError:
+    # The reason comes from Finance policy, not from a model or the ledger.  It
+    # is mapped to a closed Host-visible question rather than serialised as
+    # detail, so a continuation has a specific question without exposing
+    # records, candidate names, or connector diagnostics.
+    question = {
+        "category_unresolved": ClarificationQuestion.EXPENSE_CATEGORY,
+        "ambiguous_trip": ClarificationQuestion.TRIP,
+        "travel_without_trip": ClarificationQuestion.TRIP,
+        "original_not_unique": ClarificationQuestion.ORIGINAL_EXPENSE,
+        "category_conflicts_with_trip": (
+            ClarificationQuestion.TRIP_CATEGORY_CONFLICT
+        ),
+        "income_no_subject": ClarificationQuestion.INCOME_SUBJECT,
+    }.get(reason)
     return AppError(
         ErrorCode.CLARIFICATION_REQUIRED,
         internal_detail=f"the write needs an answer first: {reason}",
+        clarification_question=question,
     )
 
 

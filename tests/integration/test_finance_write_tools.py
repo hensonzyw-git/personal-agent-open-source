@@ -709,6 +709,9 @@ def test_an_ambiguous_trip_asks_and_writes_nothing(
     )
 
     assert error_code(result) == ErrorCode.CLARIFICATION_REQUIRED.value
+    assert json.loads(result.content[0].text)["error"][
+        "clarification_question"
+    ] == "这笔旅行支出对应哪一趟行程？"
     assert fake.creates == []
     assert executions(sessions) == []
 

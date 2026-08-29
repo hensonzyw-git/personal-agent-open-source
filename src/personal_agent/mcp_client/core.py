@@ -35,7 +35,7 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import PaginatedRequestParams, Tool
 
-from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.errors import AppError, ClarificationQuestion, ErrorCode
 from personal_agent_core.mcp_protocol import (
     MODERN_PROTOCOL_VERSION,
     THIRD_PARTY_PROTOCOL_VERSIONS,
@@ -457,11 +457,23 @@ class McpClientCore:
 
         if result.is_error:
             payload = _error_payload(result)
+            clarification_question = None
             if payload is not None:
                 try:
                     code = ErrorCode(payload["code"])
                 except ValueError:
                     code = ErrorCode.INTERNAL_ERROR
+                if code is ErrorCode.CLARIFICATION_REQUIRED:
+                    try:
+                        clarification_question = ClarificationQuestion(
+                            payload.get("clarification_question")
+                        )
+                    except (TypeError, ValueError):
+                        # A connector cannot introduce arbitrary prose into a
+                        # persisted clarification chain.  Keep the generic,
+                        # stable code when its optional closed field is absent
+                        # or malformed.
+                        clarification_question = None
             else:
                 code = ErrorCode.INTERNAL_ERROR
             raise AppError(
@@ -474,6 +486,7 @@ class McpClientCore:
                         else " without a valid error envelope"
                     )
                 ),
+                clarification_question=clarification_question,
             )
         return result.structured_content or result.content
 

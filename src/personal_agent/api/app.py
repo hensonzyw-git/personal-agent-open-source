@@ -1515,6 +1515,11 @@ def _run_chat_turn(
         authorize=deps.build_authorizer(auth),
         keyring=deps.keyring,
         now=deps.now,
+        prior_clarification_question=(
+            payload.clarification_context.question
+            if payload.clarification_context is not None
+            else None
+        ),
         recorder=deps.recorder,
     )
     if result.state == "waiting_for_clarification":
