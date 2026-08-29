@@ -166,10 +166,12 @@ def _open_facts(
 
 def _admit_facts(count: int, *, proposed: str = "reviewer-proposed") -> dict:
     """Golden admit facts — call-after: the controller has attested the
-    reviewer's binding and the gate judges the independence matrix."""
+    reviewer's binding and the gate re-derives the budget and the
+    verification precondition from its own facts (round-2 review B1)."""
     return {
         "target": _target(),
         **_history(count),
+        "latest_verification_status": "succeeded",
         "proposed_reviewer_session_id": f"sess-{proposed}",
         "proposed_reviewer_context_sha256": _ctx(proposed),
         "proposed_reviewer_independence_key": _key(proposed),
@@ -235,35 +237,39 @@ def _verdict(
     }
 
 
-def _chains(count: int, new_findings: list[dict]) -> tuple[list[dict], list[dict]]:
+def _chains(count: int) -> tuple[list[dict], list[dict]]:
     """`(pfv_chain, openset_chain)` for a re-review closing at `count`.
 
-    The prior verdict chain holds only the post-fix verdicts so far — V_1 ..
-    V_{count-1} — so at count=1 (the first re-review) it is empty and the
-    open set is the original review's findings (frozen rule: "round 1, empty
-    chain"). The newest verdict's new findings travel in the last entry.
+    The prior verdict chain holds V_1 .. V_{count-1}, so at count=1 (the
+    first re-review) it is empty and the open set is the original review's
+    findings (frozen rule: "round 1, empty chain"). In the golden history
+    the original finding stays `remaining` through every completed cycle
+    (changes_requested → fix → verify), so each chain entry resolves it
+    remaining and introduces no regressions — carried findings travel
+    through resolutions by their original id, and chain `new_findings` are
+    new regressions with disjoint ids (round-2 review S1: the golden
+    fixtures must follow the contract's carry-forward model, not reuse an
+    original id as a chain new-finding id).
     """
     entries = max(count - 1, 0)
     results = [FIX1, FIX2, FIX3][:entries]
-    pfv_chain: list[dict] = []
-    openset_chain: list[dict] = []
-    for index in range(entries):
-        findings = new_findings if index == entries - 1 else []
-        pfv_chain.append(
-            {
-                "finding_resolutions": [],
-                "new_findings": findings,
-                "result_sha": results[index],
-                "sequence": index + 1,
-            }
-        )
-        openset_chain.append(
-            {
-                "new_findings": findings,
-                "result_sha": results[index],
-                "sequence": index + 1,
-            }
-        )
+    pfv_chain = [
+        {
+            "finding_resolutions": [_resolution("F-001", "remaining")],
+            "new_findings": [],
+            "result_sha": results[index],
+            "sequence": index + 1,
+        }
+        for index in range(entries)
+    ]
+    openset_chain = [
+        {
+            "new_findings": [],
+            "result_sha": results[index],
+            "sequence": index + 1,
+        }
+        for index in range(entries)
+    ]
     return pfv_chain, openset_chain
 
 
@@ -336,10 +342,8 @@ def _close_facts(
     ]
     current = CAND if count == 1 else FIX1
     expected = {"anchor_sha": current, "previous_result_sha": current}
-    new_findings = new_findings if new_findings is not None else [
-        _finding(finding_ids[0], current, 5)
-    ]
-    pfv_chain, openset_chain = _chains(count, new_findings)
+    new_findings = new_findings if new_findings is not None else []
+    pfv_chain, openset_chain = _chains(count)
     return {
         "target": _target(),
         **_history(count),
@@ -368,7 +372,7 @@ def _close_facts(
                 # The verdict under judgment carries no new findings in the
                 # golden paths: the findings it must resolve travel in the
                 # prior chain (count >= 2) or the original review (count = 1).
-                new_findings=[],
+                new_findings=new_findings,
             ),
         },
     }
@@ -588,6 +592,30 @@ def test_exhaustion_precedes_verification_drift() -> None:
     assert result.declared_write_set == BLOCK_WRITE_SET
 
 
+def test_budget_block_carries_history_violation_labels() -> None:
+    """S4: the declared order is the real order — accounting, budget,
+    verification, history. A budget refusal on a forged history still lands
+    (the count is readable before the history is certified) and carries the
+    history labels with it instead of raising."""
+    facts = _open_facts(3)
+    facts["round_records"][1]["reviewer_session_id"] = "sess-coder-original"
+    result = open_review_fix_round(facts)
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "POLICY_FAILURE"
+    assert any("round_records[1] reviewer" in label for label in result.loop_violations)
+
+
+def test_verification_failed_block_on_forged_history_still_lands() -> None:
+    facts = _open_facts(1, status="failed")
+    facts["round_records"][0]["coder_session_id"] = facts["round_records"][0][
+        "reviewer_session_id"
+    ]
+    result = open_review_fix_round(facts)
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "POLICY_FAILURE"
+    assert any("round_records[0] coder" in label for label in result.loop_violations)
+
+
 def test_count_must_equal_records_length() -> None:
     facts = _open_facts(1)
     facts["round_records"] = []
@@ -734,6 +762,37 @@ def test_fully_distinct_matrix_at_count_two_passes() -> None:
     assert result.receipt.code is ReceiptCode.APPLIED
     assert result.round_no == 3
     assert result.loop_violations == ()
+
+
+def test_admit_at_exhausted_count_lands_the_policy_block() -> None:
+    """B1: the admission gate re-derives the budget from its own facts — a
+    facts swap or replay between open and admit cannot admit a round-4
+    reviewer behind a refused opener."""
+    result = admit_round_reviewer(_admit_facts(3, proposed="reviewer-r4"))
+    assert result.receipt.code is ReceiptCode.APPLIED
+    assert result.state_trace == ("reviewing", "needs_human")
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "POLICY_FAILURE"
+    assert result.final_reason_owner == "policy-engine"
+    assert result.declared_write_set == BLOCK_WRITE_SET
+    assert result.event_trace == ("feature.blocked",)
+    assert result.round_no is None
+    assert any("exhausted" in label for label in result.loop_violations)
+
+
+def test_admit_with_failed_verification_lands_the_policy_block() -> None:
+    result = admit_round_reviewer(_admit_facts(1, proposed="reviewer-r2"))
+    result = admit_round_reviewer({**_admit_facts(1), "latest_verification_status": "failed"})
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "POLICY_FAILURE"
+    assert result.declared_write_set == BLOCK_WRITE_SET
+
+
+def test_admit_with_blocked_verification_raises() -> None:
+    facts = {**_admit_facts(1), "latest_verification_status": "blocked"}
+    with pytest.raises(DalError) as raised:
+        admit_round_reviewer(facts)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
 
 
 # --- D. chain consistency ----------------------------------------------------
@@ -884,7 +943,10 @@ def test_verified_with_unresolved_carried_finding_blocks() -> None:
     assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
     assert result.final_reason_owner == "feature"
     assert result.declared_write_set == BLOCK_WRITE_SET
-    assert any("not fully resolved" in reason for reason in result.reasons)
+    assert any(
+        "omits open findings" in reason and "F-002" in reason
+        for reason in result.reasons
+    )
 
 
 @pytest.mark.parametrize(
@@ -958,13 +1020,47 @@ def test_close_rejects_malformed_original_coder_identity() -> None:
     assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "chain_too_long",
+        "chain_emptied",
+        "chain_sequence_drift",
+        "chain_result_sha_drift",
+        "chain_entry_extra_field",
+    ],
+)
+def test_close_binds_sub_fact_chains_to_recorded_history(mutation: str) -> None:
+    """B2: the chain is controller-derived state, so a drift between either
+    sub-fact's ``prior_verdict_chain`` and ``round_records`` raises
+    INVALID_ARGUMENT — no forged chain can reach the evaluators."""
+    facts = _close_facts(2)
+    for sub_facts_name in ("post_fix_verdict_facts", "open_finding_set_facts"):
+        chain = facts[sub_facts_name]["prior_verdict_chain"]
+        if mutation == "chain_too_long":
+            chain.append(dict(chain[0], sequence=2))
+        elif mutation == "chain_emptied":
+            facts[sub_facts_name]["prior_verdict_chain"] = []
+        elif mutation == "chain_sequence_drift":
+            chain[0]["sequence"] = 3
+        elif mutation == "chain_result_sha_drift":
+            chain[0]["result_sha"] = _git_sha("unbound-tree")
+        elif mutation == "chain_entry_extra_field":
+            chain[0]["junk"] = 1
+    with pytest.raises(DalError) as raised:
+        close_review_fix_round(facts)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
 # --- F. module hygiene -------------------------------------------------------
 
 
 def test_dependency_surface_is_closed() -> None:
     """The pure policy cannot acquire an unguarded I/O dependency — via
-    from-imports, plain imports, dynamic import calls or attribute calls
-    into imported modules (round-1 review S2)."""
+    from-imports, plain imports, dynamic imports (``__import__``,
+    ``getattr(__builtins__, "__import__")``, subscripted builtins) or
+    attribute calls into imported modules (round-1 review S2, round-2
+    review S2)."""
     source_path = Path(loop_policy.__file__)
     source_text = source_path.read_text(encoding="utf-8")
     tree = ast.parse(source_text)
@@ -990,19 +1086,73 @@ def test_dependency_surface_is_closed() -> None:
     }
     assert plain_imports == set()
 
+    #: Every called function must be either a plain name from the closed
+    #: allowlist below or an attribute whose receiver closes over locals and
+    #: the from-imports (which expose no I/O surface). Anything else —
+    #: ``getattr(__builtins__, ...)`` and friends — fails.
+    allowed_calls = {
+        "frozenset",
+        "tuple",
+        "list",
+        "set",
+        "dict",
+        "isinstance",
+        "len",
+        "bool",
+        "str",
+        "zip",
+        "sorted",
+        "any",
+        "all",
+        "enumerate",
+        "deepcopy",
+        "dataclass",
+        "OperationReceipt",
+        "ReviewFixLoopEvaluation",
+        "DalError",
+        "DalErrorCode",
+        "_invalid",
+        "_policy_block",
+        "_contract_block",
+        "_pass_through",
+        "_budget_and_verification",
+        "_assert_untainted_history",
+        "_validate_target",
+        "_validate_identity_fields",
+        "_validate_accounting",
+        "_validate_record",
+        "_validate_anchors",
+        "_history_reuse",
+        "_history_identities",
+        "_identity_violations",
+        "_original_coder",
+        "_proposed_reuse",
+        "_current_anchor",
+        "_bind_chain_to_history",
+        "_chain_member_drift",
+        "_carry_forward_violations",
+        "_verified_semantics",
+        "_evidence_and_gap_violations",
+        "_new_finding_anchor_violations",
+        "_verdict_member_drift",
+        "_resolution_drift",
+        "_finding_drift",
+        "_id_field",
+        "_is_sha256_hex",
+        "_is_git_sha_hex",
+        "_is_non_empty_str",
+        "_is_non_negative_int",
+        "_sub_command",
+        "validate_post_fix_verdict",
+        "derive_open_finding_set",
+    }
     called_names = {
         node.func.id
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-    forbidden_calls = {"open", "exec", "eval", "compile", "__import__"}
-    assert not (called_names & forbidden_calls)
-    # Attribute calls resolve either to a local binding (a Store name or a
-    # function parameter — locals cannot reach I/O) or to a module-level
-    # name (a from-imported symbol or a module constant; the module-level
-    # set is closed over the from-imports above, none of which exposes an
-    # I/O surface). A receiver outside both sets means a new import smuggled
-    # in under a fresh name.
+    assert called_names <= allowed_calls
+
     local_names = {
         node.id
         for node in ast.walk(tree)
@@ -1029,14 +1179,35 @@ def test_dependency_surface_is_closed() -> None:
         for node in tree.body
         if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
     }
-    attribute_calls = {
-        node.func.value.id
+    #: A call's receiver tree must resolve entirely to names in the closed
+    #: sets: a bare name (locals, from-imports, module constants, the builtin
+    #: types whose methods expose no I/O), an attribute chain rooted there
+    #: (``dict.fromkeys``), or a string literal (``", ".join``). Receivers
+    #: like ``__builtins__`` or ``sys`` cannot appear.
+    allowed_builtin_receivers = {"dict", "str", "list", "set", "tuple"}
+
+    def _receiver_ok(node: ast.expr) -> bool:
+        if isinstance(node, ast.Name):
+            return (
+                node.id in local_names | from_symbol_names | module_constants
+                or node.id in allowed_builtin_receivers
+            )
+        if isinstance(node, ast.Attribute):
+            return _receiver_ok(node.value)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return True
+        return False
+
+    bad_receivers = [
+        node
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and isinstance(node.func.value, ast.Name)
-    }
-    assert attribute_calls <= local_names | from_symbol_names | module_constants
+        and not (
+            (isinstance(node.func, ast.Name) and node.func.id in allowed_calls)
+            or (isinstance(node.func, ast.Attribute) and _receiver_ok(node.func.value))
+        )
+    ]
+    assert bad_receivers == []
 
 
 def test_no_operation_spec_id_and_no_dispatch_graph_import() -> None:
@@ -1090,3 +1261,294 @@ def test_decisions_are_deterministic_and_echo_nothing() -> None:
     assert E_FIX not in surface
     assert "old5" not in surface
     assert "+new5" not in surface
+
+
+# --- G. round-2 review remediation: verdict content and §6 cross-checks ------
+
+
+def _attack(  # type: ignore[no-untyped-def]
+    count: int = 1,
+    **verdict_overrides,
+):
+    """A golden close whose verdict members carry the given overrides."""
+    facts = _close_facts(count)
+    for field, value in verdict_overrides.items():
+        facts["reviewer_result"]["verdict"][field] = value
+    return facts
+
+
+def _attack_resolutions(*resolutions: dict) -> dict:
+    return _attack(finding_resolutions=list(resolutions))
+
+
+def test_verified_with_remaining_resolution_blocks() -> None:
+    """B4: ``verified`` with a ``remaining`` resolution violates the §6
+    if/then cross-constraint the frozen evaluators do not judge."""
+    result = close_review_fix_round(
+        _attack_resolutions(_resolution("F-001", "remaining"))
+    )
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+    assert any("non-closed resolutions" in reason for reason in result.reasons)
+
+
+def test_verified_with_remaining_gap_resolution_blocks() -> None:
+    """B4: a ``verified`` verdict whose gap resolution stays ``remaining``."""
+    facts = _attack()
+    facts["reviewer_result"]["verdict"]["acceptance_gap_resolutions"] = [
+        {
+            "acceptance_id": "A-001",
+            "evidence_sha256": [E_FIX],
+            "status": "remaining",
+            "summary": "gap remains",
+        }
+    ]
+    # The pfv original review must carry the same gap id for the bijection.
+    facts["post_fix_verdict_facts"]["original_review"]["acceptance_gap_ids"] = ["A-001"]
+    facts["open_finding_set_facts"]["original_review"]["acceptance_gap_ids"] = ["A-001"]
+    result = close_review_fix_round(facts)
+    assert result.final_state == "needs_human"
+    assert any("non-closed gap resolution" in reason for reason in result.reasons)
+
+
+def test_duplicate_resolution_id_blocks() -> None:
+    result = close_review_fix_round(
+        _attack_resolutions(
+            _resolution("F-001", "closed"), _resolution("F-001", "closed")
+        )
+    )
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+    assert any(
+        ("resolves an id more than once" in reason) or ("repeats an id" in reason)
+        for reason in result.reasons
+    )
+
+
+def test_repeated_evidence_digest_blocks() -> None:
+    """B4: two resolutions citing the same digest (§6: no repeats)."""
+    shared = _resolution("F-001", "closed")["evidence_sha256"][0]
+    result = close_review_fix_round(
+        _attack_resolutions(
+            {**_resolution("F-001", "closed"), "evidence_sha256": [shared]},
+            {**_resolution("F-001", "closed"), "finding_id": "F-002",
+             "evidence_sha256": [shared]},
+        )
+    )
+    assert result.final_state == "needs_human"
+    assert any("repeats an evidence digest" in reason for reason in result.reasons)
+
+
+def test_resolution_citing_unknown_role_blocks() -> None:
+    digest = _sha256_hex("evidence", "not-in-manifest")
+    resolution = {**_resolution("F-001", "closed"), "evidence_sha256": [digest]}
+    result = close_review_fix_round(_attack_resolutions(resolution))
+    assert result.final_state == "needs_human"
+    assert any("unknown or disallowed role" in reason for reason in result.reasons)
+
+
+def test_gap_resolutions_must_bijection_the_original_gaps() -> None:
+    """B4: a gap resolution attached when the original review listed no gaps."""
+    facts = _attack()
+    facts["reviewer_result"]["verdict"]["acceptance_gap_resolutions"] = [
+        {
+            "acceptance_id": "A-999",
+            "evidence_sha256": [E_FIX],
+            "status": "closed",
+            "summary": "invented gap",
+        }
+    ]
+    result = close_review_fix_round(facts)
+    assert result.final_state == "needs_human"
+    assert any("bijection" in reason for reason in result.reasons)
+
+
+def test_closed_gap_citing_non_test_receipt_role_blocks() -> None:
+    """B4: a closed gap resolution must cite ``test_receipts`` evidence."""
+    facts = _attack()
+    facts["post_fix_verdict_facts"]["original_review"]["acceptance_gap_ids"] = ["A-001"]
+    facts["open_finding_set_facts"]["original_review"]["acceptance_gap_ids"] = ["A-001"]
+    facts["reviewer_result"]["verdict"]["acceptance_gap_resolutions"] = [
+        {
+            "acceptance_id": "A-001",
+            "evidence_sha256": [E_FIX],
+            "status": "closed",
+            "summary": "closed with fix-diff evidence",
+        }
+    ]
+    result = close_review_fix_round(facts)
+    assert result.final_state == "needs_human"
+    assert any("non-test-receipt evidence" in reason for reason in result.reasons)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "location_none",
+        "location_extra_field",
+        "location_bad_anchor",
+        "location_bad_path",
+        "location_bool_line",
+        "finding_empty_summary",
+    ],
+)
+def test_new_finding_content_drift_blocks(mutation: str) -> None:
+    """B6/B4: a malformed ``location`` or finding member lands the frozen
+    contract block — never a native TypeError from the evaluators."""
+    finding = _finding("F-100", _git_sha("r1"), 5)
+    if mutation == "location_none":
+        finding["location"] = None  # type: ignore[assignment]
+    elif mutation == "location_extra_field":
+        finding["location"]["junk"] = 1
+    elif mutation == "location_bad_anchor":
+        finding["location"]["anchor_sha"] = "CAND"
+    elif mutation == "location_bad_path":
+        finding["location"]["path"] = ""
+    elif mutation == "location_bool_line":
+        finding["location"]["line_start"] = True
+    elif mutation == "finding_empty_summary":
+        finding["summary"] = ""
+    result = close_review_fix_round(_attack(new_findings=[finding]))
+    assert result.receipt.code is ReceiptCode.APPLIED
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+    assert result.final_reason_owner == "feature"
+    assert result.declared_write_set == BLOCK_WRITE_SET
+    assert len(result.reasons) == 1
+
+
+def test_new_finding_anchored_to_neither_tree_blocks() -> None:
+    """B5 at the loop level: an anchor that is neither the result tree nor
+    the round anchor satisfies neither the frozen evaluator's reading nor
+    the contract's, and blocks."""
+    finding = _finding("F-100", _git_sha("some-other-tree"), 5)
+    result = close_review_fix_round(
+        _attack(
+            decl="changes_requested",
+            resolutions=[_resolution("F-001", "remaining")],
+            new_findings=[finding],
+        )
+    )
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+    assert any("neither the result tree" in reason for reason in result.reasons)
+
+
+def test_omitted_original_remaining_blocks_the_carry_forward() -> None:
+    """B3 at the loop level: the §6 per-round carry-forward invariant. The
+    original finding stays open; a verdict that resolves only a chain new
+    finding while omitting it cannot be ``verified`` — the original cannot
+    silently vanish behind the chain."""
+    facts = _close_facts(2, resolutions=[])
+    # A verified verdict that omits F-001 entirely must block: the open set
+    # after V_1 still holds F-001 (remaining), and the verdict must resolve
+    # it — it cannot silently vanish behind the chain.
+    result = close_review_fix_round(facts)
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+    assert any(
+        "omits open findings" in reason and "F-001" in reason
+        for reason in result.reasons
+    )
+
+
+def test_chain_resolving_an_unknown_finding_blocks() -> None:
+    """A chain entry resolving an id outside its round's open set is caught
+    by the loop-level per-round derivation."""
+    facts = _close_facts(2)
+    facts["post_fix_verdict_facts"]["prior_verdict_chain"][0][
+        "finding_resolutions"
+    ] = [_resolution("F-042", "closed")]
+    result = close_review_fix_round(facts)
+    # The chain member is shape-valid controller state, so the per-round
+    # derivation catches the unknown id as a contract violation — fail
+    # closed either way.
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+    assert any("outside the open set" in reason for reason in result.reasons)
+
+
+def test_changes_requested_closing_everything_with_a_new_regression_blocks() -> None:
+    """Frozen-evaluator behaviour, documented: §6 makes a non-empty
+    ``new_findings`` the one legal shape of ``changes_requested`` and does
+    not require a remaining finding, but the frozen
+    ``validate_post_fix_verdict`` reaches ``fixing`` only when a ``remaining``
+    resolution exists, so a verdict that closed everything and reports only
+    a new regression blocks. Fail-closed either way; the frozen evaluator's
+    two §6 divergences (this and the B5 anchor direction) are Henson's
+    refreeze decision, tracked in the evidence."""
+    facts = _close_facts(
+        2,
+        decl="changes_requested",
+        resolutions=[_resolution("F-001", "closed")],
+        new_findings=[_finding("F-100", FIX1, 7)],
+    )
+    result = close_review_fix_round(facts)
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+
+
+def test_changes_requested_with_remaining_closes_to_fixing() -> None:
+    """The frozen legal fixing path: a remaining finding carries the round
+    back to ``fixing`` through both composed evaluators."""
+    facts = _close_facts(
+        2,
+        decl="changes_requested",
+        resolutions=[_resolution("F-001", "remaining")],
+    )
+    result = close_review_fix_round(facts)
+    assert result.final_state == "fixing"
+    assert result.event_trace == ("fix.requested",)
+    assert result.round_no == 3
+    assert result.loop_violations == ()
+
+
+def test_contract_anchored_new_finding_blocks_until_refreeze() -> None:
+    """B5 residual, documented: §6 says a new finding's anchor MUST equal
+    ``result_sha``, but the frozen evaluator anchors to ``round_anchors`` and
+    blocks the contract direction. The loop passes it through fail-closed —
+    a legal-contract round cannot reach ``fixing`` until the evaluator is
+    refrozen (Henson's decision, tracked in the evidence)."""
+    facts = _close_facts(
+        2,
+        decl="changes_requested",
+        resolutions=[_resolution("F-001", "closed")],
+        new_findings=[_finding("F-100", FIX2, 7)],
+    )
+    result = close_review_fix_round(facts)
+    assert result.final_state == "needs_human"
+    assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+    assert "new_finding_anchor" in result.reasons
+
+
+def test_legal_verified_after_full_resolution_closes() -> None:
+    """A verified verdict that closes every open finding (original F-001
+    resolved closed, no new findings) closes the feature."""
+    result = close_review_fix_round(
+        _close_facts(2, resolutions=[_resolution("F-001", "closed")])
+    )
+    assert result.final_state == "verified"
+    assert result.event_trace == ("review.completed",)
+    assert result.round_no == 3
+    assert result.reasons == ()
+
+
+def test_sub_facts_disagreeing_on_original_ids_raise() -> None:
+    """Controller drift between the two sub-fact objects' original review id
+    sets would let each half validate against a different baseline."""
+    facts = _close_facts(1)
+    facts["open_finding_set_facts"]["original_review"]["finding_ids"] = ["F-001", "F-002"]
+    with pytest.raises(DalError) as raised:
+        close_review_fix_round(facts)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
+def test_chain_new_finding_reusing_a_seen_id_blocks() -> None:
+    """§6: chain new findings must be disjoint from everything already seen;
+    a chain regression reusing the original id cannot ride the loop."""
+    facts = _close_facts(2)
+    findings = [_finding("F-001", FIX1, 5)]
+    facts["post_fix_verdict_facts"]["prior_verdict_chain"][0]["new_findings"] = findings
+    result = close_review_fix_round(facts)
+    assert result.final_state == "needs_human"
+    assert any("reuses an already-seen id" in reason for reason in result.reasons)

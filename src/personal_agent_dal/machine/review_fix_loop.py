@@ -101,10 +101,13 @@ from typing import Any, Final
 
 from personal_agent_dal.errors import DalError, DalErrorCode
 from personal_agent_dal.machine.open_finding_set import (
+    CHAIN_ENTRY_FIELDS as OPENSET_CHAIN_ENTRY_FIELDS,
+    LOCATION_FIELDS as NEW_FINDING_LOCATION_FIELDS,
     OpenFindingSetEvaluation,
     derive_open_finding_set,
 )
 from personal_agent_dal.machine.post_fix_verdict import (
+    CHAIN_ENTRY_FIELDS as PFV_CHAIN_ENTRY_FIELDS,
     PostFixVerdictEvaluation,
     validate_post_fix_verdict,
 )
@@ -146,7 +149,11 @@ OPEN_FACT_FIELDS: Final[frozenset[str]] = frozenset(
 #: The admission gate's closed facts — **call-after**. The controller has
 #: invoked the reviewer and attested its binding; the gate judges the
 #: cross-round independence matrix against that attested binding before the
-#: review receipt may be accepted. The history facts mirror the opener's.
+#: review receipt may be accepted. The history facts mirror the opener's, and
+#: the verification status travels too: the admission gate re-derives the
+#: budget and the verification precondition from its own facts, so a facts
+#: swap or replay between open and admit cannot slip a fourth round past it
+#: (round-2 review B1).
 ADMIT_FACT_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "target",
@@ -154,6 +161,7 @@ ADMIT_FACT_FIELDS: Final[frozenset[str]] = frozenset(
         "round_records",
         "round_anchors",
         "original_review_result_sha",
+        "latest_verification_status",
         "original_coder_session_id",
         "original_coder_context_sha256",
         "original_coder_independence_key",
@@ -235,6 +243,14 @@ _GAP_FIELD_SETS: Final[frozenset[str]] = frozenset(
 )
 _NEW_FINDING_FIELD_SET: Final[frozenset[str]] = frozenset(
     {"category", "failure_scenario", "finding_id", "location", "severity", "summary"}
+)
+
+#: §6: resolution status enum and the manifest roles that may serve as
+#: resolution evidence (a digest citing any other role — or no manifest item
+#: at all — is a contract violation).
+RESOLUTION_STATUSES: Final[frozenset[str]] = frozenset({"closed", "remaining"})
+EVIDENCE_ROLES: Final[frozenset[str]] = frozenset(
+    {"fix_diff", "test_receipts", "review_findings"}
 )
 
 #: The frozen seven-write block set (the four-write base set plus the three
@@ -511,16 +527,19 @@ def _history_identities(
     return identities
 
 
-def _history_reuse(records: list[dict[str, Any]], facts: dict[str, Any]) -> None:
-    """A forged past is controller drift, not a policy outcome.
+def _history_reuse(records: list[dict[str, Any]], facts: dict[str, Any]) -> list[str]:
+    """The history-drift labels for a forged past, if any.
 
     Every recorded **reviewer** must differ (on all three binding fields)
     from the original coder and from every earlier reviewer and coder; within
     one cycle the coder must differ from that cycle's reviewer (coder
     不自证). Coders carry no cross-cycle novelty (S1). A history that already
     contains a reviewer reuse equality could not have been produced by the
-    gates, so its presence is INVALID_ARGUMENT.
+    gates. Returns every label found; the caller raises
+    (``_assert_untainted_history``) when the feature would still advance, or
+    carries the labels on the refusal block when it would not.
     """
+    violations: list[str] = []
     seen: list[tuple[str, _IDENTITY]] = [("original coder", _original_coder(facts))]
     for index, record in enumerate(records):
         reviewer: _IDENTITY = (
@@ -528,21 +547,31 @@ def _history_reuse(records: list[dict[str, Any]], facts: dict[str, Any]) -> None
             record["reviewer_context_sha256"],
             record["reviewer_independence_key"],
         )
-        violations = _identity_violations(reviewer, seen)
-        if violations:
-            raise _invalid(f"round_records[{index}] reviewer " + "; ".join(violations))
+        violations.extend(
+            f"round_records[{index}] reviewer {violation}"
+            for violation in _identity_violations(reviewer, seen)
+        )
         coder: _IDENTITY = (
             record["coder_session_id"],
             record["coder_context_sha256"],
             record["coder_independence_key"],
         )
-        violations = _identity_violations(
-            coder, [(f"cycle {index + 1} reviewer", reviewer)]
+        violations.extend(
+            f"round_records[{index}] coder {violation}"
+            for violation in _identity_violations(
+                coder, [(f"cycle {index + 1} reviewer", reviewer)]
+            )
         )
-        if violations:
-            raise _invalid(f"round_records[{index}] coder " + "; ".join(violations))
         seen.append((f"cycle {index + 1} reviewer", reviewer))
         seen.append((f"cycle {index + 1} coder", coder))
+    return violations
+
+
+def _assert_untainted_history(records: list[dict[str, Any]], facts: dict[str, Any]) -> None:
+    """Raise when the history itself is forged (controller drift)."""
+    violations = _history_reuse(records, facts)
+    if violations:
+        raise _invalid("; ".join(violations))
 
 
 def _proposed_reuse(
@@ -586,6 +615,41 @@ def _policy_block(
     )
 
 
+def _budget_and_verification(
+    facts: dict[str, Any], count: int
+) -> ReviewFixLoopEvaluation | None:
+    """The call-before policy decisions both round-entry gates share.
+
+    Judged in the declared order: the round budget first, then the
+    verification precondition (round-2 review S4 — the declared order is the
+    real order). A ``count >= REVIEW_LOOP_LIMIT`` lands the frozen BLK-POLICY
+    block; a ``failed`` verification blocks the same way; a ``blocked`` value
+    contradicts a feature in ``reviewing`` and raises.
+    """
+    if count >= REVIEW_LOOP_LIMIT:
+        return _policy_block(
+            facts["target"],
+            (
+                f"review fix loop exhausted: {count} completed fix cycles, no "
+                f"round may open automatically beyond {REVIEW_LOOP_LIMIT}",
+            ),
+        )
+    status = facts["latest_verification_status"]
+    if status not in VERIFICATION_STATUSES:
+        raise _invalid("latest_verification_status is outside the closed set")
+    if status == "blocked":
+        raise _invalid(
+            "latest_verification_status is blocked, which contradicts a feature "
+            "in reviewing"
+        )
+    if status == "failed":
+        return _policy_block(
+            facts["target"],
+            ("the latest fix verification failed; no review round may open",),
+        )
+    return None
+
+
 def _pass_through(
     evaluation: PostFixVerdictEvaluation | OpenFindingSetEvaluation, round_no: int
 ) -> ReviewFixLoopEvaluation:
@@ -614,12 +678,14 @@ def _pass_through(
 def open_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
     """Decide whether the next review round may open — **before any call**.
 
-    Judged in order: the round budget (`count >= 3` → the BLK-POLICY block),
-    then the verification precondition (only a succeeded verification returns
-    the feature to `reviewing`). The budget is judged **first** so the
-    round-4 refusal lands `needs_human` before a fourth reviewer call can be
-    spent (round-1 review B1). Facts drift — including a status value or
-    history shape that contradicts a feature in `reviewing` — raises;
+    Judged in the declared order: accounting, the round budget (`count >= 3`
+    → the BLK-POLICY block), the verification precondition (only a succeeded
+    verification returns the feature to `reviewing`), and finally the
+    history's own drift invariants — a refusal block carries any history
+    violation labels it is landing with (round-2 review S4). The budget is
+    judged **first** after accounting, so the round-4 refusal lands
+    `needs_human` before a fourth reviewer call can be spent (round-1 review
+    B1). Facts drift that contradicts a feature in `reviewing` raises;
     identity and independence are *not* judged here: the reviewer's binding
     does not exist until call-after (``admit_round_reviewer``).
     """
@@ -629,30 +695,12 @@ def open_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
     _validate_identity_fields(facts, "original_coder")
 
     count, records = _validate_accounting(facts)
-    _history_reuse(records, facts)
+    block = _budget_and_verification(facts, count)
+    if block is not None:
+        violations = tuple(_history_reuse(records, facts))
+        return _policy_block(facts["target"], violations + block.loop_violations)
 
-    if count >= REVIEW_LOOP_LIMIT:
-        return _policy_block(
-            facts["target"],
-            (
-                f"review fix loop exhausted: {count} completed fix cycles, no "
-                f"round may open automatically beyond {REVIEW_LOOP_LIMIT}",
-            ),
-        )
-
-    status = facts["latest_verification_status"]
-    if status not in VERIFICATION_STATUSES:
-        raise _invalid("latest_verification_status is outside the closed set")
-    if status == "blocked":
-        raise _invalid(
-            "latest_verification_status is blocked, which contradicts a feature "
-            "in reviewing"
-        )
-    if status == "failed":
-        return _policy_block(
-            facts["target"],
-            ("the latest fix verification failed; no review round may open",),
-        )
+    _assert_untainted_history(records, facts)
 
     return ReviewFixLoopEvaluation(
         receipt=OperationReceipt(
@@ -671,13 +719,16 @@ def admit_round_reviewer(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
 
     The controller has invoked the round's reviewer and attested its binding
     (``session_id``, ``context_binding_sha256``, ``independence_key`` from
-    ``dal.reviewer-session-binding/1.0``). Before any review receipt may be
-    accepted, the gate re-runs the history-drift invariants and judges the
-    cross-round independence matrix against the attested binding: any field
-    equality with the original coder or a recorded reviewer/coder is a clean
-    ``POLICY_DENIED`` zero-write refusal; all violations are collected so the
-    refusal is auditable. Budget and verification are *not* re-judged — the
-    opener owns them and no new provider call happens between open and admit.
+    ``dal.reviewer-session-binding/1.0``). The gate re-derives the budget and
+    the verification precondition from its own facts — a facts swap or replay
+    between open and admit cannot slip a fourth round past an admission that
+    only trusted the opener (round-2 review B1) — then re-runs the
+    history-drift invariants and judges the cross-round independence matrix
+    against the attested binding: any field equality with the original coder
+    or a recorded reviewer/coder is a clean ``POLICY_DENIED`` zero-write
+    refusal; all violations are collected so the refusal is auditable. A
+    budget/verification block lands the frozen BLK-POLICY semantics and
+    carries the history labels it lands with (S4).
     """
     if not isinstance(facts, dict) or frozenset(facts) != ADMIT_FACT_FIELDS:
         raise _invalid("admit facts shape is not closed")
@@ -686,8 +737,12 @@ def admit_round_reviewer(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
     _validate_identity_fields(facts, "proposed_reviewer")
 
     count, records = _validate_accounting(facts)
-    _history_reuse(records, facts)
+    block = _budget_and_verification(facts, count)
+    if block is not None:
+        violations = tuple(_history_reuse(records, facts))
+        return _policy_block(facts["target"], violations + block.loop_violations)
 
+    history_labels = tuple(_history_reuse(records, facts))
     violations = _proposed_reuse(records, facts)
     if violations:
         return ReviewFixLoopEvaluation(
@@ -698,8 +753,9 @@ def admit_round_reviewer(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
             state_trace=(REVIEWING_STATE,),
             final_state=REVIEWING_STATE,
             final_entity_type=facts["target"]["entity_type"],
-            loop_violations=violations,
+            loop_violations=history_labels + violations,
         )
+    _assert_untainted_history(records, facts)
 
     return ReviewFixLoopEvaluation(
         receipt=OperationReceipt(
@@ -718,6 +774,42 @@ def _current_anchor(facts: dict[str, Any], count: int) -> str:
     if count == 1:
         return facts["original_review_result_sha"]
     return facts["round_records"][count - 2]["result_sha"]
+
+
+def _bind_chain_to_history(
+    name: str,
+    chain: Any,
+    records: list[dict[str, Any]],
+    chain_entry_fields: frozenset[str],
+) -> None:
+    """Bind one sub-fact object's ``prior_verdict_chain`` to the recorded
+    history (round-2 review B2).
+
+    The chain is the controller's own derived state, not a provider claim, so
+    a drift between it and ``round_records`` is controller drift, not a
+    policy outcome: length must be ``count - 1`` (V_1 .. V_{count-1}), every
+    entry's closed shape must hold, ``sequence`` must be exact, and each
+    entry's ``result_sha`` must equal the corresponding record's fix tree.
+    Raises ``INVALID_ARGUMENT``.
+    """
+    if not isinstance(chain, list) or len(chain) != len(records) - 1:
+        raise _invalid(
+            f"{name} prior_verdict_chain must have one entry per prior "
+            "post-fix verdict"
+        )
+    for index, entry in enumerate(chain):
+        if not isinstance(entry, dict) or frozenset(entry) != chain_entry_fields:
+            raise _invalid(f"{name} prior_verdict_chain[{index}] shape is not closed")
+        if entry["sequence"] != index + 1:
+            raise _invalid(
+                f"{name} prior_verdict_chain[{index}] sequence must be exactly "
+                f"{index + 1}"
+            )
+        if entry["result_sha"] != records[index]["result_sha"]:
+            raise _invalid(
+                f"{name} prior_verdict_chain[{index}] result_sha is not bound "
+                "to the recorded fix result tree"
+            )
 
 
 def _sub_command(
@@ -752,8 +844,55 @@ def _sub_command(
     }
 
 
-def _preflight_verdict_members(verdict: dict[str, Any]) -> str | None:
-    """Content pre-flight of the untrusted verdict members.
+def _resolution_drift(item: Any, label: str, fields: frozenset[str]) -> str | None:
+    """Closed-shape and value checks for one resolution member."""
+    if not isinstance(item, dict):
+        return f"{label} is not an object"
+    if frozenset(item) != fields:
+        return f"{label} shape is not closed"
+    if item["status"] not in RESOLUTION_STATUSES:
+        return f"{label} status is outside the closed set"
+    if not _is_non_empty_str(item["summary"]):
+        return f"{label} summary must be a non-empty string"
+    evidence = item["evidence_sha256"]
+    if not isinstance(evidence, list) or not evidence:
+        return f"{label} evidence_sha256 is empty"
+    if not all(_is_sha256_hex(digest) for digest in evidence):
+        return f"{label} evidence_sha256 is malformed"
+    if len(set(evidence)) != len(evidence):
+        return f"{label} evidence_sha256 repeats a digest"
+    return None
+
+
+def _finding_drift(item: Any, label: str) -> str | None:
+    """Closed-shape and value checks for one new-finding member."""
+    if not isinstance(item, dict) or frozenset(item) != _NEW_FINDING_FIELD_SET:
+        return f"{label} shape is not closed"
+    for field in ("category", "severity", "summary", "failure_scenario"):
+        if not _is_non_empty_str(item[field]):
+            return f"{label} {field} must be a non-empty string"
+    location = item["location"]
+    if not isinstance(location, dict) or frozenset(location) != set(
+        NEW_FINDING_LOCATION_FIELDS
+    ):
+        return f"{label} location shape is not closed"
+    if not _is_git_sha_hex(location["anchor_sha"]):
+        return f"{label} location anchor_sha must be a 40-char git sha"
+    if not _is_non_empty_str(location["path"]):
+        return f"{label} location path must be a non-empty string"
+    for field in ("line_start", "line_end"):
+        line = location[field]
+        if not isinstance(line, int) or isinstance(line, bool) or line < 0:
+            return f"{label} location {field} must be a line number"
+    return None
+
+
+def _id_field(field: str) -> str:
+    return "acceptance_id" if field == "acceptance_gap_resolutions" else "finding_id"
+
+
+def _verdict_member_drift(verdict: dict[str, Any]) -> str | None:
+    """Content checks on the untrusted verdict members.
 
     The frozen sub-evaluators dereference resolution members directly
     (``item["status"]``, ``item["evidence_sha256"][0]``), so a ``None``
@@ -770,22 +909,254 @@ def _preflight_verdict_members(verdict: dict[str, Any]) -> str | None:
         if not isinstance(members, list):
             return f"verdict {field} is not a list"
         for index, item in enumerate(members):
-            if not isinstance(item, dict):
-                return f"verdict {field}[{index}] is not an object"
-            if frozenset(item) != fields:
-                return f"verdict {field}[{index}] shape is not closed"
-            evidence = item["evidence_sha256"]
-            if not isinstance(evidence, list) or not evidence:
-                return f"verdict {field}[{index}] evidence_sha256 is empty"
-            if not all(_is_sha256_hex(digest) for digest in evidence):
-                return f"verdict {field}[{index}] evidence_sha256 is malformed"
+            drift = _resolution_drift(item, f"verdict {field}[{index}]", fields)
+            if drift is not None:
+                return drift
+        ids = [item[_id_field(field)] for item in members]
+        if len(set(ids)) != len(ids):
+            return f"verdict {field} repeats an id"
+        digests = [item["evidence_sha256"][0] for item in members]
+        if len(set(digests)) != len(digests):
+            return f"verdict {field} repeats an evidence digest"
     members = verdict.get("new_findings")
     if not isinstance(members, list):
         return "verdict new_findings is not a list"
     for index, item in enumerate(members):
-        if not isinstance(item, dict) or frozenset(item) != _NEW_FINDING_FIELD_SET:
-            return f"verdict new_findings[{index}] shape is not closed"
+        drift = _finding_drift(item, f"verdict new_findings[{index}]")
+        if drift is not None:
+            return drift
+    finding_ids = [item["finding_id"] for item in members]
+    if len(set(finding_ids)) != len(finding_ids):
+        return "verdict new_findings repeats a finding id"
     return None
+
+
+def _chain_member_drift(chain: list[dict[str, Any]]) -> str | None:
+    """Content checks on the prior chain's own members.
+
+    The chain is the controller's derived state (built from protected prior
+    verdicts), so a malformed member is controller drift, not a policy
+    outcome — but the loop-level carry-forward derivation below dereferences
+    these members itself, so their closed shapes are checked here first.
+    """
+    for index, entry in enumerate(chain):
+        resolutions = entry["finding_resolutions"]
+        if not isinstance(resolutions, list):
+            return (
+                f"prior_verdict_chain[{index}] finding_resolutions is not a list"
+            )
+        for member_index, item in enumerate(resolutions):
+            drift = _resolution_drift(
+                item,
+                f"prior_verdict_chain[{index}] finding_resolutions[{member_index}]",
+                _RESOLUTION_FIELD_SETS,
+            )
+            if drift is not None:
+                return drift
+        findings = entry["new_findings"]
+        if not isinstance(findings, list):
+            return f"prior_verdict_chain[{index}] new_findings is not a list"
+        for member_index, item in enumerate(findings):
+            drift = _finding_drift(
+                item, f"prior_verdict_chain[{index}] new_findings[{member_index}]"
+            )
+            if drift is not None:
+                return drift
+    return None
+
+
+def _carry_forward_violations(
+    original_ids: list[str],
+    chain: list[dict[str, Any]],
+    verdict: dict[str, Any],
+) -> tuple[str, ...]:
+    """The §6 per-round carry-forward invariant, judged at the loop level.
+
+    The open set is controller state: it starts as the original review's
+    finding ids and after each prior verdict V_j it loses the findings V_j
+    resolved ``closed`` and gains V_j's new findings (kept verbatim, by id).
+    This derivation runs over the bound chain (``_bind_chain_to_history``
+    has already tied it to ``round_records``) and the round under judgment:
+
+    - every id in the current open set must appear exactly once among the
+      verdict's resolutions (omitted carried findings cannot vanish);
+    - a resolution may not reference an id outside the open set;
+    - new-finding ids must be disjoint from everything already seen;
+    - a declared ``verified`` is legal only when the open set it closes is
+      fully ``closed`` (a ``remaining`` or a carried finding cannot survive a
+      verified verdict) and ``new_findings`` is empty (checked in
+      ``_verified_semantics``).
+    """
+    open_ids: list[str] = list(original_ids)
+    seen: set[str] = set(original_ids)
+    violations: list[str] = []
+    for index, entry in enumerate(chain):
+        resolutions = entry["finding_resolutions"]
+        unknown = {item["finding_id"] for item in resolutions} - set(open_ids)
+        if unknown:
+            violations.append(
+                f"prior_verdict_chain[{index}] resolves findings outside the "
+                "open set"
+            )
+        closed_ids = {
+            item["finding_id"]
+            for item in resolutions
+            if item["status"] == "closed"
+        }
+        open_ids = [
+            finding_id for finding_id in open_ids if finding_id not in closed_ids
+        ]
+        for finding in entry["new_findings"]:
+            finding_id = finding["finding_id"]
+            if finding_id in seen:
+                violations.append(
+                    f"prior_verdict_chain[{index}] reuses an already-seen id: "
+                    f"{finding_id}"
+                )
+            open_ids.append(finding_id)
+            seen.add(finding_id)
+
+    resolutions = verdict["finding_resolutions"]
+    resolution_ids = [item["finding_id"] for item in resolutions]
+    if len(set(resolution_ids)) != len(resolution_ids):
+        violations.append("the verdict resolves an id more than once")
+    missing = set(open_ids) - set(resolution_ids)
+    if missing:
+        violations.append(
+            "the verdict omits open findings it must resolve: "
+            + ", ".join(sorted(missing))
+        )
+    unknown = set(resolution_ids) - set(open_ids)
+    if unknown:
+        violations.append(
+            "the verdict resolves findings outside the open set: "
+            + ", ".join(sorted(unknown))
+        )
+    new_ids = [item["finding_id"] for item in verdict["new_findings"]]
+    collisions = set(new_ids) & seen
+    if collisions:
+        violations.append(
+            "a new finding reuses an already-seen id: "
+            + ", ".join(sorted(collisions))
+        )
+    return tuple(violations)
+
+
+def _verified_semantics(verdict: dict[str, Any]) -> str | None:
+    """The §6 verified cross-constraints the frozen evaluators do not judge.
+
+    ``verified`` requires every resolution ``closed`` and an empty
+    ``new_findings``; the frozen evaluators only partially enforce this
+    (round-2 review B4).
+    """
+    if verdict["verdict"] != "verified":
+        return None
+    remaining = [
+        item["finding_id"]
+        for item in verdict["finding_resolutions"]
+        if item["status"] != "closed"
+    ]
+    if remaining:
+        return (
+            "a verified verdict carries non-closed resolutions: "
+            + ", ".join(sorted(remaining))
+        )
+    for item in verdict["acceptance_gap_resolutions"]:
+        if item["status"] != "closed":
+            return (
+                "a verified verdict carries a non-closed gap resolution: "
+                + item["acceptance_id"]
+            )
+    if verdict["new_findings"]:
+        return "a verified verdict still carries new findings"
+    return None
+
+
+def _evidence_and_gap_violations(
+    pfv_facts: dict[str, Any], verdict: dict[str, Any]
+) -> tuple[str, ...]:
+    """The §6 evidence-role and gap-bijection constraints (round-2 review B4).
+
+    The frozen evaluator checks only each closed resolution's **first**
+    digest; the contract binds every evidence digest to an allowed manifest
+    role, requires the gap resolutions to be a bijection with the original
+    review's acceptance-gap ids, and requires a ``closed`` gap resolution to
+    cite ``test_receipts``. All are judged here.
+    """
+    roles = pfv_facts["manifest_roles"]
+    violations: list[str] = []
+    for field in ("finding_resolutions", "acceptance_gap_resolutions"):
+        seen: set[str] = set()
+        for item in verdict[field]:
+            for digest in item["evidence_sha256"]:
+                if digest in seen:
+                    violations.append(
+                        f"the verdict repeats an evidence digest: {field}"
+                    )
+                seen.add(digest)
+                if roles.get(digest) not in EVIDENCE_ROLES:
+                    violations.append(
+                        f"an evidence digest cites an unknown or disallowed role: {field}"
+                    )
+    gap_ids = [item["acceptance_id"] for item in verdict["acceptance_gap_resolutions"]]
+    if len(set(gap_ids)) != len(gap_ids):
+        violations.append("the verdict repeats an acceptance id")
+    original_gap_ids = pfv_facts["original_review"]["acceptance_gap_ids"]
+    if set(gap_ids) != set(original_gap_ids):
+        violations.append(
+            "the gap resolutions are not a bijection with the original review's "
+            "acceptance gaps"
+        )
+    for item in verdict["acceptance_gap_resolutions"]:
+        if item["status"] == "closed" and not all(
+            roles.get(digest) == "test_receipts" for digest in item["evidence_sha256"]
+        ):
+            violations.append(
+                "a closed gap resolution cites non-test-receipt evidence"
+            )
+    return tuple(dict.fromkeys(violations))
+
+
+def _new_finding_anchor_violations(
+    verdict: dict[str, Any], round_anchor_sha: str
+) -> tuple[str, ...]:
+    """§6: a new finding's ``location.anchor_sha`` MUST equal ``result_sha``.
+
+    The frozen evaluator instead anchors new findings to ``round_anchors`` —
+    the pre-fix tree — which contradicts the frozen contract's direction
+    (round-2 review B5; hardening the evaluator in place is a refreeze
+    question, so the loop judges both directions): a new finding whose anchor
+    is neither the result tree nor the round anchor cannot satisfy either
+    reading and is a provider contract failure here.
+    """
+    result_sha = verdict["result_sha"]
+    return tuple(
+        f"a new finding's location anchor is neither the result tree nor the "
+        f"round anchor: {item['finding_id']}"
+        for item in verdict["new_findings"]
+        if item["location"]["anchor_sha"] not in (result_sha, round_anchor_sha)
+    )
+
+
+def _contract_block(
+    target: dict[str, Any], count: int, violations: tuple[str, ...]
+) -> ReviewFixLoopEvaluation:
+    """The frozen contract-block landing for provider content violations."""
+    return ReviewFixLoopEvaluation(
+        receipt=OperationReceipt(
+            ReceiptCode.APPLIED,
+            schema_version=FEATURE_TRANSITION_RECEIPT_SCHEMA,
+        ),
+        state_trace=(REVIEWING_STATE, BLOCK_STATE),
+        final_state=BLOCK_STATE,
+        final_entity_type=target["entity_type"],
+        final_reason_code=PROVIDER_REASON,
+        final_reason_owner=PROVIDER_OWNER,
+        declared_write_set=BLOCK_WRITE_SET,
+        event_trace=(BLOCK_EVENT,),
+        round_no=count + 1,
+        reasons=violations,
+    )
 
 
 def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
@@ -798,11 +1169,14 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
     full history-drift re-validation (the closer is a separate judge call —
     it never assumes a prior ``open``/``admit`` ran against the same facts),
     the round budget (`count` must name a round that could have opened —
-    re-reviews round 2 or 3), the binding of the verdict to the recorded fix
-    result, the current-round anchor agreement between the two sub-fact
-    objects, and a content pre-flight of the untrusted verdict members
-    (crash-shaped provider output lands the frozen contract block instead of
-    raising).
+    re-reviews round 2 or 3), the binding of the verdict and of both
+    sub-facts' ``prior_verdict_chain`` to the recorded fix results (B2), the
+    current-round anchor agreement between the two sub-fact objects, the
+    content pre-flight of the untrusted verdict members (crash-shaped output
+    lands the frozen contract block instead of raising), and the §6
+    cross-constraints the frozen evaluators do not judge — the per-round
+    carry-forward invariant (B3, over the bound chain) and the ``verified``
+    semantics, evidence roles and gap bijection (B4).
     """
     if not isinstance(facts, dict) or frozenset(facts) != CLOSE_FACT_FIELDS:
         raise _invalid("close facts shape is not closed")
@@ -810,7 +1184,7 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
     _validate_identity_fields(facts, "original_coder")
 
     count, records = _validate_accounting(facts)
-    _history_reuse(records, facts)
+    _assert_untainted_history(records, facts)
     if count < 1 or count >= REVIEW_LOOP_LIMIT:
         raise _invalid(
             f"closing requires a completable re-review round: count {count} names "
@@ -836,7 +1210,7 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
     #: Content pre-flight of the untrusted verdict members: crash-shaped
     #: output must fail closed as the frozen contract block, never raise out
     #: of a policy boundary (round-1 review B5).
-    preflight = _preflight_verdict_members(verdict)
+    preflight = _verdict_member_drift(verdict)
     if preflight is not None:
         return ReviewFixLoopEvaluation(
             receipt=OperationReceipt(
@@ -854,11 +1228,25 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
             reasons=(preflight,),
         )
 
+    #: Bind both sub-facts' prior_verdict_chain to the recorded history (B2):
+    #: the chain is controller state, so a drift from ``round_records`` is a
+    #: controller bug, not a provider contract failure.
+    pfv_facts = facts["post_fix_verdict_facts"]
+    openset_facts = facts["open_finding_set_facts"]
+    for name, sub_facts, chain_fields in (
+        ("post_fix_verdict_facts", pfv_facts, PFV_CHAIN_ENTRY_FIELDS),
+        ("open_finding_set_facts", openset_facts, OPENSET_CHAIN_ENTRY_FIELDS),
+    ):
+        _bind_chain_to_history(
+            name,
+            sub_facts.get("prior_verdict_chain"),
+            records,
+            chain_fields,
+        )
+
     #: Both sub-fact objects must anchor the same current round: r(count-1).
     current = _current_anchor(facts, count)
     expected_anchor = {"anchor_sha": current, "previous_result_sha": current}
-    pfv_facts = facts["post_fix_verdict_facts"]
-    openset_facts = facts["open_finding_set_facts"]
     for name, sub_facts in (
         ("post_fix_verdict_facts", pfv_facts),
         ("open_finding_set_facts", openset_facts),
@@ -868,6 +1256,38 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
             raise _invalid(
                 f"{name} round_anchors do not match the current round anchor"
             )
+
+    #: Both sub-fact objects must carry the same original review's id sets:
+    #: the carry-forward derivation reads one and the evidence/gap checks read
+    #: the other — a disagreement would let each half validate against a
+    #: different baseline (controller drift, not a provider outcome).
+    pfv_original = pfv_facts["original_review"]
+    openset_original = openset_facts["original_review"]
+    if (
+        pfv_original["finding_ids"] != openset_original["finding_ids"]
+        or pfv_original["acceptance_gap_ids"] != openset_original["acceptance_gap_ids"]
+    ):
+        raise _invalid(
+            "the two sub-fact objects disagree on the original review's id sets"
+        )
+
+    #: §6 constraints the frozen evaluators do not judge — judged here over
+    #: the bound chain and the original review's ids before any dispatch.
+    #: Failures are provider contract failures, not controller drift: the
+    #: verdict and its members are provider claims.
+    pfv_chain = pfv_facts["prior_verdict_chain"]
+    original_ids = openset_facts["original_review"]["finding_ids"]
+    drift = _chain_member_drift(pfv_chain)
+    if drift is not None:
+        raise _invalid(f"post_fix_verdict_facts {drift}")
+    violations = _carry_forward_violations(original_ids, pfv_chain, verdict)
+    verified_drift = _verified_semantics(verdict)
+    if verified_drift is not None:
+        violations += (verified_drift,)
+    violations += _evidence_and_gap_violations(pfv_facts, verdict)
+    violations += _new_finding_anchor_violations(verdict, current)
+    if violations:
+        return _contract_block(facts["target"], count, violations)
 
     pfv = validate_post_fix_verdict(
         _sub_command(
