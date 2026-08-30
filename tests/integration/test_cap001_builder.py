@@ -805,6 +805,7 @@ def test_tool_declarations_are_the_intersection(db, keyring):
     envelope = _build(
         db,
         keyring,
+        user_text="今天天气如何？",
         candidate_tools=["finance.query_expenses", "finance.delete_everything"],
     )
     assert envelope.tool_aliases == ("finance.query_expenses",)
@@ -838,6 +839,23 @@ def test_an_essential_tool_is_never_dropped_by_the_budget(db, keyring):
     )
     # The minimal tool contract survives; the rest of the catalog is what paid
     # for it, which is the §7.3 step-2 trim rather than a truncated schema.
+    assert envelope.tool_aliases == ("finance.log_expense",)
+    assert envelope.dropped_counts.get("tool_declaration") == 2
+    assert envelope.estimated_input_tokens <= tight.hard_limit_tokens
+
+
+def test_finance_required_tool_is_essential_without_a_router_hint(db, keyring):
+    """A Finance turn cannot degrade into an internal-tools-only envelope."""
+    _append(db, keyring, text="记一笔")
+    tight = _config(
+        CONTEXT_SOFT_LIMIT_TOKENS=400,
+        CONTEXT_HARD_LIMIT_TOKENS=500,
+    )
+
+    envelope = _build(db, keyring, builder=_builder(tight))
+
+    assert envelope.finance_intent_required is True
+    assert envelope.finance_required_tool == "finance.log_expense"
     assert envelope.tool_aliases == ("finance.log_expense",)
     assert envelope.dropped_counts.get("tool_declaration") == 2
     assert envelope.estimated_input_tokens <= tight.hard_limit_tokens
@@ -1125,8 +1143,10 @@ def test_a_classifier_is_not_called_without_trusted_state(db, keyring):
             }
 
     _append(db, keyring, text="随便说一句")
+    # A wide idle window keeps the deterministic idle boundary out of the way:
+    # this test is about classifier gating, not idle timeouts.
     manager = SessionManager(
-        _config(),
+        _config(CONTEXT_SESSION_IDLE_MINUTES=600),
         classifier=RecordingClassifier(),
         state_provider=_provider(keyring),
     )

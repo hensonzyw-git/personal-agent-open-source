@@ -127,6 +127,8 @@ SESSION_BOUNDARY_REASONS: Final[tuple[str, ...]] = (
     "explicit_correction",
     "task_boundary",
     "idle_and_unrelated",
+    "idle_timeout",
+    "completed_tool_unrelated",
     "previous_closed",
 )
 
