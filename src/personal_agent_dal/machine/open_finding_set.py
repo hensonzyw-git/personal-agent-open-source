@@ -120,6 +120,9 @@ FACT_FIELDS: Final[frozenset[str]] = frozenset(
 ORIGINAL_REVIEW_FIELDS: Final[frozenset[str]] = frozenset(
     {"acceptance_gap_ids", "finding_ids"}
 )
+RESOLUTION_FIELDS: Final[frozenset[str]] = frozenset(
+    {"evidence_sha256", "finding_id", "status", "summary"}
+)
 CHAIN_ENTRY_FIELDS: Final[frozenset[str]] = frozenset(
     {"finding_resolutions", "new_findings", "result_sha", "sequence"}
 )
@@ -271,6 +274,19 @@ def _validate_command(command: dict[str, Any]) -> None:
     original = facts.get("original_review")
     if not isinstance(original, dict) or frozenset(original) != ORIGINAL_REVIEW_FIELDS:
         raise _invalid("original_review shape is not closed")
+    #: Both id lists feed set builds in ``_derive``; a non-string element
+    #: would leak ``TypeError: unhashable type`` and a string (instead of a
+    #: list) would silently become per-character set members — trusted
+    #: controller state must fail closed as INVALID_ARGUMENT instead
+    #: (round-5 review F-1b).
+    for field in ("finding_ids", "acceptance_gap_ids"):
+        ids = original.get(field)
+        if not isinstance(ids, list) or not all(
+            _is_non_empty_str(item) for item in ids
+        ):
+            raise _invalid(
+                f"original_review {field} must be a list of non-empty strings"
+            )
     if not _is_git_sha_hex(facts.get("recomputed_result_sha")):
         raise _invalid("recomputed_result_sha must be a 40-char git sha")
     anchors = facts.get("round_anchors")
@@ -406,6 +422,51 @@ def _deleted_lines(diff_text: Any) -> set[str]:
     return deleted
 
 
+def _verdict_member_block_reasons(verdict: dict[str, Any]) -> list[str]:
+    """Closed-shape and value checks on the untrusted verdict members.
+
+    The derivation below dereferences every resolution/new-finding member
+    directly (``item["finding_id"]``, ``item["status"]``, …), so a non-list
+    container, a ``None``/non-dict member or a member with extra/missing
+    fields would crash or silently skip — the verdict is untrusted provider
+    output, so every such shape must become a block reason, never a raised
+    exception (round-5 review F-1c; the round-4 fix checked only the id
+    value and mis-documented non-dict members as already rejected).
+    """
+    reasons: list[str] = []
+    resolutions = verdict["finding_resolutions"]
+    if not isinstance(resolutions, list):
+        return ["finding_resolutions is not a list"]
+    new_findings = verdict["new_findings"]
+    if not isinstance(new_findings, list):
+        return ["new_findings is not a list"]
+    for index, item in enumerate(resolutions):
+        if not isinstance(item, dict) or frozenset(item) != RESOLUTION_FIELDS:
+            return [f"finding_resolutions[{index}] is not a closed resolution object"]
+        if not _is_non_empty_str(item["finding_id"]):
+            return [f"finding_resolutions[{index}] finding_id is not a non-empty string"]
+        if item["status"] not in ("closed", "remaining"):
+            return [f"finding_resolutions[{index}] status is outside the closed set"]
+        if not _is_non_empty_str(item["summary"]):
+            return [f"finding_resolutions[{index}] summary is not a non-empty string"]
+        evidence = item["evidence_sha256"]
+        if (
+            not isinstance(evidence, list)
+            or not evidence
+            or not all(_is_sha256_hex(digest) for digest in evidence)
+        ):
+            return [f"finding_resolutions[{index}] evidence_sha256 is malformed"]
+    for index, finding in enumerate(new_findings):
+        if not isinstance(finding, dict) or frozenset(finding) != NEW_FINDING_FIELDS:
+            return [f"new_findings[{index}] is not a closed new-finding object"]
+        if not _is_non_empty_str(finding["finding_id"]):
+            return [f"new_findings[{index}] finding_id is not a non-empty string"]
+        location = finding["location"]
+        if not isinstance(location, dict) or frozenset(location) != LOCATION_FIELDS:
+            return [f"new_findings[{index}] location is not a closed location object"]
+    return reasons
+
+
 def _derive(facts: dict[str, Any], git_result: dict[str, Any], verdict: dict[str, Any]) -> tuple[str | None, tuple[str, ...]]:
     """Judge the verdict against the derived open set; returns `(outcome, reasons)`.
 
@@ -455,19 +516,14 @@ def _derive(facts: dict[str, Any], git_result: dict[str, Any], verdict: dict[str
 
     resolutions = verdict["finding_resolutions"]
     #: The verdict is untrusted provider output, so its members cannot be
-    #: assumed well-formed here: a non-string (or non-hashable) id must
-    #: become a block reason, never a TypeError from the set builds below
-    #: (round-4 review F1). Non-dict members were rejected by
-    #: ``_validate_command``; these members are dicts with a closed shape
-    #: whose ``finding_id`` may still hold any JSON value.
-    for item in resolutions:
-        if not _is_non_empty_str(item["finding_id"]):
-            reasons.append("a resolution's finding_id is not a non-empty string")
-            return None, tuple(reasons)
-    for item in verdict["new_findings"]:
-        if not _is_non_empty_str(item["finding_id"]):
-            reasons.append("a new finding's finding_id is not a non-empty string")
-            return None, tuple(reasons)
+    #: assumed well-formed here: every shape the derivation dereferences
+    #: (containers, members, closed field sets, id/status/summary/evidence
+    #: values) must be checked before the set builds below, and a malformed
+    #: member must become a block reason — never a TypeError or a silently
+    #: skipped member (round-5 review F-1c, extending round-4 review F1).
+    reasons.extend(_verdict_member_block_reasons(verdict))
+    if reasons:
+        return None, tuple(reasons)
     closed = {item["finding_id"] for item in resolutions if item["status"] == "closed"}
     remaining = {item["finding_id"] for item in resolutions if item["status"] == "remaining"}
     unknown = {item["finding_id"] for item in resolutions} - open_ids

@@ -66,6 +66,7 @@ FIX3 = _git_sha("fix-3")
 FIX4 = _git_sha("fix-4")
 E_FIX = _sha256_hex("evidence", "fix-diff-1")
 E_FIX2 = _sha256_hex("evidence", "fix-diff-2")
+E_RECEIPT = _sha256_hex("evidence", "test-receipt-1")
 
 BASE_WRITE_SET = ("aggregate", "business_event", "transition_receipt", "audit")
 BLOCK_WRITE_SET = BASE_WRITE_SET + (
@@ -208,6 +209,16 @@ def _resolution(finding_id: str, status: str) -> dict:
     }
 
 
+def _gap_resolution(acceptance_id: str, status: str) -> dict:
+    """A well-formed acceptance-gap resolution citing a test-receipt digest."""
+    return {
+        "acceptance_id": acceptance_id,
+        "evidence_sha256": [E_RECEIPT],
+        "status": status,
+        "summary": f"{acceptance_id} {status}",
+    }
+
+
 def _git_result() -> dict:
     return {
         "anchor_translation_diff": "@@ -5,1 +5,1 @@\n-old5\n+old5",
@@ -279,7 +290,12 @@ def _pfv_facts(
     count: int, anchors: dict, chain: list[dict], finding_ids: list[str]
 ) -> dict:
     return {
-        "manifest_roles": {E_FIX: "fix_diff", E_FIX2: "fix_diff"},
+        "manifest_roles": {
+            E_FIX: "fix_diff",
+            E_FIX2: "fix_diff",
+            E_RECEIPT: "test_receipts",
+        },
+        "test_receipts": {E_RECEIPT: {"verification_id": "VR-1"}},
         "original_review": {
             "acceptance_gap_ids": [],
             "finding_ids": finding_ids,
@@ -315,7 +331,11 @@ def _openset_facts(
     finding_ids: list[str],
 ) -> dict:
     return {
-        "manifest_roles": {E_FIX: "fix_diff", E_FIX2: "fix_diff"},
+        "manifest_roles": {
+            E_FIX: "fix_diff",
+            E_FIX2: "fix_diff",
+            E_RECEIPT: "test_receipts",
+        },
         "original_review": {"acceptance_gap_ids": [], "finding_ids": finding_ids},
         "prior_verdict_chain": chain,
         "recomputed_result_sha": recomputed,
@@ -960,10 +980,15 @@ def test_verified_with_unresolved_carried_finding_blocks() -> None:
         "resolution_non_hex_evidence",
         "resolution_list_finding_id",
         "resolution_dict_finding_id",
-        "gap_resolution_not_object",
+        "resolutions_not_a_list",
+        "gap_resolutions_not_a_list",
+        "gap_resolution_empty_evidence",
+        "gap_resolution_list_acceptance_id",
         "new_finding_not_object",
         "new_finding_extra_field",
         "new_finding_list_finding_id",
+        "new_findings_not_a_list",
+        "new_finding_location_not_object",
     ],
 )
 def test_crash_shaped_verdict_members_fail_closed(mutation: str) -> None:
@@ -987,6 +1012,15 @@ def test_crash_shaped_verdict_members_fail_closed(mutation: str) -> None:
         resolutions[0]["finding_id"] = ["unhashable-id"]
     elif mutation == "resolution_dict_finding_id":
         resolutions[0]["finding_id"] = {"k": "v"}
+    elif mutation == "resolutions_not_a_list":
+        resolutions = "abc"  # type: ignore[assignment]
+    elif mutation == "gap_resolutions_not_a_list":
+        gap_resolutions = "abc"  # type: ignore[assignment]
+    elif mutation == "gap_resolution_empty_evidence":
+        gap_resolutions = [_gap_resolution("AC-1", "closed")]
+        gap_resolutions[0]["evidence_sha256"] = []
+    elif mutation == "gap_resolution_list_acceptance_id":
+        gap_resolutions = [_gap_resolution(["AC-1"], "closed")]  # type: ignore[arg-type]
     elif mutation == "gap_resolution_not_object":
         gap_resolutions = [None]  # type: ignore[list-item]
     elif mutation == "new_finding_not_object":
@@ -997,6 +1031,11 @@ def test_crash_shaped_verdict_members_fail_closed(mutation: str) -> None:
     elif mutation == "new_finding_list_finding_id":
         new_findings = [_finding("F-100", FIX1, 5)]
         new_findings[0]["finding_id"] = ["unhashable-id"]
+    elif mutation == "new_findings_not_a_list":
+        new_findings = 123  # type: ignore[assignment]
+    elif mutation == "new_finding_location_not_object":
+        new_findings = [_finding("F-100", FIX1, 5)]
+        new_findings[0]["location"] = "src/feature.py"
 
     facts = _close_facts(1, resolutions=resolutions)
     verdict = facts["reviewer_result"]["verdict"]
@@ -1659,13 +1698,27 @@ def test_sub_facts_disagreeing_on_original_ids_raise() -> None:
         "finding_ids_missing",
         "finding_ids_not_strings",
         "finding_ids_not_list",
+        "gap_ids_missing",
+        "gap_ids_none",
+        "gap_ids_not_strings",
+        "gap_ids_not_list",
+        "gap_ids_int_hashable",
+        "manifest_roles_missing",
+        "manifest_roles_not_object",
+        "chain_none",
+        "chain_not_list",
     ],
 )
 def test_drifted_original_review_fails_closed(mutation: str) -> None:
-    """Round-4 F6: the carry-forward derivation and the evidence/gap checks
-    dereference the sub-facts' ``original_review`` directly, so a drifted
-    shape must raise ``INVALID_ARGUMENT`` before any dereference — not leak
-    TypeError/KeyError out of a policy boundary."""
+    """Round-4 F6, extended by round-5 F-1a: the carry-forward derivation,
+    the gap bijection and the evidence-role checks dereference the
+    sub-facts' ``original_review``, ``manifest_roles`` and
+    ``prior_verdict_chain`` directly, so a drifted shape must raise
+    ``INVALID_ARGUMENT`` before any dereference — not leak
+    TypeError/KeyError out of a policy boundary. The hashable-but-wrong
+    ``[123]`` shape matters too: unguarded, it would flow into the gap
+    bijection and be mis-judged as a provider contract failure instead of
+    controller drift."""
     facts = _close_facts(2)
     sub = facts["open_finding_set_facts"]
     if mutation == "original_review_none":
@@ -1678,6 +1731,24 @@ def test_drifted_original_review_fails_closed(mutation: str) -> None:
         sub["original_review"]["finding_ids"] = [["F-001"]]
     elif mutation == "finding_ids_not_list":
         sub["original_review"]["finding_ids"] = "F-001"
+    elif mutation == "gap_ids_missing":
+        del sub["original_review"]["acceptance_gap_ids"]
+    elif mutation == "gap_ids_none":
+        sub["original_review"]["acceptance_gap_ids"] = None
+    elif mutation == "gap_ids_not_strings":
+        sub["original_review"]["acceptance_gap_ids"] = [["AC-1"]]
+    elif mutation == "gap_ids_not_list":
+        sub["original_review"]["acceptance_gap_ids"] = "AC-1"
+    elif mutation == "gap_ids_int_hashable":
+        sub["original_review"]["acceptance_gap_ids"] = [123]
+    elif mutation == "manifest_roles_missing":
+        del sub["manifest_roles"]
+    elif mutation == "manifest_roles_not_object":
+        sub["manifest_roles"] = ["fix_diff"]
+    elif mutation == "chain_none":
+        sub["prior_verdict_chain"] = None
+    elif mutation == "chain_not_list":
+        sub["prior_verdict_chain"] = {"sequence": 1}
     with pytest.raises(DalError) as raised:
         close_review_fix_round(facts)
     assert raised.value.code is DalErrorCode.INVALID_ARGUMENT, mutation

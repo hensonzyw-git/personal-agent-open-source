@@ -847,16 +847,18 @@ def _sub_command(
 def _resolution_drift(item: Any, label: str, fields: frozenset[str]) -> str | None:
     """Closed-shape and value checks for one resolution member.
 
-    ``fields`` selects the id semantics: finding resolutions carry
-    ``finding_id``; acceptance-gap resolutions carry ``acceptance_id``.
-    Both id classes feed set builds downstream, so either must be a
-    non-hashable-safe non-empty string (round-4 review F1).
+    ``fields`` selects the id semantics by **value** (round-5 review F-5: an
+    identity comparison against the module constant would silently pick the
+    wrong id field if a caller ever passed an equal-but-distinct frozenset):
+    finding resolutions carry ``finding_id``; acceptance-gap resolutions
+    carry ``acceptance_id``. Both id classes feed set builds downstream, so
+    either must be a non-hashable-safe non-empty string (round-4 review F1).
     """
     if not isinstance(item, dict):
         return f"{label} is not an object"
     if frozenset(item) != fields:
         return f"{label} shape is not closed"
-    id_field = "acceptance_id" if fields is _GAP_FIELD_SETS else "finding_id"
+    id_field = "acceptance_id" if fields == _GAP_FIELD_SETS else "finding_id"
     if not _is_non_empty_str(item[id_field]):
         #: The carry-forward derivation consumes ids as set members; a
         #  non-hashable value would leak ``TypeError: unhashable type``
@@ -1221,14 +1223,26 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
         original = sub_facts.get("original_review")
         if not isinstance(original, dict):
             raise _invalid(f"{name} original_review must be an object")
-        ids = original.get("finding_ids")
-        if not isinstance(ids, list) or not all(
-            _is_non_empty_str(item) for item in ids
-        ):
-            raise _invalid(
-                f"{name} original_review finding_ids must be a list of "
-                "non-empty strings"
-            )
+        #: Both id lists are dereferenced below (the carry-forward derivation
+        #: and the gap bijection build sets from them), so either shape the
+        #: frozen layer would crash on must raise here first — trusted
+        #: controller state drifts as INVALID_ARGUMENT, never a KeyError or
+        #: TypeError (round-4 review F6, extended by round-5 review F-1a).
+        for field in ("finding_ids", "acceptance_gap_ids"):
+            ids = original.get(field)
+            if not isinstance(ids, list) or not all(
+                _is_non_empty_str(item) for item in ids
+            ):
+                raise _invalid(
+                    f"{name} original_review {field} must be a list of "
+                    "non-empty strings"
+                )
+        #: The evidence-role checks read the role map directly; a missing
+        #: or non-object manifest_roles would KeyError (round-5 review F-1a).
+        if not isinstance(sub_facts.get("manifest_roles"), dict):
+            raise _invalid(f"{name} manifest_roles must be an object")
+        if not isinstance(sub_facts.get("prior_verdict_chain"), list):
+            raise _invalid(f"{name} prior_verdict_chain must be a list")
 
     #: The verdict under judgment must be bound to the recorded fix result:
     #: re-review V_k reviews fix k's tree r(k).

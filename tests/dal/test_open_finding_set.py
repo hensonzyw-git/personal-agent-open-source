@@ -204,10 +204,128 @@ def test_malformed_envelopes_are_stable_invalid_arguments(
     ][0]["location"]["line_start"] = "2"
     cases.append(("chain new finding string line", command))
 
+    # Round-5 review F-1b: both original_review id lists feed set builds in
+    # _derive, so value-level drift must fail closed as INVALID_ARGUMENT —
+    # never a TypeError, never garbage ids flowing into the open set.
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["authoritative_facts"]["original_review"]["finding_ids"] = [
+        ["F-1"]
+    ]
+    cases.append(("original finding_ids list element", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["authoritative_facts"]["original_review"]["finding_ids"] = "F-1"
+    cases.append(("original finding_ids not a list", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["authoritative_facts"]["original_review"]["finding_ids"] = [1]
+    cases.append(("original finding_ids int element", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["authoritative_facts"]["original_review"][
+        "acceptance_gap_ids"
+    ] = [["AC-1"]]
+    cases.append(("original gap ids list element", command))
+
     for label, malformed in cases:
         with pytest.raises(DalError) as raised:
             open_finding_set_policy.derive_open_finding_set(malformed)
         assert raised.value.code is DalErrorCode.INVALID_ARGUMENT, label
+
+
+def test_crash_shaped_verdict_members_block(contracts: FrozenContracts) -> None:
+    """Round-5 review F-1c: the derivation dereferences verdict members
+    directly, so a non-list container, a non-dict member, a member outside
+    its closed field set, or malformed member values must land the frozen
+    PROVIDER_CONTRACT_FAILURE block — never a raised exception and never a
+    silently skipped member. (The round-4 fix covered only id values and
+    mis-documented non-dict members as already rejected.)"""
+    mutated: list[tuple[str, dict]] = []
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["injected_results"][1]["verdict"]["finding_resolutions"] = "abc"
+    mutated.append(("resolutions not a list", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["injected_results"][1]["verdict"]["finding_resolutions"] = [None]
+    mutated.append(("resolutions None member", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["injected_results"][1]["verdict"]["finding_resolutions"] = [123]
+    mutated.append(("resolutions int member", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["injected_results"][1]["verdict"]["finding_resolutions"][0][
+        "extra"
+    ] = "x"
+    mutated.append(("resolution extra field", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["injected_results"][1]["verdict"]["finding_resolutions"][0][
+        "finding_id"
+    ] = ["x"]
+    mutated.append(("resolution list finding_id", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["injected_results"][1]["verdict"]["finding_resolutions"][0][
+        "status"
+    ] = "postponed"
+    mutated.append(("resolution bad status", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["injected_results"][1]["verdict"]["finding_resolutions"][0][
+        "evidence_sha256"
+    ] = []
+    mutated.append(("resolution empty evidence", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["injected_results"][1]["verdict"]["finding_resolutions"][0][
+        "evidence_sha256"
+    ] = ["nothex"]
+    mutated.append(("resolution non-hex evidence", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["injected_results"][1]["verdict"]["new_findings"] = 7
+    mutated.append(("new findings not a list", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["injected_results"][1]["verdict"]["new_findings"] = [
+        {
+            "finding_id": "F-9",
+            "severity": "P2",
+            "category": "correctness",
+            "summary": "Regression",
+            "failure_scenario": "Replay duplicates rows",
+            "location": "src/x.py",
+        }
+    ]
+    mutated.append(("new finding location not object", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    facts = command["input"]["authoritative_facts"]
+    verdict = command["input"]["injected_results"][1]["verdict"]
+    finding = {
+        "finding_id": "F-9",
+        "severity": "P2",
+        "category": "correctness",
+        "summary": "Regression",
+        "failure_scenario": "Replay duplicates rows",
+        "location": {
+            "path": "src/importer/run.py",
+            "line_start": 2,
+            "line_end": 2,
+            "anchor_sha": verdict["result_sha"],
+        },
+    }
+    finding["junk"] = 1
+    verdict["new_findings"] = [finding]
+    mutated.append(("new finding extra field", command))
+
+    for label, malformed in mutated:
+        result = open_finding_set_policy.derive_open_finding_set(malformed)
+        assert result.final_state == "needs_human", label
+        assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE", label
+        assert len(result.reasons) == 1, label
 
 
 def test_wrong_actor_and_evidence_are_their_own_refusals(

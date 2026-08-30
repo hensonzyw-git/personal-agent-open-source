@@ -171,6 +171,9 @@ FINDING_RESOLUTION_FIELDS: Final[frozenset[str]] = frozenset(
 GAP_RESOLUTION_FIELDS: Final[frozenset[str]] = frozenset(
     {"acceptance_id", "evidence_sha256", "status", "summary"}
 )
+NEW_FINDING_FIELDS: Final[frozenset[str]] = frozenset(
+    {"category", "failure_scenario", "finding_id", "location", "severity", "summary"}
+)
 
 _HEX: Final[str] = "0123456789abcdef"
 
@@ -217,6 +220,10 @@ def _is_git_sha_hex(value: Any) -> bool:
 
 def _is_non_negative_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_non_empty_str(value: Any) -> bool:
+    return isinstance(value, str) and bool(value)
 
 
 def _validate_command(command: dict[str, Any]) -> None:
@@ -338,6 +345,27 @@ def _validate_command(command: dict[str, Any]) -> None:
         raise _invalid("verdict acceptance_verified must be boolean")
     if not _is_git_sha_hex(verdict.get("result_sha")):
         raise _invalid("verdict result_sha must be a 40-char git sha")
+    #: ``_structural`` dereferences every verdict member directly
+    #: (``item["status"]``, ``item["evidence_sha256"][0]``, …), so a non-list
+    #: container or a member outside its closed field set must be rejected
+    #: here as trusted envelope drift — never a KeyError/IndexError out of
+    #: the structural pass (round-5 review F-2; the loop's preflight already
+    #: blocks these shapes, the direct OP-FIXDIFF-001 dispatch path had no
+    #: guard).
+    member_shapes = (
+        ("finding_resolutions", FINDING_RESOLUTION_FIELDS),
+        ("acceptance_gap_resolutions", GAP_RESOLUTION_FIELDS),
+        ("new_findings", NEW_FINDING_FIELDS),
+    )
+    for field, shape in member_shapes:
+        members = verdict.get(field)
+        if not isinstance(members, list):
+            raise _invalid(f"verdict {field} must be a list")
+        for index, item in enumerate(members):
+            if not isinstance(item, dict) or frozenset(item) != shape:
+                raise _invalid(
+                    f"verdict {field}[{index}] must be a closed member object"
+                )
 
 
 def _diff_parts(diff_text: Any) -> tuple[set[str], set[str]]:
@@ -387,14 +415,39 @@ def _structural(
         violations.append("increment_deletion")
 
     for item in verdict["finding_resolutions"]:
-        if item["status"] == "closed" and roles.get(item["evidence_sha256"][0]) != "fix_diff":
+        #: Crash-shaped member content must produce the violation, not an
+        #: IndexError/TypeError (round-5 review F-2, same class as the gap
+        #: branch below).
+        evidence = item.get("evidence_sha256")
+        if (
+            not isinstance(evidence, list)
+            or not evidence
+            or not all(_is_sha256_hex(digest) for digest in evidence)
+        ):
+            violations.append("evidence_role")
+            continue
+        if item["status"] == "closed" and roles.get(evidence[0]) != "fix_diff":
             violations.append("evidence_role")
 
     for item in verdict["acceptance_gap_resolutions"]:
-        evidence = item["evidence_sha256"][0]
-        receipt = facts["test_receipts"].get(evidence)
+        #: Crash-shaped member content (empty evidence, a non-hashable
+        #: acceptance_id feeding dict lookups) must produce the violation —
+        #: not an IndexError/TypeError out of the structural pass (round-5
+        #: review F-2; the loop preflight blocks these shapes, the direct
+        #: OP-FIXDIFF-001 dispatch path had no guard).
+        evidence = item.get("evidence_sha256")
         if (
-            roles.get(evidence) != "test_receipts"
+            not isinstance(evidence, list)
+            or not evidence
+            or not all(_is_sha256_hex(digest) for digest in evidence)
+            or not _is_non_empty_str(item.get("acceptance_id"))
+        ):
+            violations.append("gap_evidence")
+            continue
+        first = evidence[0]
+        receipt = facts["test_receipts"].get(first)
+        if (
+            roles.get(first) != "test_receipts"
             or receipt is None
             or receipt.get("verification_id")
             not in facts["plan_verification_ids"].get(item["acceptance_id"], [])
@@ -402,7 +455,11 @@ def _structural(
             violations.append("gap_evidence")
 
     for finding in verdict["new_findings"]:
-        if finding["location"]["anchor_sha"] != verdict["result_sha"]:
+        #: A missing/non-object location or a non-string anchor must produce
+        #: the violation, not a TypeError (round-5 review F-2).
+        location = finding.get("location")
+        anchor = location.get("anchor_sha") if isinstance(location, dict) else None
+        if anchor != verdict["result_sha"]:
             violations.append("new_finding_anchor")
 
     if not verdict["acceptance_verified"]:

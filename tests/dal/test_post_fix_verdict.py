@@ -147,6 +147,41 @@ def test_malformed_envelopes_are_stable_invalid_arguments(
     command["input"]["target"]["state"] = "coding"
     cases.append(("target outside reviewing", command))
 
+    # Round-5 review F-2: _structural dereferences every verdict member
+    # directly, so a non-list container or a member outside its closed field
+    # set must be rejected as trusted envelope drift — never a
+    # TypeError/KeyError/IndexError out of the structural pass on the direct
+    # OP-FIXDIFF-001 dispatch path.
+    command = _command(contracts, "verified_clean")
+    command["input"]["injected_results"][1]["verdict"]["finding_resolutions"] = "abc"
+    cases.append(("verdict resolutions not a list", command))
+
+    command = _command(contracts, "verified_clean")
+    command["input"]["injected_results"][1]["verdict"][
+        "acceptance_gap_resolutions"
+    ] = 7
+    cases.append(("verdict gap resolutions not a list", command))
+
+    command = _command(contracts, "verified_clean")
+    command["input"]["injected_results"][1]["verdict"]["new_findings"] = None
+    cases.append(("verdict new findings not a list", command))
+
+    command = _command(contracts, "verified_clean")
+    command["input"]["injected_results"][1]["verdict"]["finding_resolutions"][0] = None
+    cases.append(("verdict resolution None member", command))
+
+    command = _command(contracts, "verified_clean")
+    command["input"]["injected_results"][1]["verdict"]["finding_resolutions"][0][
+        "extra"
+    ] = "x"
+    cases.append(("verdict resolution extra field", command))
+
+    command = _command(contracts, "verified_clean")
+    command["input"]["injected_results"][1]["verdict"]["new_findings"] = [
+        {"finding_id": "F-9"}
+    ]
+    cases.append(("verdict new finding shape not closed", command))
+
     for label, malformed in cases:
         with pytest.raises(DalError) as raised:
             post_fix_verdict_policy.validate_post_fix_verdict(malformed)
