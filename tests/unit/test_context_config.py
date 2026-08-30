@@ -248,11 +248,26 @@ def test_override_rejects_non_positive_values() -> None:
 
 
 @pytest.mark.parametrize(
-    "raw", ["abc", "480m", "", "   ", "1.5"]
+    "raw", ["abc", "480m", "", "   ", "1.5", "+60", "6_0", "６０", "-5"]
 )
 def test_env_override_fails_closed_on_malformed_values(raw: str) -> None:
     with pytest.raises(ContextConfigError):
         operator_override_from_env({"CONTEXT_SESSION_IDLE_MINUTES": raw})
+
+
+def test_env_override_rejects_values_beyond_the_upper_bound() -> None:
+    # int() would happily parse an unbounded digit string; without a cap an
+    # accidental huge value silently disables the idle boundary.
+    with pytest.raises(ContextConfigError, match="must not exceed"):
+        operator_override_from_env(
+            {"CONTEXT_SESSION_IDLE_MINUTES": "99999999999999999999"}
+        )
+
+
+def test_env_override_accepts_the_bound_itself() -> None:
+    assert operator_override_from_env(
+        {"CONTEXT_SESSION_IDLE_MINUTES": "1440"}
+    ) == {"CONTEXT_SESSION_IDLE_MINUTES": 1440}
 
 
 def test_env_override_accepts_a_positive_integer() -> None:
