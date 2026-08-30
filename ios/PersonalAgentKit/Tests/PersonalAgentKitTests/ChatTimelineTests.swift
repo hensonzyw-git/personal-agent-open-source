@@ -184,16 +184,45 @@ final class ChatStub: URLProtocol {
             )
             return
         }
-        let reply = service.handle(call)
-        let response = HTTPURLResponse(
-            url: request.url!,
-            statusCode: reply.status,
-            httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "application/json"]
-        )!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: reply.body)
-        client?.urlProtocolDidFinishLoading(self)
+        // Handle each request off the protocol queue. Synchronous handling
+        // here serialises independent requests behind whatever handler runs
+        // long — the held POST of the trail suite blocked every by-key poll
+        // until it answered, so "polls beside the open POST" could never be
+        // observed, and the suite only passed where machine speed let two
+        // polls sneak in first. A real server answers independent connections
+        // concurrently; the stub must too. Sequential flows are unaffected:
+        // one request in flight at a time cannot tell the difference.
+        //
+        // URLProtocol subclasses are called on a single protocol queue and are
+        // not Sendable; the box scopes that promise to exactly this hop. The
+        // URLProtocol client callbacks themselves are documented thread-safe.
+        let loader = SendableLoader(self)
+        let requestURL = request.url!
+        DispatchQueue.global().async {
+            let reply = service.handle(call)
+            let response = HTTPURLResponse(
+                url: requestURL,
+                statusCode: reply.status,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            loader.client?.urlProtocol(
+                loader.base, didReceive: response, cacheStoragePolicy: .notAllowed
+            )
+            loader.client?.urlProtocol(loader.base, didLoad: reply.body)
+            loader.client?.urlProtocolDidFinishLoading(loader.base)
+        }
+    }
+
+    /// Escapes a URLProtocol subclass through a `@Sendable` dispatch without
+    /// pretending the subclass itself is `Sendable`.
+    private final class SendableLoader: @unchecked Sendable {
+        let base: ChatStub
+        let client: (any URLProtocolClient)?
+        init(_ base: ChatStub) {
+            self.base = base
+            self.client = base.client
+        }
     }
 
     override func stopLoading() {}
@@ -2228,19 +2257,46 @@ final class KeyBox: @unchecked Sendable {
     var key: String? { lock.withLock { _key } }
 }
 
+/// Blocks the calling thread until `predicate` holds or five seconds pass,
+/// then returns either way.
+///
+/// The POST handlers of this suite hold the connection until the evidence
+/// their assertions need has landed, instead of sleeping a fixed interval: a
+/// fixed sleep races machine speed, and the CI runner lost that race — one
+/// by-key poll inside a 30 ms window where a laptop found two. A starved gate
+/// answers anyway so the assertions below fail loudly instead of hanging.
+private func waitForGate(
+    _ name: String,
+    until predicate: @escaping @Sendable () -> Bool
+) {
+    let deadline = Date().addingTimeInterval(5)
+    while !predicate() && Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.001)
+    }
+    if !predicate() {
+        print("trail gate starved after 5s: \(name)")
+    }
+}
+
 @Suite("The concurrent trail beside the POST")
 struct TrailConcurrencyTests {
     @Test("by-key polls run while the POST is open and stop after it answers")
     func trailPollsBesideThePost() async throws {
         let service = Service()
         let keyBox = KeyBox()
-        // A slow POST: holds the connection long enough for the trail loop to
-        // poll by-key at least twice, and never reaches a settle poll.
+        // A held POST: it answers only once the trail has demonstrably polled
+        // by-key at least twice beside the open connection — and never reaches
+        // a settle poll. A fixed sleep raced the CI runner's speed (one slow
+        // round trip ate the whole window); the gate makes "polled beside the
+        // POST" a precondition of the answer instead.
         service.answer { call, _ in
             switch (call.method, call.path) {
             case ("POST", "/v1/chat/messages"):
                 if let key = call.idempotencyKey { keyBox.set(key) }
-                Thread.sleep(forTimeInterval: 0.03)
+                waitForGate("two by-key polls beside the open POST") {
+                    guard let key = keyBox.key else { return false }
+                    return service.calls("GET", "/v1/operations/by-key/\(key)").count >= 2
+                }
                 return .ok(
                     chatReceipt("succeeded", tool: "finance.log_expense", recordID: "rec-1")
                 )
@@ -2250,7 +2306,14 @@ struct TrailConcurrencyTests {
         }
         let (chat, _, store) = try await makeChat(
             service: service,
-            pollDelays: [.zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero]
+            // Real pacing, not a zero-delay burst: with `.zero` delays and the
+            // no-op test sleep the trail spends all eight attempts in the few
+            // microseconds before the POST handler starts holding the
+            // connection, and a gate waiting for polls *inside* the hold
+            // starves. 25 ms spacing spreads the polls over the hold; the
+            // second one reliably lands while the gate is closed.
+            pollDelays: Array(repeating: .milliseconds(25), count: 8),
+            sleep: { try await Task.sleep(for: $0) }
         )
         let trail = OperationTrail()
         await chat.setProgressSink { stage in trail.record(stage) }
@@ -2268,11 +2331,20 @@ struct TrailConcurrencyTests {
     func trailCarriesToolBesideThePost() async throws {
         let service = Service()
         let keyBox = KeyBox()
+        let trail = OperationTrail()
         service.answer { call, _ in
             switch (call.method, call.path) {
             case ("POST", "/v1/chat/messages"):
                 if let key = call.idempotencyKey { keyBox.set(key) }
-                Thread.sleep(forTimeInterval: 0.03)
+                // Hold until the sink has actually recorded the dispatching
+                // stage — the very evidence the assertion below needs — so
+                // the observation is not a race against runner speed.
+                waitForGate("the sink observed the dispatching stage") {
+                    trail.stages.contains { stage in
+                        if case .dispatching = stage { return true }
+                        return false
+                    }
+                }
                 return .ok(
                     chatReceipt("succeeded", tool: "finance.log_expense", recordID: "rec-1")
                 )
@@ -2285,9 +2357,11 @@ struct TrailConcurrencyTests {
         }
         let (chat, _, _) = try await makeChat(
             service: service,
-            pollDelays: [.zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero]
+            // Same real pacing as above: the dispatching poll must arrive
+            // while the POST holds, not in the pre-hold burst.
+            pollDelays: Array(repeating: .milliseconds(25), count: 8),
+            sleep: { try await Task.sleep(for: $0) }
         )
-        let trail = OperationTrail()
         await chat.setProgressSink { stage in trail.record(stage) }
 
         _ = try await chat.send(text: "咖啡 18")
