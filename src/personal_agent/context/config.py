@@ -30,6 +30,7 @@ version and keeps the previous one loadable for rollback (§19.3).
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Mapping
@@ -308,14 +309,71 @@ CAP001_PROVISIONAL_VALUES: Final[dict[str, Any]] = {
     "CONTEXT_ESTIMATE_SAFETY_MARGIN": "0.15",
     "CONTEXT_MAX_SESSION_LINEAGE_DEPTH": 3,
     "CONTEXT_FULL_REBUILD_AFTER_INCREMENTALS": 3,
-    "CONTEXT_SESSION_IDLE_MINUTES": 480,
+    "CONTEXT_SESSION_IDLE_MINUTES": 60,
     "CONTEXT_TIMELINE_PAGE_DEFAULT": 30,
     "CONTEXT_TIMELINE_PAGE_MAX": 100,
 }
 
 
-def default_context_config() -> ContextConfig:
-    """The configuration the service composes with today."""
+def default_context_config(
+    overrides: Mapping[str, Any] | None = None,
+) -> ContextConfig:
+    """The configuration the service composes with today.
+
+    `overrides` lets an operator retune exactly the keys it names (2026-08-30:
+    the Session idle threshold, a pacing preference and not a model-input
+    bound). The result still carries the complete validated key set — the
+    override replaces one value inside the frozen baseline, it never widens
+    what the budget invariants check, and the content-derived `config_version`
+    changes with it, so evidence stays attributable to the numbers actually
+    in force.
+    """
+    values = dict(CAP001_PROVISIONAL_VALUES)
+    if overrides:
+        unknown = sorted(set(overrides) - set(CONFIG_KEYS))
+        if unknown:
+            raise ContextConfigError(
+                "context configuration override has unknown keys: "
+                + ", ".join(unknown)
+            )
+        values.update(overrides)
     return ContextConfig.from_mapping(
-        "ctx-cap001-provisional-1", CAP001_PROVISIONAL_VALUES
+        "ctx-cap001-provisional-1", values
     )
+
+
+#: The one key an operator may retune without a release (2026-08-30): the
+#: Session idle threshold is a pacing preference, not a model-input bound, so
+#: widening it costs context continuity rather than safety. Deliberately a
+#: closed list: every other number here still comes from code only.
+OPERATOR_OVERRIDE_KEYS: Final[frozenset[str]] = frozenset(
+    {"CONTEXT_SESSION_IDLE_MINUTES"}
+)
+
+
+def operator_override_from_env(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Collect the operator-tunable overrides from the environment.
+
+    Fail closed at startup: a set-but-invalid value is a `ContextConfigError`,
+    never a silent fall back to the baseline. An operator who wrote `480m`
+    must find out at boot, not when a Session boundary behaves strangely.
+    """
+    source = os.environ if environ is None else environ
+    overrides: dict[str, Any] = {}
+    for key in sorted(OPERATOR_OVERRIDE_KEYS):
+        raw = source.get(key)
+        if raw is None:
+            continue
+        raw = raw.strip()
+        if not raw:
+            raise ContextConfigError(f"{key} is set but empty")
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise ContextConfigError(f"{key} must be an integer") from exc
+        if value <= 0:
+            raise ContextConfigError(f"{key} must be positive")
+        overrides[key] = value
+    return overrides

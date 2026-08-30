@@ -146,8 +146,11 @@ def test_appending_an_event_refreshes_the_session_activity(
 
 def test_idle_time_is_input_not_a_boundary_by_itself(engine) -> None:
     classifier = ContinueClassifier()
+    # A wide idle window keeps the deterministic idle boundary out of the way:
+    # this test pins the classifier still seeing the idle input (100 minutes)
+    # and deciding on semantics, not the 60-minute hard cutoff.
     manager = SessionManager(
-        default_context_config(),
+        default_context_config({"CONTEXT_SESSION_IDLE_MINUTES": 600}),
         classifier=classifier,
         state_provider=SessionStateProvider(),
     )

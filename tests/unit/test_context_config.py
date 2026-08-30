@@ -17,6 +17,7 @@ from personal_agent.context.config import (
     ContextConfig,
     ContextConfigError,
     default_context_config,
+    operator_override_from_env,
 )
 
 
@@ -223,3 +224,46 @@ def test_config_carries_no_secret_or_resource_id() -> None:
     assert all(
         isinstance(value, int) or value == "0.15" for value in body.values()
     )
+
+
+# -- operator overrides (2026-08-30): the idle threshold is retunable -------
+
+
+def test_override_replaces_only_the_named_value() -> None:
+    config = default_context_config({"CONTEXT_SESSION_IDLE_MINUTES": 1})
+    baseline = default_context_config()
+    assert config.session_idle_minutes == 1
+    assert config.hard_limit_tokens == baseline.hard_limit_tokens
+    assert config.config_version != baseline.config_version
+
+
+def test_override_rejects_unknown_keys() -> None:
+    with pytest.raises(ContextConfigError, match="override has unknown keys"):
+        default_context_config({"CONTEXT_UNKNOWN_KEY": 1})
+
+
+def test_override_rejects_non_positive_values() -> None:
+    with pytest.raises(ContextConfigError, match="must be positive"):
+        default_context_config({"CONTEXT_SESSION_IDLE_MINUTES": 0})
+
+
+@pytest.mark.parametrize(
+    "raw", ["abc", "480m", "", "   ", "1.5"]
+)
+def test_env_override_fails_closed_on_malformed_values(raw: str) -> None:
+    with pytest.raises(ContextConfigError):
+        operator_override_from_env({"CONTEXT_SESSION_IDLE_MINUTES": raw})
+
+
+def test_env_override_accepts_a_positive_integer() -> None:
+    overrides = operator_override_from_env(
+        {"CONTEXT_SESSION_IDLE_MINUTES": " 90 "}
+    )
+    assert overrides == {"CONTEXT_SESSION_IDLE_MINUTES": 90}
+
+
+def test_env_override_absent_or_unrelated_keys_yield_nothing() -> None:
+    assert operator_override_from_env({}) == {}
+    assert operator_override_from_env(
+        {"GLM_MODEL": "glm-5.3", "PERSONAL_AGENT_USER_ID": "henson"}
+    ) == {}

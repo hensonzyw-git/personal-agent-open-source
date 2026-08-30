@@ -65,7 +65,11 @@ from personal_agent.api.recovery import FinanceExecutionStatus, recover_pending
 from personal_agent.auth.enrollment import decode_device_scopes
 from personal_agent.context.builder import ContextBuilder, ContextEnvelope
 from personal_agent.context.compactor import Compactor
-from personal_agent.context.config import ContextConfig, default_context_config
+from personal_agent.context.config import (
+    ContextConfig,
+    default_context_config,
+    operator_override_from_env,
+)
 from personal_agent.context.continuation import (
     ClarificationContext,
     FinanceRetryContext,
@@ -566,7 +570,13 @@ async def agent_service(
     # conversation id from an unknown one.
     cursor_key = load_cursor_key()
     identifier_key = load_identifier_key()
-    context_config = context_config or default_context_config()
+    # An injected `context_config` is authoritative (tests, callers that have
+    # already applied overrides). The composed default applies the operator's
+    # environment overrides on top of the code baseline; an invalid value
+    # raises here so a bad tuning fails at startup, never mid-turn.
+    context_config = context_config or default_context_config(
+        operator_override_from_env()
+    )
     # The budget is checked against what the adapter says it can accept, so a
     # ceiling larger than the model's window fails at startup, not mid-turn.
     context_config.require_within_model_limit(declared_context_limit())

@@ -1143,8 +1143,10 @@ def test_a_classifier_is_not_called_without_trusted_state(db, keyring):
             }
 
     _append(db, keyring, text="随便说一句")
+    # A wide idle window keeps the deterministic idle boundary out of the way:
+    # this test is about classifier gating, not idle timeouts.
     manager = SessionManager(
-        _config(),
+        _config(CONTEXT_SESSION_IDLE_MINUTES=600),
         classifier=RecordingClassifier(),
         state_provider=_provider(keyring),
     )
