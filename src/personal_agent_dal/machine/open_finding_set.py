@@ -1,17 +1,22 @@
 """`OP-OPENSET-001`: carry-forward open-finding-set boundary (DAL-024, G3).
 
 Freeze package §6 (docs/dal/DAL021-024_合同冻结包_v0.1.md) makes the open
-finding set a controller-derived state, not a provider claim. Round 1 (empty
-chain) resolves the original review's findings; from round 2 on, the required
-open set is the accumulated `new_findings` of the prior verdict chain — the
-original findings were already dispositioned in round 1. The derivation:
+finding set a controller-derived state, not a provider claim. The open set is
+re-derived per round from the protected inputs: it starts as the original
+review's findings, and after each prior verdict V_j it loses the findings V_j
+resolved ``closed`` and gains V_j's ``new_findings`` (kept verbatim, by id) —
+so a regression carried in by one round can never silently vanish behind a
+later chain. Refrozen 2026-08-29 (Henson's authorization, evidence
+`DAL_R09-A2_review-fix-loop_2026-08-29.md` §2c D1): the pre-refreeze rule
+replaced the whole set with the chain's accumulated ``new_findings`` whenever
+the chain was non-empty, dropping original findings still ``remaining``.
 
-- `open_ids = chain_ids if chain_ids else original_ids`.
 - New-finding ID collisions are checked against the **full** namespace the
   feature has seen (`original ∪ chain`), so a regression can never silently
   reuse an already-seen ID.
-- Every carried finding's old-side line must actually be deleted by this
-  round's increment diff (`old<line_start>` present among deleted lines).
+- Every carried chain finding's old-side line must actually be deleted by
+  this round's increment diff (`old<line_start>` present among deleted
+  lines).
 
 `derive_open_finding_set` judges the injected verdict against that set:
 
@@ -116,7 +121,7 @@ ORIGINAL_REVIEW_FIELDS: Final[frozenset[str]] = frozenset(
     {"acceptance_gap_ids", "finding_ids"}
 )
 CHAIN_ENTRY_FIELDS: Final[frozenset[str]] = frozenset(
-    {"new_findings", "result_sha", "sequence"}
+    {"finding_resolutions", "new_findings", "result_sha", "sequence"}
 )
 NEW_FINDING_FIELDS: Final[frozenset[str]] = frozenset(
     {"category", "failure_scenario", "finding_id", "location", "severity", "summary"}
@@ -273,6 +278,9 @@ def _validate_command(command: dict[str, Any]) -> None:
     chain = facts.get("prior_verdict_chain")
     if not isinstance(chain, list):
         raise _invalid("prior_verdict_chain must be a list")
+    for entry in chain:
+        if not isinstance(entry, dict) or frozenset(entry) != CHAIN_ENTRY_FIELDS:
+            raise _invalid("prior_verdict_chain entry shape is not closed")
 
     results = payload.get("injected_results")
     if not isinstance(results, list) or len(results) != 2:
@@ -337,10 +345,29 @@ def _derive(facts: dict[str, Any], git_result: dict[str, Any], verdict: dict[str
     chain_findings = [
         item
         for entry in facts["prior_verdict_chain"]
-        for item in entry.get("new_findings", [])
+        for item in entry["new_findings"]
     ]
     chain_ids = {item["finding_id"] for item in chain_findings if isinstance(item, dict)}
-    open_ids = chain_ids if chain_ids else original_ids
+
+    #: §6 per-round carry-forward: the open set starts as the original
+    #: review's findings and after each prior verdict V_j it loses the
+    #: findings V_j resolved ``closed`` and gains V_j's new findings (kept
+    #: verbatim, by id). Refrozen 2026-08-29 (§2c D1) — the pre-refreeze
+    #: rule replaced the whole set with the chain's accumulated
+    #: ``new_findings``, dropping original findings still ``remaining``.
+    open_ids = set(original_ids)
+    for entry in facts["prior_verdict_chain"]:
+        closed_ids = {
+            item["finding_id"]
+            for item in entry["finding_resolutions"]
+            if isinstance(item, dict) and item.get("status") == "closed"
+        }
+        open_ids -= closed_ids
+        open_ids |= {
+            item["finding_id"]
+            for item in entry["new_findings"]
+            if isinstance(item, dict)
+        }
 
     resolutions = verdict["finding_resolutions"]
     closed = {item["finding_id"] for item in resolutions if item["status"] == "closed"}

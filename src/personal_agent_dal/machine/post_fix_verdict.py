@@ -18,8 +18,18 @@ adopts `verified` when that set is empty:
   `test_receipts` and its receipt's `verification_id` must belong to the
   acceptance.
 - **new-finding anchor** — every new finding's `location.anchor_sha` must equal
-  the round anchor.
+  the verdict's `result_sha` (the regression is measured in the verdict's own
+  post-fix tree). Refrozen 2026-08-29 (Henson's authorization, evidence
+  `DAL_R09-A2_review-fix-loop_2026-08-29.md` §2c D2): the pre-refreeze rule
+  anchored to `round_anchors.anchor_sha` — the pre-fix tree — contradicting
+  the frozen contract §6 L620.
 - **acceptance** — `acceptance_verified` must be true.
+
+A structurally clean `changes_requested` moves `reviewing → fixing` whether
+it carries a `remaining` resolution or only new findings (§6 makes a non-empty
+`new_findings[]` itself force `changes_requested`). Refrozen 2026-08-29 (§2c
+D3): the pre-refreeze rule demanded a `remaining` resolution before reaching
+`fixing`, rejecting the all-closed-plus-regression shape.
 
 A structurally clean `verified` moves the feature `reviewing → verified`
 (`review.completed`, four-write base set); a structurally clean
@@ -361,7 +371,6 @@ def _structural(
     """
     violations: list[str] = []
     roles = facts["manifest_roles"]
-    anchors = facts["round_anchors"]
 
     anchor_entry = git_result["anchor_tree_entry"]
     if anchor_entry["type"] != "blob" or not anchor_entry["present"]:
@@ -393,7 +402,7 @@ def _structural(
             violations.append("gap_evidence")
 
     for finding in verdict["new_findings"]:
-        if finding["location"]["anchor_sha"] != anchors["anchor_sha"]:
+        if finding["location"]["anchor_sha"] != verdict["result_sha"]:
             violations.append("new_finding_anchor")
 
     if not verdict["acceptance_verified"]:
@@ -405,9 +414,9 @@ def _structural(
 def validate_post_fix_verdict(command: dict[str, Any]) -> PostFixVerdictEvaluation:
     """Validate one post-fix verdict's structural invariants and decide.
 
-    A structurally clean `verified` verifies the feature; a structurally clean
-    `changes_requested` with a remaining finding requests a fix; any structural
-    violation blocks the feature.
+    A structurally clean `verified` verifies the feature; a structurally
+    clean `changes_requested` requests a fix; any structural violation
+    blocks the feature.
     """
     _validate_command(command)
     payload = command["input"]
@@ -433,10 +442,10 @@ def validate_post_fix_verdict(command: dict[str, Any]) -> PostFixVerdictEvaluati
     if declared == "verified":
         outcome = "verified" if not reasons else None
     else:
-        has_remaining = any(
-            item["status"] == "remaining" for item in verdict["finding_resolutions"]
-        )
-        outcome = "fixing" if has_remaining and not reasons else None
+        #: §6 D3 (refrozen 2026-08-29): a non-empty ``new_findings`` itself
+        #: forces ``changes_requested``; the verdict no longer needs a
+        #: ``remaining`` resolution to reach ``fixing``.
+        outcome = "fixing" if not reasons else None
 
     if outcome is None:
         return PostFixVerdictEvaluation(

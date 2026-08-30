@@ -649,9 +649,25 @@ def semantic_operation_input(
             resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "closed", "e" * 64)], [regression("F-1", "5" * 40)], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 2
         elif variant == "verified_with_new_findings":
             resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "closed", "e" * 64)], [regression("F-202", "5" * 40)], "verified", [regression("F-101", "4" * 40)], "4" * 40, 2
+        elif variant == "original_remaining_omitted":
+            #: Refreeze §2c D1 distinguishing variant: the original finding
+            #: stays open (V_1 resolved it remaining) while the chain carries
+            #: a new regression; the verdict resolves only the regression and
+            #: reports verified. The pre-refreeze whole-replacement rule saw
+            #: the chain's ids as the entire open set and accepted this; the
+            #: per-round derivation keeps F-1 open and blocks.
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "closed", "e" * 64)], [], "verified", [regression("F-101", "4" * 40)], "4" * 40, 2
         else:
             resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "remaining", "r" * 64)], [], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 2
-        chain = [] if variant == "init_from_review" else [{"sequence": 1, "result_sha": "4" * 40, "new_findings": carried}]
+        #: The chain entry now carries V_1's finding_resolutions so the
+        #: per-round carry-forward can remove V_1's closed findings (refreeze
+        #: §2c D1).
+        chain_resolutions = (
+            [resolution("F-1", "remaining", "r" * 64)]
+            if variant == "original_remaining_omitted"
+            else ([resolution("F-1", "closed", "e" * 64)] if variant != "init_from_review" else [])
+        )
+        chain = [] if variant == "init_from_review" else [{"sequence": 1, "result_sha": "4" * 40, "finding_resolutions": chain_resolutions, "new_findings": carried}]
         increment = "@@ -1,5 +1,5 @@\n line1\n line2\n-old3\n+new3\n line4\n line5" if touched_line == 3 else "@@ -1,3 +1,3 @@\n line1\n-old2\n+new2\n line3"
         actions, facts, results = (
             [{"command": "derive_open_finding_set"}, {"command": "record_review"}],
@@ -684,11 +700,27 @@ def semantic_operation_input(
         gap_ids = ["AC-1"] if variant in {"gap_closed_by_test_receipts", "gap_closed_by_fix_diff_only"} else []
         gap_evidence = "t" * 64 if variant == "gap_closed_by_test_receipts" else "f" * 64
         gap_resolutions = [{"acceptance_id": "AC-1", "status": "closed", "summary": "Missing verification delivered", "evidence_sha256": [gap_evidence]}] if gap_ids else []
-        verdict_value = "changes_requested" if variant in {"new_finding_anchor_mismatch", "changes_requested_declared"} else "verified"
-        new_findings = [] if variant != "new_finding_anchor_mismatch" else [{"finding_id": "F-901", "severity": "P2", "location": {"path": path, "line_start": 2, "line_end": 2, "anchor_sha": "9" * 40}, "summary": "Anchor not bound to this verdict", "failure_scenario": "Regression measured on another tree", "category": "correctness"}]
+        verdict_value = "changes_requested" if variant in {"new_finding_anchor_mismatch", "changes_requested_declared", "changes_requested_new_findings_only"} else "verified"
+        if variant == "new_finding_anchor_mismatch":
+            #: Anchored to a third tree: neither the verdict's result_sha
+            #: (§6 L620) nor any round anchor — illegal in both directions.
+            new_findings = [{"finding_id": "F-901", "severity": "P2", "location": {"path": path, "line_start": 2, "line_end": 2, "anchor_sha": "9" * 40}, "summary": "Anchor not bound to this verdict", "failure_scenario": "Regression measured on another tree", "category": "correctness"}]
+        elif variant == "changes_requested_new_findings_only":
+            #: Refreeze §2c D2/D3 legal-path variant: the regression anchors
+            #: to this verdict's result_sha (§6 L620).
+            new_findings = [{"finding_id": "F-901", "severity": "P2", "location": {"path": path, "line_start": 2, "line_end": 2, "anchor_sha": "5" * 40}, "summary": "Regression measured in this verdict's result tree", "failure_scenario": "Replay duplicates rows again", "category": "correctness"}]
+        else:
+            new_findings = []
         if variant == "changes_requested_declared":
             finding_resolutions = [{"finding_id": "F-1", "status": "remaining", "summary": "Fix attempt rejected", "evidence_sha256": ["r" * 64]}]
         else:
+            #: ``changes_requested_new_findings_only`` (refreeze §2c D2/D3
+            #: legal-path variant) shares this closed resolution: every
+            #: original finding resolved closed but the new regression forces
+            #: changes_requested — anchored to this verdict's result_sha
+            #: (§6 L620) and reaching fixing without any remaining resolution.
+            #: The pre-refreeze rule blocked this shape twice over (anchor
+            #: direction; no remaining).
             finding_resolutions = [{"finding_id": "F-1", "status": "closed", "summary": "Idempotency key added", "evidence_sha256": [evidence]}]
         verdict = {"schema_version": "dal.post-fix-verdict/1.0", "result_sha": "5" * 40, "verdict": verdict_value, "acceptance_verified": acceptance_verified, "finding_resolutions": finding_resolutions, "acceptance_gap_resolutions": gap_resolutions, "new_findings": new_findings}
         actions, facts, results = (
@@ -2696,12 +2728,12 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
     many("DAL-T-DISPOSITION-001", ["coverage_incomplete", "provider_approve_with_findings", "provider_request_changes_clean"], "G3", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
     many("DAL-T-DISPOSITION-001", ["approve_clean"], "G3", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
     many("DAL-T-DISPOSITION-001", ["request_changes_findings", "request_changes_gaps"], "G3", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "fixing", None, None, "APPLIED", None, ["fix.requested"])
-    many("DAL-T-OPENSET-001", ["carried_finding_omitted", "carried_finding_renamed", "new_finding_id_reused", "verified_with_new_findings"], "G3", ["DAL-024", "DAL-030"], "reviewing", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
+    many("DAL-T-OPENSET-001", ["carried_finding_omitted", "carried_finding_renamed", "new_finding_id_reused", "verified_with_new_findings", "original_remaining_omitted"], "G3", ["DAL-024", "DAL-030"], "reviewing", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
     many("DAL-T-OPENSET-001", ["init_from_review", "carry_forward_exact"], "G3", ["DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
     many("DAL-T-OPENSET-001", ["remaining_declared"], "G3", ["DAL-024", "DAL-030"], "reviewing", "fixing", None, None, "APPLIED", None, ["fix.requested"])
     many("DAL-T-FIXDIFF-001", ["evidence_role_violation", "anchor_entry_not_blob", "path_died_between_rounds", "surviving_set_empty", "increment_missed_surviving_lines", "no_deletion_in_increment", "gap_closed_by_fix_diff_only", "new_finding_anchor_mismatch", "verified_with_unverified_acceptance"], "G3", ["DAL-022", "DAL-024", "DAL-030"], "reviewing", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
     many("DAL-T-FIXDIFF-001", ["verified_clean", "gap_closed_by_test_receipts"], "G3", ["DAL-022", "DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
-    many("DAL-T-FIXDIFF-001", ["changes_requested_declared"], "G3", ["DAL-022", "DAL-024", "DAL-030"], "reviewing", "fixing", None, None, "APPLIED", None, ["fix.requested"])
+    many("DAL-T-FIXDIFF-001", ["changes_requested_declared", "changes_requested_new_findings_only"], "G3", ["DAL-022", "DAL-024", "DAL-030"], "reviewing", "fixing", None, None, "APPLIED", None, ["fix.requested"])
     pronly = {
         "text_request": ("awaiting_merge", "POLICY_DENIED", None, []),
         "approve_record": ("awaiting_merge", "APPLIED", None, ["approval.recorded"]),
@@ -3208,13 +3240,13 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
     fixture_sequences = [fixture for fixture in fixtures.values() if "operation_sequence" in fixture]
     operation_fixture_sequences = [fixture for fixture in fixture_sequences if fixture.get("resolver_sequence_kind") == "operation_commands"]
     transition_fixture_sequences = [fixture for fixture in fixture_sequences if fixture.get("resolver_sequence_kind") == "transition_commands"]
-    if (len(common_specs), len(sequence_specs), len(common_commands), len(sequence_commands), operation_variant_count) != (40, 2, 224, 17, 238):
+    if (len(common_specs), len(sequence_specs), len(common_commands), len(sequence_commands), operation_variant_count) != (40, 2, 226, 17, 240):
         raise ValueError("semantic operation coverage drift")
     if (
         len(fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in fixture_sequences),
         len(operation_fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in operation_fixture_sequences),
         len(transition_fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in transition_fixture_sequences),
-    ) != (239, 243, 238, 241, 1, 2):
+    ) != (241, 245, 240, 243, 1, 2):
         raise ValueError("fixture operation/transition sequence accounting drift")
     forbidden_resolver_keys = {"test_id", "variant_id", "case_id", "injection_point", "injection_occurrence", "expected_result", "expected_receipt_code"}
 

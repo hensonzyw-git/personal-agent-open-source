@@ -1117,24 +1117,21 @@ def _evidence_and_gap_violations(
     return tuple(dict.fromkeys(violations))
 
 
-def _new_finding_anchor_violations(
-    verdict: dict[str, Any], round_anchor_sha: str
-) -> tuple[str, ...]:
+def _new_finding_anchor_violations(verdict: dict[str, Any]) -> tuple[str, ...]:
     """§6: a new finding's ``location.anchor_sha`` MUST equal ``result_sha``.
 
-    The frozen evaluator instead anchors new findings to ``round_anchors`` —
-    the pre-fix tree — which contradicts the frozen contract's direction
-    (round-2 review B5; hardening the evaluator in place is a refreeze
-    question, so the loop judges both directions): a new finding whose anchor
-    is neither the result tree nor the round anchor cannot satisfy either
-    reading and is a provider contract failure here.
+    Refreeze 2026-08-29 (§2c D2): the frozen evaluator now anchors new
+    findings to the verdict's ``result_sha`` too, so the loop's check and the
+    frozen check judge the same direction. The round anchor no longer
+    satisfies the anchor constraint — a finding measured in the pre-fix tree
+    is a provider contract failure at both layers.
     """
     result_sha = verdict["result_sha"]
     return tuple(
-        f"a new finding's location anchor is neither the result tree nor the "
-        f"round anchor: {item['finding_id']}"
+        f"a new finding's location anchor is not the verdict's result tree: "
+        f"{item['finding_id']}"
         for item in verdict["new_findings"]
-        if item["location"]["anchor_sha"] not in (result_sha, round_anchor_sha)
+        if item["location"]["anchor_sha"] != result_sha
     )
 
 
@@ -1271,10 +1268,13 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
             "the two sub-fact objects disagree on the original review's id sets"
         )
 
-    #: §6 constraints the frozen evaluators do not judge — judged here over
-    #: the bound chain and the original review's ids before any dispatch.
-    #: Failures are provider contract failures, not controller drift: the
-    #: verdict and its members are provider claims.
+    #: §6 constraints judged over the bound chain and the original review's
+    #: ids before any dispatch — after the 2026-08-29 refreeze (§2c) the
+    #: frozen evaluators judge the same carry-forward and anchor rules, so
+    #: these checks are the loop's own defense-in-depth layer (a divergence
+    #: between the two layers still fails closed). Failures are provider
+    #: contract failures, not controller drift: the verdict and its members
+    #: are provider claims.
     pfv_chain = pfv_facts["prior_verdict_chain"]
     original_ids = openset_facts["original_review"]["finding_ids"]
     drift = _chain_member_drift(pfv_chain)
@@ -1285,7 +1285,7 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
     if verified_drift is not None:
         violations += (verified_drift,)
     violations += _evidence_and_gap_violations(pfv_facts, verdict)
-    violations += _new_finding_anchor_violations(verdict, current)
+    violations += _new_finding_anchor_violations(verdict)
     if violations:
         return _contract_block(facts["target"], count, violations)
 

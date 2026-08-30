@@ -1,5 +1,5 @@
 {
-  "authority_sha256": "e240bb4d6789e43bbcb628e4281aa77934f25d6ba62d932be1b15598f8900f83",
+  "authority_sha256": "fece506e31e3ed5a5f27b2a15db75450ccd0373db2866d6980f83e485842ae60",
   "authority_version": "1.0",
   "entries": {
     "dal.oracle/DAL-T-APP-001/concurrent_consume/G1/1.0": {
@@ -13087,6 +13087,229 @@
         "kind": "single"
       }
     },
+    "dal.oracle/DAL-T-FIXDIFF-001/changes_requested_new_findings_only/G3/1.0": {
+      "command_type": "validate_post_fix_verdict",
+      "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
+      "expected_result": {
+        "allowed_write_set": [
+          "aggregate",
+          "business_event",
+          "transition_receipt",
+          "audit"
+        ],
+        "coverage_ref": null,
+        "expected_atomic_companion_transitions": [],
+        "expected_event_trace": [
+          "fix.requested"
+        ],
+        "expected_external_effect_trace": [],
+        "expected_final_snapshot": {
+          "entity_type": "feature",
+          "reason_code": null,
+          "reason_owner": null,
+          "state": "fixing"
+        },
+        "expected_receipts": [
+          {
+            "code": "APPLIED",
+            "count": 1,
+            "schema_version": "dal.transition-receipt/1.0"
+          }
+        ],
+        "expected_related_snapshots": [],
+        "expected_state_trace": [
+          "reviewing",
+          "fixing"
+        ],
+        "forbidden_side_effects": [
+          "unapproved_external_effect",
+          "production_access"
+        ],
+        "injection_operation": {
+          "injection_point": "dal.inject/DAL-T-FIXDIFF-001/changes_requested_new_findings_only/G3/1.0",
+          "occurrence": 1,
+          "operation_id": "changes_requested_new_findings_only",
+          "schema_version": "dal.test-injection/1.0"
+        },
+        "pre_state": {
+          "entity_id": "fixture-entity",
+          "entity_type": "feature",
+          "state": "reviewing",
+          "version": 7
+        },
+        "run_gate": "G3",
+        "scenario_assertions": [],
+        "schema_version": "dal.test-oracle/1.0",
+        "test_id": "DAL-T-FIXDIFF-001",
+        "variant_id": "changes_requested_new_findings_only"
+      },
+      "fixture_ref": "dal.fixture/DAL-T-FIXDIFF-001/changes_requested_new_findings_only/G3/1.0",
+      "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
+      "operation_spec_id": "OP-FIXDIFF-001",
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "resolver_input": {
+        "commands": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "review-controller",
+            "idempotency_key": "idem-31bc2ca06ba24f693f1497a8",
+            "input": {
+              "action_sequence": [
+                {
+                  "command": "validate_post_fix_verdict"
+                },
+                {
+                  "command": "record_review"
+                }
+              ],
+              "authoritative_facts": {
+                "manifest_roles": {
+                  "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
+                  "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
+                  "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
+                  "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                },
+                "original_review": {
+                  "acceptance_gap_ids": [],
+                  "finding_ids": [
+                    "F-1"
+                  ],
+                  "finding_locations": {
+                    "F-1": {
+                      "anchor_sha": "3333333333333333333333333333333333333333",
+                      "line_end": 4,
+                      "line_start": 3,
+                      "path": "src/importer/run.py"
+                    }
+                  }
+                },
+                "plan_tasks": [
+                  {
+                    "acceptance_ids": [
+                      "AC-1"
+                    ],
+                    "allowed_paths": [
+                      {
+                        "path": "src/importer",
+                        "path_type": "directory"
+                      }
+                    ],
+                    "task_id": "T-1"
+                  }
+                ],
+                "plan_verification_ids": {
+                  "AC-1": [
+                    "VR-1"
+                  ]
+                },
+                "prior_verdict_chain": [
+                  {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "remaining",
+                        "summary": "Not yet fixed"
+                      }
+                    ],
+                    "new_findings": [],
+                    "result_sha": "4444444444444444444444444444444444444444",
+                    "sequence": 1
+                  }
+                ],
+                "round_anchors": {
+                  "anchor_sha": "3333333333333333333333333333333333333333",
+                  "previous_result_sha": "4444444444444444444444444444444444444444"
+                },
+                "test_receipts": {
+                  "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                    "verification_id": "VR-1"
+                  }
+                }
+              },
+              "injected_results": [
+                {
+                  "anchor_translation_diff": "@@ -1,5 +1,5 @@\n line1\n line2\n-old3\n-old4\n+new3\n+new4\n line5",
+                  "anchor_tree_entry": {
+                    "mode": "100644",
+                    "present": true,
+                    "type": "blob"
+                  },
+                  "current_tree_entry": {
+                    "mode": "100644",
+                    "present": true,
+                    "type": "blob"
+                  },
+                  "increment_diff": "@@ -2,4 +2,4 @@\n line2\n-new3\n-new4\n+fixed3\n+fixed4\n line5",
+                  "path": "src/importer/run.py",
+                  "previous_tree_entry": {
+                    "mode": "100644",
+                    "present": true,
+                    "type": "blob"
+                  },
+                  "source": "git_executor",
+                  "status": "completed"
+                },
+                {
+                  "source": "reviewer",
+                  "status": "completed",
+                  "verdict": {
+                    "acceptance_gap_resolutions": [],
+                    "acceptance_verified": true,
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "closed",
+                        "summary": "Idempotency key added"
+                      }
+                    ],
+                    "new_findings": [
+                      {
+                        "category": "correctness",
+                        "failure_scenario": "Replay duplicates rows again",
+                        "finding_id": "F-901",
+                        "location": {
+                          "anchor_sha": "5555555555555555555555555555555555555555",
+                          "line_end": 2,
+                          "line_start": 2,
+                          "path": "src/importer/run.py"
+                        },
+                        "severity": "P2",
+                        "summary": "Regression measured in this verdict's result tree"
+                      }
+                    ],
+                    "result_sha": "5555555555555555555555555555555555555555",
+                    "schema_version": "dal.post-fix-verdict/1.0",
+                    "verdict": "changes_requested"
+                  }
+                }
+              ],
+              "schema_version": "dal.operation-input/1.0",
+              "target": {
+                "entity_id": "fixture-entity",
+                "entity_type": "feature",
+                "state": "reviewing",
+                "version": 7
+              }
+            },
+            "operation_id": "op-de858c4c2f0f521c78eea61a",
+            "operation_spec_id": "OP-FIXDIFF-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ],
+        "kind": "single"
+      }
+    },
     "dal.oracle/DAL-T-FIXDIFF-001/evidence_role_violation/G3/1.0": {
       "command_type": "validate_post_fix_verdict",
       "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
@@ -19196,7 +19419,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "review-controller",
-            "idempotency_key": "idem-8994054465c02478d0dcd941",
+            "idempotency_key": "idem-15b0d6e4b4d9792fc277d8d5",
             "input": {
               "action_sequence": [
                 {
@@ -19219,6 +19442,16 @@
                 },
                 "prior_verdict_chain": [
                   {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "closed",
+                        "summary": "F-1 covered this round"
+                      }
+                    ],
                     "new_findings": [
                       {
                         "category": "correctness",
@@ -19289,7 +19522,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-6651925d6f5631d6fd284546",
+            "operation_id": "op-97898436116ccb7707596158",
             "operation_spec_id": "OP-OPENSET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -19370,7 +19603,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "review-controller",
-            "idempotency_key": "idem-be327035c1994b4b7d4f2789",
+            "idempotency_key": "idem-a557fc95502f52d42f92ba27",
             "input": {
               "action_sequence": [
                 {
@@ -19393,6 +19626,16 @@
                 },
                 "prior_verdict_chain": [
                   {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "closed",
+                        "summary": "F-1 covered this round"
+                      }
+                    ],
                     "new_findings": [
                       {
                         "category": "correctness",
@@ -19472,7 +19715,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-56e5daf43f05091102f7f086",
+            "operation_id": "op-bb0cae18e85141ac4cb97cd7",
             "operation_spec_id": "OP-OPENSET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -19550,7 +19793,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "review-controller",
-            "idempotency_key": "idem-a79a625b573e1378ed85fc20",
+            "idempotency_key": "idem-491d5e8d4a816a2199fe5de5",
             "input": {
               "action_sequence": [
                 {
@@ -19573,6 +19816,16 @@
                 },
                 "prior_verdict_chain": [
                   {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "closed",
+                        "summary": "F-1 covered this round"
+                      }
+                    ],
                     "new_findings": [
                       {
                         "category": "correctness",
@@ -19652,7 +19905,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-a60eec8f7c42d16869948910",
+            "operation_id": "op-fd70b8c77b19707fd6f15408",
             "operation_spec_id": "OP-OPENSET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -19893,7 +20146,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "review-controller",
-            "idempotency_key": "idem-7bcd1cd9bb884f3cd3ab8ecd",
+            "idempotency_key": "idem-98a9cab9883de69ce2beecad",
             "input": {
               "action_sequence": [
                 {
@@ -19916,6 +20169,16 @@
                 },
                 "prior_verdict_chain": [
                   {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "closed",
+                        "summary": "F-1 covered this round"
+                      }
+                    ],
                     "new_findings": [
                       {
                         "category": "correctness",
@@ -20009,7 +20272,200 @@
                 "version": 7
               }
             },
-            "operation_id": "op-dc10fca1dc0503d12e114038",
+            "operation_id": "op-a294f7b5079ff730e1f199a5",
+            "operation_spec_id": "OP-OPENSET-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ],
+        "kind": "single"
+      }
+    },
+    "dal.oracle/DAL-T-OPENSET-001/original_remaining_omitted/G3/1.0": {
+      "command_type": "derive_open_finding_set",
+      "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
+      "expected_result": {
+        "allowed_write_set": [
+          "aggregate",
+          "business_event",
+          "transition_receipt",
+          "audit",
+          "decision_create",
+          "decision_projection",
+          "notification_outbox"
+        ],
+        "coverage_ref": null,
+        "expected_atomic_companion_transitions": [],
+        "expected_event_trace": [
+          "feature.blocked"
+        ],
+        "expected_external_effect_trace": [],
+        "expected_final_snapshot": {
+          "entity_type": "feature",
+          "reason_code": "PROVIDER_CONTRACT_FAILURE",
+          "reason_owner": "feature",
+          "state": "needs_human"
+        },
+        "expected_receipts": [
+          {
+            "code": "APPLIED",
+            "count": 1,
+            "schema_version": "dal.transition-receipt/1.0"
+          }
+        ],
+        "expected_related_snapshots": [],
+        "expected_state_trace": [
+          "reviewing",
+          "needs_human"
+        ],
+        "forbidden_side_effects": [
+          "unapproved_external_effect",
+          "production_access"
+        ],
+        "injection_operation": {
+          "injection_point": "dal.inject/DAL-T-OPENSET-001/original_remaining_omitted/G3/1.0",
+          "occurrence": 1,
+          "operation_id": "original_remaining_omitted",
+          "schema_version": "dal.test-injection/1.0"
+        },
+        "pre_state": {
+          "entity_id": "fixture-entity",
+          "entity_type": "feature",
+          "state": "reviewing",
+          "version": 7
+        },
+        "run_gate": "G3",
+        "scenario_assertions": [],
+        "schema_version": "dal.test-oracle/1.0",
+        "test_id": "DAL-T-OPENSET-001",
+        "variant_id": "original_remaining_omitted"
+      },
+      "fixture_ref": "dal.fixture/DAL-T-OPENSET-001/original_remaining_omitted/G3/1.0",
+      "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
+      "operation_spec_id": "OP-OPENSET-001",
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "resolver_input": {
+        "commands": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "review-controller",
+            "idempotency_key": "idem-50e87d28309e62f87930b00c",
+            "input": {
+              "action_sequence": [
+                {
+                  "command": "derive_open_finding_set"
+                },
+                {
+                  "command": "record_review"
+                }
+              ],
+              "authoritative_facts": {
+                "manifest_roles": {
+                  "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff",
+                  "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings"
+                },
+                "original_review": {
+                  "acceptance_gap_ids": [],
+                  "finding_ids": [
+                    "F-1"
+                  ]
+                },
+                "prior_verdict_chain": [
+                  {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "remaining",
+                        "summary": "F-1 still open"
+                      }
+                    ],
+                    "new_findings": [
+                      {
+                        "category": "correctness",
+                        "failure_scenario": "Replay duplicates rows again",
+                        "finding_id": "F-101",
+                        "location": {
+                          "anchor_sha": "4444444444444444444444444444444444444444",
+                          "line_end": 2,
+                          "line_start": 2,
+                          "path": "src/importer/run.py"
+                        },
+                        "severity": "P2",
+                        "summary": "Regression in replay"
+                      }
+                    ],
+                    "result_sha": "4444444444444444444444444444444444444444",
+                    "sequence": 1
+                  }
+                ],
+                "recomputed_result_sha": "5555555555555555555555555555555555555555",
+                "round_anchors": {
+                  "anchor_sha": "4444444444444444444444444444444444444444",
+                  "previous_result_sha": "4444444444444444444444444444444444444444"
+                }
+              },
+              "injected_results": [
+                {
+                  "anchor_translation_diff": null,
+                  "anchor_tree_entry": {
+                    "mode": "100644",
+                    "present": true,
+                    "type": "blob"
+                  },
+                  "current_tree_entry": {
+                    "mode": "100644",
+                    "present": true,
+                    "type": "blob"
+                  },
+                  "increment_diff": "@@ -1,3 +1,3 @@\n line1\n-old2\n+new2\n line3",
+                  "path": "src/importer/run.py",
+                  "previous_tree_entry": {
+                    "mode": "100644",
+                    "present": true,
+                    "type": "blob"
+                  },
+                  "source": "git_executor",
+                  "status": "completed"
+                },
+                {
+                  "source": "reviewer",
+                  "status": "completed",
+                  "verdict": {
+                    "acceptance_gap_resolutions": [],
+                    "acceptance_verified": true,
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        ],
+                        "finding_id": "F-101",
+                        "status": "closed",
+                        "summary": "F-101 covered this round"
+                      }
+                    ],
+                    "new_findings": [],
+                    "result_sha": "5555555555555555555555555555555555555555",
+                    "schema_version": "dal.post-fix-verdict/1.0",
+                    "verdict": "verified"
+                  }
+                }
+              ],
+              "schema_version": "dal.operation-input/1.0",
+              "target": {
+                "entity_id": "fixture-entity",
+                "entity_type": "feature",
+                "state": "reviewing",
+                "version": 7
+              }
+            },
+            "operation_id": "op-0ecac89d27f0c2b51bce1cd1",
             "operation_spec_id": "OP-OPENSET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -20087,7 +20543,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "review-controller",
-            "idempotency_key": "idem-3979a5b5cac0355c37ee7ecd",
+            "idempotency_key": "idem-66bbe133ce59d6ba011eea00",
             "input": {
               "action_sequence": [
                 {
@@ -20110,6 +20566,16 @@
                 },
                 "prior_verdict_chain": [
                   {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "closed",
+                        "summary": "F-1 covered this round"
+                      }
+                    ],
                     "new_findings": [
                       {
                         "category": "correctness",
@@ -20189,7 +20655,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-ccc53071df9447db64e3f205",
+            "operation_id": "op-b51315b2243a8cc8c3521e11",
             "operation_spec_id": "OP-OPENSET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -20270,7 +20736,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "review-controller",
-            "idempotency_key": "idem-f307323e4ec4de1f3dfe6b9d",
+            "idempotency_key": "idem-14a354bfe20c7ee69e605046",
             "input": {
               "action_sequence": [
                 {
@@ -20293,6 +20759,16 @@
                 },
                 "prior_verdict_chain": [
                   {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "closed",
+                        "summary": "F-1 covered this round"
+                      }
+                    ],
                     "new_findings": [
                       {
                         "category": "correctness",
@@ -20386,7 +20862,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-0693e96de47a00b1279d1d5a",
+            "operation_id": "op-eb0dde8e16a084c95ee28603",
             "operation_spec_id": "OP-OPENSET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -30651,7 +31127,7 @@
   },
   "frozen_evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
   "frozen_guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
-  "frozen_operation_registry_sha256": "57396000fb4d7b588fed07fb0087bf82071c22bf65233963ba2be3cbf5925ed1",
+  "frozen_operation_registry_sha256": "d9f2df289c15af718646a4fc28b649ad9e90c18a33ca49b4cd071cdbc0341235",
   "operation_specs": {
     "OP-APP-001": {
       "allowed_actor_types": [
@@ -37017,6 +37493,12 @@
           "transition_receipt",
           "audit"
         ],
+        "changes_requested_new_findings_only": [
+          "aggregate",
+          "business_event",
+          "transition_receipt",
+          "audit"
+        ],
         "evidence_role_violation": [
           "aggregate",
           "business_event",
@@ -37398,6 +37880,160 @@
               }
             },
             "operation_id": "op-861f58064c3ddef24eadf8e2",
+            "operation_spec_id": "OP-FIXDIFF-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ],
+        "changes_requested_new_findings_only": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "review-controller",
+            "idempotency_key": "idem-31bc2ca06ba24f693f1497a8",
+            "input": {
+              "action_sequence": [
+                {
+                  "command": "validate_post_fix_verdict"
+                },
+                {
+                  "command": "record_review"
+                }
+              ],
+              "authoritative_facts": {
+                "manifest_roles": {
+                  "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
+                  "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
+                  "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
+                  "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                },
+                "original_review": {
+                  "acceptance_gap_ids": [],
+                  "finding_ids": [
+                    "F-1"
+                  ],
+                  "finding_locations": {
+                    "F-1": {
+                      "anchor_sha": "3333333333333333333333333333333333333333",
+                      "line_end": 4,
+                      "line_start": 3,
+                      "path": "src/importer/run.py"
+                    }
+                  }
+                },
+                "plan_tasks": [
+                  {
+                    "acceptance_ids": [
+                      "AC-1"
+                    ],
+                    "allowed_paths": [
+                      {
+                        "path": "src/importer",
+                        "path_type": "directory"
+                      }
+                    ],
+                    "task_id": "T-1"
+                  }
+                ],
+                "plan_verification_ids": {
+                  "AC-1": [
+                    "VR-1"
+                  ]
+                },
+                "prior_verdict_chain": [
+                  {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "remaining",
+                        "summary": "Not yet fixed"
+                      }
+                    ],
+                    "new_findings": [],
+                    "result_sha": "4444444444444444444444444444444444444444",
+                    "sequence": 1
+                  }
+                ],
+                "round_anchors": {
+                  "anchor_sha": "3333333333333333333333333333333333333333",
+                  "previous_result_sha": "4444444444444444444444444444444444444444"
+                },
+                "test_receipts": {
+                  "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                    "verification_id": "VR-1"
+                  }
+                }
+              },
+              "injected_results": [
+                {
+                  "anchor_translation_diff": "@@ -1,5 +1,5 @@\n line1\n line2\n-old3\n-old4\n+new3\n+new4\n line5",
+                  "anchor_tree_entry": {
+                    "mode": "100644",
+                    "present": true,
+                    "type": "blob"
+                  },
+                  "current_tree_entry": {
+                    "mode": "100644",
+                    "present": true,
+                    "type": "blob"
+                  },
+                  "increment_diff": "@@ -2,4 +2,4 @@\n line2\n-new3\n-new4\n+fixed3\n+fixed4\n line5",
+                  "path": "src/importer/run.py",
+                  "previous_tree_entry": {
+                    "mode": "100644",
+                    "present": true,
+                    "type": "blob"
+                  },
+                  "source": "git_executor",
+                  "status": "completed"
+                },
+                {
+                  "source": "reviewer",
+                  "status": "completed",
+                  "verdict": {
+                    "acceptance_gap_resolutions": [],
+                    "acceptance_verified": true,
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "closed",
+                        "summary": "Idempotency key added"
+                      }
+                    ],
+                    "new_findings": [
+                      {
+                        "category": "correctness",
+                        "failure_scenario": "Replay duplicates rows again",
+                        "finding_id": "F-901",
+                        "location": {
+                          "anchor_sha": "5555555555555555555555555555555555555555",
+                          "line_end": 2,
+                          "line_start": 2,
+                          "path": "src/importer/run.py"
+                        },
+                        "severity": "P2",
+                        "summary": "Regression measured in this verdict's result tree"
+                      }
+                    ],
+                    "result_sha": "5555555555555555555555555555555555555555",
+                    "schema_version": "dal.post-fix-verdict/1.0",
+                    "verdict": "changes_requested"
+                  }
+                }
+              ],
+              "schema_version": "dal.operation-input/1.0",
+              "target": {
+                "entity_id": "fixture-entity",
+                "entity_type": "feature",
+                "state": "reviewing",
+                "version": 7
+              }
+            },
+            "operation_id": "op-de858c4c2f0f521c78eea61a",
             "operation_spec_id": "OP-FIXDIFF-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -40912,6 +41548,15 @@
           "decision_projection",
           "notification_outbox"
         ],
+        "original_remaining_omitted": [
+          "aggregate",
+          "business_event",
+          "transition_receipt",
+          "audit",
+          "decision_create",
+          "decision_projection",
+          "notification_outbox"
+        ],
         "remaining_declared": [
           "aggregate",
           "business_event",
@@ -40952,7 +41597,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "review-controller",
-            "idempotency_key": "idem-8994054465c02478d0dcd941",
+            "idempotency_key": "idem-15b0d6e4b4d9792fc277d8d5",
             "input": {
               "action_sequence": [
                 {
@@ -40975,6 +41620,16 @@
                 },
                 "prior_verdict_chain": [
                   {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "closed",
+                        "summary": "F-1 covered this round"
+                      }
+                    ],
                     "new_findings": [
                       {
                         "category": "correctness",
@@ -41045,7 +41700,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-6651925d6f5631d6fd284546",
+            "operation_id": "op-97898436116ccb7707596158",
             "operation_spec_id": "OP-OPENSET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -41054,7 +41709,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "review-controller",
-            "idempotency_key": "idem-be327035c1994b4b7d4f2789",
+            "idempotency_key": "idem-a557fc95502f52d42f92ba27",
             "input": {
               "action_sequence": [
                 {
@@ -41077,6 +41732,16 @@
                 },
                 "prior_verdict_chain": [
                   {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "closed",
+                        "summary": "F-1 covered this round"
+                      }
+                    ],
                     "new_findings": [
                       {
                         "category": "correctness",
@@ -41156,7 +41821,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-56e5daf43f05091102f7f086",
+            "operation_id": "op-bb0cae18e85141ac4cb97cd7",
             "operation_spec_id": "OP-OPENSET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -41165,7 +41830,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "review-controller",
-            "idempotency_key": "idem-a79a625b573e1378ed85fc20",
+            "idempotency_key": "idem-491d5e8d4a816a2199fe5de5",
             "input": {
               "action_sequence": [
                 {
@@ -41188,6 +41853,16 @@
                 },
                 "prior_verdict_chain": [
                   {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "closed",
+                        "summary": "F-1 covered this round"
+                      }
+                    ],
                     "new_findings": [
                       {
                         "category": "correctness",
@@ -41267,7 +41942,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-a60eec8f7c42d16869948910",
+            "operation_id": "op-fd70b8c77b19707fd6f15408",
             "operation_spec_id": "OP-OPENSET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -41367,7 +42042,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "review-controller",
-            "idempotency_key": "idem-7bcd1cd9bb884f3cd3ab8ecd",
+            "idempotency_key": "idem-98a9cab9883de69ce2beecad",
             "input": {
               "action_sequence": [
                 {
@@ -41390,6 +42065,16 @@
                 },
                 "prior_verdict_chain": [
                   {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "closed",
+                        "summary": "F-1 covered this round"
+                      }
+                    ],
                     "new_findings": [
                       {
                         "category": "correctness",
@@ -41483,16 +42168,16 @@
                 "version": 7
               }
             },
-            "operation_id": "op-dc10fca1dc0503d12e114038",
+            "operation_id": "op-a294f7b5079ff730e1f199a5",
             "operation_spec_id": "OP-OPENSET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
         ],
-        "remaining_declared": [
+        "original_remaining_omitted": [
           {
             "actor_type": "service",
             "evidence_source_type": "review-controller",
-            "idempotency_key": "idem-3979a5b5cac0355c37ee7ecd",
+            "idempotency_key": "idem-50e87d28309e62f87930b00c",
             "input": {
               "action_sequence": [
                 {
@@ -41515,6 +42200,137 @@
                 },
                 "prior_verdict_chain": [
                   {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "remaining",
+                        "summary": "F-1 still open"
+                      }
+                    ],
+                    "new_findings": [
+                      {
+                        "category": "correctness",
+                        "failure_scenario": "Replay duplicates rows again",
+                        "finding_id": "F-101",
+                        "location": {
+                          "anchor_sha": "4444444444444444444444444444444444444444",
+                          "line_end": 2,
+                          "line_start": 2,
+                          "path": "src/importer/run.py"
+                        },
+                        "severity": "P2",
+                        "summary": "Regression in replay"
+                      }
+                    ],
+                    "result_sha": "4444444444444444444444444444444444444444",
+                    "sequence": 1
+                  }
+                ],
+                "recomputed_result_sha": "5555555555555555555555555555555555555555",
+                "round_anchors": {
+                  "anchor_sha": "4444444444444444444444444444444444444444",
+                  "previous_result_sha": "4444444444444444444444444444444444444444"
+                }
+              },
+              "injected_results": [
+                {
+                  "anchor_translation_diff": null,
+                  "anchor_tree_entry": {
+                    "mode": "100644",
+                    "present": true,
+                    "type": "blob"
+                  },
+                  "current_tree_entry": {
+                    "mode": "100644",
+                    "present": true,
+                    "type": "blob"
+                  },
+                  "increment_diff": "@@ -1,3 +1,3 @@\n line1\n-old2\n+new2\n line3",
+                  "path": "src/importer/run.py",
+                  "previous_tree_entry": {
+                    "mode": "100644",
+                    "present": true,
+                    "type": "blob"
+                  },
+                  "source": "git_executor",
+                  "status": "completed"
+                },
+                {
+                  "source": "reviewer",
+                  "status": "completed",
+                  "verdict": {
+                    "acceptance_gap_resolutions": [],
+                    "acceptance_verified": true,
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        ],
+                        "finding_id": "F-101",
+                        "status": "closed",
+                        "summary": "F-101 covered this round"
+                      }
+                    ],
+                    "new_findings": [],
+                    "result_sha": "5555555555555555555555555555555555555555",
+                    "schema_version": "dal.post-fix-verdict/1.0",
+                    "verdict": "verified"
+                  }
+                }
+              ],
+              "schema_version": "dal.operation-input/1.0",
+              "target": {
+                "entity_id": "fixture-entity",
+                "entity_type": "feature",
+                "state": "reviewing",
+                "version": 7
+              }
+            },
+            "operation_id": "op-0ecac89d27f0c2b51bce1cd1",
+            "operation_spec_id": "OP-OPENSET-001",
+            "schema_version": "dal.test-operation-command/1.0"
+          }
+        ],
+        "remaining_declared": [
+          {
+            "actor_type": "service",
+            "evidence_source_type": "review-controller",
+            "idempotency_key": "idem-66bbe133ce59d6ba011eea00",
+            "input": {
+              "action_sequence": [
+                {
+                  "command": "derive_open_finding_set"
+                },
+                {
+                  "command": "record_review"
+                }
+              ],
+              "authoritative_facts": {
+                "manifest_roles": {
+                  "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff",
+                  "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings"
+                },
+                "original_review": {
+                  "acceptance_gap_ids": [],
+                  "finding_ids": [
+                    "F-1"
+                  ]
+                },
+                "prior_verdict_chain": [
+                  {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "closed",
+                        "summary": "F-1 covered this round"
+                      }
+                    ],
                     "new_findings": [
                       {
                         "category": "correctness",
@@ -41594,7 +42410,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-ccc53071df9447db64e3f205",
+            "operation_id": "op-b51315b2243a8cc8c3521e11",
             "operation_spec_id": "OP-OPENSET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -41603,7 +42419,7 @@
           {
             "actor_type": "service",
             "evidence_source_type": "review-controller",
-            "idempotency_key": "idem-f307323e4ec4de1f3dfe6b9d",
+            "idempotency_key": "idem-14a354bfe20c7ee69e605046",
             "input": {
               "action_sequence": [
                 {
@@ -41626,6 +42442,16 @@
                 },
                 "prior_verdict_chain": [
                   {
+                    "finding_resolutions": [
+                      {
+                        "evidence_sha256": [
+                          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                        ],
+                        "finding_id": "F-1",
+                        "status": "closed",
+                        "summary": "F-1 covered this round"
+                      }
+                    ],
                     "new_findings": [
                       {
                         "category": "correctness",
@@ -41719,7 +42545,7 @@
                 "version": 7
               }
             },
-            "operation_id": "op-0693e96de47a00b1279d1d5a",
+            "operation_id": "op-eb0dde8e16a084c95ee28603",
             "operation_spec_id": "OP-OPENSET-001",
             "schema_version": "dal.test-operation-command/1.0"
           }
@@ -47057,12 +47883,12 @@
   "schema_version": "dal.operation-oracle-authority/1.0",
   "semantic_counts": {
     "common_input_specs": 40,
-    "complete_pre_state_command_result_entries": 238,
-    "operation_oracle_entries": 238,
+    "complete_pre_state_command_result_entries": 240,
+    "operation_oracle_entries": 240,
     "operation_specs": 42,
-    "resolver_command_objects": 241,
+    "resolver_command_objects": 243,
     "sequence_entries": 3,
-    "single_command_entries": 235
+    "single_command_entries": 237
   },
   "source_boundary": "static-independent-review-authority; never generated by build_contract_manifests.py"
 }

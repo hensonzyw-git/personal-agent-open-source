@@ -253,7 +253,12 @@ def _chains(count: int) -> tuple[list[dict], list[dict]]:
     """
     entries = max(count - 1, 0)
     results = [FIX1, FIX2, FIX3][:entries]
-    pfv_chain = [
+    #: Both sub-evaluators' chain entries now carry ``finding_resolutions``
+    #: (refreeze §2c D1): the open-set derivation removes V_j's closed
+    #: findings per round. In the golden history the original finding stays
+    #: ``remaining`` through every completed cycle, so each entry resolves it
+    #: remaining.
+    chain = [
         {
             "finding_resolutions": [_resolution("F-001", "remaining")],
             "new_findings": [],
@@ -262,15 +267,7 @@ def _chains(count: int) -> tuple[list[dict], list[dict]]:
         }
         for index in range(entries)
     ]
-    openset_chain = [
-        {
-            "new_findings": [],
-            "result_sha": results[index],
-            "sequence": index + 1,
-        }
-        for index in range(entries)
-    ]
-    return pfv_chain, openset_chain
+    return chain, [dict(entry) for entry in chain]
 
 
 def _pfv_facts(
@@ -1417,10 +1414,11 @@ def test_new_finding_content_drift_blocks(mutation: str) -> None:
     assert len(result.reasons) == 1
 
 
-def test_new_finding_anchored_to_neither_tree_blocks() -> None:
-    """B5 at the loop level: an anchor that is neither the result tree nor
-    the round anchor satisfies neither the frozen evaluator's reading nor
-    the contract's, and blocks."""
+def test_new_finding_anchored_to_another_tree_blocks() -> None:
+    """An anchor that is neither the result tree nor any other legal anchor
+    is a provider contract failure at both layers (the loop's check and, since
+    the 2026-08-29 refreeze, the frozen evaluator's check judge the same
+    direction)."""
     finding = _finding("F-100", _git_sha("some-other-tree"), 5)
     result = close_review_fix_round(
         _attack(
@@ -1431,7 +1429,7 @@ def test_new_finding_anchored_to_neither_tree_blocks() -> None:
     )
     assert result.final_state == "needs_human"
     assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
-    assert any("neither the result tree" in reason for reason in result.reasons)
+    assert any("not the verdict's result tree" in reason for reason in result.reasons)
 
 
 def test_omitted_original_remaining_blocks_the_carry_forward() -> None:
@@ -1503,12 +1501,12 @@ def test_changes_requested_with_remaining_closes_to_fixing() -> None:
     assert result.loop_violations == ()
 
 
-def test_contract_anchored_new_finding_blocks_until_refreeze() -> None:
-    """B5 residual, documented: §6 says a new finding's anchor MUST equal
-    ``result_sha``, but the frozen evaluator anchors to ``round_anchors`` and
-    blocks the contract direction. The loop passes it through fail-closed —
-    a legal-contract round cannot reach ``fixing`` until the evaluator is
-    refrozen (Henson's decision, tracked in the evidence)."""
+def test_changes_requested_with_contract_anchored_new_finding_closes_to_fixing() -> None:
+    """D2/D3 post-refreeze legal path (previously blocked until refreeze):
+    §6 anchors a new finding to the verdict's ``result_sha``, and a non-empty
+    ``new_findings`` alone forces ``changes_requested`` — with every original
+    finding closed and no remaining resolution, the round now reaches
+    ``fixing`` at both layers."""
     facts = _close_facts(
         2,
         decl="changes_requested",
@@ -1516,9 +1514,10 @@ def test_contract_anchored_new_finding_blocks_until_refreeze() -> None:
         new_findings=[_finding("F-100", FIX2, 7)],
     )
     result = close_review_fix_round(facts)
-    assert result.final_state == "needs_human"
-    assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
-    assert "new_finding_anchor" in result.reasons
+    assert result.final_state == "fixing"
+    assert result.event_trace == ("fix.requested",)
+    assert result.round_no == 3
+    assert result.reasons == ()
 
 
 def test_legal_verified_after_full_resolution_closes() -> None:

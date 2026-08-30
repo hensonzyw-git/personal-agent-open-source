@@ -1,14 +1,17 @@
 """DAL-024: post-fix verdict two-layer boundary — `DAL-T-FIXDIFF-001`.
 
-Twelve frozen G3 variants, all offline replayable. The controller re-derives a
+Thirteen frozen G3 variants, all offline replayable. The controller re-derives a
 structural violation set (anchor entry, path continuity, surviving-set /
 increment algebra, evidence roles, new-finding anchor, acceptance) and only
 adopts a provider `verified` when that set is empty. A clean `verified` moves
 the feature `reviewing → verified` (`review.completed`, four-write base set);
-a clean `changes_requested` with a remaining finding moves `reviewing →
-fixing` (`fix.requested`, four-write base set); any structural violation moves
-`reviewing → needs_human` (`feature.blocked`, `PROVIDER_CONTRACT_FAILURE`,
-seven-write block set).
+a clean `changes_requested` moves `reviewing → fixing` (`fix.requested`,
+four-write base set) — whether it carries a remaining resolution or only new
+findings (refrozen 2026-08-29, evidence
+`DAL_R09-A2_review-fix-loop_2026-08-29.md` §2c D2/D3: new findings anchor to
+the verdict's `result_sha`, and a non-empty `new_findings[]` alone forces
+`changes_requested`); any structural violation moves `reviewing → needs_human`
+(`feature.blocked`, `PROVIDER_CONTRACT_FAILURE`, seven-write block set).
 
 No `dal.test-receipt/1.0` PASS is claimed here — that is §9 item 3's separate,
 gated deliverable.
@@ -38,6 +41,7 @@ FROZEN_VARIANTS: set[str] = {
     "verified_clean",
     "gap_closed_by_test_receipts",
     "changes_requested_declared",
+    "changes_requested_new_findings_only",
     "evidence_role_violation",
     "anchor_entry_not_blob",
     "path_died_between_rounds",

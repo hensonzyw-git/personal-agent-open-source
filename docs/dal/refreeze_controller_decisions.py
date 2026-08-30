@@ -197,9 +197,12 @@ def verify_disposition(fixtures: dict, oracles: dict) -> None:
 def verify_open_set(fixtures: dict, oracles: dict) -> None:
     """§6: the carried open set must be exactly resolved before 'verified'.
 
-    Round 1 (empty chain) resolves the original review's findings; from round
-    2 on, the required set is the chain's accumulated new findings.  New
-    finding IDs may not reuse any ID the feature has already seen.
+    The open set is re-derived per round: it starts as the original review's
+    findings and after each prior verdict V_j it loses the findings V_j
+    resolved ``closed`` and gains V_j's new findings (refrozen 2026-08-29,
+    §2c D1 — the pre-refreeze rule replaced the whole set with the chain's
+    accumulated new findings whenever the chain was non-empty).  New finding
+    IDs may not reuse any ID the feature has already seen.
     """
     for variant in [
         "init_from_review", "carry_forward_exact", "carried_finding_omitted",
@@ -224,7 +227,15 @@ def verify_open_set(fixtures: dict, oracles: dict) -> None:
             for item in entry["new_findings"]
         ]
         chain_ids = {item["finding_id"] for item in chain_findings}
-        open_ids = chain_ids if chain_ids else original_ids
+        open_ids = set(original_ids)
+        for entry in facts["prior_verdict_chain"]:
+            closed_ids = {
+                item["finding_id"]
+                for item in entry["finding_resolutions"]
+                if item["status"] == "closed"
+            }
+            open_ids -= closed_ids
+            open_ids |= {item["finding_id"] for item in entry["new_findings"]}
         resolutions = verdict["finding_resolutions"]
         closed = {item["finding_id"] for item in resolutions if item["status"] == "closed"}
         remaining = {item["finding_id"] for item in resolutions if item["status"] == "remaining"}
@@ -309,7 +320,7 @@ def verify_post_fix_verdict(fixtures: dict, oracles: dict) -> None:
             ):
                 structural.add("gap_evidence")
         for finding in verdict["new_findings"]:
-            if finding["location"]["anchor_sha"] != anchors["anchor_sha"]:
+            if finding["location"]["anchor_sha"] != verdict["result_sha"]:
                 structural.add("new_finding_anchor")
         if not verdict["acceptance_verified"]:
             structural.add("acceptance")
@@ -320,8 +331,7 @@ def verify_post_fix_verdict(fixtures: dict, oracles: dict) -> None:
         if verdict["verdict"] == "verified":
             outcome = "verified" if not structural else "failure"
         else:
-            has_remaining = any(item["status"] == "remaining" for item in verdict["finding_resolutions"])
-            outcome = "fixing" if has_remaining and not structural else "failure"
+            outcome = "fixing" if not structural else "failure"
         _check_oracle(oracles, "DAL-T-FIXDIFF-001", variant, outcome, "reviewing")
 
 

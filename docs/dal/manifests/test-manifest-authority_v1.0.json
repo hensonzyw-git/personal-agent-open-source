@@ -1,7 +1,7 @@
 {
-  "authority_sha256": "3ba96a9595a503d660fcaed45bba235ee6a51f76089209e2519ac4d6d4776a85",
+  "authority_sha256": "8aa774fe95ccde3afa4d654dffe05517f7a5b8ac2b24eb496d7b36a6d56b0248",
   "authority_version": "1.0",
-  "frozen_manifest_sha256": "5a615a15bc37bffb52292222a5e1232f78a203af6d436479d30273664cf0267f",
+  "frozen_manifest_sha256": "a164222278a6087271c36d657f96b4678bd0209c7c34965150f8f370fd0b906b",
   "manifest_rows": {
     "DAL-T-APP-001/concurrent_consume": {
       "expected_effect_state": null,
@@ -4724,6 +4724,31 @@
       "test_id": "DAL-T-FIXDIFF-001",
       "variant_id": "changes_requested_declared"
     },
+    "DAL-T-FIXDIFF-001/changes_requested_new_findings_only": {
+      "expected_effect_state": null,
+      "expected_entity_state": "fixing",
+      "expected_entity_type": "feature",
+      "expected_reason_code": null,
+      "expected_reason_owner": null,
+      "expected_receipt_code": "APPLIED",
+      "expected_receipt_schema": "dal.transition-receipt/1.0",
+      "fixture_ref": "dal.fixture/DAL-T-FIXDIFF-001/changes_requested_new_findings_only/G3/1.0",
+      "fixture_schema_version": "dal.test-fixture/1.0",
+      "fixture_sha256": "fc89efc63a0215affad7cc75756ac7dcc4479816d522953ab753a51127e67f94",
+      "injection_point": "dal.inject/DAL-T-FIXDIFF-001/changes_requested_new_findings_only/G3/1.0",
+      "injection_schema_version": "dal.test-injection/1.0",
+      "oracle_id": "dal.oracle/DAL-T-FIXDIFF-001/changes_requested_new_findings_only/G3/1.0",
+      "oracle_schema_version": "dal.test-oracle/1.0",
+      "oracle_sha256": "1078345cf305306dabb8f159920998e5175ee7669a2a79fc7710111999b8c5d7",
+      "owner_tasks": [
+        "DAL-022",
+        "DAL-024",
+        "DAL-030"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-FIXDIFF-001",
+      "variant_id": "changes_requested_new_findings_only"
+    },
     "DAL-T-FIXDIFF-001/evidence_role_violation": {
       "expected_effect_state": null,
       "expected_entity_state": "needs_human",
@@ -5777,7 +5802,7 @@
       "expected_receipt_schema": "dal.transition-receipt/1.0",
       "fixture_ref": "dal.fixture/DAL-T-OPENSET-001/carried_finding_omitted/G3/1.0",
       "fixture_schema_version": "dal.test-fixture/1.0",
-      "fixture_sha256": "c729650adcfb0d5d1e774d4eb3dd4e39fe42c2acaf6ec44278ba3ae3f9dfa9a3",
+      "fixture_sha256": "9dcbcd0a42788eab0df8d722fdc3c1b03a3493cbef168a28ba329efe1f7bff56",
       "injection_point": "dal.inject/DAL-T-OPENSET-001/carried_finding_omitted/G3/1.0",
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-OPENSET-001/carried_finding_omitted/G3/1.0",
@@ -5801,7 +5826,7 @@
       "expected_receipt_schema": "dal.transition-receipt/1.0",
       "fixture_ref": "dal.fixture/DAL-T-OPENSET-001/carried_finding_renamed/G3/1.0",
       "fixture_schema_version": "dal.test-fixture/1.0",
-      "fixture_sha256": "e4de65901a2445543ec03797f9cd6214022becb5becc8fc58275a4a3cab07225",
+      "fixture_sha256": "e5a669659227fe641ad60e1bc6e5736abd99492215ecb4578dfbcc621bea6d49",
       "injection_point": "dal.inject/DAL-T-OPENSET-001/carried_finding_renamed/G3/1.0",
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-OPENSET-001/carried_finding_renamed/G3/1.0",
@@ -5825,7 +5850,7 @@
       "expected_receipt_schema": "dal.transition-receipt/1.0",
       "fixture_ref": "dal.fixture/DAL-T-OPENSET-001/carry_forward_exact/G3/1.0",
       "fixture_schema_version": "dal.test-fixture/1.0",
-      "fixture_sha256": "41d3900a7bd1892a6d57a9d09acb50baf925655659b780c34a6d601fba6b429a",
+      "fixture_sha256": "3f6da60eed8385b9e66107fb03c09d9c2e7c3c5d7d910e96eccf768eb8956499",
       "injection_point": "dal.inject/DAL-T-OPENSET-001/carry_forward_exact/G3/1.0",
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-OPENSET-001/carry_forward_exact/G3/1.0",
@@ -5873,7 +5898,7 @@
       "expected_receipt_schema": "dal.transition-receipt/1.0",
       "fixture_ref": "dal.fixture/DAL-T-OPENSET-001/new_finding_id_reused/G3/1.0",
       "fixture_schema_version": "dal.test-fixture/1.0",
-      "fixture_sha256": "a32a8eb7f2db07b1a6b53c02df0b80b34ed6122f01396e6f7f521a967ed70484",
+      "fixture_sha256": "8a286611b7fcf99d61eb42fb23f4a0105ebff21437c635cb93a962a755c6896e",
       "injection_point": "dal.inject/DAL-T-OPENSET-001/new_finding_id_reused/G3/1.0",
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-OPENSET-001/new_finding_id_reused/G3/1.0",
@@ -5887,6 +5912,30 @@
       "test_id": "DAL-T-OPENSET-001",
       "variant_id": "new_finding_id_reused"
     },
+    "DAL-T-OPENSET-001/original_remaining_omitted": {
+      "expected_effect_state": null,
+      "expected_entity_state": "needs_human",
+      "expected_entity_type": "feature",
+      "expected_reason_code": "PROVIDER_CONTRACT_FAILURE",
+      "expected_reason_owner": "feature",
+      "expected_receipt_code": "APPLIED",
+      "expected_receipt_schema": "dal.transition-receipt/1.0",
+      "fixture_ref": "dal.fixture/DAL-T-OPENSET-001/original_remaining_omitted/G3/1.0",
+      "fixture_schema_version": "dal.test-fixture/1.0",
+      "fixture_sha256": "86d1a996f5cd6fca02e8a2660436368dd94b472d688a399442e4f65590a20ae4",
+      "injection_point": "dal.inject/DAL-T-OPENSET-001/original_remaining_omitted/G3/1.0",
+      "injection_schema_version": "dal.test-injection/1.0",
+      "oracle_id": "dal.oracle/DAL-T-OPENSET-001/original_remaining_omitted/G3/1.0",
+      "oracle_schema_version": "dal.test-oracle/1.0",
+      "oracle_sha256": "a7ddaf680b7c864fb0045da869b7302b90e3382a98ee1df384adaf9e46e4cde5",
+      "owner_tasks": [
+        "DAL-024",
+        "DAL-030"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-OPENSET-001",
+      "variant_id": "original_remaining_omitted"
+    },
     "DAL-T-OPENSET-001/remaining_declared": {
       "expected_effect_state": null,
       "expected_entity_state": "fixing",
@@ -5897,7 +5946,7 @@
       "expected_receipt_schema": "dal.transition-receipt/1.0",
       "fixture_ref": "dal.fixture/DAL-T-OPENSET-001/remaining_declared/G3/1.0",
       "fixture_schema_version": "dal.test-fixture/1.0",
-      "fixture_sha256": "1e572595af9b8c485695ce1a7cc4346d3950f5c338a436720465d43dcd43501a",
+      "fixture_sha256": "7a46b79ca5b6e62792ddaa36049e621cd0829133f95ed0293b462b3d6113d5db",
       "injection_point": "dal.inject/DAL-T-OPENSET-001/remaining_declared/G3/1.0",
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-OPENSET-001/remaining_declared/G3/1.0",
@@ -5921,7 +5970,7 @@
       "expected_receipt_schema": "dal.transition-receipt/1.0",
       "fixture_ref": "dal.fixture/DAL-T-OPENSET-001/verified_with_new_findings/G3/1.0",
       "fixture_schema_version": "dal.test-fixture/1.0",
-      "fixture_sha256": "214087b8f3d395fcd0fb90f479be328e6c692bf24343f19b55a50505eda415ca",
+      "fixture_sha256": "8c969f95170fab26452579e221aa139409b74aa40e5653a059d06df74fe9ddc2",
       "injection_point": "dal.inject/DAL-T-OPENSET-001/verified_with_new_findings/G3/1.0",
       "injection_schema_version": "dal.test-injection/1.0",
       "oracle_id": "dal.oracle/DAL-T-OPENSET-001/verified_with_new_findings/G3/1.0",
@@ -31766,8 +31815,8 @@
   },
   "schema_version": "dal.test-manifest-authority/1.0",
   "semantic_counts": {
-    "complete_expected_projection_rows": 1309,
-    "manifest_rows": 1309,
+    "complete_expected_projection_rows": 1311,
+    "manifest_rows": 1311,
     "owner_task_memberships": {
       "DAL-007": 4,
       "DAL-008": 5,
@@ -31782,14 +31831,14 @@
       "DAL-017": 38,
       "DAL-018": 12,
       "DAL-019": 4,
-      "DAL-022": 30,
+      "DAL-022": 31,
       "DAL-023": 19,
-      "DAL-024": 30,
+      "DAL-024": 32,
       "DAL-025": 60,
       "DAL-026": 46,
       "DAL-027": 41,
       "DAL-028": 6,
-      "DAL-030": 30,
+      "DAL-030": 32,
       "DAL-031": 3,
       "DAL-032": 9,
       "DAL-033": 15,
@@ -31802,12 +31851,12 @@
     "run_gate_counts": {
       "G1": 1078,
       "G2": 47,
-      "G3": 57,
+      "G3": 59,
       "G4": 76,
       "G5": 51
     },
-    "unique_fixture_refs": 1309,
-    "unique_oracle_ids": 1309
+    "unique_fixture_refs": 1311,
+    "unique_oracle_ids": 1311
   },
   "source_boundary": "static-independent-review-authority; never generated by build_contract_manifests.py"
 }

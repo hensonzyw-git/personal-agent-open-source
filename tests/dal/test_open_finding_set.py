@@ -1,15 +1,19 @@
 """DAL-024: carry-forward open finding set — `DAL-T-OPENSET-001`.
 
-Seven frozen G3 variants, all offline replayable. The controller derives the
-open finding set (original findings on round 1; the prior chain's accumulated
-new findings from round 2 on) and judges the injected verdict against it. A
-legal `verified` verifies the feature (`reviewing → verified`,
-`review.completed`, four-write base set); a legal `changes_requested` requests
-a fix (`reviewing → fixing`, `fix.requested`, four-write base set); any
-violation of the carry-forward invariants — omitted/renamed carried findings,
-an ID reuse, or a `verified` verdict that still carries new findings — blocks
-the feature (`reviewing → needs_human`, `feature.blocked`,
-`PROVIDER_CONTRACT_FAILURE`, seven-write block set).
+Eight frozen G3 variants, all offline replayable. The controller re-derives
+the open finding set per round (the original review's findings, minus the
+findings each prior verdict resolved ``closed``, plus each prior verdict's new
+findings — refrozen 2026-08-29, evidence
+`DAL_R09-A2_review-fix-loop_2026-08-29.md` §2c D1) and judges the injected
+verdict against it. A legal `verified` verifies the feature
+(`reviewing → verified`, `review.completed`, four-write base set); a legal
+`changes_requested` requests a fix (`reviewing → fixing`, `fix.requested`,
+four-write base set); any violation of the carry-forward invariants —
+omitted/renamed carried findings, an original finding silently dropped behind
+the chain (`original_remaining_omitted`), an ID reuse, or a `verified`
+verdict that still carries new findings — blocks the feature
+(`reviewing → needs_human`, `feature.blocked`, `PROVIDER_CONTRACT_FAILURE`,
+seven-write block set).
 
 No `dal.test-receipt/1.0` PASS is claimed here — that is §9 item 3's separate,
 gated deliverable.
@@ -43,6 +47,7 @@ FROZEN_VARIANTS: set[str] = {
     "carried_finding_renamed",
     "new_finding_id_reused",
     "verified_with_new_findings",
+    "original_remaining_omitted",
 }
 
 

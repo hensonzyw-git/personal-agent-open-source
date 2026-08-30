@@ -111,12 +111,14 @@ EXPECTED_G3_VARIANTS: dict[str, frozenset[str]] = {
             "init_from_review", "carry_forward_exact", "remaining_declared",
             "carried_finding_omitted", "carried_finding_renamed",
             "new_finding_id_reused", "verified_with_new_findings",
+            "original_remaining_omitted",
         }
     ),
     "DAL-T-FIXDIFF-001": frozenset(
         {
             "verified_clean", "gap_closed_by_test_receipts",
-            "changes_requested_declared", "evidence_role_violation",
+            "changes_requested_declared", "changes_requested_new_findings_only",
+            "evidence_role_violation",
             "anchor_entry_not_blob", "path_died_between_rounds",
             "surviving_set_empty", "increment_missed_surviving_lines",
             "no_deletion_in_increment", "gap_closed_by_fix_diff_only",
