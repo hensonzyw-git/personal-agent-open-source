@@ -195,7 +195,7 @@ def _invalid(detail: str) -> DalError:
 
 def _is_sha256_hex(value: Any) -> bool:
     return (
-        isinstance(value, str)
+        type(value) is str
         and len(value) == 64
         and all(char in _HEX for char in value)
     )
@@ -203,7 +203,7 @@ def _is_sha256_hex(value: Any) -> bool:
 
 def _is_git_sha_hex(value: Any) -> bool:
     return (
-        isinstance(value, str)
+        type(value) is str
         and len(value) == 40
         and all(char in _HEX for char in value)
     )
@@ -213,59 +213,17 @@ def _is_non_negative_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _is_positive_int(value: Any) -> bool:
+    return type(value) is int and value > 0
+
+
 def _is_non_empty_str(value: Any) -> bool:
-    return isinstance(value, str) and bool(value)
+    """Only native JSON strings; subclasses can override hash/equality."""
+    return type(value) is str and bool(value)
 
 
-def _validate_command(command: dict[str, Any]) -> None:
-    """Validate the trusted envelope; raise `DalError` on any drift."""
-    if not isinstance(command, dict):
-        raise _invalid("command must be an object")
-    if frozenset(command) != COMMAND_FIELDS:
-        raise _invalid("command shape is not closed")
-    if command.get("schema_version") != "dal.test-operation-command/1.0":
-        raise _invalid("wrong command schema")
-    if not isinstance(command.get("operation_id"), str) or not command["operation_id"]:
-        raise _invalid("operation_id must be a non-empty string")
-    if not isinstance(command.get("idempotency_key"), str) or not command["idempotency_key"]:
-        raise _invalid("idempotency_key must be a non-empty string")
-    if command.get("operation_spec_id") != OPERATION_SPEC_ID:
-        raise _invalid("wrong open-finding-set spec")
-    if command.get("actor_type") != SERVICE_ACTOR:
-        raise DalError(DalErrorCode.ACTOR_NOT_ALLOWED)
-    if command.get("evidence_source_type") != EVIDENCE_SOURCE:
-        raise DalError(DalErrorCode.SCOPE_DENIED)
-
-    payload = command.get("input")
-    if not isinstance(payload, dict):
-        raise _invalid("input must be an object")
-    if frozenset(payload) != INPUT_FIELDS:
-        raise _invalid("input shape is not closed")
-    if payload.get("schema_version") != "dal.operation-input/1.0":
-        raise _invalid("wrong input schema")
-
-    target = payload.get("target")
-    if not isinstance(target, dict) or frozenset(target) != TARGET_FIELDS:
-        raise _invalid("target shape is not closed")
-    if (
-        not isinstance(target.get("entity_id"), str)
-        or not target["entity_id"]
-        or target.get("entity_type") != "feature"
-        or target.get("state") != "reviewing"
-        or not _is_non_negative_int(target.get("version"))
-    ):
-        raise _invalid("open-finding-set target must be a feature in reviewing")
-
-    action_sequence = payload.get("action_sequence")
-    if not isinstance(action_sequence, list) or len(action_sequence) != 2:
-        raise _invalid("action sequence must contain exactly two steps")
-    for index, step in enumerate(action_sequence):
-        if not isinstance(step, dict) or frozenset(step) != frozenset({"command"}):
-            raise _invalid(f"action step {index} shape is not closed")
-        if step.get("command") != ACTION_COMMANDS[index]:
-            raise _invalid("unexpected action sequence")
-
-    facts = payload.get("authoritative_facts")
+def validate_open_finding_set_facts(facts: dict[str, Any]) -> None:
+    """Validate controller facts before any provider judgment (round-7)."""
     if not isinstance(facts, dict) or frozenset(facts) != FACT_FIELDS:
         raise _invalid("authoritative facts shape is not closed")
 
@@ -321,7 +279,7 @@ def _validate_command(command: dict[str, Any]) -> None:
                     f"prior_verdict_chain[{index}] finding_resolutions[{member_index}] "
                     "status is outside the closed set"
                 )
-            if not isinstance(item["summary"], str) or not item["summary"]:
+            if not type(item["summary"]) is str or not item["summary"]:
                 raise _invalid(
                     f"prior_verdict_chain[{index}] finding_resolutions[{member_index}] "
                     "summary must be a non-empty string"
@@ -359,7 +317,7 @@ def _validate_command(command: dict[str, Any]) -> None:
                     "location shape is not closed"
                 )
             for field in ("category", "severity", "summary", "failure_scenario"):
-                if not isinstance(item[field], str) or not item[field]:
+                if not type(item[field]) is str or not item[field]:
                     raise _invalid(
                         f"prior_verdict_chain[{index}] new_findings[{member_index}] "
                         f"{field} must be a non-empty string"
@@ -369,18 +327,70 @@ def _validate_command(command: dict[str, Any]) -> None:
                     f"prior_verdict_chain[{index}] new_findings[{member_index}] "
                     "location anchor_sha must be a 40-char git sha"
                 )
-            if not isinstance(location["path"], str) or not location["path"]:
+            if not type(location["path"]) is str or not location["path"]:
                 raise _invalid(
                     f"prior_verdict_chain[{index}] new_findings[{member_index}] "
                     "location path must be a non-empty string"
                 )
             for field in ("line_start", "line_end"):
                 line = location[field]
-                if not _is_non_negative_int(line):
+                if not _is_positive_int(line):
                     raise _invalid(
                         f"prior_verdict_chain[{index}] new_findings[{member_index}] "
                         f"location {field} must be a line number"
                     )
+
+
+
+def _validate_command(command: dict[str, Any]) -> None:
+    """Validate the trusted envelope; raise `DalError` on any drift."""
+    if not isinstance(command, dict):
+        raise _invalid("command must be an object")
+    if frozenset(command) != COMMAND_FIELDS:
+        raise _invalid("command shape is not closed")
+    if command.get("schema_version") != "dal.test-operation-command/1.0":
+        raise _invalid("wrong command schema")
+    if not type(command.get("operation_id")) is str or not command["operation_id"]:
+        raise _invalid("operation_id must be a non-empty string")
+    if not type(command.get("idempotency_key")) is str or not command["idempotency_key"]:
+        raise _invalid("idempotency_key must be a non-empty string")
+    if command.get("operation_spec_id") != OPERATION_SPEC_ID:
+        raise _invalid("wrong open-finding-set spec")
+    if command.get("actor_type") != SERVICE_ACTOR:
+        raise DalError(DalErrorCode.ACTOR_NOT_ALLOWED)
+    if command.get("evidence_source_type") != EVIDENCE_SOURCE:
+        raise DalError(DalErrorCode.SCOPE_DENIED)
+
+    payload = command.get("input")
+    if not isinstance(payload, dict):
+        raise _invalid("input must be an object")
+    if frozenset(payload) != INPUT_FIELDS:
+        raise _invalid("input shape is not closed")
+    if payload.get("schema_version") != "dal.operation-input/1.0":
+        raise _invalid("wrong input schema")
+
+    target = payload.get("target")
+    if not isinstance(target, dict) or frozenset(target) != TARGET_FIELDS:
+        raise _invalid("target shape is not closed")
+    if (
+        not type(target.get("entity_id")) is str
+        or not target["entity_id"]
+        or target.get("entity_type") != "feature"
+        or target.get("state") != "reviewing"
+        or not _is_non_negative_int(target.get("version"))
+    ):
+        raise _invalid("open-finding-set target must be a feature in reviewing")
+
+    action_sequence = payload.get("action_sequence")
+    if not isinstance(action_sequence, list) or len(action_sequence) != 2:
+        raise _invalid("action sequence must contain exactly two steps")
+    for index, step in enumerate(action_sequence):
+        if not isinstance(step, dict) or frozenset(step) != frozenset({"command"}):
+            raise _invalid(f"action step {index} shape is not closed")
+        if step.get("command") != ACTION_COMMANDS[index]:
+            raise _invalid("unexpected action sequence")
+
+    validate_open_finding_set_facts(payload.get("authoritative_facts"))
 
     results = payload.get("injected_results")
     if not isinstance(results, list) or len(results) != 2:
@@ -389,7 +399,7 @@ def _validate_command(command: dict[str, Any]) -> None:
     if not isinstance(git_result, dict) or frozenset(git_result) != GIT_RESULT_FIELDS:
         raise _invalid("git executor result shape is not closed")
     for field in ("source", "status", "path"):
-        if not isinstance(git_result.get(field), str) or not git_result[field]:
+        if not type(git_result.get(field)) is str or not git_result[field]:
             raise _invalid(f"git executor result {field} must be a non-empty string")
     for field in ("anchor_tree_entry", "current_tree_entry", "previous_tree_entry"):
         entry = git_result.get(field)
@@ -398,7 +408,7 @@ def _validate_command(command: dict[str, Any]) -> None:
     if not isinstance(reviewer_result, dict) or frozenset(reviewer_result) != REVIEWER_RESULT_FIELDS:
         raise _invalid("reviewer result shape is not closed")
     for field in ("source", "status"):
-        if not isinstance(reviewer_result.get(field), str) or not reviewer_result[field]:
+        if not type(reviewer_result.get(field)) is str or not reviewer_result[field]:
             raise _invalid(f"reviewer result {field} must be a non-empty string")
     verdict = reviewer_result.get("verdict")
     if not isinstance(verdict, dict) or frozenset(verdict) != VERDICT_FIELDS:
@@ -413,7 +423,7 @@ def _validate_command(command: dict[str, Any]) -> None:
 
 def _deleted_lines(diff_text: Any) -> set[str]:
     """The deleted (`-`) lines of a unified diff, minus the header line."""
-    if not isinstance(diff_text, str):
+    if not type(diff_text) is str:
         return set()
     deleted: set[str] = set()
     for line in diff_text.split("\n")[1:]:
@@ -483,7 +493,7 @@ def _verdict_member_block_reasons(verdict: dict[str, Any]) -> list[str]:
         if not _is_non_empty_str(location["path"]):
             return [f"new_findings[{index}] location path is not a non-empty string"]
         for field in ("line_start", "line_end"):
-            if not _is_non_negative_int(location[field]):
+            if not _is_positive_int(location[field]):
                 return [
                     f"new_findings[{index}] location {field} is not a line number"
                 ]

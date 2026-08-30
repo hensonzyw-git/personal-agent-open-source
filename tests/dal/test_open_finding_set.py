@@ -428,6 +428,34 @@ def test_executor_observes_a_forbidden_boundary_crossing(
     assert probe.observed == frozenset({"filesystem_write"})
 
 
+@pytest.mark.parametrize("field", ["line_start", "line_end"])
+@pytest.mark.parametrize("in_chain", [False, True])
+def test_round7_zero_line_fails_at_its_boundary(
+    contracts: FrozenContracts, field: str, in_chain: bool,
+) -> None:
+    command = _command(contracts, "carry_forward_exact")
+    payload = command["input"]
+    if in_chain:
+        assert open_finding_set_policy.derive_open_finding_set(deepcopy(command)).final_state == "verified"
+        location = payload["authoritative_facts"]["prior_verdict_chain"][0]["new_findings"][0]["location"]
+        location[field] = 0
+        with pytest.raises(DalError) as raised:
+            open_finding_set_policy.derive_open_finding_set(command)
+        assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+    else:
+        verdict = payload["injected_results"][1]["verdict"]
+        verdict["verdict"] = "changes_requested"
+        finding = deepcopy(payload["authoritative_facts"]["prior_verdict_chain"][0]["new_findings"][0])
+        finding["finding_id"] = "F-ROUND7"
+        finding["location"]["anchor_sha"] = verdict["result_sha"]
+        verdict["new_findings"] = [finding]
+        assert open_finding_set_policy.derive_open_finding_set(deepcopy(command)).final_state == "fixing"
+        finding["location"][field] = 0
+        result = open_finding_set_policy.derive_open_finding_set(command)
+        assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+        assert len(result.reasons) == 1
+
+
 def test_open_finding_set_dependency_surface_is_closed() -> None:
     """The pure policy cannot acquire an unguarded I/O dependency."""
     source_path = Path(open_finding_set_policy.__file__)

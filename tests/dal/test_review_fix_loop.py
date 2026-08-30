@@ -1227,6 +1227,146 @@ def test_controller_drift_is_not_masked_by_provider_drift() -> None:
     assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
 
 
+@pytest.mark.parametrize("field", ["verdict", "schema_version", "acceptance_verified"])
+@pytest.mark.parametrize("bad_member", [False, True])
+def test_round7_missing_envelope_field_is_invalid(field: str, bad_member: bool) -> None:
+    facts = _close_facts(1)
+    verdict = facts["reviewer_result"]["verdict"]
+    del verdict[field]
+    if bad_member:
+        verdict["finding_resolutions"] = [None]
+    with pytest.raises(DalError) as raised:
+        close_review_fix_round(facts)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
+@pytest.mark.parametrize("provider_drift", ["none", "member", "semantic"])
+@pytest.mark.parametrize("drift", [
+    "pfv_anchor", "openset_anchor", "original_disagreement", "receipt_member",
+    "receipt_id", "verification_ids", "finding_locations", "extra_fact",
+])
+def test_round7_all_trusted_checks_precede_provider_judgment(
+    drift: str, provider_drift: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facts = _close_facts(1)
+    pfv = facts["post_fix_verdict_facts"]
+    openset = facts["open_finding_set_facts"]
+    if drift == "pfv_anchor":
+        pfv["round_anchors"]["anchor_sha"] = FIX2
+    elif drift == "openset_anchor":
+        openset["round_anchors"]["anchor_sha"] = FIX2
+    elif drift == "original_disagreement":
+        openset["original_review"]["finding_ids"] = ["F-OTHER"]
+    elif drift == "receipt_member":
+        pfv["test_receipts"][E_RECEIPT] = []
+    elif drift == "receipt_id":
+        pfv["test_receipts"][E_RECEIPT] = {"verification_id": None}
+    elif drift == "verification_ids":
+        pfv["plan_verification_ids"]["A-001"] = [None]
+    elif drift == "finding_locations":
+        pfv["original_review"]["finding_locations"] = None
+    elif drift == "extra_fact":
+        openset["extra"] = "drift"
+    if provider_drift == "member":
+        facts["reviewer_result"]["verdict"]["finding_resolutions"] = [None]
+    elif provider_drift == "semantic":
+        facts["reviewer_result"]["verdict"]["finding_resolutions"][0]["status"] = "remaining"
+
+    def forbidden_preflight(_verdict: dict) -> None:
+        pytest.fail("provider judgment ran before trusted facts were rejected")
+
+    monkeypatch.setattr(loop_policy, "_verdict_member_drift", forbidden_preflight)
+    with pytest.raises(DalError) as raised:
+        close_review_fix_round(facts)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
+@pytest.mark.parametrize("role", ["approved_plan", "repo_rules"])
+@pytest.mark.parametrize("referenced", [False, True])
+def test_round7_manifest_role_is_distinct_from_evidence_role(role: str, referenced: bool) -> None:
+    facts = _close_facts(1)
+    baseline = close_review_fix_round(deepcopy(facts))
+    for side in ("post_fix_verdict_facts", "open_finding_set_facts"):
+        facts[side]["manifest_roles"][E_FIX if referenced else "1" * 64] = role
+    result = close_review_fix_round(facts)
+    if referenced:
+        assert result.final_state == "needs_human"
+        assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+        assert result.declared_write_set == BLOCK_WRITE_SET
+    else:
+        assert _shape(result) == _shape(baseline)
+
+
+class _UnhashableStr(str):
+    __hash__ = None
+
+
+@pytest.mark.parametrize("site", [
+    "pfv_role", "openset_role", "original_id", "record_verdict", "chain_id",
+    "open_status", "admit_status", "provider_status", "provider_gap_status",
+    "provider_id", "provider_digest",
+])
+def test_round7_string_subclasses_fail_at_their_boundary(site: str) -> None:
+    facts = _close_facts(2)
+    judge = close_review_fix_round
+    if site in ("pfv_role", "openset_role"):
+        side = "post_fix_verdict_facts" if site == "pfv_role" else "open_finding_set_facts"
+        facts[side]["manifest_roles"][E_FIX] = _UnhashableStr("fix_diff")
+    elif site == "original_id":
+        for side in ("post_fix_verdict_facts", "open_finding_set_facts"):
+            facts[side]["original_review"]["finding_ids"] = [_UnhashableStr("F-001")]
+    elif site == "record_verdict":
+        facts["round_records"][0]["verdict"] = _UnhashableStr("changes_requested")
+    elif site == "chain_id":
+        facts["post_fix_verdict_facts"]["prior_verdict_chain"][0]["finding_resolutions"][0]["finding_id"] = _UnhashableStr("F-001")
+    elif site in ("open_status", "admit_status"):
+        facts = _open_facts(1) if site == "open_status" else _admit_facts(1)
+        judge = open_review_fix_round if site == "open_status" else admit_round_reviewer
+        facts["latest_verification_status"] = _UnhashableStr("succeeded")
+    else:
+        verdict = facts["reviewer_result"]["verdict"]
+        item = verdict["finding_resolutions"][0]
+        if site == "provider_gap_status":
+            item = _gap_resolution("A-001", "closed")
+            verdict["acceptance_gap_resolutions"] = [item]
+        if site in ("provider_status", "provider_gap_status"):
+            item["status"] = _UnhashableStr("closed")
+        elif site == "provider_id":
+            item["finding_id"] = _UnhashableStr("F-001")
+        elif site == "provider_digest":
+            item["evidence_sha256"] = [_UnhashableStr(E_FIX)]
+    if site.startswith("provider_"):
+        result = judge(facts)
+        assert result.final_state == "needs_human"
+        assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+        assert result.declared_write_set == BLOCK_WRITE_SET
+    else:
+        with pytest.raises(DalError) as raised:
+            judge(facts)
+        assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
+@pytest.mark.parametrize("field", ["line_start", "line_end"])
+@pytest.mark.parametrize("in_chain", [False, True])
+def test_round7_zero_line_is_not_a_location(field: str, in_chain: bool) -> None:
+    if in_chain:
+        facts = _close_facts(2, resolutions=[_resolution("F-001", "closed"), _resolution("F-NEW", "closed")])
+        for side in ("post_fix_verdict_facts", "open_finding_set_facts"):
+            facts[side]["prior_verdict_chain"][0]["new_findings"] = [_finding("F-NEW", FIX1, 5)]
+        assert close_review_fix_round(deepcopy(facts)).final_state == "verified"
+        facts["post_fix_verdict_facts"]["prior_verdict_chain"][0]["new_findings"][0]["location"][field] = 0
+        with pytest.raises(DalError) as raised:
+            close_review_fix_round(facts)
+        assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+    else:
+        facts = _close_facts(1, decl="changes_requested", new_findings=[_finding("F-NEW", FIX1, 5)])
+        assert close_review_fix_round(deepcopy(facts)).final_state == "fixing"
+        facts["reviewer_result"]["verdict"]["new_findings"][0]["location"][field] = 0
+        result = close_review_fix_round(facts)
+        assert result.final_state == "needs_human"
+        assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+
+
 # --- F. module hygiene -------------------------------------------------------
 
 
@@ -1272,6 +1412,7 @@ def test_dependency_surface_is_closed() -> None:
         "set",
         "dict",
         "isinstance",
+        "type",
         "len",
         "bool",
         "str",
@@ -1293,6 +1434,9 @@ def test_dependency_surface_is_closed() -> None:
         "_budget_and_verification",
         "_assert_untainted_history",
         "_validate_target",
+        "validate_open_finding_set_facts",
+        "validate_post_fix_verdict_facts",
+        "validate_post_fix_verdict_envelope",
         "_validate_identity_fields",
         "_validate_accounting",
         "_validate_record",
@@ -1597,14 +1741,17 @@ def test_new_finding_anchored_to_another_tree_blocks() -> None:
     is a provider contract failure at both layers (the loop's check and, since
     the 2026-08-29 refreeze, the frozen evaluator's check judge the same
     direction)."""
-    finding = _finding("F-100", _git_sha("some-other-tree"), 5)
-    result = close_review_fix_round(
-        _attack(
-            decl="changes_requested",
-            resolutions=[_resolution("F-001", "remaining")],
-            new_findings=[finding],
-        )
+    finding = _finding("F-100", FIX1, 5)
+    facts = _attack(
+        verdict="changes_requested",
+        finding_resolutions=[_resolution("F-001", "remaining")],
+        new_findings=[finding],
     )
+    # `_attack` takes verdict field names, not `_close_facts` parameter
+    # names. Prove the baseline is legal before mutating only the anchor.
+    assert close_review_fix_round(deepcopy(facts)).final_state == "fixing"
+    finding["location"]["anchor_sha"] = _git_sha("some-other-tree")
+    result = close_review_fix_round(facts)
     assert result.final_state == "needs_human"
     assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
     assert any("not the verdict's result tree" in reason for reason in result.reasons)

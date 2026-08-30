@@ -70,8 +70,8 @@ representation of the HMAC-SHA256 derivation, DAL021-024 "digest 表示闭合");
 is checkable here.
 
 Untrusted evidence. The closer's ``git_result`` and ``reviewer_result`` are
-provider/Git output. Their *envelope shapes* are validated by the frozen
-sub-evaluators' own command checks; their *content members* (resolutions,
+provider/Git output. Their *envelope shapes* are validated before any judgment by the frozen
+post-fix evaluator's shared envelope check; their *content members* (resolutions,
 new findings) are pre-flighted here, because the frozen evaluators dereference
 them directly (``item["status"]``, ``item["evidence_sha256"][0]``) — a
 ``None`` member or an empty evidence list would crash the composition, and a
@@ -105,11 +105,14 @@ from personal_agent_dal.machine.open_finding_set import (
     LOCATION_FIELDS as NEW_FINDING_LOCATION_FIELDS,
     OpenFindingSetEvaluation,
     derive_open_finding_set,
+    validate_open_finding_set_facts,
 )
 from personal_agent_dal.machine.post_fix_verdict import (
     CHAIN_ENTRY_FIELDS as PFV_CHAIN_ENTRY_FIELDS,
     PostFixVerdictEvaluation,
     validate_post_fix_verdict,
+    validate_post_fix_verdict_envelope,
+    validate_post_fix_verdict_facts,
 )
 from personal_agent_dal.receipt import OperationReceipt, ReceiptCode
 
@@ -252,6 +255,8 @@ RESOLUTION_STATUSES: Final[frozenset[str]] = frozenset({"closed", "remaining"})
 EVIDENCE_ROLES: Final[frozenset[str]] = frozenset(
     {"fix_diff", "test_receipts", "review_findings"}
 )
+#: DAL021-024 §2: the post-fix manifest also contains non-evidence roles.
+MANIFEST_ROLES: Final[frozenset[str]] = EVIDENCE_ROLES | {"approved_plan", "repo_rules"}
 
 #: The frozen seven-write block set (the four-write base set plus the three
 #: block-only writes), mirroring the family form. The legal four-write
@@ -310,7 +315,7 @@ def _invalid(detail: str) -> DalError:
 
 def _is_sha256_hex(value: Any) -> bool:
     return (
-        isinstance(value, str)
+        type(value) is str
         and len(value) == 64
         and all(char in _HEX for char in value)
     )
@@ -318,14 +323,15 @@ def _is_sha256_hex(value: Any) -> bool:
 
 def _is_git_sha_hex(value: Any) -> bool:
     return (
-        isinstance(value, str)
+        type(value) is str
         and len(value) == 40
         and all(char in _HEX for char in value)
     )
 
 
 def _is_non_empty_str(value: Any) -> bool:
-    return isinstance(value, str) and bool(value)
+    """Only native JSON strings; subclasses can override hash/equality."""
+    return type(value) is str and bool(value)
 
 
 def _is_non_negative_int(value: Any) -> bool:
@@ -336,7 +342,7 @@ def _validate_target(target: Any) -> None:
     if not isinstance(target, dict) or frozenset(target) != TARGET_FIELDS:
         raise _invalid("target shape is not closed")
     if (
-        not isinstance(target.get("entity_id"), str)
+        not type(target.get("entity_id")) is str
         or not target["entity_id"]
         or target.get("entity_type") != "feature"
         or target.get("state") != REVIEWING_STATE
@@ -914,7 +920,7 @@ def _finding_drift(item: Any, label: str) -> str | None:
         return f"{label} location path must be a non-empty string"
     for field in ("line_start", "line_end"):
         line = location[field]
-        if not isinstance(line, int) or isinstance(line, bool) or line < 0:
+        if type(line) is not int or line < 1:
             return f"{label} location {field} must be a line number"
     return None
 
@@ -1225,64 +1231,22 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
         if not isinstance(facts[field], dict):
             raise _invalid(f"{field} must be an object")
 
-    #: The sub-facts' ``original_review`` objects are controller state the
-    #: carry-forward derivation and the evidence/gap checks dereference
-    #: directly; a drifted shape is controller drift, not a provider
-    #: outcome (round-4 review F6, same crash class as B1's chain members).
+    pfv_facts = facts["post_fix_verdict_facts"]
+    openset_facts = facts["open_finding_set_facts"]
+    # Use the same fact validators as the direct frozen entrypoints. Both
+    # must finish before any provider content can produce a block (R7 F2).
+    validate_post_fix_verdict_facts(pfv_facts)
+    validate_open_finding_set_facts(openset_facts)
     for name, sub_facts in (
-        ("post_fix_verdict_facts", facts["post_fix_verdict_facts"]),
-        ("open_finding_set_facts", facts["open_finding_set_facts"]),
+        ("post_fix_verdict_facts", pfv_facts),
+        ("open_finding_set_facts", openset_facts),
     ):
-        original = sub_facts.get("original_review")
-        if not isinstance(original, dict):
-            raise _invalid(f"{name} original_review must be an object")
-        #: Both id lists are dereferenced below (the carry-forward derivation
-        #: and the gap bijection build sets from them), so either shape the
-        #: frozen layer would crash on must raise here first — trusted
-        #: controller state drifts as INVALID_ARGUMENT, never a KeyError or
-        #: TypeError (round-4 review F6, extended by round-5 review F-1a).
-        for field in ("finding_ids", "acceptance_gap_ids"):
-            ids = original.get(field)
-            if not isinstance(ids, list) or not all(
-                _is_non_empty_str(item) for item in ids
-            ):
-                raise _invalid(
-                    f"{name} original_review {field} must be a list of "
-                    "non-empty strings"
-                )
-        #: The evidence-role checks read the role map directly; a missing
-        #: or non-object manifest_roles would KeyError (round-5 review F-1a).
-        #: The membership checks consume the map's values as frozenset
-        #: members and its keys as dict/digest lookups, so a member drift
-        #: (non-hashable value, non-string key/value) is controller drift —
-        #: fail closed as INVALID_ARGUMENT before any provider judgment,
-        #: never a TypeError and never a mis-classified provider block
-        #: (round-6 review F1).
-        roles = sub_facts.get("manifest_roles")
-        if not isinstance(roles, dict):
-            raise _invalid(f"{name} manifest_roles must be an object")
+        roles = sub_facts["manifest_roles"]
         for digest, role in roles.items():
             if not _is_sha256_hex(digest):
-                raise _invalid(
-                    f"{name} manifest_roles keys must be 64-char digests"
-                )
-            if not _is_non_empty_str(role) or role not in EVIDENCE_ROLES:
-                raise _invalid(
-                    f"{name} manifest_roles values must be allowed evidence roles"
-                )
-        if not isinstance(sub_facts.get("prior_verdict_chain"), list):
-            raise _invalid(f"{name} prior_verdict_chain must be a list")
-
-    #: The verdict under judgment must be bound to the recorded fix result:
-    #: re-review V_k reviews fix k's tree r(k).
-    reviewer_result = facts["reviewer_result"]
-    verdict = reviewer_result.get("verdict")
-    if not isinstance(verdict, dict):
-        raise _invalid("reviewer_result verdict must be an object")
-    if verdict.get("result_sha") != records[count - 1]["result_sha"]:
-        raise _invalid(
-            "verdict result_sha is not bound to the recorded fix result tree"
-        )
+                raise _invalid(f"{name} manifest_roles keys must be 64-char digests")
+            if not _is_non_empty_str(role) or role not in MANIFEST_ROLES:
+                raise _invalid(f"{name} manifest_roles values must be known manifest roles")
 
     #: Trusted-state validation comes before any provider judgment
     #: (round-6 review F3): a controller drift must raise INVALID_ARGUMENT
@@ -1290,8 +1254,6 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
     #: block must never mask broken controller state. Both sub-facts'
     #: prior_verdict_chain are controller state, bound here to the recorded
     #: history (B2) and member-checked before the verdict preflight below.
-    pfv_facts = facts["post_fix_verdict_facts"]
-    openset_facts = facts["open_finding_set_facts"]
     for name, sub_facts, chain_fields in (
         ("post_fix_verdict_facts", pfv_facts, PFV_CHAIN_ENTRY_FIELDS),
         ("open_finding_set_facts", openset_facts, OPENSET_CHAIN_ENTRY_FIELDS),
@@ -1309,27 +1271,6 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
         drift = _chain_member_drift(chain)
         if drift is not None:
             raise _invalid(f"{name} {drift}")
-
-    #: Content pre-flight of the untrusted verdict members: crash-shaped
-    #: output must fail closed as the frozen contract block, never raise out
-    #: of a policy boundary (round-1 review B5).
-    preflight = _verdict_member_drift(verdict)
-    if preflight is not None:
-        return ReviewFixLoopEvaluation(
-            receipt=OperationReceipt(
-                ReceiptCode.APPLIED,
-                schema_version=FEATURE_TRANSITION_RECEIPT_SCHEMA,
-            ),
-            state_trace=(REVIEWING_STATE, BLOCK_STATE),
-            final_state=BLOCK_STATE,
-            final_entity_type=facts["target"]["entity_type"],
-            final_reason_code=PROVIDER_REASON,
-            final_reason_owner=PROVIDER_OWNER,
-            declared_write_set=BLOCK_WRITE_SET,
-            event_trace=(BLOCK_EVENT,),
-            round_no=count + 1,
-            reasons=(preflight,),
-        )
 
     #: Both sub-fact objects must anchor the same current round: r(count-1).
     current = _current_anchor(facts, count)
@@ -1356,6 +1297,42 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
     ):
         raise _invalid(
             "the two sub-fact objects disagree on the original review's id sets"
+        )
+
+    # The envelope is checked before semantics can dereference its fields;
+    # malformed members still retain the loop's provider-block landing.
+    validate_post_fix_verdict_envelope(facts["git_result"], facts["reviewer_result"])
+
+    #: The verdict under judgment must be bound to the recorded fix result:
+    #: re-review V_k reviews fix k's tree r(k).
+    reviewer_result = facts["reviewer_result"]
+    verdict = reviewer_result.get("verdict")
+    if not isinstance(verdict, dict):
+        raise _invalid("reviewer_result verdict must be an object")
+    if verdict.get("result_sha") != records[count - 1]["result_sha"]:
+        raise _invalid(
+            "verdict result_sha is not bound to the recorded fix result tree"
+        )
+
+    #: Content pre-flight of the untrusted verdict members: crash-shaped
+    #: output must fail closed as the frozen contract block, never raise out
+    #: of a policy boundary (round-1 review B5).
+    preflight = _verdict_member_drift(verdict)
+    if preflight is not None:
+        return ReviewFixLoopEvaluation(
+            receipt=OperationReceipt(
+                ReceiptCode.APPLIED,
+                schema_version=FEATURE_TRANSITION_RECEIPT_SCHEMA,
+            ),
+            state_trace=(REVIEWING_STATE, BLOCK_STATE),
+            final_state=BLOCK_STATE,
+            final_entity_type=facts["target"]["entity_type"],
+            final_reason_code=PROVIDER_REASON,
+            final_reason_owner=PROVIDER_OWNER,
+            declared_write_set=BLOCK_WRITE_SET,
+            event_trace=(BLOCK_EVENT,),
+            round_no=count + 1,
+            reasons=(preflight,),
         )
 
     #: §6 constraints judged over the bound chain and the original review's

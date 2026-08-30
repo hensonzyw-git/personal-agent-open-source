@@ -204,7 +204,7 @@ def _invalid(detail: str) -> DalError:
 
 def _is_sha256_hex(value: Any) -> bool:
     return (
-        isinstance(value, str)
+        type(value) is str
         and len(value) == 64
         and all(char in _HEX for char in value)
     )
@@ -212,7 +212,7 @@ def _is_sha256_hex(value: Any) -> bool:
 
 def _is_git_sha_hex(value: Any) -> bool:
     return (
-        isinstance(value, str)
+        type(value) is str
         and len(value) == 40
         and all(char in _HEX for char in value)
     )
@@ -223,58 +223,12 @@ def _is_non_negative_int(value: Any) -> bool:
 
 
 def _is_non_empty_str(value: Any) -> bool:
-    return isinstance(value, str) and bool(value)
+    """Only native JSON strings; subclasses can override hash/equality."""
+    return type(value) is str and bool(value)
 
 
-def _validate_command(command: dict[str, Any]) -> None:
-    """Validate the trusted envelope; raise `DalError` on any drift."""
-    if not isinstance(command, dict):
-        raise _invalid("command must be an object")
-    if frozenset(command) != COMMAND_FIELDS:
-        raise _invalid("command shape is not closed")
-    if command.get("schema_version") != "dal.test-operation-command/1.0":
-        raise _invalid("wrong command schema")
-    if not isinstance(command.get("operation_id"), str) or not command["operation_id"]:
-        raise _invalid("operation_id must be a non-empty string")
-    if not isinstance(command.get("idempotency_key"), str) or not command["idempotency_key"]:
-        raise _invalid("idempotency_key must be a non-empty string")
-    if command.get("operation_spec_id") != OPERATION_SPEC_ID:
-        raise _invalid("wrong post-fix verdict spec")
-    if command.get("actor_type") != SERVICE_ACTOR:
-        raise DalError(DalErrorCode.ACTOR_NOT_ALLOWED)
-    if command.get("evidence_source_type") != EVIDENCE_SOURCE:
-        raise DalError(DalErrorCode.SCOPE_DENIED)
-
-    payload = command.get("input")
-    if not isinstance(payload, dict):
-        raise _invalid("input must be an object")
-    if frozenset(payload) != INPUT_FIELDS:
-        raise _invalid("input shape is not closed")
-    if payload.get("schema_version") != "dal.operation-input/1.0":
-        raise _invalid("wrong input schema")
-
-    target = payload.get("target")
-    if not isinstance(target, dict) or frozenset(target) != TARGET_FIELDS:
-        raise _invalid("target shape is not closed")
-    if (
-        not isinstance(target.get("entity_id"), str)
-        or not target["entity_id"]
-        or target.get("entity_type") != "feature"
-        or target.get("state") != "reviewing"
-        or not _is_non_negative_int(target.get("version"))
-    ):
-        raise _invalid("post-fix verdict target must be a feature in reviewing")
-
-    action_sequence = payload.get("action_sequence")
-    if not isinstance(action_sequence, list) or len(action_sequence) != 2:
-        raise _invalid("action sequence must contain exactly two steps")
-    for index, step in enumerate(action_sequence):
-        if not isinstance(step, dict) or frozenset(step) != frozenset({"command"}):
-            raise _invalid(f"action step {index} shape is not closed")
-        if step.get("command") != ACTION_COMMANDS[index]:
-            raise _invalid("unexpected action sequence")
-
-    facts = payload.get("authoritative_facts")
+def validate_post_fix_verdict_facts(facts: dict[str, Any]) -> None:
+    """Validate controller facts before any provider judgment (round-7)."""
     if not isinstance(facts, dict) or frozenset(facts) != FACT_FIELDS:
         raise _invalid("authoritative facts shape is not closed")
     if not isinstance(facts.get("manifest_roles"), dict):
@@ -282,12 +236,8 @@ def _validate_command(command: dict[str, Any]) -> None:
     original = facts.get("original_review")
     if not isinstance(original, dict) or frozenset(original) != ORIGINAL_REVIEW_FIELDS:
         raise _invalid("original_review shape is not closed")
-    #: Both id lists feed set builds in the structural pass (the gap
-    #: bijection builds sets from them); a non-string element would leak
-    #: ``TypeError: unhashable type`` and a string would silently become
-    #: per-character set members — trusted controller state must fail
-    #: closed as INVALID_ARGUMENT instead (round-6 review F4, same class as
-    #: the frozen openset layer's round-5 F-1b check).
+    #: These controller IDs are consumed by the composed loop's set and
+    #: bijection checks. Reject malformed values at the direct boundary too.
     for field in ("finding_ids", "acceptance_gap_ids"):
         ids = original.get(field)
         if not isinstance(ids, list) or not all(
@@ -300,7 +250,7 @@ def _validate_command(command: dict[str, Any]) -> None:
     if not isinstance(locations, dict):
         raise _invalid("finding_locations must be an object")
     for finding_id, location in locations.items():
-        if not isinstance(finding_id, str) or not finding_id:
+        if not type(finding_id) is str or not finding_id:
             raise _invalid("finding_locations keys must be non-empty strings")
         if not isinstance(location, dict) or frozenset(location) != FINDING_LOCATION_FIELDS:
             raise _invalid(f"finding_locations[{finding_id}] shape is not closed")
@@ -319,7 +269,7 @@ def _validate_command(command: dict[str, Any]) -> None:
         if not _is_non_empty_str(acceptance_id):
             raise _invalid("plan_verification_ids keys must be non-empty strings")
         if not isinstance(ids, list) or not all(
-            isinstance(verification_id, str) and verification_id
+            type(verification_id) is str and verification_id
             for verification_id in ids
         ):
             raise _invalid(
@@ -348,15 +298,19 @@ def _validate_command(command: dict[str, Any]) -> None:
         #: state fails closed instead (round-6 review F4).
         if not isinstance(receipt, dict):
             raise _invalid(f"test_receipts[{digest}] must be an object")
+        if not _is_non_empty_str(receipt.get("verification_id")):
+            raise _invalid(f"test_receipts[{digest}] verification_id must be a non-empty string")
 
-    results = payload.get("injected_results")
-    if not isinstance(results, list) or len(results) != 2:
-        raise _invalid("injected_results must contain git_executor and reviewer results")
-    git_result, reviewer_result = results
+
+
+def validate_post_fix_verdict_envelope(
+    git_result: dict[str, Any], reviewer_result: dict[str, Any]
+) -> None:
+    """Validate outer evidence shapes; leave member content to the judge."""
     if not isinstance(git_result, dict) or frozenset(git_result) != GIT_RESULT_FIELDS:
         raise _invalid("git executor result shape is not closed")
     for field in ("source", "status", "path"):
-        if not isinstance(git_result.get(field), str) or not git_result[field]:
+        if not type(git_result.get(field)) is str or not git_result[field]:
             raise _invalid(f"git executor result {field} must be a non-empty string")
     for field in ("anchor_tree_entry", "current_tree_entry", "previous_tree_entry"):
         entry = git_result.get(field)
@@ -365,7 +319,7 @@ def _validate_command(command: dict[str, Any]) -> None:
     if not isinstance(reviewer_result, dict) or frozenset(reviewer_result) != REVIEWER_RESULT_FIELDS:
         raise _invalid("reviewer result shape is not closed")
     for field in ("source", "status"):
-        if not isinstance(reviewer_result.get(field), str) or not reviewer_result[field]:
+        if not type(reviewer_result.get(field)) is str or not reviewer_result[field]:
             raise _invalid(f"reviewer result {field} must be a non-empty string")
     verdict = reviewer_result.get("verdict")
     if not isinstance(verdict, dict) or frozenset(verdict) != VERDICT_FIELDS:
@@ -378,6 +332,64 @@ def _validate_command(command: dict[str, Any]) -> None:
         raise _invalid("verdict acceptance_verified must be boolean")
     if not _is_git_sha_hex(verdict.get("result_sha")):
         raise _invalid("verdict result_sha must be a 40-char git sha")
+
+
+def _validate_command(command: dict[str, Any]) -> None:
+    """Validate the trusted envelope; raise `DalError` on any drift."""
+    if not isinstance(command, dict):
+        raise _invalid("command must be an object")
+    if frozenset(command) != COMMAND_FIELDS:
+        raise _invalid("command shape is not closed")
+    if command.get("schema_version") != "dal.test-operation-command/1.0":
+        raise _invalid("wrong command schema")
+    if not type(command.get("operation_id")) is str or not command["operation_id"]:
+        raise _invalid("operation_id must be a non-empty string")
+    if not type(command.get("idempotency_key")) is str or not command["idempotency_key"]:
+        raise _invalid("idempotency_key must be a non-empty string")
+    if command.get("operation_spec_id") != OPERATION_SPEC_ID:
+        raise _invalid("wrong post-fix verdict spec")
+    if command.get("actor_type") != SERVICE_ACTOR:
+        raise DalError(DalErrorCode.ACTOR_NOT_ALLOWED)
+    if command.get("evidence_source_type") != EVIDENCE_SOURCE:
+        raise DalError(DalErrorCode.SCOPE_DENIED)
+
+    payload = command.get("input")
+    if not isinstance(payload, dict):
+        raise _invalid("input must be an object")
+    if frozenset(payload) != INPUT_FIELDS:
+        raise _invalid("input shape is not closed")
+    if payload.get("schema_version") != "dal.operation-input/1.0":
+        raise _invalid("wrong input schema")
+
+    target = payload.get("target")
+    if not isinstance(target, dict) or frozenset(target) != TARGET_FIELDS:
+        raise _invalid("target shape is not closed")
+    if (
+        not type(target.get("entity_id")) is str
+        or not target["entity_id"]
+        or target.get("entity_type") != "feature"
+        or target.get("state") != "reviewing"
+        or not _is_non_negative_int(target.get("version"))
+    ):
+        raise _invalid("post-fix verdict target must be a feature in reviewing")
+
+    action_sequence = payload.get("action_sequence")
+    if not isinstance(action_sequence, list) or len(action_sequence) != 2:
+        raise _invalid("action sequence must contain exactly two steps")
+    for index, step in enumerate(action_sequence):
+        if not isinstance(step, dict) or frozenset(step) != frozenset({"command"}):
+            raise _invalid(f"action step {index} shape is not closed")
+        if step.get("command") != ACTION_COMMANDS[index]:
+            raise _invalid("unexpected action sequence")
+
+    validate_post_fix_verdict_facts(payload.get("authoritative_facts"))
+
+    results = payload.get("injected_results")
+    if not isinstance(results, list) or len(results) != 2:
+        raise _invalid("injected_results must contain git_executor and reviewer results")
+    git_result, reviewer_result = results
+    validate_post_fix_verdict_envelope(git_result, reviewer_result)
+    verdict = reviewer_result["verdict"]
     #: ``_structural`` dereferences every verdict member directly
     #: (``item["status"]``, ``item["evidence_sha256"][0]``, …), so a non-list
     #: container or a member outside its closed field set must be rejected
@@ -409,7 +421,7 @@ def _diff_parts(diff_text: Any) -> tuple[set[str], set[str]]:
     output fails closed (an empty surviving set is a violation when a finding
     was closed), never a crash.
     """
-    if not isinstance(diff_text, str):
+    if not type(diff_text) is str:
         return set(), set()
     deleted: set[str] = set()
     added: set[str] = set()

@@ -234,6 +234,36 @@ def test_malformed_envelopes_are_stable_invalid_arguments(
         assert raised.value.code is DalErrorCode.INVALID_ARGUMENT, label
 
 
+@pytest.mark.parametrize("value", [None, [], {}, True, b"VR-1", "", 1])
+def test_round7_receipt_verification_id_is_trusted(
+    contracts: FrozenContracts, value: object,
+) -> None:
+    command = _command(contracts, "gap_closed_by_test_receipts")
+    payload = command["input"]
+    gap = payload["injected_results"][1]["verdict"]["acceptance_gap_resolutions"][0]
+    payload["authoritative_facts"]["test_receipts"][gap["evidence_sha256"][0]]["verification_id"] = value
+    with pytest.raises(DalError) as raised:
+        post_fix_verdict_policy.validate_post_fix_verdict(command)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
+def test_round7_missing_receipt_id_differs_from_wrong_verification(
+    contracts: FrozenContracts,
+) -> None:
+    command = _command(contracts, "gap_closed_by_test_receipts")
+    payload = command["input"]
+    gap = payload["injected_results"][1]["verdict"]["acceptance_gap_resolutions"][0]
+    receipt = payload["authoritative_facts"]["test_receipts"][gap["evidence_sha256"][0]]
+    receipt["verification_id"] = "unrelated-verification"
+    result = post_fix_verdict_policy.validate_post_fix_verdict(command)
+    assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+    assert result.reasons == ("gap_evidence",)
+    del receipt["verification_id"]
+    with pytest.raises(DalError) as raised:
+        post_fix_verdict_policy.validate_post_fix_verdict(command)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
 def test_wrong_actor_and_evidence_are_their_own_refusals(
     contracts: FrozenContracts,
 ) -> None:
