@@ -657,13 +657,21 @@ def semantic_operation_input(
             #: the chain's ids as the entire open set and accepted this; the
             #: per-round derivation keeps F-1 open and blocks.
             resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "closed", "e" * 64)], [], "verified", [regression("F-101", "4" * 40)], "4" * 40, 2
+        elif variant == "prior_closed_carried_not_touched":
+            #: Round-3 review B2 distinguishing variant: F-101 was closed by
+            #: an earlier verdict and this round leaves its line untouched —
+            #: legal. The pre-fix whole-chain deletion check required every
+            #: carried finding's line to be deleted again and blocked this;
+            #: the narrowed check (§6 L645-651: only this round's closed
+            #: findings) reaches fixing.
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "remaining", "a" * 64)], [], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 3
         else:
-            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "remaining", "r" * 64)], [], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 2
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "remaining", "a" * 64)], [], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 2
         #: The chain entry now carries V_1's finding_resolutions so the
         #: per-round carry-forward can remove V_1's closed findings (refreeze
         #: §2c D1).
         chain_resolutions = (
-            [resolution("F-1", "remaining", "r" * 64)]
+            [resolution("F-1", "remaining", "a" * 64)]
             if variant == "original_remaining_omitted"
             else ([resolution("F-1", "closed", "e" * 64)] if variant != "init_from_review" else [])
         )
@@ -674,7 +682,7 @@ def semantic_operation_input(
             {
                 "original_review": {"finding_ids": ["F-1"], "acceptance_gap_ids": []},
                 "prior_verdict_chain": chain,
-                "manifest_roles": {"e" * 64: "fix_diff", "r" * 64: "review_findings"},
+                "manifest_roles": {"e" * 64: "fix_diff", "a" * 64: "review_findings"},
                 "round_anchors": {"anchor_sha": anchor_sha, "previous_result_sha": anchor_sha},
                 "recomputed_result_sha": "5" * 40,
             },
@@ -695,10 +703,10 @@ def semantic_operation_input(
             increment = "@@ -2,2 +2,3 @@\n line2\n+guard\n new3"
         anchor_entry = {"mode": "040000", "type": "tree", "present": True} if variant == "anchor_entry_not_blob" else {"mode": "100644", "type": "blob", "present": True}
         previous_entry = {"mode": "100644", "type": "blob", "present": False} if variant == "path_died_between_rounds" else {"mode": "100644", "type": "blob", "present": True}
-        evidence = "p" * 64 if variant == "evidence_role_violation" else "f" * 64
+        evidence = "d" * 64 if variant == "evidence_role_violation" else "f" * 64
         acceptance_verified = variant != "verified_with_unverified_acceptance"
         gap_ids = ["AC-1"] if variant in {"gap_closed_by_test_receipts", "gap_closed_by_fix_diff_only"} else []
-        gap_evidence = "t" * 64 if variant == "gap_closed_by_test_receipts" else "f" * 64
+        gap_evidence = "c" * 64 if variant == "gap_closed_by_test_receipts" else "f" * 64
         gap_resolutions = [{"acceptance_id": "AC-1", "status": "closed", "summary": "Missing verification delivered", "evidence_sha256": [gap_evidence]}] if gap_ids else []
         verdict_value = "changes_requested" if variant in {"new_finding_anchor_mismatch", "changes_requested_declared", "changes_requested_new_findings_only"} else "verified"
         if variant == "new_finding_anchor_mismatch":
@@ -712,7 +720,7 @@ def semantic_operation_input(
         else:
             new_findings = []
         if variant == "changes_requested_declared":
-            finding_resolutions = [{"finding_id": "F-1", "status": "remaining", "summary": "Fix attempt rejected", "evidence_sha256": ["r" * 64]}]
+            finding_resolutions = [{"finding_id": "F-1", "status": "remaining", "summary": "Fix attempt rejected", "evidence_sha256": ["a" * 64]}]
         else:
             #: ``changes_requested_new_findings_only`` (refreeze §2c D2/D3
             #: legal-path variant) shares this closed resolution: every
@@ -726,12 +734,12 @@ def semantic_operation_input(
         actions, facts, results = (
             [{"command": "validate_post_fix_verdict"}, {"command": "record_review"}],
             {
-                "manifest_roles": {"f" * 64: "fix_diff", "t" * 64: "test_receipts", "p" * 64: "approved_plan", "r" * 64: "review_findings"},
-                "test_receipts": {"t" * 64: {"verification_id": "VR-1"}},
+                "manifest_roles": {"f" * 64: "fix_diff", "c" * 64: "test_receipts", "d" * 64: "approved_plan", "a" * 64: "review_findings"},
+                "test_receipts": {"c" * 64: {"verification_id": "VR-1"}},
                 "plan_tasks": [{"task_id": "T-1", "allowed_paths": [{"path": "src/importer", "path_type": "directory"}], "acceptance_ids": ["AC-1"]}],
                 "plan_verification_ids": {"AC-1": ["VR-1"]},
                 "original_review": {"finding_ids": ["F-1"], "finding_locations": {"F-1": {"path": path, "line_start": 3, "line_end": 4, "anchor_sha": "3" * 40}}, "acceptance_gap_ids": gap_ids},
-                "prior_verdict_chain": [{"sequence": 1, "result_sha": "4" * 40, "finding_resolutions": [{"finding_id": "F-1", "status": "remaining", "summary": "Not yet fixed", "evidence_sha256": ["r" * 64]}], "new_findings": []}],
+                "prior_verdict_chain": [{"sequence": 1, "result_sha": "4" * 40, "finding_resolutions": [{"finding_id": "F-1", "status": "remaining", "summary": "Not yet fixed", "evidence_sha256": ["a" * 64]}], "new_findings": []}],
                 "round_anchors": {"anchor_sha": "3" * 40, "previous_result_sha": "4" * 40},
             },
             [
@@ -2730,7 +2738,7 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
     many("DAL-T-DISPOSITION-001", ["request_changes_findings", "request_changes_gaps"], "G3", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "fixing", None, None, "APPLIED", None, ["fix.requested"])
     many("DAL-T-OPENSET-001", ["carried_finding_omitted", "carried_finding_renamed", "new_finding_id_reused", "verified_with_new_findings", "original_remaining_omitted"], "G3", ["DAL-024", "DAL-030"], "reviewing", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
     many("DAL-T-OPENSET-001", ["init_from_review", "carry_forward_exact"], "G3", ["DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
-    many("DAL-T-OPENSET-001", ["remaining_declared"], "G3", ["DAL-024", "DAL-030"], "reviewing", "fixing", None, None, "APPLIED", None, ["fix.requested"])
+    many("DAL-T-OPENSET-001", ["remaining_declared", "prior_closed_carried_not_touched"], "G3", ["DAL-024", "DAL-030"], "reviewing", "fixing", None, None, "APPLIED", None, ["fix.requested"])
     many("DAL-T-FIXDIFF-001", ["evidence_role_violation", "anchor_entry_not_blob", "path_died_between_rounds", "surviving_set_empty", "increment_missed_surviving_lines", "no_deletion_in_increment", "gap_closed_by_fix_diff_only", "new_finding_anchor_mismatch", "verified_with_unverified_acceptance"], "G3", ["DAL-022", "DAL-024", "DAL-030"], "reviewing", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
     many("DAL-T-FIXDIFF-001", ["verified_clean", "gap_closed_by_test_receipts"], "G3", ["DAL-022", "DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
     many("DAL-T-FIXDIFF-001", ["changes_requested_declared", "changes_requested_new_findings_only"], "G3", ["DAL-022", "DAL-024", "DAL-030"], "reviewing", "fixing", None, None, "APPLIED", None, ["fix.requested"])
@@ -3240,13 +3248,13 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
     fixture_sequences = [fixture for fixture in fixtures.values() if "operation_sequence" in fixture]
     operation_fixture_sequences = [fixture for fixture in fixture_sequences if fixture.get("resolver_sequence_kind") == "operation_commands"]
     transition_fixture_sequences = [fixture for fixture in fixture_sequences if fixture.get("resolver_sequence_kind") == "transition_commands"]
-    if (len(common_specs), len(sequence_specs), len(common_commands), len(sequence_commands), operation_variant_count) != (40, 2, 226, 17, 240):
+    if (len(common_specs), len(sequence_specs), len(common_commands), len(sequence_commands), operation_variant_count) != (40, 2, 227, 17, 241):
         raise ValueError("semantic operation coverage drift")
     if (
         len(fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in fixture_sequences),
         len(operation_fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in operation_fixture_sequences),
         len(transition_fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in transition_fixture_sequences),
-    ) != (241, 245, 240, 243, 1, 2):
+    ) != (242, 246, 241, 244, 1, 2):
         raise ValueError("fixture operation/transition sequence accounting drift")
     forbidden_resolver_keys = {"test_id", "variant_id", "case_id", "injection_point", "injection_occurrence", "expected_result", "expected_receipt_code"}
 

@@ -6,7 +6,8 @@ DAL-T-FIXDIFF-001 (freeze pack `DAL021-024_合同冻结包_v0.1.md` §4–§6). 
 script re-derives every variant's legal outcome from the contract rules
 independently of the generator's own classification, proves that no unrelated
 authority row differs from the generated expectation, then splices only the
-four operation specs and their thirty-four entries/rows into the two static
+four operation specs, their thirty-six oracle entries and the matching
+thirty-six test-manifest rows into the two static
 authorities.  It deliberately cannot rebuild an entire authority.
 """
 
@@ -208,6 +209,7 @@ def verify_open_set(fixtures: dict, oracles: dict) -> None:
         "init_from_review", "carry_forward_exact", "carried_finding_omitted",
         "carried_finding_renamed", "new_finding_id_reused",
         "verified_with_new_findings", "remaining_declared",
+        "original_remaining_omitted", "prior_closed_carried_not_touched",
     ]:
         facts, results = _inputs(fixtures, "DAL-T-OPENSET-001", variant)
         git_executor, reviewer = results
@@ -243,11 +245,20 @@ def verify_open_set(fixtures: dict, oracles: dict) -> None:
         new_ids = {item["finding_id"] for item in verdict["new_findings"]}
         collisions = new_ids & (original_ids | chain_ids)
         unresolved = open_ids - closed - remaining
-        # A carried finding's line must actually be deleted by this round's increment.
+        # §6 L645-651: the increment-deletion check binds a finding THIS
+        # round declares closed to this round's diff. Findings still open
+        # (remaining) and findings already closed by an earlier verdict are
+        # not re-judged (round-3 review B2).
+        open_carried = {
+            item["finding_id"]: item
+            for item in chain_findings
+            if item["finding_id"] in open_ids
+        }
         deleted, _ = _diff_parts(git_executor["increment_diff"])
-        for finding in chain_findings:
+        for finding_id in closed & set(open_carried):
+            finding = open_carried[finding_id]
             if f"old{finding['location']['line_start']}" not in deleted:
-                raise SystemExit(f"OPENSET/{variant}: increment does not delete carried line")
+                raise SystemExit(f"OPENSET/{variant}: increment does not delete closed carried line")
         if verdict["verdict"] == "verified":
             outcome = (
                 "verified"
@@ -278,6 +289,7 @@ FIXDIFF_EXPECTED_RULES = {
     "new_finding_anchor_mismatch": {"new_finding_anchor"},
     "verified_with_unverified_acceptance": {"acceptance"},
     "changes_requested_declared": set(),
+    "changes_requested_new_findings_only": set(),
 }
 
 

@@ -1,5 +1,5 @@
 {
-  "catalog_sha256": "cbff24eb13d612604e161d4cd9977de8fffd29eb2cc59178beb25084a631881f",
+  "catalog_sha256": "3035a26b2e26f3e9bc4981a580e16735ee987070789ff289c164008066fe695e",
   "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
   "fixtures": {
     "dal.fixture/DAL-T-APP-001/concurrent_consume/G1/1.0": {
@@ -24316,7 +24316,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-c136947f64af003b3d211bc6",
+          "idempotency_key": "idem-fdd373325d15937c38a31849",
           "input": {
             "action_sequence": [
               {
@@ -24328,10 +24328,10 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
-                "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "test_receipts",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "approved_plan",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -24371,7 +24371,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -24388,7 +24388,7 @@
                 "previous_result_sha": "4444444444444444444444444444444444444444"
               },
               "test_receipts": {
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
                   "verification_id": "VR-1"
                 }
               }
@@ -24447,7 +24447,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-50557dcce5787c05ffcec2bc",
+          "operation_id": "op-4629eaab8cad4a0c8850ed7c",
           "operation_spec_id": "OP-FIXDIFF-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -24479,7 +24479,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-77bbff88951016f56c7797ac",
+          "idempotency_key": "idem-5b4c2857ac9fa4177a22bb75",
           "input": {
             "action_sequence": [
               {
@@ -24491,10 +24491,10 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
-                "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "test_receipts",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "approved_plan",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -24534,7 +24534,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -24551,7 +24551,7 @@
                 "previous_result_sha": "4444444444444444444444444444444444444444"
               },
               "test_receipts": {
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
                   "verification_id": "VR-1"
                 }
               }
@@ -24588,7 +24588,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -24610,7 +24610,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-861f58064c3ddef24eadf8e2",
+          "operation_id": "op-b4922f333d786829f2c9e80c",
           "operation_spec_id": "OP-FIXDIFF-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -24642,7 +24642,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-31bc2ca06ba24f693f1497a8",
+          "idempotency_key": "idem-b272bf3227059203685f6d1a",
           "input": {
             "action_sequence": [
               {
@@ -24654,10 +24654,10 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
-                "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "test_receipts",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "approved_plan",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -24697,7 +24697,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -24714,7 +24714,7 @@
                 "previous_result_sha": "4444444444444444444444444444444444444444"
               },
               "test_receipts": {
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
                   "verification_id": "VR-1"
                 }
               }
@@ -24787,7 +24787,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-de858c4c2f0f521c78eea61a",
+          "operation_id": "op-b6ac143ec6ba2e91a3ee0bd4",
           "operation_spec_id": "OP-FIXDIFF-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -24819,7 +24819,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-feb409525dad1bc2d7bb9bc3",
+          "idempotency_key": "idem-539978e6cf9f822099a06be9",
           "input": {
             "action_sequence": [
               {
@@ -24831,10 +24831,10 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
-                "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "test_receipts",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "approved_plan",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -24874,7 +24874,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -24891,7 +24891,7 @@
                 "previous_result_sha": "4444444444444444444444444444444444444444"
               },
               "test_receipts": {
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
                   "verification_id": "VR-1"
                 }
               }
@@ -24928,7 +24928,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+                        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
                       ],
                       "finding_id": "F-1",
                       "status": "closed",
@@ -24950,7 +24950,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-f51633f7c796fdc973257272",
+          "operation_id": "op-9f06e7a49e45485488634686",
           "operation_spec_id": "OP-FIXDIFF-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -24982,7 +24982,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-b04f89c914a7e2d253259107",
+          "idempotency_key": "idem-e96e9424c2447fda48b07f3d",
           "input": {
             "action_sequence": [
               {
@@ -24994,10 +24994,10 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
-                "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "test_receipts",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "approved_plan",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [
@@ -25039,7 +25039,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -25056,7 +25056,7 @@
                 "previous_result_sha": "4444444444444444444444444444444444444444"
               },
               "test_receipts": {
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
                   "verification_id": "VR-1"
                 }
               }
@@ -25124,7 +25124,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-84b2ebcf656165ef6e35b36c",
+          "operation_id": "op-66c131c9c251a8cd6a95b08a",
           "operation_spec_id": "OP-FIXDIFF-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -25156,7 +25156,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-4a812264aed240d68f923693",
+          "idempotency_key": "idem-b69ea5adfb311dbcdeb5a312",
           "input": {
             "action_sequence": [
               {
@@ -25168,10 +25168,10 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
-                "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "test_receipts",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "approved_plan",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [
@@ -25213,7 +25213,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -25230,7 +25230,7 @@
                 "previous_result_sha": "4444444444444444444444444444444444444444"
               },
               "test_receipts": {
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
                   "verification_id": "VR-1"
                 }
               }
@@ -25266,7 +25266,7 @@
                     {
                       "acceptance_id": "AC-1",
                       "evidence_sha256": [
-                        "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt"
+                        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                       ],
                       "status": "closed",
                       "summary": "Missing verification delivered"
@@ -25298,7 +25298,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-835dfbe2753fb85453c13095",
+          "operation_id": "op-d3a70f9ea006ac34a7ffff83",
           "operation_spec_id": "OP-FIXDIFF-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -25330,7 +25330,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-35758aaa5d3d37078f2c1978",
+          "idempotency_key": "idem-c7d99bd3a095887858a8478a",
           "input": {
             "action_sequence": [
               {
@@ -25342,10 +25342,10 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
-                "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "test_receipts",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "approved_plan",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -25385,7 +25385,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -25402,7 +25402,7 @@
                 "previous_result_sha": "4444444444444444444444444444444444444444"
               },
               "test_receipts": {
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
                   "verification_id": "VR-1"
                 }
               }
@@ -25461,7 +25461,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-b797a44957259685b4453fc2",
+          "operation_id": "op-0d6779111c15bb5e63962a39",
           "operation_spec_id": "OP-FIXDIFF-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -25493,7 +25493,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-cac8fcf9c2ef9645e13b950f",
+          "idempotency_key": "idem-7f59ad17674cc81e0c71a508",
           "input": {
             "action_sequence": [
               {
@@ -25505,10 +25505,10 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
-                "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "test_receipts",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "approved_plan",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -25548,7 +25548,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -25565,7 +25565,7 @@
                 "previous_result_sha": "4444444444444444444444444444444444444444"
               },
               "test_receipts": {
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
                   "verification_id": "VR-1"
                 }
               }
@@ -25638,7 +25638,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-6881f700ac8ccccfbda742d8",
+          "operation_id": "op-4a809c88a9c29f1b1a6d1e3c",
           "operation_spec_id": "OP-FIXDIFF-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -25670,7 +25670,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-8a35929e512df2b373a02949",
+          "idempotency_key": "idem-199124da69fb13adb29b67f5",
           "input": {
             "action_sequence": [
               {
@@ -25682,10 +25682,10 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
-                "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "test_receipts",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "approved_plan",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -25725,7 +25725,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -25742,7 +25742,7 @@
                 "previous_result_sha": "4444444444444444444444444444444444444444"
               },
               "test_receipts": {
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
                   "verification_id": "VR-1"
                 }
               }
@@ -25801,7 +25801,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-db2f0abf8bbc3bc02d4f5a71",
+          "operation_id": "op-99e449bb0274fd775caaedc4",
           "operation_spec_id": "OP-FIXDIFF-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -25833,7 +25833,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-d9eab0f8a40b1955a3b8581f",
+          "idempotency_key": "idem-9c24d0d55be4bb4bc2deba59",
           "input": {
             "action_sequence": [
               {
@@ -25845,10 +25845,10 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
-                "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "test_receipts",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "approved_plan",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -25888,7 +25888,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -25905,7 +25905,7 @@
                 "previous_result_sha": "4444444444444444444444444444444444444444"
               },
               "test_receipts": {
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
                   "verification_id": "VR-1"
                 }
               }
@@ -25964,7 +25964,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-b0e00e00d82789d3d73ee6d0",
+          "operation_id": "op-2935f66aec6bb5068358d74c",
           "operation_spec_id": "OP-FIXDIFF-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -25996,7 +25996,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-aaa69c3397a261125cb96273",
+          "idempotency_key": "idem-15087ef5e71e86a21dc12a87",
           "input": {
             "action_sequence": [
               {
@@ -26008,10 +26008,10 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
-                "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "test_receipts",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "approved_plan",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -26051,7 +26051,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -26068,7 +26068,7 @@
                 "previous_result_sha": "4444444444444444444444444444444444444444"
               },
               "test_receipts": {
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
                   "verification_id": "VR-1"
                 }
               }
@@ -26127,7 +26127,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-2dd773316c88f63807c496ca",
+          "operation_id": "op-819f5290014445b586f983df",
           "operation_spec_id": "OP-FIXDIFF-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -26159,7 +26159,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-d20b9b6ce155713f22023e0f",
+          "idempotency_key": "idem-b94959691d6100c5dcec0f4d",
           "input": {
             "action_sequence": [
               {
@@ -26171,10 +26171,10 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
-                "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "test_receipts",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "approved_plan",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -26214,7 +26214,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -26231,7 +26231,7 @@
                 "previous_result_sha": "4444444444444444444444444444444444444444"
               },
               "test_receipts": {
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
                   "verification_id": "VR-1"
                 }
               }
@@ -26290,7 +26290,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-c27b7c87eca7fe0e44b684ce",
+          "operation_id": "op-1194acc8148960faa02be077",
           "operation_spec_id": "OP-FIXDIFF-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -26322,7 +26322,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-225f41aba3ac959b3ddcdea0",
+          "idempotency_key": "idem-e304cdbbb818baedd2ca468b",
           "input": {
             "action_sequence": [
               {
@@ -26334,10 +26334,10 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff",
-                "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp": "approved_plan",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings",
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": "test_receipts"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": "test_receipts",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": "approved_plan",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -26377,7 +26377,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -26394,7 +26394,7 @@
                 "previous_result_sha": "4444444444444444444444444444444444444444"
               },
               "test_receipts": {
-                "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt": {
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
                   "verification_id": "VR-1"
                 }
               }
@@ -26453,7 +26453,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-1ffa1476be47a6b05a7b09b3",
+          "operation_id": "op-9b711891b87d7b2631a6a6f6",
           "operation_spec_id": "OP-FIXDIFF-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -28799,7 +28799,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-15b0d6e4b4d9792fc277d8d5",
+          "idempotency_key": "idem-dd6c0b4b6bf8696b354a5661",
           "input": {
             "action_sequence": [
               {
@@ -28811,8 +28811,8 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -28902,7 +28902,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-97898436116ccb7707596158",
+          "operation_id": "op-b6909ad5f1c4329e15f71d31",
           "operation_spec_id": "OP-OPENSET-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -28934,7 +28934,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-a557fc95502f52d42f92ba27",
+          "idempotency_key": "idem-bd98138c0db33aa2a6469fea",
           "input": {
             "action_sequence": [
               {
@@ -28946,8 +28946,8 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -29046,7 +29046,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-bb0cae18e85141ac4cb97cd7",
+          "operation_id": "op-541760386742979c8521bc84",
           "operation_spec_id": "OP-OPENSET-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -29078,7 +29078,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-491d5e8d4a816a2199fe5de5",
+          "idempotency_key": "idem-a0091f3d93d3a37cd1cf9dfe",
           "input": {
             "action_sequence": [
               {
@@ -29090,8 +29090,8 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -29190,7 +29190,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-fd70b8c77b19707fd6f15408",
+          "operation_id": "op-39fb8ffe665b2435be0edd4e",
           "operation_spec_id": "OP-OPENSET-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -29222,7 +29222,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-c626a4270c80c1ad3e724d6d",
+          "idempotency_key": "idem-dc44eb483c4e12e4ff6b337e",
           "input": {
             "action_sequence": [
               {
@@ -29234,8 +29234,8 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -29304,7 +29304,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-e270fcb58e6a882d35860978",
+          "operation_id": "op-ae43c564f34181ea9802ca69",
           "operation_spec_id": "OP-OPENSET-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -29336,7 +29336,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-98a9cab9883de69ce2beecad",
+          "idempotency_key": "idem-d9b7662cf21a97e4e37f42d7",
           "input": {
             "action_sequence": [
               {
@@ -29348,8 +29348,8 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -29462,7 +29462,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-a294f7b5079ff730e1f199a5",
+          "operation_id": "op-e699aa0db83c332e9d898a89",
           "operation_spec_id": "OP-OPENSET-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -29494,7 +29494,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-50e87d28309e62f87930b00c",
+          "idempotency_key": "idem-4d8163e545af074fb3c625e2",
           "input": {
             "action_sequence": [
               {
@@ -29506,8 +29506,8 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -29520,7 +29520,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-1",
                       "status": "remaining",
@@ -29606,7 +29606,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-0ecac89d27f0c2b51bce1cd1",
+          "operation_id": "op-8fe177cb521b5fb4a3d09103",
           "operation_spec_id": "OP-OPENSET-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -29624,6 +29624,150 @@
       "transition_registry_sha256": null,
       "variant_id": "original_remaining_omitted"
     },
+    "dal.fixture/DAL-T-OPENSET-001/prior_closed_carried_not_touched/G3/1.0": {
+      "coverage_ref": null,
+      "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
+      "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
+      "injection_operation": {
+        "injection_point": "dal.inject/DAL-T-OPENSET-001/prior_closed_carried_not_touched/G3/1.0",
+        "occurrence": 1,
+        "operation_id": "prior_closed_carried_not_touched",
+        "schema_version": "dal.test-injection/1.0"
+      },
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "review-controller",
+          "idempotency_key": "idem-cce07f36b45c664adcbe3d61",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "derive_open_finding_set"
+              },
+              {
+                "command": "record_review"
+              }
+            ],
+            "authoritative_facts": {
+              "manifest_roles": {
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff"
+              },
+              "original_review": {
+                "acceptance_gap_ids": [],
+                "finding_ids": [
+                  "F-1"
+                ]
+              },
+              "prior_verdict_chain": [
+                {
+                  "finding_resolutions": [
+                    {
+                      "evidence_sha256": [
+                        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                      ],
+                      "finding_id": "F-1",
+                      "status": "closed",
+                      "summary": "F-1 covered this round"
+                    }
+                  ],
+                  "new_findings": [
+                    {
+                      "category": "correctness",
+                      "failure_scenario": "Replay duplicates rows again",
+                      "finding_id": "F-101",
+                      "location": {
+                        "anchor_sha": "4444444444444444444444444444444444444444",
+                        "line_end": 2,
+                        "line_start": 2,
+                        "path": "src/importer/run.py"
+                      },
+                      "severity": "P2",
+                      "summary": "Regression in replay"
+                    }
+                  ],
+                  "result_sha": "4444444444444444444444444444444444444444",
+                  "sequence": 1
+                }
+              ],
+              "recomputed_result_sha": "5555555555555555555555555555555555555555",
+              "round_anchors": {
+                "anchor_sha": "4444444444444444444444444444444444444444",
+                "previous_result_sha": "4444444444444444444444444444444444444444"
+              }
+            },
+            "injected_results": [
+              {
+                "anchor_translation_diff": null,
+                "anchor_tree_entry": {
+                  "mode": "100644",
+                  "present": true,
+                  "type": "blob"
+                },
+                "current_tree_entry": {
+                  "mode": "100644",
+                  "present": true,
+                  "type": "blob"
+                },
+                "increment_diff": "@@ -1,5 +1,5 @@\n line1\n line2\n-old3\n+new3\n line4\n line5",
+                "path": "src/importer/run.py",
+                "previous_tree_entry": {
+                  "mode": "100644",
+                  "present": true,
+                  "type": "blob"
+                },
+                "source": "git_executor",
+                "status": "completed"
+              },
+              {
+                "source": "reviewer",
+                "status": "completed",
+                "verdict": {
+                  "acceptance_gap_resolutions": [],
+                  "acceptance_verified": true,
+                  "finding_resolutions": [
+                    {
+                      "evidence_sha256": [
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      ],
+                      "finding_id": "F-101",
+                      "status": "remaining",
+                      "summary": "F-101 still open"
+                    }
+                  ],
+                  "new_findings": [],
+                  "result_sha": "5555555555555555555555555555555555555555",
+                  "schema_version": "dal.post-fix-verdict/1.0",
+                  "verdict": "changes_requested"
+                }
+              }
+            ],
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "reviewing",
+              "version": 7
+            }
+          },
+          "operation_id": "op-c53c0d5bb8f32be4fe385caa",
+          "operation_spec_id": "OP-OPENSET-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "resolver_sequence_kind": "operation_commands",
+      "run_gate": "G3",
+      "schema_version": "dal.test-fixture/1.0",
+      "test_id": "DAL-T-OPENSET-001",
+      "transition_registry_sha256": null,
+      "variant_id": "prior_closed_carried_not_touched"
+    },
     "dal.fixture/DAL-T-OPENSET-001/remaining_declared/G3/1.0": {
       "coverage_ref": null,
       "evidence_registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
@@ -29638,7 +29782,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-66bbe133ce59d6ba011eea00",
+          "idempotency_key": "idem-e2404131460b546e0549b5a4",
           "input": {
             "action_sequence": [
               {
@@ -29650,8 +29794,8 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -29728,7 +29872,7 @@
                   "finding_resolutions": [
                     {
                       "evidence_sha256": [
-                        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                       ],
                       "finding_id": "F-101",
                       "status": "remaining",
@@ -29750,7 +29894,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-b51315b2243a8cc8c3521e11",
+          "operation_id": "op-61a9b14f24aa0fb951beb207",
           "operation_spec_id": "OP-OPENSET-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -29782,7 +29926,7 @@
         {
           "actor_type": "service",
           "evidence_source_type": "review-controller",
-          "idempotency_key": "idem-14a354bfe20c7ee69e605046",
+          "idempotency_key": "idem-8b14e08f918db4b694703ba9",
           "input": {
             "action_sequence": [
               {
@@ -29794,8 +29938,8 @@
             ],
             "authoritative_facts": {
               "manifest_roles": {
-                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff",
-                "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr": "review_findings"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "review_findings",
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": "fix_diff"
               },
               "original_review": {
                 "acceptance_gap_ids": [],
@@ -29908,7 +30052,7 @@
               "version": 7
             }
           },
-          "operation_id": "op-eb0dde8e16a084c95ee28603",
+          "operation_id": "op-a2f59cdaf948664a10d43eaa",
           "operation_spec_id": "OP-OPENSET-001",
           "schema_version": "dal.test-operation-command/1.0"
         }
@@ -119722,7 +119866,7 @@
     }
   },
   "guard_registry_sha256": "25c46e868a304f88d3df4c2236acb8a0c9d6a373e5c5796f0f9e10a400f445d7",
-  "operation_registry_sha256": "d9f2df289c15af718646a4fc28b649ad9e90c18a33ca49b4cd071cdbc0341235",
+  "operation_registry_sha256": "f04fd717f556e8f7a1bbb8b0aa1a2cb52ebb37995b7f6d6cf663f8340911f0a2",
   "schema_version": "dal.test-fixture-catalog/1.0",
   "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06"
 }

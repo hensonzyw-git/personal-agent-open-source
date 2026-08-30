@@ -1,6 +1,6 @@
 """DAL-024: carry-forward open finding set — `DAL-T-OPENSET-001`.
 
-Eight frozen G3 variants, all offline replayable. The controller re-derives
+Nine frozen G3 variants, all offline replayable. The controller re-derives
 the open finding set per round (the original review's findings, minus the
 findings each prior verdict resolved ``closed``, plus each prior verdict's new
 findings — refrozen 2026-08-29, evidence
@@ -13,7 +13,10 @@ omitted/renamed carried findings, an original finding silently dropped behind
 the chain (`original_remaining_omitted`), an ID reuse, or a `verified`
 verdict that still carries new findings — blocks the feature
 (`reviewing → needs_human`, `feature.blocked`, `PROVIDER_CONTRACT_FAILURE`,
-seven-write block set).
+seven-write block set). The increment-deletion check binds only the findings
+THIS round declares closed to this round's diff (§6 L645–651;
+`prior_closed_carried_not_touched`: a carried finding closed by an earlier
+verdict may stay untouched — round-3 review B2).
 
 No `dal.test-receipt/1.0` PASS is claimed here — that is §9 item 3's separate,
 gated deliverable.
@@ -48,6 +51,7 @@ FROZEN_VARIANTS: set[str] = {
     "new_finding_id_reused",
     "verified_with_new_findings",
     "original_remaining_omitted",
+    "prior_closed_carried_not_touched",
 }
 
 
@@ -143,6 +147,45 @@ def test_malformed_envelopes_are_stable_invalid_arguments(
     command = _command(contracts, "init_from_review")
     command["input"]["target"]["state"] = "coding"
     cases.append(("target outside reviewing", command))
+
+    # Round-3 review B1: chain members are trusted controller state, so a
+    # malformed member must fail closed as INVALID_ARGUMENT — not skip the
+    # member in the derivation, and never leak a TypeError/AttributeError.
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["authoritative_facts"]["prior_verdict_chain"][0][
+        "finding_resolutions"
+    ].append({"finding_id": "F-1", "status": "closed"})
+    cases.append(("chain resolution missing fields", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["authoritative_facts"]["prior_verdict_chain"][0][
+        "finding_resolutions"
+    ][0]["extra"] = "x"
+    cases.append(("chain resolution unknown field", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["authoritative_facts"]["prior_verdict_chain"][0][
+        "finding_resolutions"
+    ].append(None)
+    cases.append(("chain resolution None member", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["authoritative_facts"]["prior_verdict_chain"][0][
+        "finding_resolutions"
+    ] = "closed"
+    cases.append(("chain resolutions not a list", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["authoritative_facts"]["prior_verdict_chain"][0][
+        "new_findings"
+    ].append("F-101")
+    cases.append(("chain new finding not an object", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["authoritative_facts"]["prior_verdict_chain"][0][
+        "new_findings"
+    ][0]["location"]["line_start"] = "2"
+    cases.append(("chain new finding string line", command))
 
     for label, malformed in cases:
         with pytest.raises(DalError) as raised:

@@ -1280,6 +1280,10 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
     drift = _chain_member_drift(pfv_chain)
     if drift is not None:
         raise _invalid(f"post_fix_verdict_facts {drift}")
+    openset_chain = openset_facts["prior_verdict_chain"]
+    drift = _chain_member_drift(openset_chain)
+    if drift is not None:
+        raise _invalid(f"open_finding_set_facts {drift}")
     violations = _carry_forward_violations(original_ids, pfv_chain, verdict)
     verified_drift = _verified_semantics(verdict)
     if verified_drift is not None:

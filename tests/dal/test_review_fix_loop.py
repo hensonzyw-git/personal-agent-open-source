@@ -65,6 +65,7 @@ FIX2 = _git_sha("fix-2")
 FIX3 = _git_sha("fix-3")
 FIX4 = _git_sha("fix-4")
 E_FIX = _sha256_hex("evidence", "fix-diff-1")
+E_FIX2 = _sha256_hex("evidence", "fix-diff-2")
 
 BASE_WRITE_SET = ("aggregate", "business_event", "transition_receipt", "audit")
 BLOCK_WRITE_SET = BASE_WRITE_SET + (
@@ -195,8 +196,12 @@ def _finding(finding_id: str, anchor: str, line: int) -> dict:
 
 
 def _resolution(finding_id: str, status: str) -> dict:
+    #: Distinct evidence digest per resolution — the verdict drift check
+    #: rejects two resolutions citing the same first digest.
     return {
-        "evidence_sha256": [E_FIX],
+        "evidence_sha256": [
+            E_FIX if finding_id == "F-001" else E_FIX2,
+        ],
         "finding_id": finding_id,
         "status": status,
         "summary": f"{finding_id} {status}",
@@ -274,7 +279,7 @@ def _pfv_facts(
     count: int, anchors: dict, chain: list[dict], finding_ids: list[str]
 ) -> dict:
     return {
-        "manifest_roles": {E_FIX: "fix_diff"},
+        "manifest_roles": {E_FIX: "fix_diff", E_FIX2: "fix_diff"},
         "original_review": {
             "acceptance_gap_ids": [],
             "finding_ids": finding_ids,
@@ -310,7 +315,7 @@ def _openset_facts(
     finding_ids: list[str],
 ) -> dict:
     return {
-        "manifest_roles": {E_FIX: "fix_diff"},
+        "manifest_roles": {E_FIX: "fix_diff", E_FIX2: "fix_diff"},
         "original_review": {"acceptance_gap_ids": [], "finding_ids": finding_ids},
         "prior_verdict_chain": chain,
         "recomputed_result_sha": recomputed,
@@ -1466,24 +1471,90 @@ def test_chain_resolving_an_unknown_finding_blocks() -> None:
     assert any("outside the open set" in reason for reason in result.reasons)
 
 
-def test_changes_requested_closing_everything_with_a_new_regression_blocks() -> None:
-    """Frozen-evaluator behaviour, documented: §6 makes a non-empty
-    ``new_findings`` the one legal shape of ``changes_requested`` and does
-    not require a remaining finding, but the frozen
-    ``validate_post_fix_verdict`` reaches ``fixing`` only when a ``remaining``
-    resolution exists, so a verdict that closed everything and reports only
-    a new regression blocks. Fail-closed either way; the frozen evaluator's
-    two §6 divergences (this and the B5 anchor direction) are Henson's
-    refreeze decision, tracked in the evidence."""
+def test_malformed_openset_chain_members_raise_before_dispatch() -> None:
+    """Round-3 review B1: the openset sub-fact's chain members are trusted
+    controller state, so a malformed member is controller drift and must
+    raise ``INVALID_ARGUMENT`` — not pass through the pre-flight untouched
+    and crash (or silently skip the member) inside the frozen evaluator."""
+    cases: list[tuple[str, dict]] = []
+
+    facts = _close_facts(2)
+    facts["open_finding_set_facts"]["prior_verdict_chain"][0][
+        "finding_resolutions"
+    ].append({"finding_id": "F-001", "status": "closed"})
+    cases.append(("missing fields", facts))
+
+    facts = _close_facts(2)
+    facts["open_finding_set_facts"]["prior_verdict_chain"][0][
+        "finding_resolutions"
+    ][0]["extra"] = "x"
+    cases.append(("unknown field", facts))
+
+    facts = _close_facts(2)
+    facts["open_finding_set_facts"]["prior_verdict_chain"][0][
+        "finding_resolutions"
+    ].append(None)
+    cases.append(("None member", facts))
+
+    facts = _close_facts(2)
+    facts["open_finding_set_facts"]["prior_verdict_chain"][0][
+        "finding_resolutions"
+    ] = "closed"
+    cases.append(("not a list", facts))
+
+    facts = _close_facts(2)
+    facts["open_finding_set_facts"]["prior_verdict_chain"][0][
+        "new_findings"
+    ].append("F-100")
+    cases.append(("new finding not an object", facts))
+
+    for label, drifted in cases:
+        with pytest.raises(DalError) as raised:
+            close_review_fix_round(drifted)
+        assert raised.value.code is DalErrorCode.INVALID_ARGUMENT, label
+
+
+def test_prior_closed_carried_finding_needs_no_new_deletion() -> None:
+    """Round-3 review B2: the increment-deletion check binds only findings
+    THIS round declares ``closed`` (§6 L645–651). A carried finding resolved
+    ``remaining`` here survives its round's diff untouched and the round
+    still reaches ``fixing`` legally — the pre-fix check would have demanded
+    its deletion because it iterated every chain finding."""
     facts = _close_facts(
         2,
         decl="changes_requested",
-        resolutions=[_resolution("F-001", "closed")],
-        new_findings=[_finding("F-100", FIX1, 7)],
+        resolutions=[
+            _resolution("F-001", "remaining"),
+            _resolution("F-100", "remaining"),
+        ],
     )
+    # V_1 introduced F-100 as a regression (anchor FIX1 = V_1's result_sha),
+    # so both sub-evaluators' chains carry it and it joins the open set.
+    facts["post_fix_verdict_facts"]["prior_verdict_chain"][0][
+        "new_findings"
+    ] = [_finding("F-100", FIX1, 5)]
+    facts["open_finding_set_facts"]["prior_verdict_chain"][0][
+        "new_findings"
+    ] = [_finding("F-100", FIX1, 5)]
+    # The golden increment deletes old5 (F-001's line, left remaining here)
+    # and nothing else. F-100's own line is 5 in its anchor tree too, so
+    # rewrite its location to line 6: old6 is never deleted, and the round
+    # must still be legal.
+    facts["git_result"]["increment_diff"] = "@@ -5,1 +5,1 @@\n-old5\n+new5"
+    for sub_facts in (
+        facts["post_fix_verdict_facts"],
+        facts["open_finding_set_facts"],
+    ):
+        sub_facts["prior_verdict_chain"][0]["new_findings"][0]["location"][
+            "line_start"
+        ] = 6
+        sub_facts["prior_verdict_chain"][0]["new_findings"][0]["location"][
+            "line_end"
+        ] = 6
     result = close_review_fix_round(facts)
-    assert result.final_state == "needs_human"
-    assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE"
+    assert result.final_state == "fixing"
+    assert result.event_trace == ("fix.requested",)
+    assert result.round_no == 3
 
 
 def test_changes_requested_with_remaining_closes_to_fixing() -> None:

@@ -278,9 +278,79 @@ def _validate_command(command: dict[str, Any]) -> None:
     chain = facts.get("prior_verdict_chain")
     if not isinstance(chain, list):
         raise _invalid("prior_verdict_chain must be a list")
-    for entry in chain:
+    for index, entry in enumerate(chain):
         if not isinstance(entry, dict) or frozenset(entry) != CHAIN_ENTRY_FIELDS:
             raise _invalid("prior_verdict_chain entry shape is not closed")
+        if not isinstance(entry["finding_resolutions"], list):
+            raise _invalid(
+                f"prior_verdict_chain[{index}] finding_resolutions must be a list"
+            )
+        for member_index, item in enumerate(entry["finding_resolutions"]):
+            if not isinstance(item, dict) or frozenset(item) != RESOLUTION_FIELDS:
+                raise _invalid(
+                    f"prior_verdict_chain[{index}] finding_resolutions[{member_index}] "
+                    "shape is not closed"
+                )
+            if item["status"] not in ("closed", "remaining"):
+                raise _invalid(
+                    f"prior_verdict_chain[{index}] finding_resolutions[{member_index}] "
+                    "status is outside the closed set"
+                )
+            if not isinstance(item["summary"], str) or not item["summary"]:
+                raise _invalid(
+                    f"prior_verdict_chain[{index}] finding_resolutions[{member_index}] "
+                    "summary must be a non-empty string"
+                )
+            evidence = item["evidence_sha256"]
+            if not isinstance(evidence, list) or not evidence:
+                raise _invalid(
+                    f"prior_verdict_chain[{index}] finding_resolutions[{member_index}] "
+                    "evidence_sha256 is empty"
+                )
+            if not all(_is_sha256_hex(digest) for digest in evidence):
+                raise _invalid(
+                    f"prior_verdict_chain[{index}] finding_resolutions[{member_index}] "
+                    "evidence_sha256 is malformed"
+                )
+        if not isinstance(entry["new_findings"], list):
+            raise _invalid(
+                f"prior_verdict_chain[{index}] new_findings must be a list"
+            )
+        for member_index, item in enumerate(entry["new_findings"]):
+            if not isinstance(item, dict) or frozenset(item) != NEW_FINDING_FIELDS:
+                raise _invalid(
+                    f"prior_verdict_chain[{index}] new_findings[{member_index}] "
+                    "shape is not closed"
+                )
+            location = item["location"]
+            if not isinstance(location, dict) or frozenset(location) != LOCATION_FIELDS:
+                raise _invalid(
+                    f"prior_verdict_chain[{index}] new_findings[{member_index}] "
+                    "location shape is not closed"
+                )
+            for field in ("category", "severity", "summary", "failure_scenario"):
+                if not isinstance(item[field], str) or not item[field]:
+                    raise _invalid(
+                        f"prior_verdict_chain[{index}] new_findings[{member_index}] "
+                        f"{field} must be a non-empty string"
+                    )
+            if not _is_git_sha_hex(location["anchor_sha"]):
+                raise _invalid(
+                    f"prior_verdict_chain[{index}] new_findings[{member_index}] "
+                    "location anchor_sha must be a 40-char git sha"
+                )
+            if not isinstance(location["path"], str) or not location["path"]:
+                raise _invalid(
+                    f"prior_verdict_chain[{index}] new_findings[{member_index}] "
+                    "location path must be a non-empty string"
+                )
+            for field in ("line_start", "line_end"):
+                line = location[field]
+                if not _is_non_negative_int(line):
+                    raise _invalid(
+                        f"prior_verdict_chain[{index}] new_findings[{member_index}] "
+                        f"location {field} must be a line number"
+                    )
 
     results = payload.get("injected_results")
     if not isinstance(results, list) or len(results) != 2:
@@ -378,11 +448,22 @@ def _derive(facts: dict[str, Any], git_result: dict[str, Any], verdict: dict[str
     unresolved = open_ids - closed - remaining
 
     deleted = _deleted_lines(git_result["increment_diff"])
-    for finding in chain_findings:
-        location = finding.get("location")
+    #: §6 L645–651: the increment-deletion check binds a finding THIS round
+    #: declares ``closed`` to this round's diff. Findings still open
+    #: (remaining) and findings already closed by an earlier verdict are not
+    #: re-judged — a remaining finding legitimately survives this round's
+    #: diff, and a previously closed finding may legitimately be untouched
+    #: now (round-3 review B2).
+    open_carried = {
+        item["finding_id"]: item
+        for item in chain_findings
+        if isinstance(item, dict) and item["finding_id"] in open_ids
+    }
+    for finding_id in closed & set(open_carried):
+        location = open_carried[finding_id].get("location")
         line_start = location.get("line_start") if isinstance(location, dict) else None
         if f"old{line_start}" not in deleted:
-            reasons.append("the increment does not delete a carried finding's line")
+            reasons.append("the increment does not delete a closed carried finding's line")
 
     if unknown:
         reasons.append("a resolution references a finding outside the open set")

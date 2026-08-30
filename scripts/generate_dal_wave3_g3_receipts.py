@@ -111,7 +111,7 @@ EXPECTED_G3_VARIANTS: dict[str, frozenset[str]] = {
             "init_from_review", "carry_forward_exact", "remaining_declared",
             "carried_finding_omitted", "carried_finding_renamed",
             "new_finding_id_reused", "verified_with_new_findings",
-            "original_remaining_omitted",
+            "original_remaining_omitted", "prior_closed_carried_not_touched",
         }
     ),
     "DAL-T-FIXDIFF-001": frozenset(
