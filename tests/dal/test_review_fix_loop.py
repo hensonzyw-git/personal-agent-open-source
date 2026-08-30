@@ -1105,6 +1105,128 @@ def test_close_binds_sub_fact_chains_to_recorded_history(mutation: str) -> None:
     assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "pfv_value_empty_list",
+        "pfv_value_bool",
+        "pfv_value_none",
+        "pfv_value_int",
+        "pfv_value_bytes",
+        "openset_value_empty_list",
+        "roles_key_not_digest",
+        "roles_value_unknown",
+    ],
+)
+def test_drifted_manifest_role_members_fail_closed(mutation: str) -> None:
+    """Round-6 review F1: the evidence-role checks consume the role maps'
+    members directly (``roles.get(digest)`` membership), so a member drift —
+    a non-hashable value (would leak ``TypeError: unhashable type``), a
+    hashable-but-disallowed value (would be mis-classified as a provider
+    contract failure), or a garbage key (would silently never match a cited
+    digest) — is controller drift and must raise INVALID_ARGUMENT before any
+    provider judgment. ``isinstance(map, dict)`` alone cannot catch these."""
+    facts = _close_facts(1)
+    if mutation == "roles_key_not_digest":
+        facts["post_fix_verdict_facts"]["manifest_roles"]["not-a-digest"] = "fix_diff"
+    elif mutation == "roles_value_unknown":
+        facts["post_fix_verdict_facts"]["manifest_roles"][E_FIX] = "free_form"
+    else:
+        side, value_class = mutation.split("_", 1)
+        value = {
+            "value_empty_list": [],
+            "value_bool": True,
+            "value_none": None,
+            "value_int": 123,
+            "value_bytes": b"fix_diff",
+        }[value_class]
+        sub = (
+            "post_fix_verdict_facts"
+            if side == "pfv"
+            else "open_finding_set_facts"
+        )
+        facts[sub]["manifest_roles"][E_FIX] = value
+    with pytest.raises(DalError) as raised:
+        close_review_fix_round(facts)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT, mutation
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "verdict_resolution_status_list",
+        "verdict_resolution_status_dict",
+        "verdict_gap_resolution_status_list",
+        "chain_resolution_status_list",
+        "record_verdict_list",
+        "record_verification_status_list",
+        "record_verification_status_dict",
+    ],
+)
+def test_unhashable_enum_values_fail_closed(mutation: str) -> None:
+    """Round-6 review F2: every closed-set membership hashes the value
+    first, so an unhashable enum value (list/dict) must be guarded by the
+    string type check — the provider's resolution status lands the frozen
+    contract block, trusted controller state (chain members, history
+    records, the latest verification status) raises INVALID_ARGUMENT —
+    never a bare ``TypeError: unhashable type``."""
+    if mutation.startswith("verdict_"):
+        facts = _close_facts(1)
+        verdict = facts["reviewer_result"]["verdict"]
+        if mutation == "verdict_resolution_status_list":
+            verdict["finding_resolutions"][0]["status"] = ["closed"]
+        elif mutation == "verdict_resolution_status_dict":
+            verdict["finding_resolutions"][0]["status"] = {"closed": True}
+        elif mutation == "verdict_gap_resolution_status_list":
+            verdict["acceptance_gap_resolutions"] = [
+                _gap_resolution("AC-1", ["closed"])  # type: ignore[arg-type]
+            ]
+        result = close_review_fix_round(facts)
+        assert result.final_state == "needs_human", mutation
+        assert result.final_reason_code == "PROVIDER_CONTRACT_FAILURE", mutation
+        assert len(result.reasons) == 1, mutation
+        return
+    facts = _close_facts(2)
+    if mutation == "chain_resolution_status_list":
+        facts["post_fix_verdict_facts"]["prior_verdict_chain"][0][
+            "finding_resolutions"
+        ][0]["status"] = ["closed"]
+    elif mutation == "record_verdict_list":
+        facts["round_records"][0]["verdict"] = ["changes_requested"]
+    elif mutation == "record_verification_status_list":
+        facts["round_records"][0]["verification_status"] = ["succeeded"]
+    elif mutation == "record_verification_status_dict":
+        facts["round_records"][0]["verification_status"] = {"succeeded": True}
+    with pytest.raises(DalError) as raised:
+        close_review_fix_round(facts)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT, mutation
+
+
+def test_latest_verification_status_unhashable_raises() -> None:
+    """Round-6 review F2: the open gate's closed-set membership on
+    ``latest_verification_status`` must be guarded by the string type check —
+    trusted controller state raises INVALID_ARGUMENT, not a TypeError."""
+    facts = _open_facts(1)
+    facts["latest_verification_status"] = ["succeeded"]
+    with pytest.raises(DalError) as raised:
+        open_review_fix_round(facts)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
+def test_controller_drift_is_not_masked_by_provider_drift() -> None:
+    """Round-6 review F3: trusted-state validation precedes every provider
+    judgment. A broken chain member plus a separately malformed verdict must
+    still raise INVALID_ARGUMENT — a provider contract block must never mask
+    controller drift (the single-drift case is covered by the B2 binding and
+    chain-member tests; this is the double-malformation companion)."""
+    facts = _close_facts(2)
+    facts["post_fix_verdict_facts"]["prior_verdict_chain"][0] = None
+    facts["reviewer_result"]["verdict"]["finding_resolutions"] = [None]
+    with pytest.raises(DalError) as raised:
+        close_review_fix_round(facts)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
 # --- F. module hygiene -------------------------------------------------------
 
 

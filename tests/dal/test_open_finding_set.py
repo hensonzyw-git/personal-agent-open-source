@@ -321,6 +321,65 @@ def test_crash_shaped_verdict_members_block(contracts: FrozenContracts) -> None:
     verdict["new_findings"] = [finding]
     mutated.append(("new finding extra field", command))
 
+    # Round-6 review F5: the closed-shape test on location is not enough —
+    # the derivation and the contract checks consume the location values
+    # (path, anchor_sha, line numbers), so a drifted value class must block,
+    # never ride into a legal ``fixing`` outcome on the direct dispatch path.
+    for field, value in (
+        ("path", {}),
+        ("anchor_sha", {}),
+        ("line_start", {}),
+        ("line_end", {}),
+    ):
+        command = _command(contracts, "carry_forward_exact")
+        facts = command["input"]["authoritative_facts"]
+        verdict = command["input"]["injected_results"][1]["verdict"]
+        verdict["verdict"] = "changes_requested"
+        verdict["finding_resolutions"] = []
+        verdict["new_findings"] = [
+            {
+                "finding_id": "F-9",
+                "severity": "P2",
+                "category": "correctness",
+                "summary": "Regression",
+                "failure_scenario": "Replay duplicates rows",
+                "location": {
+                    "path": "src/importer/run.py",
+                    "line_start": 2,
+                    "line_end": 2,
+                    "anchor_sha": verdict["result_sha"],
+                },
+            }
+        ]
+        verdict["new_findings"][0]["location"][field] = value
+        mutated.append((f"new finding location {field} not a {type(value).__name__} guard", command))
+
+    # Round-6 review F5 (companion): the new finding's string fields feed
+    # the same untrusted surface and must be value-checked too.
+    for field in ("category", "severity", "summary", "failure_scenario"):
+        command = _command(contracts, "carry_forward_exact")
+        facts = command["input"]["authoritative_facts"]
+        verdict = command["input"]["injected_results"][1]["verdict"]
+        verdict["verdict"] = "changes_requested"
+        verdict["finding_resolutions"] = []
+        verdict["new_findings"] = [
+            {
+                "finding_id": "F-9",
+                "severity": "P2",
+                "category": "correctness",
+                "summary": "Regression",
+                "failure_scenario": "Replay duplicates rows",
+                "location": {
+                    "path": "src/importer/run.py",
+                    "line_start": 2,
+                    "line_end": 2,
+                    "anchor_sha": verdict["result_sha"],
+                },
+            }
+        ]
+        verdict["new_findings"][0][field] = {}
+        mutated.append((f"new finding {field} not a string", command))
+
     for label, malformed in mutated:
         result = open_finding_set_policy.derive_open_finding_set(malformed)
         assert result.final_state == "needs_human", label

@@ -370,14 +370,19 @@ def _validate_record(record: Any, index: int) -> None:
             raise _invalid(
                 f"round_records[{index}] {field} must be 64-char lowercase hex"
             )
-    if record["verdict"] not in RECORD_VERDICTS:
+    #: Membership in a frozenset hashes the value first; an unhashable
+    #: verdict/status (list/dict) is trusted controller state and must fail
+    #: closed as INVALID_ARGUMENT, never a TypeError (round-6 review F2).
+    if not _is_non_empty_str(record["verdict"]) or record["verdict"] not in RECORD_VERDICTS:
         raise _invalid(f"round_records[{index}] verdict is outside the closed set")
     if record["verdict"] == "verified":
         raise _invalid(
             f"round_records[{index}] records a verified review: a verified review "
             "ends the loop and never enters the completed-cycle history"
         )
-    if record["verification_status"] not in VERIFICATION_STATUSES:
+    if not _is_non_empty_str(record["verification_status"]) or record[
+        "verification_status"
+    ] not in VERIFICATION_STATUSES:
         raise _invalid(
             f"round_records[{index}] verification_status is outside the closed set"
         )
@@ -635,7 +640,10 @@ def _budget_and_verification(
             ),
         )
     status = facts["latest_verification_status"]
-    if status not in VERIFICATION_STATUSES:
+    #: Trusted controller state: an unhashable value must raise
+    #: INVALID_ARGUMENT, not leak a TypeError out of the frozenset
+    #: membership (round-6 review F2).
+    if not _is_non_empty_str(status) or status not in VERIFICATION_STATUSES:
         raise _invalid("latest_verification_status is outside the closed set")
     if status == "blocked":
         raise _invalid(
@@ -864,7 +872,12 @@ def _resolution_drift(item: Any, label: str, fields: frozenset[str]) -> str | No
         #  non-hashable value would leak ``TypeError: unhashable type``
         #  instead of failing closed (round-4 review F1).
         return f"{label} {id_field} must be a non-empty string"
-    if item["status"] not in RESOLUTION_STATUSES:
+    #: Membership in a frozenset hashes the value first; an unhashable
+    #: ``status`` (list/dict) would leak ``TypeError: unhashable type``
+    #: instead of the drift label, so the closed-set test is guarded by the
+    #: string type check (round-6 review F2 — the same class at every
+    #: enum-membership site).
+    if not _is_non_empty_str(item["status"]) or item["status"] not in RESOLUTION_STATUSES:
         return f"{label} status is outside the closed set"
     if not _is_non_empty_str(item["summary"]):
         return f"{label} summary must be a non-empty string"
@@ -1239,8 +1252,24 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
                 )
         #: The evidence-role checks read the role map directly; a missing
         #: or non-object manifest_roles would KeyError (round-5 review F-1a).
-        if not isinstance(sub_facts.get("manifest_roles"), dict):
+        #: The membership checks consume the map's values as frozenset
+        #: members and its keys as dict/digest lookups, so a member drift
+        #: (non-hashable value, non-string key/value) is controller drift —
+        #: fail closed as INVALID_ARGUMENT before any provider judgment,
+        #: never a TypeError and never a mis-classified provider block
+        #: (round-6 review F1).
+        roles = sub_facts.get("manifest_roles")
+        if not isinstance(roles, dict):
             raise _invalid(f"{name} manifest_roles must be an object")
+        for digest, role in roles.items():
+            if not _is_sha256_hex(digest):
+                raise _invalid(
+                    f"{name} manifest_roles keys must be 64-char digests"
+                )
+            if not _is_non_empty_str(role) or role not in EVIDENCE_ROLES:
+                raise _invalid(
+                    f"{name} manifest_roles values must be allowed evidence roles"
+                )
         if not isinstance(sub_facts.get("prior_verdict_chain"), list):
             raise _invalid(f"{name} prior_verdict_chain must be a list")
 
@@ -1254,6 +1283,32 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
         raise _invalid(
             "verdict result_sha is not bound to the recorded fix result tree"
         )
+
+    #: Trusted-state validation comes before any provider judgment
+    #: (round-6 review F3): a controller drift must raise INVALID_ARGUMENT
+    #: even when the provider output is separately malformed — a provider
+    #: block must never mask broken controller state. Both sub-facts'
+    #: prior_verdict_chain are controller state, bound here to the recorded
+    #: history (B2) and member-checked before the verdict preflight below.
+    pfv_facts = facts["post_fix_verdict_facts"]
+    openset_facts = facts["open_finding_set_facts"]
+    for name, sub_facts, chain_fields in (
+        ("post_fix_verdict_facts", pfv_facts, PFV_CHAIN_ENTRY_FIELDS),
+        ("open_finding_set_facts", openset_facts, OPENSET_CHAIN_ENTRY_FIELDS),
+    ):
+        _bind_chain_to_history(
+            name,
+            sub_facts.get("prior_verdict_chain"),
+            records,
+            chain_fields,
+        )
+    for name, chain in (
+        ("post_fix_verdict_facts", pfv_facts["prior_verdict_chain"]),
+        ("open_finding_set_facts", openset_facts["prior_verdict_chain"]),
+    ):
+        drift = _chain_member_drift(chain)
+        if drift is not None:
+            raise _invalid(f"{name} {drift}")
 
     #: Content pre-flight of the untrusted verdict members: crash-shaped
     #: output must fail closed as the frozen contract block, never raise out
@@ -1274,22 +1329,6 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
             event_trace=(BLOCK_EVENT,),
             round_no=count + 1,
             reasons=(preflight,),
-        )
-
-    #: Bind both sub-facts' prior_verdict_chain to the recorded history (B2):
-    #: the chain is controller state, so a drift from ``round_records`` is a
-    #: controller bug, not a provider contract failure.
-    pfv_facts = facts["post_fix_verdict_facts"]
-    openset_facts = facts["open_finding_set_facts"]
-    for name, sub_facts, chain_fields in (
-        ("post_fix_verdict_facts", pfv_facts, PFV_CHAIN_ENTRY_FIELDS),
-        ("open_finding_set_facts", openset_facts, OPENSET_CHAIN_ENTRY_FIELDS),
-    ):
-        _bind_chain_to_history(
-            name,
-            sub_facts.get("prior_verdict_chain"),
-            records,
-            chain_fields,
         )
 
     #: Both sub-fact objects must anchor the same current round: r(count-1).
@@ -1325,16 +1364,11 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
     #: these checks are the loop's own defense-in-depth layer (a divergence
     #: between the two layers still fails closed). Failures are provider
     #: contract failures, not controller drift: the verdict and its members
-    #: are provider claims.
+    #: are provider claims. (The chain members themselves were already
+    #: member-checked above — trusted state precedes every provider
+    #: judgment, round-6 review F3.)
     pfv_chain = pfv_facts["prior_verdict_chain"]
     original_ids = openset_facts["original_review"]["finding_ids"]
-    drift = _chain_member_drift(pfv_chain)
-    if drift is not None:
-        raise _invalid(f"post_fix_verdict_facts {drift}")
-    openset_chain = openset_facts["prior_verdict_chain"]
-    drift = _chain_member_drift(openset_chain)
-    if drift is not None:
-        raise _invalid(f"open_finding_set_facts {drift}")
     violations = _carry_forward_violations(original_ids, pfv_chain, verdict)
     verified_drift = _verified_semantics(verdict)
     if verified_drift is not None:

@@ -182,6 +182,52 @@ def test_malformed_envelopes_are_stable_invalid_arguments(
     ]
     cases.append(("verdict new finding shape not closed", command))
 
+    # Round-6 review F4: the structural pass dereferences the trusted facts'
+    # deep members directly (``test_receipts[digest].get(...)``,
+    # ``plan_verification_ids[acceptance_id]`` membership, the original
+    # review's id lists feeding set builds), so a drifted member is trusted
+    # controller state and must fail closed as INVALID_ARGUMENT — never an
+    # AttributeError/TypeError, never a silently accepted garbage id set.
+    command = _command(contracts, "gap_closed_by_test_receipts")
+    gap = command["input"]["injected_results"][1]["verdict"][
+        "acceptance_gap_resolutions"
+    ][0]
+    command["input"]["authoritative_facts"]["test_receipts"][
+        gap["evidence_sha256"][0]
+    ] = []
+    cases.append(("test receipt member not an object", command))
+
+    command = _command(contracts, "gap_closed_by_test_receipts")
+    command["input"]["authoritative_facts"]["test_receipts"]["not-a-digest"] = {
+        "verification_id": "VR-1"
+    }
+    cases.append(("test receipt key not a digest", command))
+
+    command = _command(contracts, "gap_closed_by_test_receipts")
+    gap = command["input"]["injected_results"][1]["verdict"][
+        "acceptance_gap_resolutions"
+    ][0]
+    command["input"]["authoritative_facts"]["plan_verification_ids"][
+        gap["acceptance_id"]
+    ] = None
+    cases.append(("plan verification ids value not a list", command))
+
+    command = _command(contracts, "gap_closed_by_test_receipts")
+    command["input"]["authoritative_facts"]["plan_verification_ids"][7] = ["VR-1"]
+    cases.append(("plan verification ids key not a string", command))
+
+    command = _command(contracts, "verified_clean")
+    command["input"]["authoritative_facts"]["original_review"]["finding_ids"] = [
+        ["F-1"]
+    ]
+    cases.append(("original finding_ids list element", command))
+
+    command = _command(contracts, "verified_clean")
+    command["input"]["authoritative_facts"]["original_review"][
+        "acceptance_gap_ids"
+    ] = [["AC-1"]]
+    cases.append(("original gap ids list element", command))
+
     for label, malformed in cases:
         with pytest.raises(DalError) as raised:
             post_fix_verdict_policy.validate_post_fix_verdict(malformed)

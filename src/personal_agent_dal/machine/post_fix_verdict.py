@@ -282,6 +282,20 @@ def _validate_command(command: dict[str, Any]) -> None:
     original = facts.get("original_review")
     if not isinstance(original, dict) or frozenset(original) != ORIGINAL_REVIEW_FIELDS:
         raise _invalid("original_review shape is not closed")
+    #: Both id lists feed set builds in the structural pass (the gap
+    #: bijection builds sets from them); a non-string element would leak
+    #: ``TypeError: unhashable type`` and a string would silently become
+    #: per-character set members — trusted controller state must fail
+    #: closed as INVALID_ARGUMENT instead (round-6 review F4, same class as
+    #: the frozen openset layer's round-5 F-1b check).
+    for field in ("finding_ids", "acceptance_gap_ids"):
+        ids = original.get(field)
+        if not isinstance(ids, list) or not all(
+            _is_non_empty_str(item) for item in ids
+        ):
+            raise _invalid(
+                f"original_review {field} must be a list of non-empty strings"
+            )
     locations = original.get("finding_locations")
     if not isinstance(locations, dict):
         raise _invalid("finding_locations must be an object")
@@ -301,6 +315,17 @@ def _validate_command(command: dict[str, Any]) -> None:
     verification_ids = facts.get("plan_verification_ids")
     if not isinstance(verification_ids, dict):
         raise _invalid("plan_verification_ids must be an object")
+    for acceptance_id, ids in verification_ids.items():
+        if not _is_non_empty_str(acceptance_id):
+            raise _invalid("plan_verification_ids keys must be non-empty strings")
+        if not isinstance(ids, list) or not all(
+            isinstance(verification_id, str) and verification_id
+            for verification_id in ids
+        ):
+            raise _invalid(
+                f"plan_verification_ids[{acceptance_id}] must be a list of "
+                "non-empty strings"
+            )
     chain = facts.get("prior_verdict_chain")
     if not isinstance(chain, list):
         raise _invalid("prior_verdict_chain must be a list")
@@ -315,6 +340,14 @@ def _validate_command(command: dict[str, Any]) -> None:
             raise _invalid(f"round_anchors {field} must be a 40-char git sha")
     if not isinstance(facts.get("test_receipts"), dict):
         raise _invalid("test_receipts must be an object")
+    for digest, receipt in facts["test_receipts"].items():
+        if not _is_sha256_hex(digest):
+            raise _invalid("test_receipts keys must be 64-char digests")
+        #: ``_structural`` dereferences ``receipt.get("verification_id")``,
+        #: so a non-object receipt would AttributeError — trusted controller
+        #: state fails closed instead (round-6 review F4).
+        if not isinstance(receipt, dict):
+            raise _invalid(f"test_receipts[{digest}] must be an object")
 
     results = payload.get("injected_results")
     if not isinstance(results, list) or len(results) != 2:

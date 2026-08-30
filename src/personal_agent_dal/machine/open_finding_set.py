@@ -461,9 +461,32 @@ def _verdict_member_block_reasons(verdict: dict[str, Any]) -> list[str]:
             return [f"new_findings[{index}] is not a closed new-finding object"]
         if not _is_non_empty_str(finding["finding_id"]):
             return [f"new_findings[{index}] finding_id is not a non-empty string"]
+        for field in ("category", "severity", "summary", "failure_scenario"):
+            if not _is_non_empty_str(finding[field]):
+                return [
+                    f"new_findings[{index}] {field} is not a non-empty string"
+                ]
         location = finding["location"]
         if not isinstance(location, dict) or frozenset(location) != LOCATION_FIELDS:
             return [f"new_findings[{index}] location is not a closed location object"]
+        #: The closed-shape test alone is not enough: the derivation and the
+        #: contract checks consume the location values (the loop-level
+        #: increment-deletion check reads ``line_start``, the anchor checks
+        #: read ``anchor_sha``), so a drifted value would flow into a legal
+        #: outcome instead of a block. The value classes mirror the trusted
+        #: chain validation above (round-6 review F5 — the direct openset
+        #: dispatch path accepted ``path = {}`` into a legal ``fixing``).
+        if not _is_git_sha_hex(location["anchor_sha"]):
+            return [
+                f"new_findings[{index}] location anchor_sha is not a 40-char git sha"
+            ]
+        if not _is_non_empty_str(location["path"]):
+            return [f"new_findings[{index}] location path is not a non-empty string"]
+        for field in ("line_start", "line_end"):
+            if not _is_non_negative_int(location[field]):
+                return [
+                    f"new_findings[{index}] location {field} is not a line number"
+                ]
     return reasons
 
 
