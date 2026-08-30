@@ -845,11 +845,23 @@ def _sub_command(
 
 
 def _resolution_drift(item: Any, label: str, fields: frozenset[str]) -> str | None:
-    """Closed-shape and value checks for one resolution member."""
+    """Closed-shape and value checks for one resolution member.
+
+    ``fields`` selects the id semantics: finding resolutions carry
+    ``finding_id``; acceptance-gap resolutions carry ``acceptance_id``.
+    Both id classes feed set builds downstream, so either must be a
+    non-hashable-safe non-empty string (round-4 review F1).
+    """
     if not isinstance(item, dict):
         return f"{label} is not an object"
     if frozenset(item) != fields:
         return f"{label} shape is not closed"
+    id_field = "acceptance_id" if fields is _GAP_FIELD_SETS else "finding_id"
+    if not _is_non_empty_str(item[id_field]):
+        #: The carry-forward derivation consumes ids as set members; a
+        #  non-hashable value would leak ``TypeError: unhashable type``
+        #  instead of failing closed (round-4 review F1).
+        return f"{label} {id_field} must be a non-empty string"
     if item["status"] not in RESOLUTION_STATUSES:
         return f"{label} status is outside the closed set"
     if not _is_non_empty_str(item["summary"]):
@@ -868,6 +880,11 @@ def _finding_drift(item: Any, label: str) -> str | None:
     """Closed-shape and value checks for one new-finding member."""
     if not isinstance(item, dict) or frozenset(item) != _NEW_FINDING_FIELD_SET:
         return f"{label} shape is not closed"
+    if not _is_non_empty_str(item["finding_id"]):
+        #: The collision/open-set checks consume ids as set members; a
+        #  non-hashable value would leak ``TypeError: unhashable type``
+        #  instead of failing closed (round-4 review F1).
+        return f"{label} finding_id must be a non-empty string"
     for field in ("category", "severity", "summary", "failure_scenario"):
         if not _is_non_empty_str(item[field]):
             return f"{label} {field} must be a non-empty string"
@@ -1192,6 +1209,26 @@ def close_review_fix_round(facts: dict[str, Any]) -> ReviewFixLoopEvaluation:
                   "reviewer_result"):
         if not isinstance(facts[field], dict):
             raise _invalid(f"{field} must be an object")
+
+    #: The sub-facts' ``original_review`` objects are controller state the
+    #: carry-forward derivation and the evidence/gap checks dereference
+    #: directly; a drifted shape is controller drift, not a provider
+    #: outcome (round-4 review F6, same crash class as B1's chain members).
+    for name, sub_facts in (
+        ("post_fix_verdict_facts", facts["post_fix_verdict_facts"]),
+        ("open_finding_set_facts", facts["open_finding_set_facts"]),
+    ):
+        original = sub_facts.get("original_review")
+        if not isinstance(original, dict):
+            raise _invalid(f"{name} original_review must be an object")
+        ids = original.get("finding_ids")
+        if not isinstance(ids, list) or not all(
+            _is_non_empty_str(item) for item in ids
+        ):
+            raise _invalid(
+                f"{name} original_review finding_ids must be a list of "
+                "non-empty strings"
+            )
 
     #: The verdict under judgment must be bound to the recorded fix result:
     #: re-review V_k reviews fix k's tree r(k).

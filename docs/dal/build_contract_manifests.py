@@ -658,12 +658,17 @@ def semantic_operation_input(
             #: per-round derivation keeps F-1 open and blocks.
             resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "closed", "e" * 64)], [], "verified", [regression("F-101", "4" * 40)], "4" * 40, 2
         elif variant == "prior_closed_carried_not_touched":
-            #: Round-3 review B2 distinguishing variant: F-101 was closed by
-            #: an earlier verdict and this round leaves its line untouched —
-            #: legal. The pre-fix whole-chain deletion check required every
-            #: carried finding's line to be deleted again and blocked this;
-            #: the narrowed check (§6 L645-651: only this round's closed
-            #: findings) reaches fixing.
+            #: Round-3 review B2 distinguishing variant. F-101 is the carried
+            #: finding V_1 INTRODUCED (chain new_findings) and left open — it
+            #: was never closed by any verdict. This round resolves it
+            #: ``remaining`` and leaves its line untouched, which is legal:
+            #: the narrowed check (§6 L645-651) binds the increment-deletion
+            #: requirement to findings THIS round declares closed. The
+            #: pre-fix whole-chain deletion check iterated every carried
+            #: finding, demanded F-101's deletion again and blocked this.
+            #: The frozen variant id keeps its round-3 name (renaming it
+            #: would refreeze the manifest); round-4 review F5 records that
+            #: the actual shape is still-open-carried, not earlier-closed.
             resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "remaining", "a" * 64)], [], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 3
         else:
             resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "remaining", "a" * 64)], [], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 2

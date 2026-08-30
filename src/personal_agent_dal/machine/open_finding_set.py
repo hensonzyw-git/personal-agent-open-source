@@ -210,6 +210,10 @@ def _is_non_negative_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _is_non_empty_str(value: Any) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
 def _validate_command(command: dict[str, Any]) -> None:
     """Validate the trusted envelope; raise `DalError` on any drift."""
     if not isinstance(command, dict):
@@ -291,6 +295,11 @@ def _validate_command(command: dict[str, Any]) -> None:
                     f"prior_verdict_chain[{index}] finding_resolutions[{member_index}] "
                     "shape is not closed"
                 )
+            if not _is_non_empty_str(item["finding_id"]):
+                raise _invalid(
+                    f"prior_verdict_chain[{index}] finding_resolutions[{member_index}] "
+                    "finding_id must be a non-empty string"
+                )
             if item["status"] not in ("closed", "remaining"):
                 raise _invalid(
                     f"prior_verdict_chain[{index}] finding_resolutions[{member_index}] "
@@ -321,6 +330,11 @@ def _validate_command(command: dict[str, Any]) -> None:
                 raise _invalid(
                     f"prior_verdict_chain[{index}] new_findings[{member_index}] "
                     "shape is not closed"
+                )
+            if not _is_non_empty_str(item["finding_id"]):
+                raise _invalid(
+                    f"prior_verdict_chain[{index}] new_findings[{member_index}] "
+                    "finding_id must be a non-empty string"
                 )
             location = item["location"]
             if not isinstance(location, dict) or frozenset(location) != LOCATION_FIELDS:
@@ -440,6 +454,20 @@ def _derive(facts: dict[str, Any], git_result: dict[str, Any], verdict: dict[str
         }
 
     resolutions = verdict["finding_resolutions"]
+    #: The verdict is untrusted provider output, so its members cannot be
+    #: assumed well-formed here: a non-string (or non-hashable) id must
+    #: become a block reason, never a TypeError from the set builds below
+    #: (round-4 review F1). Non-dict members were rejected by
+    #: ``_validate_command``; these members are dicts with a closed shape
+    #: whose ``finding_id`` may still hold any JSON value.
+    for item in resolutions:
+        if not _is_non_empty_str(item["finding_id"]):
+            reasons.append("a resolution's finding_id is not a non-empty string")
+            return None, tuple(reasons)
+    for item in verdict["new_findings"]:
+        if not _is_non_empty_str(item["finding_id"]):
+            reasons.append("a new finding's finding_id is not a non-empty string")
+            return None, tuple(reasons)
     closed = {item["finding_id"] for item in resolutions if item["status"] == "closed"}
     remaining = {item["finding_id"] for item in resolutions if item["status"] == "remaining"}
     unknown = {item["finding_id"] for item in resolutions} - open_ids

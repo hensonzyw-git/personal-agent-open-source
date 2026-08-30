@@ -958,15 +958,20 @@ def test_verified_with_unresolved_carried_finding_blocks() -> None:
         "resolution_extra_field",
         "resolution_empty_evidence",
         "resolution_non_hex_evidence",
+        "resolution_list_finding_id",
+        "resolution_dict_finding_id",
         "gap_resolution_not_object",
         "new_finding_not_object",
         "new_finding_extra_field",
+        "new_finding_list_finding_id",
     ],
 )
 def test_crash_shaped_verdict_members_fail_closed(mutation: str) -> None:
     """B5: the frozen evaluators dereference verdict members directly, so
     crash-shaped output must land the frozen contract block here, never
-    raise out of a policy boundary."""
+    raise out of a policy boundary. Round-4 F1 extends the class with
+    non-hashable ``finding_id`` values — both layers' set builds would leak
+    ``TypeError: unhashable type`` without the guards."""
     resolutions = [_resolution("F-001", "closed")]
     gap_resolutions: list[dict] = []
     new_findings: list[dict] = []
@@ -978,6 +983,10 @@ def test_crash_shaped_verdict_members_fail_closed(mutation: str) -> None:
         resolutions[0]["evidence_sha256"] = []
     elif mutation == "resolution_non_hex_evidence":
         resolutions[0]["evidence_sha256"] = ["not-a-digest"]
+    elif mutation == "resolution_list_finding_id":
+        resolutions[0]["finding_id"] = ["unhashable-id"]
+    elif mutation == "resolution_dict_finding_id":
+        resolutions[0]["finding_id"] = {"k": "v"}
     elif mutation == "gap_resolution_not_object":
         gap_resolutions = [None]  # type: ignore[list-item]
     elif mutation == "new_finding_not_object":
@@ -985,6 +994,9 @@ def test_crash_shaped_verdict_members_fail_closed(mutation: str) -> None:
     elif mutation == "new_finding_extra_field":
         new_findings = [_finding("F-100", FIX1, 5)]
         new_findings[0]["junk"] = 1
+    elif mutation == "new_finding_list_finding_id":
+        new_findings = [_finding("F-100", FIX1, 5)]
+        new_findings[0]["finding_id"] = ["unhashable-id"]
 
     facts = _close_facts(1, resolutions=resolutions)
     verdict = facts["reviewer_result"]["verdict"]
@@ -1508,18 +1520,44 @@ def test_malformed_openset_chain_members_raise_before_dispatch() -> None:
     ].append("F-100")
     cases.append(("new finding not an object", facts))
 
+    # Round-4 review F1: non-hashable finding_id values would leak
+    # ``TypeError: unhashable type`` from the derivation's set builds.
+    facts = _close_facts(2)
+    facts["open_finding_set_facts"]["prior_verdict_chain"][0][
+        "finding_resolutions"
+    ][0]["finding_id"] = ["unhashable-id"]
+    cases.append(("chain resolution list finding_id", facts))
+
+    facts = _close_facts(2)
+    facts["post_fix_verdict_facts"]["prior_verdict_chain"][0][
+        "new_findings"
+    ] = [_finding("F-100", FIX1, 5)]
+    facts["open_finding_set_facts"]["prior_verdict_chain"][0][
+        "new_findings"
+    ] = [_finding("F-100", FIX1, 5)]
+    for key in ("post_fix_verdict_facts", "open_finding_set_facts"):
+        facts[key]["prior_verdict_chain"][0]["new_findings"][0][
+            "finding_id"
+        ] = {"k": "v"}
+    cases.append(("chain new finding dict finding_id", facts))
+
     for label, drifted in cases:
         with pytest.raises(DalError) as raised:
             close_review_fix_round(drifted)
         assert raised.value.code is DalErrorCode.INVALID_ARGUMENT, label
 
 
-def test_prior_closed_carried_finding_needs_no_new_deletion() -> None:
-    """Round-3 review B2: the increment-deletion check binds only findings
-    THIS round declares ``closed`` (§6 L645–651). A carried finding resolved
-    ``remaining`` here survives its round's diff untouched and the round
-    still reaches ``fixing`` legally — the pre-fix check would have demanded
-    its deletion because it iterated every chain finding."""
+def test_still_open_carried_finding_needs_no_new_deletion() -> None:
+    """Round-3 review B2 (renamed by round-4 review F5): the
+    increment-deletion check binds only findings THIS round declares
+    ``closed`` (§6 L645–651). A carried finding the prior verdict
+    introduced and left open, resolved ``remaining`` here, survives its
+    round's diff untouched and the round still reaches ``fixing`` legally —
+    the pre-fix check would have demanded its deletion because it iterated
+    every chain finding. The frozen variant id
+    ``prior_closed_carried_not_touched`` keeps its round-3 name (renaming
+    would refreeze the manifest); its fixture comment now states the real
+    shape."""
     facts = _close_facts(
         2,
         decl="changes_requested",
@@ -1611,6 +1649,38 @@ def test_sub_facts_disagreeing_on_original_ids_raise() -> None:
     with pytest.raises(DalError) as raised:
         close_review_fix_round(facts)
     assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "original_review_none",
+        "original_review_not_object",
+        "finding_ids_missing",
+        "finding_ids_not_strings",
+        "finding_ids_not_list",
+    ],
+)
+def test_drifted_original_review_fails_closed(mutation: str) -> None:
+    """Round-4 F6: the carry-forward derivation and the evidence/gap checks
+    dereference the sub-facts' ``original_review`` directly, so a drifted
+    shape must raise ``INVALID_ARGUMENT`` before any dereference — not leak
+    TypeError/KeyError out of a policy boundary."""
+    facts = _close_facts(2)
+    sub = facts["open_finding_set_facts"]
+    if mutation == "original_review_none":
+        sub["original_review"] = None
+    elif mutation == "original_review_not_object":
+        sub["original_review"] = "original"
+    elif mutation == "finding_ids_missing":
+        del sub["original_review"]["finding_ids"]
+    elif mutation == "finding_ids_not_strings":
+        sub["original_review"]["finding_ids"] = [["F-001"]]
+    elif mutation == "finding_ids_not_list":
+        sub["original_review"]["finding_ids"] = "F-001"
+    with pytest.raises(DalError) as raised:
+        close_review_fix_round(facts)
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT, mutation
 
 
 def test_chain_new_finding_reusing_a_seen_id_blocks() -> None:

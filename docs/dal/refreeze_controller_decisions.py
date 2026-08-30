@@ -6,8 +6,8 @@ DAL-T-FIXDIFF-001 (freeze pack `DAL021-024_合同冻结包_v0.1.md` §4–§6). 
 script re-derives every variant's legal outcome from the contract rules
 independently of the generator's own classification, proves that no unrelated
 authority row differs from the generated expectation, then splices only the
-four operation specs, their thirty-six oracle entries and the matching
-thirty-six test-manifest rows into the two static
+four operation specs, their thirty-seven oracle entries and the matching
+thirty-seven test-manifest rows into the two static
 authorities.  It deliberately cannot rebuild an entire authority.
 """
 
@@ -114,14 +114,25 @@ PLAN_EXPECTED_RULES = {
     "digest_drift": {"digest_drift"},
 }
 
+#: The G3 variant set of DAL-T-PLAN-XFIELD-001, shared by the re-derivation
+#: loop and the closed-set self-check in ``refreeze_targeted`` (round-4 F3).
+PLAN_VARIANTS = (
+    "plan_complete", "identity_mismatch", "paths_overlap_file_in_dir",
+    "paths_overlap_dir_in_dir", "paths_overlap_equal", "order_gap",
+    "dependency_not_earlier", "unknown_verification", "digest_drift",
+)
+
+#: The G3 variant set of DAL-T-DISPOSITION-001, shared likewise (round-4 F3).
+DISPOSITION_VARIANTS = (
+    "approve_clean", "coverage_incomplete", "provider_approve_with_findings",
+    "provider_request_changes_clean", "request_changes_findings",
+    "request_changes_gaps",
+)
+
 
 def verify_plan_cross_fields(fixtures: dict, oracles: dict) -> None:
     """§4: re-derive every cross-field rule from the plan structure itself."""
-    for variant in [
-        "plan_complete", "identity_mismatch", "paths_overlap_file_in_dir",
-        "paths_overlap_dir_in_dir", "paths_overlap_equal", "order_gap",
-        "dependency_not_earlier", "unknown_verification", "digest_drift",
-    ]:
+    for variant in PLAN_VARIANTS:
         facts, results = _inputs(fixtures, "DAL-T-PLAN-XFIELD-001", variant)
         plan = results[0]["plan"]
         tasks = sorted(plan["tasks"], key=lambda item: item["order"])
@@ -172,11 +183,7 @@ def verify_plan_cross_fields(fixtures: dict, oracles: dict) -> None:
 
 def verify_disposition(fixtures: dict, oracles: dict) -> None:
     """§5: disposition is a pure function of coverage, findings, gaps, pins."""
-    for variant in [
-        "approve_clean", "coverage_incomplete", "provider_approve_with_findings",
-        "provider_request_changes_clean", "request_changes_findings",
-        "request_changes_gaps",
-    ]:
+    for variant in DISPOSITION_VARIANTS:
         facts, results = _inputs(fixtures, "DAL-T-DISPOSITION-001", variant)
         review = results[0]
         covered = {entry["acceptance_id"] for entry in review["coverage"]}
@@ -195,6 +202,16 @@ def verify_disposition(fixtures: dict, oracles: dict) -> None:
         _check_oracle(oracles, "DAL-T-DISPOSITION-001", variant, outcome, "reviewing")
 
 
+#: The G3 variant set of DAL-T-OPENSET-001, shared by the re-derivation loop
+#: and the closed-set self-check in ``refreeze_targeted`` (round-4 review F3).
+OPENSET_VARIANTS = (
+    "init_from_review", "carry_forward_exact", "carried_finding_omitted",
+    "carried_finding_renamed", "new_finding_id_reused",
+    "verified_with_new_findings", "remaining_declared",
+    "original_remaining_omitted", "prior_closed_carried_not_touched",
+)
+
+
 def verify_open_set(fixtures: dict, oracles: dict) -> None:
     """§6: the carried open set must be exactly resolved before 'verified'.
 
@@ -205,12 +222,7 @@ def verify_open_set(fixtures: dict, oracles: dict) -> None:
     accumulated new findings whenever the chain was non-empty).  New finding
     IDs may not reuse any ID the feature has already seen.
     """
-    for variant in [
-        "init_from_review", "carry_forward_exact", "carried_finding_omitted",
-        "carried_finding_renamed", "new_finding_id_reused",
-        "verified_with_new_findings", "remaining_declared",
-        "original_remaining_omitted", "prior_closed_carried_not_touched",
-    ]:
+    for variant in OPENSET_VARIANTS:
         facts, results = _inputs(fixtures, "DAL-T-OPENSET-001", variant)
         git_executor, reviewer = results
         verdict = reviewer["verdict"]
@@ -395,6 +407,27 @@ def refreeze_targeted() -> None:
     manifest = load(MANIFESTS / "test-manifest_v1.2.json")
     fixtures = load(MANIFESTS / "test-fixtures_v1.0.json")
     oracles = load(MANIFESTS / "test-oracles_v1.0.json")
+    #: Closed-set self-check (round-4 review F3): the mirror's variant lists
+    #: must equal the frozen manifest's G3 variant set for each test id it
+    #: re-derives. A manifest drift (a variant added, renamed or regated)
+    #: must fail here — not silently skip that variant's re-derivation.
+    for test_id, mirror_variants in (
+        ("DAL-T-PLAN-XFIELD-001", set(PLAN_VARIANTS)),
+        ("DAL-T-DISPOSITION-001", set(DISPOSITION_VARIANTS)),
+        ("DAL-T-OPENSET-001", set(OPENSET_VARIANTS)),
+        ("DAL-T-FIXDIFF-001", set(FIXDIFF_EXPECTED_RULES)),
+    ):
+        frozen_variants = {
+            row["variant_id"]
+            for row in manifest["test_variants"]
+            if row["test_id"] == test_id and row["run_gate"] == "G3"
+        }
+        if frozen_variants != mirror_variants:
+            raise SystemExit(
+                f"{test_id}: mirror variant list drifts from the frozen manifest: "
+                f"missing={sorted(frozen_variants - mirror_variants)}, "
+                f"extra={sorted(mirror_variants - frozen_variants)}"
+            )
     verify_plan_cross_fields(fixtures["fixtures"], oracles["oracles"])
     verify_disposition(fixtures["fixtures"], oracles["oracles"])
     verify_open_set(fixtures["fixtures"], oracles["oracles"])

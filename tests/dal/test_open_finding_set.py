@@ -15,8 +15,10 @@ verdict that still carries new findings — blocks the feature
 (`reviewing → needs_human`, `feature.blocked`, `PROVIDER_CONTRACT_FAILURE`,
 seven-write block set). The increment-deletion check binds only the findings
 THIS round declares closed to this round's diff (§6 L645–651;
-`prior_closed_carried_not_touched`: a carried finding closed by an earlier
-verdict may stay untouched — round-3 review B2).
+`prior_closed_carried_not_touched`: the carried finding V_1 introduced and
+left open may stay untouched when this round resolves it ``remaining`` —
+round-3 review B2, shape corrected by round-4 review F5; the frozen variant
+id keeps its round-3 name).
 
 No `dal.test-receipt/1.0` PASS is claimed here — that is §9 item 3's separate,
 gated deliverable.
@@ -162,6 +164,21 @@ def test_malformed_envelopes_are_stable_invalid_arguments(
         "finding_resolutions"
     ][0]["extra"] = "x"
     cases.append(("chain resolution unknown field", command))
+
+    # Round-4 review F1: the derivation consumes finding_id as a set member
+    # (`open_ids -= closed_ids`), so a non-hashable value must be rejected
+    # before the derivation — not leak `TypeError: unhashable type`.
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["authoritative_facts"]["prior_verdict_chain"][0][
+        "finding_resolutions"
+    ][0]["finding_id"] = ["unhashable-id"]
+    cases.append(("chain resolution list finding_id", command))
+
+    command = _command(contracts, "carry_forward_exact")
+    command["input"]["authoritative_facts"]["prior_verdict_chain"][0][
+        "new_findings"
+    ][0]["finding_id"] = {"k": "v"}
+    cases.append(("chain new finding dict finding_id", command))
 
     command = _command(contracts, "carry_forward_exact")
     command["input"]["authoritative_facts"]["prior_verdict_chain"][0][
