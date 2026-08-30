@@ -176,34 +176,46 @@ def finance_source_requires_time_clarification(source_text: str) -> bool:
     )
 
 
-def _continuation_finance_source(
+def _continuation_finance_parts(
     finance_retry_context: FinanceRetryContext | None,
     clarification_context: ClarificationContext | None,
     user_text: str,
-) -> str:
-    """The complete user request a continuation turn resumes.
+) -> tuple[str, ...]:
+    """The user texts that together form the request a continuation resumes.
 
     A clarification resolves one missing fact of an *existing* request, so the
-    request is the original text joined with every answered exchange -- "记账"
-    answered by "午饭 20块" is one bookkeeping request, and only the joined
-    text matches the write-intent predicates. A Finance retry re-runs the same
-    request, so its original text (which already carries the failed intent)
-    plus its own answered chain is the source. On a plain turn the current
-    message is the whole request.
+    request is the original text, every answered exchange, and the current
+    message -- "记账" answered by "午饭 20块" is one bookkeeping request only
+    once the answer is part of it. A Finance retry re-runs the same request,
+    so its original text (which already carries the failed intent) plus its
+    own answered chain joins too. On a plain turn the current message is the
+    whole request.
+
+    The texts stay separate on purpose. A single joined string would let the
+    shape predicates match *across* segment boundaries, and those can only
+    misread text that was never one utterance: "午饭 45" is a bookkeeping
+    request, "餐饮" is not, and joining them into "午饭 45 餐饮" breaks the
+    terminal-amount shape so the request loses its intent (found by the suite
+    after the first join-based fix, 2026-08-30); "买 3" + "月 5 号到" would
+    fabricate a date. Callers therefore evaluate the shape predicates per
+    part -- intent if *any* part holds, the receipt-day default refused if
+    *any* part names a date -- and may join the parts only for the *routing*
+    predicates, whose compound rules (an amount next to the frozen
+    `个人支出`/`家庭支出` wording) describe the chain as one request.
     """
     if finance_retry_context is not None:
-        parts = [finance_retry_context.original_user_text]
-        parts.extend(
-            item.answer for item in finance_retry_context.completed_exchanges
+        return (
+            finance_retry_context.original_user_text,
+            *(item.answer for item in finance_retry_context.completed_exchanges),
+            user_text,
         )
-        return " ".join(parts)
     if clarification_context is not None:
-        parts = [clarification_context.original_user_text]
-        parts.extend(
-            item.answer for item in clarification_context.completed_exchanges
+        return (
+            clarification_context.original_user_text,
+            *(item.answer for item in clarification_context.completed_exchanges),
+            user_text,
         )
-        return " ".join(parts)
-    return user_text
+    return (user_text,)
 
 
 #: Recorded when an *ancestor* Session's Checkpoint had to go to fit the budget.
@@ -677,32 +689,44 @@ class ContextBuilder:
         # (Finance required, but unavailable to the provider).
         #
         # The request a continuation resumes is the original text *plus* every
-        # answered clarification, not the original text alone: "记账" answered
-        # by "午饭 20块" is a bookkeeping write only once the answer is part of
-        # the source. Dropping the answers left a bare original that no intent
-        # predicate matched, so a later write turn lost its Finance state and
-        # the Host never injected the required receipt date (observed live
-        # 2026-08-30: 「记账」→「午饭 20 块」→「个人」 failed at the MCP
-        # occurred_on gate). Current user text stays out of the source: it has
-        # its own predicate channel (`is_finance_retry_request`) and a bare
-        # answer such as 「个人」 must not widen the required tool set.
-        finance_source_text = _continuation_finance_source(
+        # answered clarification *plus* the current message, not the original
+        # text alone: "记账" answered by "午饭 20块" is a bookkeeping write
+        # only once the answer is part of the source. Dropping the answers
+        # left a bare original that no intent predicate matched, so a later
+        # write turn lost its Finance state and the Host never injected the
+        # required receipt date (observed live 2026-08-30: 「记账」→「午饭 20
+        # 块」→「个人」 failed at the MCP occurred_on gate). Excluding the
+        # current message instead left a covering answer with no Finance tools
+        # at all (review finding MAJOR-1, 2026-08-30). The parts are evaluated
+        # separately -- intent if *any* part matches, the receipt-day default
+        # refused if *any* part names a date -- because the shape predicates
+        # must never read across utterance boundaries (see
+        # `_continuation_finance_parts`). The chain is also joined for the
+        # routing predicates: `is_expense_write_request` requires the amount
+        # and the frozen `个人支出`/`家庭支出` wording in one string, and on a
+        # chain like "昨天午饭 45" → "家庭支出" they arrive in different parts
+        # -- the request is one expense either way, so routing reads the
+        # joined chain while intent and the date guards read only whole parts
+        # (the docstring above records why the shapes must not join).
+        finance_parts = _continuation_finance_parts(
             finance_retry_context, clarification_context, user_text
         )
+        finance_joined = "".join(finance_parts)
         finance_intent_required = (
             finance_retry_context is not None
-            or is_finance_intent_candidate(finance_source_text)
+            or any(is_finance_intent_candidate(part) for part in finance_parts)
+            or is_finance_intent_candidate(finance_joined)
             or is_finance_retry_request(user_text)
         )
         finance_required_tool = (
             FINANCE_QUERY_TOOL
-            if is_finance_query_request(finance_source_text)
+            if is_finance_query_request(finance_joined)
             else (
                 FINANCE_INCOME_TOOL
-                if is_income_write_request(finance_source_text)
+                if is_income_write_request(finance_joined)
                 else (
                     FINANCE_EXPENSE_TOOL
-                    if is_expense_write_request(finance_source_text)
+                    if is_expense_write_request(finance_joined)
                     else None
                 )
             )
@@ -718,12 +742,18 @@ class ContextBuilder:
                 finance_required_tool is None
                 or finance_required_tool in FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
             )
-            and finance_source_allows_receipt_date_default(finance_source_text)
+            and all(
+                finance_source_allows_receipt_date_default(text)
+                for text in (*finance_parts, finance_joined)
+            )
         )
         finance_clarification_required = (
             clarification_context is None
             and finance_intent_required
-            and finance_source_requires_time_clarification(finance_source_text)
+            and any(
+                finance_source_requires_time_clarification(text)
+                for text in (*finance_parts, finance_joined)
+            )
         )
         finance_retry_unbound = (
             clarification_context is None

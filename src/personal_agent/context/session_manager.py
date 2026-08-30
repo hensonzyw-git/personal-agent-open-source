@@ -398,9 +398,11 @@ class SessionManager:
             )
 
         idle_minutes = self._idle_minutes(current, now)
-        # A stale working context is never silently revived.  "Continue
-        # yesterday" is represented by a fresh `resumes` Session and a bounded
-        # reference projection, not by keeping yesterday's raw Session open.
+        # A stale working context is never silently revived.  A closed-set
+        # resume marker ("继续上次的话题") is represented by a fresh `resumes`
+        # Session pointing at the most recent closed one (step 5 above), not
+        # by keeping yesterday's raw Session open. Other phrasings fall
+        # through to the ordinary decision.
         if idle_minutes is not None and idle_minutes >= self._config.session_idle_minutes:
             return self._open_new(
                 db,

@@ -350,6 +350,32 @@ OPERATOR_OVERRIDE_KEYS: Final[frozenset[str]] = frozenset(
     {"CONTEXT_SESSION_IDLE_MINUTES"}
 )
 
+#: Upper bound on an operator-set idle threshold (minutes). Without it an
+#: accidental `99999999999999999999` silently disables the idle boundary for
+#: as long as the process lives; one day is already wider than any pacing
+#: intent this override exists for.
+MAX_OVERRIDE_MINUTES: Final[int] = 24 * 60
+
+
+def _parse_override_minutes(key: str, raw: str) -> int:
+    """Strictly parse one operator-supplied minute count.
+
+    `int()` alone is too permissive for a fail-closed boundary: it accepts
+    `+60`, `6_0` and full-width digits (`６０`), so a mistyped environment
+    value could take effect while looking like something else in audit. Only
+    plain ASCII digits parse here.
+    """
+    if not raw.isascii() or not raw.isdigit():
+        raise ContextConfigError(f"{key} must be a plain integer")
+    value = int(raw)
+    if value <= 0:
+        raise ContextConfigError(f"{key} must be positive")
+    if value > MAX_OVERRIDE_MINUTES:
+        raise ContextConfigError(
+            f"{key} must not exceed {MAX_OVERRIDE_MINUTES} minutes"
+        )
+    return value
+
 
 def operator_override_from_env(
     environ: Mapping[str, str] | None = None,
@@ -366,14 +392,5 @@ def operator_override_from_env(
         raw = source.get(key)
         if raw is None:
             continue
-        raw = raw.strip()
-        if not raw:
-            raise ContextConfigError(f"{key} is set but empty")
-        try:
-            value = int(raw)
-        except ValueError as exc:
-            raise ContextConfigError(f"{key} must be an integer") from exc
-        if value <= 0:
-            raise ContextConfigError(f"{key} must be positive")
-        overrides[key] = value
+        overrides[key] = _parse_override_minutes(key, raw.strip())
     return overrides
