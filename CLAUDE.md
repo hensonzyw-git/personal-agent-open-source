@@ -322,7 +322,9 @@ conflict instead of silently choosing an old default.
   `online_backup` primitive, both `*-db backup` CLIs, the deletion-manifest
   export/replay, the restore-verify library, `deploy/backup.sh` + three systemd
   timer/service pairs behind a least-privilege `personal-agent-backup` user,
-  and `scripts/restore_drill.sh`. The current offline suite passes (1678 tests).
+  and `scripts/restore_drill.sh`. The offline suite passed 1678 tests at the DEV-035 close (2026-08-01);
+  the count has grown since — see `PROJECT_STATUS.md` §1 for the current
+  merged-tree figure.
   **The ECS deploy and the first real OSS backup landed on 2026-08-01**
   (`docs/evidence/DEV035_部署与首次真实备份_2026-08-01.md`): snapshot `3b11537b`
   with all eight inputs, clean `restic check`, `verify.sh` 55 PASS / 0 FAIL,

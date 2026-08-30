@@ -284,8 +284,11 @@ struct ChatView: View {
     private func stageTrail(_ stages: [OperationStage]) -> some View {
         // Collapse duplicates: the poll may observe the same stage many times.
         // `stages` arrives in observation order, and the pipeline's own order is
-        // the state machine's, so the last observation of each distinct stage
-        // keeps the freshest tool fact.
+        // the state machine's, so the first observation of each distinct stage
+        // wins. Dispatching always carries the tool in production — both server
+        // transitions write a non-optional tool (orchestrator's model path and
+        // the override replay path) — so `dispatching(tool: nil)` never arrives
+        // and one dispatching entry is all there is.
         var collapsed: [OperationStage] = []
         for stage in stages where !collapsed.contains(where: { $0 == stage }) {
             collapsed.append(stage)
@@ -314,9 +317,9 @@ struct ChatView: View {
         case .interpreting: return "正在理解"
         case .dispatching(let tool):
             // The registered tool name is the server's own fact; showing it is
-            // exactly the point of the trail. The generic label covers the
-            // narrow window where dispatching was observed before the tool
-            // fact arrived on the same projection.
+            // exactly the point of the trail. The generic label is a defensive
+            // fallback only — the server's dispatching transitions always
+            // carry a non-optional tool, so it should never render.
             if let tool { return isCurrent ? "已选择 \(tool)" : tool }
             return "已选择工具"
         case .sourceInProgress: return "正在写入"

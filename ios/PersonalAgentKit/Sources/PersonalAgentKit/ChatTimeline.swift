@@ -599,8 +599,10 @@ public actor ChatTimeline {
     /// persisted before the request left. Every failure there (unanchored,
     /// transport, 5xx) means "no evidence this instant", never a conclusion
     /// about a write, so all of it is swallowed and the loop simply continues.
-    /// The schedule is the same bounded one settle uses; the task is cancelled
-    /// the moment the POST answers.
+    /// The schedule is the same bounded one settle uses — 8 waits, ~26s — so a
+    /// POST that runs to its full 30s ceiling leaves the trail idle for the
+    /// last stretch; the settle loop owns that tail by id. The task is
+    /// cancelled the moment the POST answers.
     ///
     /// Every poll is preceded by a wait, the first one included. A POST that
     /// settles inside the first window then cancels a task that has not yet

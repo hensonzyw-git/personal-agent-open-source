@@ -2596,7 +2596,7 @@ def test_by_key_poll_requires_a_canonical_uuid_key(
         interpreter=FakeInterpreter(DirectAnswer("hi")),
         dispatcher=FakeDispatcher(),
     )
-    for bad in ("not-a-uuid", REQUEST_ID_2.upper() + "-x"):
+    for bad in ("not-a-uuid", REQUEST_ID_2.upper() + "-x", REQUEST_ID_2.upper()):
         resp = client.get(
             f"/v1/operations/by-key/{bad}",
             headers={"Authorization": f"Bearer {_token(token_ring)}"},
