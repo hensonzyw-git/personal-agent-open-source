@@ -67,6 +67,11 @@ class ErrorCode(StrEnum):
     # `INVALID_EVENT_CURSOR`) arrive with the CAP that serves their route; a
     # code with no caller is surface, not readiness.
     TIMELINE_MISMATCH = "TIMELINE_MISMATCH"
+    #: The progress trail polls by idempotency key because the chat POST can
+    #: hold the client for up to 30 seconds before naming the operation. A key
+    #: nothing has anchored yet is a distinguishable 400, never a bare 404 that
+    #: could be read as "this key is free, send a new request".
+    OPERATION_NOT_ANCHORED = "OPERATION_NOT_ANCHORED"
     INVALID_CURSOR = "INVALID_CURSOR"
     CONTEXT_BUDGET_EXCEEDED = "CONTEXT_BUDGET_EXCEEDED"
     CONTEXT_UNAVAILABLE = "CONTEXT_UNAVAILABLE"
@@ -164,6 +169,7 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.BATCH_ATOMICITY_UNAVAILABLE: "多笔写入尚未启用，一笔也没有记录",
     ErrorCode.BATCH_COMMIT_UNKNOWN: "多笔写入结果未知，正在按批次键核验",
     ErrorCode.TIMELINE_MISMATCH: "该会话标识不属于当前对话记录",
+    ErrorCode.OPERATION_NOT_ANCHORED: "该请求键还没有对应的操作记录，请继续等待",
     ErrorCode.INVALID_CURSOR: "翻页游标无效或已过期",
     ErrorCode.CONTEXT_BUDGET_EXCEEDED: "本轮必要上下文超出可用长度，未调用模型",
     ErrorCode.CONTEXT_UNAVAILABLE: "暂时无法安全组装对话上下文",

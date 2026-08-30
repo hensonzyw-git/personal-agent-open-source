@@ -249,6 +249,10 @@ _STATUS_BY_CODE = {
     ErrorCode.TIMELINE_MISMATCH: 404,
     ErrorCode.INVALID_CURSOR: 400,
     ErrorCode.PENDING_OPERATION_NOT_CANCELLABLE: 400,
+    # The progress trail distinguishes "this key names no operation *yet*" from
+    # every other refusal so the client keeps polling instead of concluding
+    # anything about the write.
+    ErrorCode.OPERATION_NOT_ANCHORED: 400,
 }
 
 _MAX_JSON_BODY_BYTES = 64 * 1024
@@ -678,6 +682,71 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             response,
             delivery="operation_poll",
         )
+
+    @app.get("/v1/operations/by-key/{path_key}")
+    async def get_operation_by_key(path_key: str, request: Request):
+        # The progress trail's poll: the client holds its own idempotency key
+        # through the whole 30-second chat POST, so it can ask about the
+        # operation *before* the POST answers with an operation_id. Read-only,
+        # and the ownership rule is exactly `_owned_operation`'s: the operation
+        # must belong to an api_request this device made. A key nothing has
+        # anchored yet is a distinguishable `OPERATION_NOT_ANCHORED`, which the
+        # client treats as "keep polling", never as a conclusion about a write.
+        #
+        # The path variable is `path_key`, not `idempotency_key`: a parameter
+        # with the latter name would shadow the `idempotency_key` header parser
+        # for the whole function body.
+        authenticated_device_id: str | None = None
+        anchored_operation_id: str | None = None
+        with deps.session_factory() as session:
+            def work():
+                nonlocal authenticated_device_id, anchored_operation_id
+                auth = authenticate(request, session)
+                authenticated_device_id = auth.device_id
+                # The key arrives in the path, not in a header, so the same
+                # canonical-UUIDv4 rule is applied to the path value directly.
+                try:
+                    parsed = uuid.UUID(path_key)
+                except ValueError as exc:
+                    raise AppError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        internal_detail="path key must be a canonical UUIDv4",
+                    ) from exc
+                if (
+                    parsed.version != 4
+                    or parsed.variant != uuid.RFC_4122
+                    or str(parsed) != path_key
+                ):
+                    raise AppError(
+                        ErrorCode.INVALID_ARGUMENT,
+                        internal_detail="path key must be a canonical UUIDv4",
+                    )
+                operation = (
+                    session.query(Operation)
+                    .filter(Operation.idempotency_key == path_key)
+                    .filter(Operation.api_request.has(device_id=auth.device_id))
+                    .one_or_none()
+                )
+                if operation is None:
+                    raise AppError(
+                        ErrorCode.OPERATION_NOT_ANCHORED,
+                        internal_detail=(
+                            f"no operation anchored for key {path_key} on this device"
+                        ),
+                    )
+                anchored_operation_id = operation.operation_id
+                return _operation_response(deps.keyring, operation)
+
+            response = _commit(session, work)
+        if anchored_operation_id is not None:
+            return _record_operation_http_response(
+                deps,
+                anchored_operation_id,
+                _authenticated_device(authenticated_device_id),
+                response,
+                delivery="operation_poll_by_key",
+            )
+        return response
 
     @app.delete("/v1/operations/{operation_id}")
     async def cancel_operation(operation_id: str, request: Request):

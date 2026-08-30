@@ -216,6 +216,21 @@ public struct AgentClient: Sendable {
         )
     }
 
+    /// The progress trail's poll, resolved by idempotency key. Same projection
+    /// as the by-id poll; the server answers `400 OPERATION_NOT_ANCHORED` while
+    /// the key names nothing yet.
+    public func operation(
+        idempotencyKey: String, token: String
+    ) async throws -> OperationReceipt {
+        try await send(
+            method: "GET",
+            path: "/v1/operations/by-key/\(idempotencyKey)",
+            token: token,
+            accepting: [200, 202],
+            as: OperationReceipt.self
+        )
+    }
+
     /// Ask the server to cancel. The reply is the operation's *current* state:
     /// once a source submit may have happened this only records the request, and
     /// the accounting outcome still comes from the server.

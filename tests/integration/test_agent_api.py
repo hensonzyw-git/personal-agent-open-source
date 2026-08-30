@@ -2335,3 +2335,165 @@ def test_a_failed_correction_carries_no_business_fields(
         event["event_type"] == "expense_category_corrected"
         for event in timeline
     )
+
+
+# --- GET /v1/operations/by-key/{idempotency_key} -------------------------------
+#
+# The chat POST can hold the client for up to 30 seconds before handing back the
+# operation id, so the progress trail polls by the idempotency key it already
+# holds. Everything here is read-only: the endpoint projects the same operation
+# the by-id poll projects, and an unanchored key is a distinguishable 400, never
+# a 404 that could be read as "the key is free".
+
+
+def test_by_key_poll_returns_the_same_projection_as_by_id(
+    engine, token_ring, keyring
+) -> None:
+    class SlowInterpreter:
+        def interpret(self, *, envelope):
+            time.sleep(0.05)
+            return DirectAnswer("你好")
+
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=SlowInterpreter(),
+        dispatcher=FakeDispatcher(),
+        sync_wait_seconds=0.01,
+    )
+    key = REQUEST_ID_3
+    resp = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "hi"},
+        headers=_auth(token_ring, key=key),
+    )
+    assert resp.status_code == 202
+
+    polled = client.get(
+        f"/v1/operations/by-key/{key}",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert polled.status_code == 200
+    by_key = polled.json()
+    operation_id = by_key["operation_id"]
+
+    by_id = client.get(
+        f"/v1/operations/{operation_id}",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert by_id.status_code == 200
+    assert by_id.json() == by_key
+
+
+def test_by_key_poll_before_anchor_is_operation_not_anchored(
+    engine, token_ring, keyring
+) -> None:
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+    )
+    never_sent = REQUEST_ID_2
+    resp = client.get(
+        f"/v1/operations/by-key/{never_sent}",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "OPERATION_NOT_ANCHORED"
+
+
+def test_by_key_poll_of_another_devices_key_is_refused(
+    engine, token_ring, keyring
+) -> None:
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+    )
+    key = REQUEST_ID_3
+    created = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "hi"},
+        headers=_auth(token_ring, key=key),
+    )
+    assert created.status_code == 200
+
+    with session_factory(engine)() as session:
+        session.add(
+            Device(
+                device_id="dev-2",
+                display_name="Second iPhone",
+                public_key="K2",
+                device_key_thumbprint="THUMB2",
+                status="active",
+                scopes='["finance.write"]',
+                allowed_tools_version="v1",
+                created_at=NOW,
+            )
+        )
+        session.commit()
+    other_auth = {
+        "Authorization": (
+            "Bearer "
+            + _token(token_ring, device_id="dev-2", thumbprint="THUMB2")
+        )
+    }
+    resp = client.get(
+        f"/v1/operations/by-key/{key}", headers=other_auth
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "OPERATION_NOT_ANCHORED"
+
+
+def test_by_key_poll_requires_a_canonical_uuid_key(
+    engine, token_ring, keyring
+) -> None:
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+    )
+    for bad in ("not-a-uuid", REQUEST_ID_2.upper() + "-x"):
+        resp = client.get(
+            f"/v1/operations/by-key/{bad}",
+            headers={"Authorization": f"Bearer {_token(token_ring)}"},
+        )
+        assert resp.status_code == 400
+
+
+def test_by_key_poll_requires_authentication(engine, token_ring, keyring) -> None:
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+    )
+    resp = client.get(f"/v1/operations/by-key/{REQUEST_ID_2}")
+    assert resp.status_code == 401
+
+
+def test_by_key_poll_projection_carries_the_tool_fact(
+    engine, token_ring, keyring
+) -> None:
+    """The trail reads `tool` straight from the dispatching transition."""
+    intent = WriteIntent("finance.log_expense", {"name": "午饭"})
+    dispatcher = FakeDispatcher(resolve=Resolved(intent), commit=Written("recABC"))
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(ToolCall("finance.log_expense", {"name": "午饭"})),
+        dispatcher=dispatcher,
+    )
+    key = REQUEST_ID_3
+    resp = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=key),
+    )
+    assert resp.status_code == 200
+
+    polled = client.get(
+        f"/v1/operations/by-key/{key}",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert polled.status_code == 200
+    body = polled.json()
+    assert body["tool"] == "finance.log_expense"
+    assert body["record_id"] == "recABC"

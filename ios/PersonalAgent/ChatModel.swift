@@ -45,6 +45,15 @@ final class ChatModel {
     var ledgerURL: URL?
     /// The receipt of the message in hand, live or just settled.
     var liveReceipt: OperationReceipt?
+    /// The progress trail: where the in-flight operation has provably reached,
+    /// newest last. Every entry is read off the server's operation projection —
+    /// stage names and the tool the server recorded — never off model prose.
+    /// Cleared when the send's round trip ends, because the settled receipt is
+    /// then the full truth on screen.
+    private(set) var liveStages: [OperationStage] = []
+    /// Whether a trail is worth showing: the optimistic bubble is up and the
+    /// operation has not settled.
+    var showProgressTrail: Bool { sending != nil && !liveStages.isEmpty }
     /// Set while a parked clarification is being answered, so the next send
     /// carries `clarification_of` instead of starting an unrelated message.
     var answering: (operationID: String, question: String)?
@@ -102,6 +111,21 @@ final class ChatModel {
     init(timeline: ChatTimeline, describe: @escaping @MainActor (Error) -> String) {
         self.timeline = timeline
         self.describe = describe
+        // The trail survives for exactly one round trip: it starts when a send
+        // starts and is wiped when that send ends. The sink is @Sendable, so it
+        // captures its own weak self and hops to the main actor — SwiftUI reads
+        // `liveStages` there. The outer Task exists only to register the sink
+        // through the actor's async method and captures nothing.
+        Task { [weak self] in
+            await timeline.setProgressSink { [weak self] stage in
+                await self?.appendStage(stage)
+            }
+        }
+    }
+
+    /// One provable stage arrived from the poll loop.
+    private func appendStage(_ stage: OperationStage) async {
+        liveStages.append(stage)
     }
 
     /// Open the Timeline the server named, then finish anything left unresolved.
@@ -195,7 +219,8 @@ final class ChatModel {
         // Out of the composer and onto the screen before the request leaves.
         draft = ""
         sending = text
-        defer { sending = nil }
+        liveStages = []
+        defer { sending = nil; liveStages = [] }
         do {
             let receipt = try await timeline.send(
                 text: text,
@@ -249,7 +274,8 @@ final class ChatModel {
     /// Re-ask the server about the unresolved message.
     func resumeUnresolved() async {
         busy = true
-        defer { busy = false }
+        liveStages = []
+        defer { busy = false; liveStages = [] }
         do {
             liveReceipt = try await timeline.resume()
             try await timeline.syncNewer()

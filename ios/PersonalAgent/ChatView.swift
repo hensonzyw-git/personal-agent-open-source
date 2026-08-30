@@ -233,13 +233,18 @@ struct ChatView: View {
     }
 
     /// The in-flight message: the same bubble it will become, dimmed, with 发送中
-    /// under it.
+    /// under it — and, once the server has proven it, the stage trail.
     ///
     /// Drawn from the bubble the Timeline uses rather than a separate style, so
     /// nothing moves or changes shape when the server's copy replaces it. What
     /// distinguishes the two is opacity and the label — §3.2 in miniature: 发送中 is
     /// a weaker claim than 已发送, and the screen must not let the first read as the
     /// second.
+    ///
+    /// The trail under 发送中 carries only what the server's own operation
+    /// projection stated: a stage name, and the registered tool name once one
+    /// was selected. There is no model reasoning on it, by construction — the
+    /// server never puts thought text in the operation row.
     private func sendingBubble(_ text: String) -> some View {
         VStack(alignment: .trailing, spacing: 3) {
             Text(text)
@@ -262,8 +267,61 @@ struct ChatView: View {
             }
             .font(.caption2)
             .foregroundStyle(.secondary)
+            if !model.liveStages.isEmpty {
+                stageTrail(model.liveStages)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    /// The execution pipeline under a sending bubble: 已接收 → 正在理解 → 已选择工具
+    /// → 正在写入 → 正在核对. Only the stages the server has actually reached are
+    /// drawn, each with its own spinner state — the current one spins, the ones
+    /// before it show checkmarks, and nothing is ever shown before the server
+    /// said so.
+    private func stageTrail(_ stages: [OperationStage]) -> some View {
+        // Collapse duplicates: the poll may observe the same stage many times.
+        // `stages` arrives in observation order, and the pipeline's own order is
+        // the state machine's, so the last observation of each distinct stage
+        // keeps the freshest tool fact.
+        var collapsed: [OperationStage] = []
+        for stage in stages where !collapsed.contains(where: { $0 == stage }) {
+            collapsed.append(stage)
+        }
+        let current = collapsed.last
+        let currentIndex = collapsed.count - 1
+        return HStack(spacing: 8) {
+            ForEach(Array(collapsed.enumerated()), id: \.offset) { index, stage in
+                HStack(spacing: 3) {
+                    if index == currentIndex {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "checkmark")
+                            .font(.caption2.weight(.semibold))
+                    }
+                    Text(stageLabel(stage, isCurrent: index == currentIndex))
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func stageLabel(_ stage: OperationStage, isCurrent: Bool) -> String {
+        switch stage {
+        case .accepted: return "已接收"
+        case .interpreting: return "正在理解"
+        case .dispatching(let tool):
+            // The registered tool name is the server's own fact; showing it is
+            // exactly the point of the trail. The generic label covers the
+            // narrow window where dispatching was observed before the tool
+            // fact arrived on the same projection.
+            if let tool { return isCurrent ? "已选择 \(tool)" : tool }
+            return "已选择工具"
+        case .sourceInProgress: return "正在写入"
+        case .verifying: return "正在核对"
+        }
     }
 
     // --- one Timeline entry ---------------------------------------------------
