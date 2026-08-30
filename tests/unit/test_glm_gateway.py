@@ -15,6 +15,7 @@ from personal_agent.context.continuation import (
     MAX_CLARIFICATION_QUESTION_CHARS,
     ClarificationContext,
     ClarificationExchange,
+    FinanceRetryContext,
 )
 from personal_agent.context.config import CAP001_PROVISIONAL_VALUES, ContextConfig
 from personal_agent.policy.bridge import VisibleTool
@@ -475,6 +476,100 @@ def test_a_clarified_bare_request_keeps_its_finance_state(tmp_path) -> None:
         "finance.log_income",
         "agent.ask_clarification",
         "agent.fail_batch_unavailable",
+        "agent.fail_safely",
+    ]
+
+
+def test_a_covering_answer_carries_the_whole_request(tmp_path) -> None:
+    """Review finding MAJOR-1 (2026-08-30): the covering answer had no tools.
+
+    An open question may be answered with one message that carries the whole
+    request: 「记一笔」 asked 「请提供要记的账目内容」, and the user replies
+    「记午饭 20 块 家庭支出」 in one turn. The answers only reach
+    `completed_exchanges` on the *next* seal, so a source without the current
+    message left this turn with `tool_aliases=()` — the model had no Finance
+    tool and the prose guard then refused its only possible output. The
+    current message joins the source so the turn can complete.
+    """
+    built = envelope_for(
+        tmp_path,
+        user_text="记午饭 20 块 家庭支出",
+        clarification=ClarificationContext(
+            original_user_text="记一笔",
+            question="请提供要记的账目内容：事项、金额，以及是个人支出还是家庭支出？",
+        ),
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.log_expense", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    # 「家庭支出」 is the frozen wording, so the source binds the expense tool.
+    assert built.finance_required_tool == "finance.log_expense"
+    assert built.finance_date_default_eligible is True
+    assert generate.kwargs["allowed_function_names"] == [
+        "finance.log_expense",
+        "agent.ask_clarification",
+        "agent.fail_safely",
+    ]
+
+
+def test_a_covering_answer_with_a_date_still_refuses_the_default(tmp_path) -> None:
+    """The date protection must see a date carried in the covering answer.
+
+    「记一笔」 answered by 「记昨天午饭 45 个人支出」 in one turn: the
+    explicit date reaches the source only through the current message, and an
+    omitted date must still fail rather than become the receipt day.
+    """
+    built = envelope_for(
+        tmp_path,
+        user_text="记昨天午饭 45 个人支出",
+        clarification=ClarificationContext(
+            original_user_text="记一笔",
+            question="请提供要记的账目内容：事项、金额，以及是个人支出还是家庭支出？",
+        ),
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.log_expense", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    assert built.finance_required_tool == "finance.log_expense"
+    assert built.finance_date_default_eligible is False
+
+
+def test_a_finance_retry_chain_keeps_its_state_and_date_protection(tmp_path) -> None:
+    """The FinanceRetryContext branch of the joined source had no test.
+
+    A retry whose chain contains an answered clarification resumes the same
+    request: the joined source must keep the Finance intent, and an explicit
+    date anywhere in the chain must still refuse the receipt-day default.
+    """
+    built = envelope_for(
+        tmp_path,
+        user_text="重新记",
+        finance_retry=FinanceRetryContext(
+            original_user_text="昨天午饭 45",
+            completed_exchanges=(
+                ClarificationExchange("个人还是家庭支出？", "家庭支出"),
+            ),
+            source_operation_id="op_retry_source",
+            source_failure_reason="BOOKKEEPING_TOOL_REQUIRED",
+        ),
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.log_expense", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    assert built.finance_required_tool == "finance.log_expense"
+    assert built.finance_date_default_eligible is False
+    assert generate.kwargs["allowed_function_names"] == [
+        "finance.log_expense",
+        "agent.ask_clarification",
         "agent.fail_safely",
     ]
 
