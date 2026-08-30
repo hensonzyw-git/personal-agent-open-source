@@ -50,6 +50,11 @@ from personal_agent.auth.tokens import (
     issue_access_token,
 )
 from personal_agent.context.budget import ComponentKind
+from personal_agent.context.config import default_context_config
+from personal_agent.context.session_manager import (
+    CompactSessionState,
+    SessionManager,
+)
 from personal_agent.diagnostics import transcript
 from personal_agent.diagnostics.recording_dispatcher import RecordingDispatcher
 from personal_agent.diagnostics.transcript import TranscriptRecorder
@@ -217,6 +222,7 @@ def _client(
     ledger_url=None,
     compact_session=None,
     recorder=None,
+    session_manager=None,
 ) -> TestClient:
     def build_dispatcher(auth, trace_id):
         if dispatcher_traces is not None:
@@ -238,6 +244,7 @@ def _client(
         sync_wait_seconds=sync_wait_seconds,
         ledger_url=ledger_url,
         compact_session=compact_session,
+        **({"session_manager": session_manager} if session_manager is not None else {}),
         **({"recorder": recorder} if recorder is not None else {}),
     )
     return TestClient(build_app(deps))
@@ -245,6 +252,143 @@ def _client(
 
 def _auth(token_ring, key=REQUEST_ID_1) -> dict:
     return {"Authorization": f"Bearer {_token(token_ring)}", "Idempotency-Key": key}
+
+
+class _BoundaryClassifier:
+    def __init__(self, answer) -> None:
+        self.answer = answer
+        self.calls = []
+
+    def classify(self, request):
+        self.calls.append(request)
+        return self.answer
+
+
+class _BoundaryStateProvider:
+    def compact_state(self, db, *, session):
+        return CompactSessionState(
+            topic_summary="已完成的旧话题",
+            domain="chat",
+            task_state="completed",
+        )
+
+
+def _boundary_manager(classifier: _BoundaryClassifier) -> SessionManager:
+    return SessionManager(
+        default_context_config(),
+        classifier=classifier,
+        state_provider=_BoundaryStateProvider(),
+    )
+
+
+def test_async_classifier_reassigns_a_completed_new_topic_turn(
+    engine, token_ring, keyring
+) -> None:
+    classifier = _BoundaryClassifier(
+        {
+            "decision": "open_new_session",
+            "reason": "task_boundary",
+            "confidence_band": "high",
+        }
+    )
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=FakeInterpreter(DirectAnswer("收到")),
+        dispatcher=FakeDispatcher(),
+        session_manager=_boundary_manager(classifier),
+    )
+
+    first = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "整理上周的项目复盘"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    second = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "帮我规划周末爬山"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    asyncio.run(client.app.state.drain_background_tasks())
+    assert len(classifier.calls) == 1
+
+    with session_factory(engine)() as session:
+        sessions = (
+            session.query(ContextSession)
+            .order_by(ContextSession.opened_at, ContextSession.session_id)
+            .all()
+        )
+        assert len(sessions) == 2
+        moved = (
+            session.query(ConversationEvent)
+            .filter(ConversationEvent.operation_id == second.json()["operation_id"])
+            .all()
+        )
+        assert moved
+        moved_session_ids = {event.session_id for event in moved}
+        assert len(moved_session_ids) == 1
+        new = next(item for item in sessions if item.session_id in moved_session_ids)
+        old = next(item for item in sessions if item.session_id != new.session_id)
+        assert old.status == "closed"
+        assert new.status == "open"
+        assert new.boundary_reason == "task_boundary"
+        original = (
+            session.query(ConversationEvent)
+            .filter(ConversationEvent.operation_id == first.json()["operation_id"])
+            .all()
+        )
+        assert original and {event.session_id for event in original} == {old.session_id}
+    assert len(classifier.calls) == 1
+
+
+def test_async_classifier_never_splits_a_parked_clarification(
+    engine, token_ring, keyring
+) -> None:
+    classifier = _BoundaryClassifier(
+        {
+            "decision": "open_new_session",
+            "reason": "task_boundary",
+            "confidence_band": "high",
+        }
+    )
+
+    class SequencedInterpreter:
+        def __init__(self) -> None:
+            self.results = [DirectAnswer("收到"), Clarification("请确认分类")]
+
+        def interpret(self, *, envelope):
+            return self.results.pop(0)
+
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=SequencedInterpreter(),
+        dispatcher=FakeDispatcher(),
+        session_manager=_boundary_manager(classifier),
+    )
+    client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "整理上周的项目复盘"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "帮我规划周末爬山"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert parked.json()["state"] == "waiting_for_clarification"
+    asyncio.run(client.app.state.drain_background_tasks())
+
+    with session_factory(engine)() as session:
+        sessions = session.query(ContextSession).all()
+        assert len(sessions) == 1
+        assert sessions[0].status == "open"
+    assert len(classifier.calls) == 1
 
 
 # --- auth --------------------------------------------------------------------
@@ -2335,3 +2479,165 @@ def test_a_failed_correction_carries_no_business_fields(
         event["event_type"] == "expense_category_corrected"
         for event in timeline
     )
+
+
+# --- GET /v1/operations/by-key/{idempotency_key} -------------------------------
+#
+# The chat POST can hold the client for up to 30 seconds before handing back the
+# operation id, so the progress trail polls by the idempotency key it already
+# holds. Everything here is read-only: the endpoint projects the same operation
+# the by-id poll projects, and an unanchored key is a distinguishable 400, never
+# a 404 that could be read as "the key is free".
+
+
+def test_by_key_poll_returns_the_same_projection_as_by_id(
+    engine, token_ring, keyring
+) -> None:
+    class SlowInterpreter:
+        def interpret(self, *, envelope):
+            time.sleep(0.05)
+            return DirectAnswer("你好")
+
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=SlowInterpreter(),
+        dispatcher=FakeDispatcher(),
+        sync_wait_seconds=0.01,
+    )
+    key = REQUEST_ID_3
+    resp = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "hi"},
+        headers=_auth(token_ring, key=key),
+    )
+    assert resp.status_code == 202
+
+    polled = client.get(
+        f"/v1/operations/by-key/{key}",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert polled.status_code == 200
+    by_key = polled.json()
+    operation_id = by_key["operation_id"]
+
+    by_id = client.get(
+        f"/v1/operations/{operation_id}",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert by_id.status_code == 200
+    assert by_id.json() == by_key
+
+
+def test_by_key_poll_before_anchor_is_operation_not_anchored(
+    engine, token_ring, keyring
+) -> None:
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+    )
+    never_sent = REQUEST_ID_2
+    resp = client.get(
+        f"/v1/operations/by-key/{never_sent}",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "OPERATION_NOT_ANCHORED"
+
+
+def test_by_key_poll_of_another_devices_key_is_refused(
+    engine, token_ring, keyring
+) -> None:
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+    )
+    key = REQUEST_ID_3
+    created = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "hi"},
+        headers=_auth(token_ring, key=key),
+    )
+    assert created.status_code == 200
+
+    with session_factory(engine)() as session:
+        session.add(
+            Device(
+                device_id="dev-2",
+                display_name="Second iPhone",
+                public_key="K2",
+                device_key_thumbprint="THUMB2",
+                status="active",
+                scopes='["finance.write"]',
+                allowed_tools_version="v1",
+                created_at=NOW,
+            )
+        )
+        session.commit()
+    other_auth = {
+        "Authorization": (
+            "Bearer "
+            + _token(token_ring, device_id="dev-2", thumbprint="THUMB2")
+        )
+    }
+    resp = client.get(
+        f"/v1/operations/by-key/{key}", headers=other_auth
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "OPERATION_NOT_ANCHORED"
+
+
+def test_by_key_poll_requires_a_canonical_uuid_key(
+    engine, token_ring, keyring
+) -> None:
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+    )
+    for bad in ("not-a-uuid", REQUEST_ID_2.upper() + "-x", REQUEST_ID_2.upper()):
+        resp = client.get(
+            f"/v1/operations/by-key/{bad}",
+            headers={"Authorization": f"Bearer {_token(token_ring)}"},
+        )
+        assert resp.status_code == 400
+
+
+def test_by_key_poll_requires_authentication(engine, token_ring, keyring) -> None:
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+    )
+    resp = client.get(f"/v1/operations/by-key/{REQUEST_ID_2}")
+    assert resp.status_code == 401
+
+
+def test_by_key_poll_projection_carries_the_tool_fact(
+    engine, token_ring, keyring
+) -> None:
+    """The trail reads `tool` straight from the dispatching transition."""
+    intent = WriteIntent("finance.log_expense", {"name": "午饭"})
+    dispatcher = FakeDispatcher(resolve=Resolved(intent), commit=Written("recABC"))
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(ToolCall("finance.log_expense", {"name": "午饭"})),
+        dispatcher=dispatcher,
+    )
+    key = REQUEST_ID_3
+    resp = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=key),
+    )
+    assert resp.status_code == 200
+
+    polled = client.get(
+        f"/v1/operations/by-key/{key}",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert polled.status_code == 200
+    body = polled.json()
+    assert body["tool"] == "finance.log_expense"
+    assert body["record_id"] == "recABC"

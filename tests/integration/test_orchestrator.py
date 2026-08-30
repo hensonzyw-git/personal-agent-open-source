@@ -47,7 +47,10 @@ from personal_agent.api.orchestrator import (
     run_operation,
 )
 from personal_agent.api.recovery import _RECOVERY_PATHS
-from personal_agent.context.continuation import ClarificationContext
+from personal_agent.context.continuation import (
+    ClarificationContext,
+    ClarificationExchange,
+)
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.storage.engine import (
     create_all,
@@ -642,6 +645,72 @@ def test_omitted_finance_date_uses_durable_message_receipt_day(
         {
             "tool": tool,
             "model_args": {**arguments, "occurred_on": "2026-07-24"},
+        }
+    ]
+
+
+def test_a_clarified_bare_request_write_receives_the_host_receipt_day(
+    session, keyring, tmp_path
+) -> None:
+    """「记账」→「午饭 20 块」→「个人」 failed live on 2026-08-30.
+
+    The continuation envelope derived its Finance state from "记账" alone,
+    which no intent predicate matches, so `finance_date_default_eligible` was
+    False and the Host sent no `occurred_on`. The model call was valid; the
+    MCP boundary refused it with INVALID_ARGUMENT before any execution row.
+    The continuation source is the original text plus every answered
+    exchange, so the resumed write turn must receive the receipt-bound date.
+    """
+    envelope = envelope_for(
+        tmp_path,
+        user_text="个人",
+        clarification=ClarificationContext(
+            original_user_text="记账",
+            question="午饭 20 元是个人支出还是家庭支出？",
+            completed_exchanges=(
+                ClarificationExchange(
+                    question="请提供要记的账目内容：事项、金额，以及是个人支出还是家庭支出？",
+                    answer="午饭 20块",
+                ),
+            ),
+        ),
+    )
+    op = _fresh_operation(session)
+    dispatcher = FakeDispatcher(resolve=ResolveFailedSafe(reason="test_stop"))
+
+    _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            ToolCall(
+                "finance.log_expense",
+                {
+                    "name": "午饭",
+                    "input_amount": "20",
+                    "input_currency": "CNY",
+                    "is_family_expense": False,
+                    "entry_kind": "expense",
+                    "category": "餐饮",
+                },
+            )
+        ),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        build_context=lambda: envelope,
+    )
+
+    assert dispatcher.resolve_calls == [
+        {
+            "tool": "finance.log_expense",
+            "model_args": {
+                "name": "午饭",
+                "input_amount": "20",
+                "input_currency": "CNY",
+                "is_family_expense": False,
+                "entry_kind": "expense",
+                "category": "餐饮",
+                "occurred_on": "2026-07-24",
+            },
         }
     ]
 

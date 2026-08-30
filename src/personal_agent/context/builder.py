@@ -95,6 +95,7 @@ from personal_agent_core.finance_tools import (
     FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS,
     FINANCE_INCOME_TOOL,
     FINANCE_QUERY_TOOL,
+    FINANCE_WRITE_TOOLS,
 )
 from personal_agent_core.manifest import canonical_json
 
@@ -173,6 +174,37 @@ def finance_source_requires_time_clarification(source_text: str) -> bool:
         _RESOLVED_RELATIVE_DAY_RE.search(source_text)
         and _AMBIGUOUS_HISTORIC_TIME_RE.search(source_text)
     )
+
+
+def _continuation_finance_source(
+    finance_retry_context: FinanceRetryContext | None,
+    clarification_context: ClarificationContext | None,
+    user_text: str,
+) -> str:
+    """The complete user request a continuation turn resumes.
+
+    A clarification resolves one missing fact of an *existing* request, so the
+    request is the original text joined with every answered exchange -- "记账"
+    answered by "午饭 20块" is one bookkeeping request, and only the joined
+    text matches the write-intent predicates. A Finance retry re-runs the same
+    request, so its original text (which already carries the failed intent)
+    plus its own answered chain is the source. On a plain turn the current
+    message is the whole request.
+    """
+    if finance_retry_context is not None:
+        parts = [finance_retry_context.original_user_text]
+        parts.extend(
+            item.answer for item in finance_retry_context.completed_exchanges
+        )
+        return " ".join(parts)
+    if clarification_context is not None:
+        parts = [clarification_context.original_user_text]
+        parts.extend(
+            item.answer for item in clarification_context.completed_exchanges
+        )
+        return " ".join(parts)
+    return user_text
+
 
 #: Recorded when an *ancestor* Session's Checkpoint had to go to fit the budget.
 #: This Session's own Checkpoint is never in that set: it is what replaces this
@@ -638,10 +670,70 @@ class ContextBuilder:
                 ComponentKind.USER_INPUT, user_text, label="user_input"
             )
         )
+        # Finance routing is Host-owned state, derived from the original request
+        # for a continuation.  It has to be resolved *before* declarations are
+        # given to the Budgeter: otherwise a long ordinary Session can trim away
+        # every governed Finance tool and leave a self-contradictory envelope
+        # (Finance required, but unavailable to the provider).
+        #
+        # The request a continuation resumes is the original text *plus* every
+        # answered clarification, not the original text alone: "记账" answered
+        # by "午饭 20块" is a bookkeeping write only once the answer is part of
+        # the source. Dropping the answers left a bare original that no intent
+        # predicate matched, so a later write turn lost its Finance state and
+        # the Host never injected the required receipt date (observed live
+        # 2026-08-30: 「记账」→「午饭 20 块」→「个人」 failed at the MCP
+        # occurred_on gate). Current user text stays out of the source: it has
+        # its own predicate channel (`is_finance_retry_request`) and a bare
+        # answer such as 「个人」 must not widen the required tool set.
+        finance_source_text = _continuation_finance_source(
+            finance_retry_context, clarification_context, user_text
+        )
+        finance_intent_required = (
+            finance_retry_context is not None
+            or is_finance_intent_candidate(finance_source_text)
+            or is_finance_retry_request(user_text)
+        )
+        finance_required_tool = (
+            FINANCE_QUERY_TOOL
+            if is_finance_query_request(finance_source_text)
+            else (
+                FINANCE_INCOME_TOOL
+                if is_income_write_request(finance_source_text)
+                else (
+                    FINANCE_EXPENSE_TOOL
+                    if is_expense_write_request(finance_source_text)
+                    else None
+                )
+            )
+        )
+        finance_essential_tools = (
+            frozenset({finance_required_tool})
+            if finance_required_tool is not None
+            else (FINANCE_WRITE_TOOLS if finance_intent_required else frozenset())
+        )
+        finance_date_default_eligible = (
+            finance_intent_required
+            and (
+                finance_required_tool is None
+                or finance_required_tool in FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
+            )
+            and finance_source_allows_receipt_date_default(finance_source_text)
+        )
+        finance_clarification_required = (
+            clarification_context is None
+            and finance_intent_required
+            and finance_source_requires_time_clarification(finance_source_text)
+        )
+        finance_retry_unbound = (
+            clarification_context is None
+            and finance_retry_context is None
+            and is_finance_retry_request(user_text)
+        )
         declarations = self._tool_declarations(
             effective_tools,
             candidate_tools=candidate_tools,
-            essential_tools=essential_tools,
+            essential_tools=(*essential_tools, *finance_essential_tools),
         )
         components.extend(declarations)
 
@@ -666,52 +758,6 @@ class ContextBuilder:
             row.checkpoint_id
             for _, row in lineage
             if _checkpoint_label(row.checkpoint_id) in surviving_labels
-        )
-
-        finance_source_text = (
-            finance_retry_context.original_user_text
-            if finance_retry_context is not None
-            else (
-                clarification_context.original_user_text
-                if clarification_context is not None
-                else user_text
-            )
-        )
-        finance_intent_required = (
-            finance_retry_context is not None
-            or is_finance_intent_candidate(finance_source_text)
-            or is_finance_retry_request(user_text)
-        )
-        finance_required_tool = (
-            FINANCE_QUERY_TOOL
-            if is_finance_query_request(finance_source_text)
-            else (
-                FINANCE_INCOME_TOOL
-                if is_income_write_request(finance_source_text)
-                else (
-                    FINANCE_EXPENSE_TOOL
-                    if is_expense_write_request(finance_source_text)
-                    else None
-                )
-            )
-        )
-        finance_date_default_eligible = (
-            finance_intent_required
-            and (
-                finance_required_tool is None
-                or finance_required_tool in FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
-            )
-            and finance_source_allows_receipt_date_default(finance_source_text)
-        )
-        finance_clarification_required = (
-            clarification_context is None
-            and finance_intent_required
-            and finance_source_requires_time_clarification(finance_source_text)
-        )
-        finance_retry_unbound = (
-            clarification_context is None
-            and finance_retry_context is None
-            and is_finance_retry_request(user_text)
         )
 
         return ContextEnvelope(
@@ -1297,7 +1343,11 @@ class ContextBuilder:
         selected = [
             tool
             for tool in effective_tools
-            if candidates is None or tool.alias in candidates
+            if (
+                candidates is None
+                or tool.alias in candidates
+                or tool.alias in essential
+            )
         ]
         # The caller's order is relevance order: the Router puts its best
         # candidate first, and the governed catalog puts the business tool ahead

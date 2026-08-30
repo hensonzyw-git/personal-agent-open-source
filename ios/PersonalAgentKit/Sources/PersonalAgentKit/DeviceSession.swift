@@ -250,6 +250,15 @@ public actor DeviceSession {
         }
     }
 
+    /// The progress trail's poll. Read-only and keyed by the caller's own
+    /// idempotency key, so the one-retry refresh policy cannot create anything:
+    /// a refresh-and-retry asks the same question about the same key.
+    public func operation(idempotencyKey: String) async throws -> OperationReceipt {
+        try await authorized {
+            try await self.client.operation(idempotencyKey: idempotencyKey, token: $0)
+        }
+    }
+
     public func cancelOperation(operationID: String) async throws -> OperationReceipt {
         try await authorized {
             try await self.client.cancelOperation(operationID: operationID, token: $0)

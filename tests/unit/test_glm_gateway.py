@@ -422,6 +422,125 @@ def test_a_clarified_explicit_expense_resumes_with_only_its_tool_or_safe_calls(
     assert generate.kwargs["messages"][-1] == {"role": "user", "content": "昨天"}
 
 
+def test_a_clarified_bare_request_keeps_its_finance_state(tmp_path) -> None:
+    """「记账」→「午饭 20 块」→「个人」 failed live on 2026-08-30.
+
+    The continuation's Finance state was derived from the original text alone.
+    A bare "记账" matches no intent predicate, so the resumed turn lost
+    `finance_intent_required` and the Host never injected `occurred_on`; the
+    MCP boundary refused the write with INVALID_ARGUMENT after a fully valid
+    model call. The request a clarification resumes is the original text plus
+    every answered exchange, so the resumed turn must keep the Finance state.
+    """
+    built = envelope_for(
+        tmp_path,
+        user_text="个人",
+        clarification=ClarificationContext(
+            original_user_text="记账",
+            question="午饭 20 元是个人支出还是家庭支出？",
+            completed_exchanges=(
+                ClarificationExchange(
+                    question="请提供要记的账目内容：事项、金额，以及是个人支出还是家庭支出？",
+                    answer="午饭 20块",
+                ),
+            ),
+        ),
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(
+        _response(
+            _call(
+                "finance.log_expense",
+                {
+                    "name": "午饭",
+                    "input_amount": "20",
+                    "input_currency": "CNY",
+                    "is_family_expense": False,
+                    "entry_kind": "expense",
+                    "category": "餐饮",
+                },
+            )
+        )
+    )
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    # No single chain element names the exact tool, so the full write set
+    # stays essential and the date default stays eligible for both.
+    assert built.finance_required_tool is None
+    assert built.finance_date_default_eligible is True
+    assert generate.kwargs["allowed_function_names"] == [
+        "finance.log_expense",
+        "finance.log_income",
+        "agent.ask_clarification",
+        "agent.fail_batch_unavailable",
+        "agent.fail_safely",
+    ]
+
+
+def test_a_clarified_bare_income_request_requires_the_income_tool(tmp_path) -> None:
+    """The joined chain must also route, not only flag the intent.
+
+    「记收入」 alone names no income wording; the answered clarification
+    「公积金 4000」 does. Dropping the answer would leave the required tool
+    unset and let the model reach the expense tool.
+    """
+    built = envelope_for(
+        tmp_path,
+        user_text="个人",
+        clarification=ClarificationContext(
+            original_user_text="记收入",
+            question="这笔收入是什么？",
+            completed_exchanges=(
+                ClarificationExchange("这笔收入是什么？", "公积金入账 4000"),
+            ),
+        ),
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.log_income", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    assert built.finance_required_tool == "finance.log_income"
+    assert generate.kwargs["allowed_function_names"] == [
+        "finance.log_income",
+        "agent.ask_clarification",
+        "agent.fail_safely",
+    ]
+
+
+def test_a_clarified_explicit_date_still_refuses_the_receipt_day_default(
+    tmp_path,
+) -> None:
+    """Joining answers must not overwrite the explicit-date protection.
+
+    "昨天午饭 45" answered by "家庭支出" keeps the explicit date in the
+    source, so an omitted date still must NOT be silently defaulted to the
+    receipt day; the model has to supply it.
+    """
+    built = envelope_for(
+        tmp_path,
+        user_text="家庭支出",
+        clarification=ClarificationContext(
+            original_user_text="昨天午饭 45",
+            question="个人还是家庭支出？",
+            completed_exchanges=(
+                ClarificationExchange("个人还是家庭支出？", "家庭支出"),
+            ),
+        ),
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.log_expense", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    assert built.finance_required_tool == "finance.log_expense"
+    assert built.finance_date_default_eligible is False
+
+
 def test_a_date_merchant_ambiguity_allows_only_clarification_or_safe_failure(
     tmp_path,
 ) -> None:
