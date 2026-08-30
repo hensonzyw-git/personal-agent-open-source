@@ -1,5 +1,40 @@
 import Foundation
 
+/// Where an in-flight operation has provably reached, as the progress trail
+/// reports it.
+///
+/// Every case is read off the server's own operation projection — the same
+/// structured fields the receipt is built from — and never off model text. The
+/// trail names the *stage*, and `dispatching` names the tool the server
+/// recorded for it; nothing here can ever carry a model's reasoning, because
+/// the server never stores it in the operation row.
+public enum OperationStage: Sendable, Equatable {
+    /// The server has anchored the request durably.
+    case accepted
+    /// The model turn is being interpreted.
+    case interpreting
+    /// A tool was selected and dispatched; this is the tool's registered name.
+    case dispatching(tool: String?)
+    /// The governed write may already have been submitted to the fact source.
+    case sourceInProgress
+    /// The outcome is being verified against the fact source.
+    case verifying
+
+    public static func == (lhs: OperationStage, rhs: OperationStage) -> Bool {
+        switch (lhs, rhs) {
+        case (.accepted, .accepted),
+             (.interpreting, .interpreting),
+             (.sourceInProgress, .sourceInProgress),
+             (.verifying, .verifying):
+            return true
+        case (.dispatching(let a), .dispatching(let b)):
+            return a == b
+        default:
+            return false
+        }
+    }
+}
+
 /// The chat state machine of `DEV-030`, kept out of SwiftUI so it can be tested
 /// headlessly with `swift test`.
 ///
@@ -87,6 +122,9 @@ public actor ChatTimeline {
     /// The poll schedule. Bounded on purpose: a client that polls forever hides a
     /// stuck operation behind a spinner and drains the battery doing it.
     private let pollDelays: [Duration]
+    /// The progress trail's sink, set by the UI. Stage observations are
+    /// delivered in arrival order; the sink decides what to show.
+    private var progressSink: (@Sendable (OperationStage) async -> Void)?
 
     private var conversationID: String?
     private var seenEventIDs: Set<String> = []
@@ -136,6 +174,40 @@ public actor ChatTimeline {
     }
 
     public var boundConversationID: String? { conversationID }
+
+    // --- the progress trail ----------------------------------------------------
+
+    /// Observe where an in-flight operation has provably reached.
+    ///
+    /// The sink receives structured stages only. It never receives model text,
+    /// because the operation projection has none to give — this method exists
+    /// so the UI can show an execution pipeline instead of a bare spinner.
+    public func setProgressSink(
+        _ sink: (@Sendable (OperationStage) async -> Void)?
+    ) {
+        progressSink = sink
+    }
+
+    /// Project one receipt's state onto the trail. Terminal and parked states
+    /// say nothing: the receipt itself is about to tell the user the outcome.
+    private static func stage(of receipt: OperationReceipt) -> OperationStage? {
+        switch receipt.state {
+        case .accepted: return .accepted
+        case .interpreting: return .interpreting
+        case .dispatching: return .dispatching(tool: receipt.tool)
+        case .sourceInProgress: return .sourceInProgress
+        case .verifying: return .verifying
+        case .waitingForClarification, .waitingForDuplicateDecision,
+             .succeeded, .failedSafe, .needsManualReview, .cancelledPreSubmit,
+             .unrecognised:
+            return nil
+        }
+    }
+
+    private func report(_ stage: OperationStage) async {
+        guard let sink = progressSink else { return }
+        await sink(stage)
+    }
 
     // --- history --------------------------------------------------------------
 
@@ -237,6 +309,11 @@ public actor ChatTimeline {
         // no operation, which `resume()` re-presents; the server then either
         // replays or creates exactly one operation for it.
         try savePending(pending)
+        // The trail runs beside the POST, not after it: the whole point is the
+        // window where the POST is still waiting and the server is already
+        // interpreting and dispatching. It ends the moment the POST answers.
+        let trail = startTrailRunner(key: pending.idempotencyKey)
+        defer { trail.cancel() }
         let receipt: OperationReceipt
         do {
             receipt = try await backend.sendChatMessage(
@@ -490,11 +567,17 @@ public actor ChatTimeline {
         _ first: OperationReceipt, pending: PendingSend
     ) async throws -> OperationReceipt {
         var receipt = first
+        if let stage = Self.stage(of: receipt) {
+            await report(stage)
+        }
         var attempt = 0
         while !receipt.outcome.isSettled && attempt < pollDelays.count {
             try await sleep(pollDelays[attempt])
             attempt += 1
             receipt = try await backend.operation(operationID: receipt.operationID)
+            if let stage = Self.stage(of: receipt) {
+                await report(stage)
+            }
         }
         if receipt.outcome.releasesPendingSlot {
             // Polling may stop without releasing the slot. Unknown and
@@ -505,6 +588,46 @@ public actor ChatTimeline {
             }
         }
         return receipt
+    }
+
+    /// Run the by-key trail concurrently with the chat POST.
+    ///
+    /// The POST can hold the connection for up to 30 seconds, and that window is
+    /// exactly when the model turn runs: interpreting, tool selection, the
+    /// dispatch. The client has no operation id yet, so the only door is
+    /// `GET /v1/operations/by-key/{key}` — and the key is the one this send
+    /// persisted before the request left. Every failure there (unanchored,
+    /// transport, 5xx) means "no evidence this instant", never a conclusion
+    /// about a write, so all of it is swallowed and the loop simply continues.
+    /// The schedule is the same bounded one settle uses — 8 waits, ~26s — so a
+    /// POST that runs to its full 30s ceiling leaves the trail idle for the
+    /// last stretch; the settle loop owns that tail by id. The task is
+    /// cancelled the moment the POST answers.
+    ///
+    /// Every poll is preceded by a wait, the first one included. A POST that
+    /// settles inside the first window then cancels a task that has not yet
+    /// touched the network — a fast send costs zero by-key round trips. It also
+    /// skips the pointless t=0 poll in production, where anchoring cannot have
+    /// happened before the server has even parsed the POST.
+    private func startTrailRunner(key: String) -> Task<Void, Never> {
+        let stageOf = Self.stage(of:)
+        let sink = progressSink
+        let delays = pollDelays
+        let sleep = self.sleep
+        let backend = self.backend
+        return Task {
+            var attempt = 0
+            while attempt < delays.count {
+                try? await sleep(delays[attempt])
+                if Task.isCancelled { break }
+                attempt += 1
+                // Best effort by contract: any throw is "no evidence yet".
+                let receipt = try? await backend.operation(idempotencyKey: key)
+                if let receipt, let stage = stageOf(receipt) {
+                    await sink?(stage)
+                }
+            }
+        }
     }
 
     // --- helpers --------------------------------------------------------------
@@ -613,6 +736,13 @@ public protocol ChatBackend: Sendable {
     ) async throws -> OperationReceipt
 
     func operation(operationID: String) async throws -> OperationReceipt
+
+    /// The progress trail's poll: the same projection as `operation(operationID:)`,
+    /// resolved by the idempotency key the client already holds. The server
+    /// answers `400 OPERATION_NOT_ANCHORED` while the key names no operation yet,
+    /// which the caller reads as "keep waiting".
+    func operation(idempotencyKey: String) async throws -> OperationReceipt
+
     func cancelOperation(operationID: String) async throws -> OperationReceipt
 
     func timelinePage(

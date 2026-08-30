@@ -184,16 +184,45 @@ final class ChatStub: URLProtocol {
             )
             return
         }
-        let reply = service.handle(call)
-        let response = HTTPURLResponse(
-            url: request.url!,
-            statusCode: reply.status,
-            httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "application/json"]
-        )!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: reply.body)
-        client?.urlProtocolDidFinishLoading(self)
+        // Handle each request off the protocol queue. Synchronous handling
+        // here serialises independent requests behind whatever handler runs
+        // long — the held POST of the trail suite blocked every by-key poll
+        // until it answered, so "polls beside the open POST" could never be
+        // observed, and the suite only passed where machine speed let two
+        // polls sneak in first. A real server answers independent connections
+        // concurrently; the stub must too. Sequential flows are unaffected:
+        // one request in flight at a time cannot tell the difference.
+        //
+        // URLProtocol subclasses are called on a single protocol queue and are
+        // not Sendable; the box scopes that promise to exactly this hop. The
+        // URLProtocol client callbacks themselves are documented thread-safe.
+        let loader = SendableLoader(self)
+        let requestURL = request.url!
+        DispatchQueue.global().async {
+            let reply = service.handle(call)
+            let response = HTTPURLResponse(
+                url: requestURL,
+                statusCode: reply.status,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            loader.client?.urlProtocol(
+                loader.base, didReceive: response, cacheStoragePolicy: .notAllowed
+            )
+            loader.client?.urlProtocol(loader.base, didLoad: reply.body)
+            loader.client?.urlProtocolDidFinishLoading(loader.base)
+        }
+    }
+
+    /// Escapes a URLProtocol subclass through a `@Sendable` dispatch without
+    /// pretending the subclass itself is `Sendable`.
+    private final class SendableLoader: @unchecked Sendable {
+        let base: ChatStub
+        let client: (any URLProtocolClient)?
+        init(_ base: ChatStub) {
+            self.base = base
+            self.client = base.client
+        }
     }
 
     override func stopLoading() {}
@@ -357,16 +386,19 @@ func makeChatSession(
 
 /// An enrolled session plus a bound Timeline, which is the state every chat test
 /// starts from. Sleeping is a no-op so the poll schedule costs no wall time.
+/// Pass a real `Task.sleep`-backed closure when a test depends on cancellation
+/// landing *during* a wait, which a no-op sleep cannot observe.
 func makeChat(
     service: Service,
     store: CredentialStore = InMemoryCredentialStore(),
     bind: Bool = true,
-    pollDelays: [Duration] = Array(repeating: .zero, count: 4)
+    pollDelays: [Duration] = Array(repeating: .zero, count: 4),
+    sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in }
 ) async throws -> (ChatTimeline, DeviceSession, CredentialStore) {
     let session = try makeChatSession(service: service, store: store)
     _ = try await session.enroll(code: "code", displayName: "iPhone")
     let chat = ChatTimeline(
-        backend: session, store: store, pollDelays: pollDelays, sleep: { _ in }
+        backend: session, store: store, pollDelays: pollDelays, sleep: sleep
     )
     if bind { await chat.bind(conversationID: chatTimelineID) }
     return (chat, session, store)
@@ -2049,5 +2081,324 @@ struct ReceiptContractTests {
                 "\(entry.name): cancellation disagreed with the server contract"
             )
         }
+    }
+}
+
+// --- the operation progress trail ---------------------------------------------
+//
+// While the chat POST can still be holding the connection (the server waits up
+// to 30 seconds), the client polls `GET /v1/operations/by-key/{key}` with the
+// idempotency key it already holds. An unanchored key is a 400
+// `OPERATION_NOT_ANCHORED`, which means "keep waiting", never a failure. The
+// trail is a structured stage, never model prose.
+
+@Suite("The operation progress trail")
+struct OperationProgressTests {
+    /// A receipt for a stage the trail should surface. `tool` is the fact the
+    /// dispatching transition records server-side.
+    private func runningReceipt(
+        _ state: String, tool: Any = NSNull(), operation: String = "op-1"
+    ) -> [String: Any] {
+        var body = chatReceipt(state, operation: operation)
+        body["tool"] = tool
+        return body
+    }
+
+    private func byKeyBody(
+        _ state: String, tool: Any = NSNull(), operation: String = "op-1"
+    ) -> [String: Any] {
+        var body = chatReceipt(state, operation: operation)
+        body["tool"] = tool
+        return body
+    }
+
+    @Test("a settled send never polls by key")
+    func settledSendSkipsByKeyPolling() async throws {
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                return .ok(chatReceipt("succeeded", tool: "finance.log_expense", recordID: "rec-1"))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        // A real cancellable sleep, not the no-op default: the property under
+        // test is that cancellation lands *during* the first wait, which a
+        // no-op sleep cannot model. The first window (1s) is far longer than
+        // the cold-start POST path takes, so the cancel always arrives before
+        // poll one, and it costs nothing — the sleep never completes.
+        let (chat, _, _) = try await makeChat(
+            service: service,
+            pollDelays: [.seconds(1), .zero, .zero, .zero],
+            sleep: { try await Task.sleep(for: $0) }
+        )
+
+        let final = try await chat.send(text: "咖啡 18")
+
+        #expect(final.outcome.isSettled)
+        // No by-key request ever left: the POST settled inside the first wait,
+        // so the trail was cancelled before its first poll.
+        let byKeyCalls = service.log.filter {
+            $0.method == "GET" && $0.path.contains("/v1/operations/by-key/")
+        }
+        #expect(byKeyCalls.isEmpty)
+    }
+
+    @Test("a running send surfaces the stages the settle polls prove")
+    func runningSendSurfacesSettleStages() async throws {
+        let service = Service()
+        service.answer { call, seen in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                return seen == 0
+                    ? .accepted(chatReceipt("accepted"))
+                    : .error(500, "INTERNAL_ERROR")
+            case ("GET", "/v1/operations/op-1"):
+                return .accepted(chatReceipt("source_in_progress"))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let (chat, _, store) = try await makeChat(service: service)
+        let trail = OperationTrail()
+        await chat.setProgressSink { stage in trail.record(stage) }
+
+        // The POST replies with an accepted receipt; settle() then polls op-1,
+        // which stays running until the schedule runs out.
+        let final = try await chat.send(text: "咖啡 18")
+        #expect(final.outcome == .running)
+
+        let seen = trail.stages
+        #expect(seen.contains(.accepted))
+        #expect(seen.contains(.sourceInProgress))
+        #expect(try store.read(CredentialKey.pendingChatSend) != nil)
+    }
+
+    @Test("an unanchored key during the POST window keeps the trail at accepted")
+    func unanchoredKeyKeepsWaiting() async throws {
+        let service = Service()
+        let keyBox = KeyBox()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                if let key = call.idempotencyKey { keyBox.set(key) }
+                // Hold the POST open: never settle within the poll schedule.
+                return .accepted(chatReceipt("accepted"))
+            case ("GET", "/v1/operations/op-1"):
+                return .accepted(chatReceipt("interpreting"))
+            default:
+                // by-key before anchor: the server's OPERATION_NOT_ANCHORED.
+                return .error(400, "OPERATION_NOT_ANCHORED")
+            }
+        }
+        let (chat, _, _) = try await makeChat(service: service)
+        let trail = OperationTrail()
+        await chat.setProgressSink { stage in trail.record(stage) }
+
+        let final = try await chat.send(text: "咖啡 18")
+        #expect(final.outcome == .running)
+
+        // The trail never claimed a stage beyond what the server proved: the
+        // unanchored by-key answers were swallowed, and only the settle polls'
+        // states were reported.
+        let seen = trail.stages
+        #expect(seen.contains(.accepted))
+        #expect(seen.contains(.interpreting))
+        #expect(!seen.contains { stage in
+            if case .dispatching = stage { return true }
+            return false
+        })
+    }
+
+    @Test("a transport failure on the by-key poll does not kill the settle loop")
+    func byKeyTransportFailureIsSurvivable() async throws {
+        let service = Service()
+        service.answer { call, seen in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                return .accepted(chatReceipt("accepted"))
+            case ("GET", "/v1/operations/op-1"):
+                return seen == 3
+                    ? .ok(chatReceipt("succeeded", tool: "finance.log_expense", recordID: "rec-1"))
+                    : .accepted(chatReceipt("dispatching", tool: "finance.log_expense"))
+            default:
+                return .init(status: 599, body: Data())
+            }
+        }
+        let (chat, _, store) = try await makeChat(service: service)
+
+        let final = try await chat.send(text: "咖啡 18")
+
+        #expect(final.outcome == .recorded(recordID: "rec-1", tool: "finance.log_expense", record: nil))
+        #expect(try store.read(CredentialKey.pendingChatSend) == nil)
+    }
+}
+
+/// Collects the stages a test's sink received.
+final class OperationTrail: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _stages: [OperationStage] = []
+
+    func record(_ stage: OperationStage) {
+        lock.withLock { _stages.append(stage) }
+    }
+
+    var stages: [OperationStage] {
+        lock.withLock { _stages }
+    }
+}
+
+/// Holds the idempotency key across the actor boundary.
+final class KeyBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _key: String?
+    func set(_ key: String) { lock.withLock { _key = key } }
+    var key: String? { lock.withLock { _key } }
+}
+
+/// Blocks the calling thread until `predicate` holds or five seconds pass,
+/// then returns either way.
+///
+/// The POST handlers of this suite hold the connection until the evidence
+/// their assertions need has landed, instead of sleeping a fixed interval: a
+/// fixed sleep races machine speed, and the CI runner lost that race — one
+/// by-key poll inside a 30 ms window where a laptop found two. A starved gate
+/// answers anyway so the assertions below fail loudly instead of hanging.
+private func waitForGate(
+    _ name: String,
+    until predicate: @escaping @Sendable () -> Bool
+) {
+    let deadline = Date().addingTimeInterval(5)
+    while !predicate() && Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.001)
+    }
+    if !predicate() {
+        print("trail gate starved after 5s: \(name)")
+    }
+}
+
+@Suite("The concurrent trail beside the POST")
+struct TrailConcurrencyTests {
+    @Test("by-key polls run while the POST is open and stop after it answers")
+    func trailPollsBesideThePost() async throws {
+        let service = Service()
+        let keyBox = KeyBox()
+        // A held POST: it answers only once the trail has demonstrably polled
+        // by-key at least twice beside the open connection — and never reaches
+        // a settle poll. A fixed sleep raced the CI runner's speed (one slow
+        // round trip ate the whole window); the gate makes "polled beside the
+        // POST" a precondition of the answer instead.
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                if let key = call.idempotencyKey { keyBox.set(key) }
+                waitForGate("two by-key polls beside the open POST") {
+                    guard let key = keyBox.key else { return false }
+                    return service.calls("GET", "/v1/operations/by-key/\(key)").count >= 2
+                }
+                return .ok(
+                    chatReceipt("succeeded", tool: "finance.log_expense", recordID: "rec-1")
+                )
+            default:
+                return .error(400, "OPERATION_NOT_ANCHORED")
+            }
+        }
+        let (chat, _, store) = try await makeChat(
+            service: service,
+            // Real pacing, not a zero-delay burst: with `.zero` delays and the
+            // no-op test sleep the trail spends all eight attempts in the few
+            // microseconds before the POST handler starts holding the
+            // connection, and a gate waiting for polls *inside* the hold
+            // starves. 25 ms spacing spreads the polls over the hold; the
+            // second one reliably lands while the gate is closed.
+            pollDelays: Array(repeating: .milliseconds(25), count: 8),
+            sleep: { try await Task.sleep(for: $0) }
+        )
+        let trail = OperationTrail()
+        await chat.setProgressSink { stage in trail.record(stage) }
+
+        let final = try await chat.send(text: "咖啡 18")
+        #expect(final.outcome.isSettled)
+
+        let key = try #require(keyBox.key)
+        let byKeyPolls = service.calls("GET", "/v1/operations/by-key/\(key)")
+        #expect(byKeyPolls.count >= 2, "the trail polled beside the open POST")
+        #expect(try store.read(CredentialKey.pendingChatSend) == nil)
+    }
+
+    @Test("a dispatching observation beside the POST carries the server's tool name")
+    func trailCarriesToolBesideThePost() async throws {
+        let service = Service()
+        let keyBox = KeyBox()
+        let trail = OperationTrail()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                if let key = call.idempotencyKey { keyBox.set(key) }
+                // Hold until the sink has actually recorded the dispatching
+                // stage — the very evidence the assertion below needs — so
+                // the observation is not a race against runner speed.
+                waitForGate("the sink observed the dispatching stage") {
+                    trail.stages.contains { stage in
+                        if case .dispatching = stage { return true }
+                        return false
+                    }
+                }
+                return .ok(
+                    chatReceipt("succeeded", tool: "finance.log_expense", recordID: "rec-1")
+                )
+            default:
+                // The server anchored and dispatched while the POST held.
+                return .ok(
+                    chatReceipt("dispatching", tool: "finance.log_expense")
+                )
+            }
+        }
+        let (chat, _, _) = try await makeChat(
+            service: service,
+            // Same real pacing as above: the dispatching poll must arrive
+            // while the POST holds, not in the pre-hold burst.
+            pollDelays: Array(repeating: .milliseconds(25), count: 8),
+            sleep: { try await Task.sleep(for: $0) }
+        )
+        await chat.setProgressSink { stage in trail.record(stage) }
+
+        _ = try await chat.send(text: "咖啡 18")
+
+        let seen = trail.stages
+        #expect(seen.contains { stage in
+            if case .dispatching(let tool) = stage, tool == "finance.log_expense" {
+                return true
+            }
+            return false
+        })
+    }
+
+    @Test("the settle loop keeps its throw-through semantics")
+    func settleStillThrowsThroughTransportErrors() async throws {
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                return .accepted(chatReceipt("accepted"))
+            case ("GET", "/v1/operations/op-1"):
+                // Every settle poll fails at the transport level.
+                return .init(status: 599, body: Data())
+            default:
+                return .error(400, "OPERATION_NOT_ANCHORED")
+            }
+        }
+        let (chat, _, store) = try await makeChat(
+            service: service,
+            pollDelays: [.zero, .zero, .zero, .zero]
+        )
+
+        // The by-key trail swallows its failures; the settle loop does not.
+        // A send that ends with every poll failed leaves the slot standing.
+        await #expect(throws: (any Error).self) {
+            _ = try await chat.send(text: "咖啡 18")
+        }
+        #expect(try store.read(CredentialKey.pendingChatSend) != nil)
     }
 }
