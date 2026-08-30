@@ -279,12 +279,12 @@ class StructuredModelClient:
 
 #: The classifier may run on a smaller, faster model than Chat. The 2026-07-29
 #: live run measured 8.3s, 12.2s and 16.7s for the flagship, with one 20s
-#: timeout, on a call that sits in the request path before the message is
-#: anchored -- unusable as latency, however correct the answers were. This is a
-#: closed-schema judgement, not a conversation, so a deployment should name a
-#: fast model here. It is **not** given a default of its own: inventing a model
-#: id that may not exist would fail at runtime, so an unset value keeps today's
-#: behaviour and the operator opts in.
+#: timeout.  Classification now runs after the message is anchored, but the
+#: separate model slot still lets an operator tune cost and worker throughput.
+#: This is a closed-schema judgement, not a conversation, so a deployment may
+#: name a fast model here. It is **not** given a default of its own: inventing a
+#: model id that may not exist would fail at runtime, so an unset value keeps
+#: today's behaviour and the operator opts in.
 #:
 #: Read-only check on 2026-08-07: the ECS deployment sets neither this nor
 #: ``GLM_MODEL``, so the classifier still falls back to the Chat model and both
@@ -292,10 +292,12 @@ class StructuredModelClient:
 #: Do not read the paragraph above as a description of what is deployed.
 CLASSIFIER_MODEL_ENV: Final[str] = "GLM_CLASSIFIER_MODEL"
 
-#: The in-path deadline. Shorter than the Compactor's on purpose: a classifier
-#: that does not answer in time continues the current Session (§6.1 step 9),
-#: which costs some irrelevance, while a slow one costs the user every message.
-CLASSIFIER_TIMEOUT_SECONDS: Final[float] = 8.0
+#: Boundary classification runs after the response has been anchored, so it no
+#: longer consumes the chat request's latency budget.  Keep the timeout bounded
+#: for worker recovery, but give the auxiliary model the normal provider window:
+#: real production calls were observed to take longer than the former 8 seconds.
+#: Any timeout still fails closed to the existing Session (§6.1 step 9).
+CLASSIFIER_TIMEOUT_SECONDS: Final[float] = 20.0
 
 
 def structured_client_from_env(

@@ -591,8 +591,9 @@ async def agent_service(
         # Two clients, not one. The deadline guard keeps a single in-flight
         # call per client, so sharing one would let a background compaction
         # disable classification for every message that arrived while it ran.
-        # They also run on different models and deadlines: classification is in
-        # the request path, compaction is not.
+        # They also run on different models and worker deadlines.  Classification
+        # starts after the response has been anchored; compaction starts only
+        # after its boundary assignment has settled.
         compactor_client = build_structured_client(
             input_budget_tokens=context_config.hard_limit_tokens,
             recorder=recorder,

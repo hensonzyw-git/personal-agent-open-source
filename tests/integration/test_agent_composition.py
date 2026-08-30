@@ -668,8 +668,8 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
     The composed service is given a small soft limit and a structured client
     that returns valid checkpoints. Both the synchronous 200 path and a detached
     202 path must answer before their Compactor runs. The second turn also proves
-    the classifier runs without holding SQLite and that idempotent replay spends
-    no second classifier call.
+    the classifier runs after the terminal operation without holding SQLite and
+    that idempotent replay spends no second classifier call.
     """
     block_gateway = threading.Event()
     gateway_started = threading.Event()
@@ -813,11 +813,11 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
                     headers=second_headers,
                 )
                 assert gateway_started.is_set()
-                assert classifier_committed.is_set()
                 assert detached.status_code == 202, detached.text
                 assert not compaction_started.is_set()
                 release_gateway.set()
                 assert await asyncio.to_thread(compaction_started.wait, 5)
+                assert classifier_committed.is_set()
                 release_compaction.set()
                 await app.state.drain_background_tasks()
                 replayed = await client.post(
@@ -843,13 +843,15 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
     finally:
         engine.dispose()
 
-    # Each semantically distinct Session has one Checkpoint; raw events remain.
+    # Each semantically distinct Session has one Checkpoint; the retrospective
+    # split reassigns existing events and deliberately does not append a divider
+    # after an already-completed response.
     assert [row.status for row in checkpoints] == ["active", "active"]
     assert len(sessions) == 2
     assert {row.session_id for row in checkpoints} == {
         row.session_id for row in sessions
     }
-    assert events == 5
+    assert events == 4
 
 
 def test_a_turn_that_cannot_be_assembled_fails_safe_without_calling_the_model(

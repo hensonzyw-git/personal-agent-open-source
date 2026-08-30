@@ -26,6 +26,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import threading
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -107,6 +108,7 @@ from personal_agent.context.config import (
     default_context_config,
 )
 from personal_agent.context.session_manager import (
+    PreparedClassification,
     ResolvedClassification,
     SessionManager,
 )
@@ -319,13 +321,19 @@ def build_restore_read_only_app(session_factory: Callable[[], Any]) -> FastAPI:
 def build_app(deps: AgentApiDeps) -> FastAPI:
     operation_tasks: dict[str, asyncio.Task[_ProcessedChat]] = {}
     compaction_tasks: set[asyncio.Task[None]] = set()
+    boundary_tasks: set[threading.Thread] = set()
+    boundary_operation_ids: set[str] = set()
+    boundary_prepared: dict[str, PreparedClassification] = {}
+    boundary_lock = threading.Lock()
 
     async def drain_background_tasks() -> None:
         """Let accepted operations and their follow-up compactions finish.
 
         Production ASGI shutdown runs this before composition closes the MCP and
         control clients. Operation callbacks may enqueue compaction, so drain the
-        operation set first and then the compaction set it produced.
+        operation set first, then the asynchronous boundary work and finally the
+        compaction set it produced.  A split has to settle before compaction can
+        bind a checkpoint to the Session membership it observed.
         """
 
         async def bounded(tasks: tuple[asyncio.Task[Any], ...]) -> None:
@@ -338,6 +346,9 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 await asyncio.gather(*pending, return_exceptions=True)
 
         await bounded(tuple(operation_tasks.values()))
+        with boundary_lock:
+            boundary_workers = tuple(boundary_tasks)
+        await asyncio.to_thread(_join_boundary_workers, boundary_workers)
         # Task done callbacks enqueue compaction with call_soon semantics. Give
         # those callbacks one loop turn before snapshotting the compaction set.
         await asyncio.sleep(0)
@@ -375,6 +386,55 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         compaction_tasks.add(task)
         task.add_done_callback(finish_compaction)
 
+    def schedule_boundary(
+        prepared: PreparedClassification,
+        operation_id: str,
+        processed: _ProcessedChat,
+    ) -> None:
+        worker: threading.Thread
+
+        def classify_then_apply() -> None:
+            target_session_id: str | None = None
+            try:
+                resolved = _resolve_chat_boundary(deps, prepared, operation_id)
+                target_session_id = _apply_chat_boundary(
+                    deps, operation_id, resolved
+                )
+                if target_session_id is not None:
+                    logger.info(
+                        "asynchronous Session boundary applied operation_id=%s",
+                        operation_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "asynchronous Session boundary classification failed"
+                )
+            finally:
+                try:
+                    if processed.compact_session_id is not None:
+                        _compact_session_in_background(
+                            deps,
+                            target_session_id or processed.compact_session_id,
+                            operation_id,
+                        )
+                except Exception:
+                    logger.exception(
+                        "compaction after asynchronous Session boundary failed"
+                    )
+                finally:
+                    with boundary_lock:
+                        boundary_operation_ids.discard(operation_id)
+                        boundary_tasks.discard(worker)
+
+        worker = threading.Thread(
+            target=classify_then_apply,
+            name=f"session-boundary-{operation_id}",
+            daemon=True,
+        )
+        with boundary_lock:
+            boundary_tasks.add(worker)
+        worker.start()
+
     def forget_task(operation_id: str, done: asyncio.Task[_ProcessedChat]) -> None:
         if operation_tasks.get(operation_id) is done:
             operation_tasks.pop(operation_id, None)
@@ -387,8 +447,14 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 )
             else:
                 session_id = done.result().compact_session_id
-                if session_id is not None:
-                    schedule_compaction(session_id, operation_id)
+                prepared = boundary_prepared.pop(operation_id, None)
+                if prepared is not None:
+                    schedule_boundary(prepared, operation_id, done.result())
+                elif session_id is not None:
+                    with boundary_lock:
+                        boundary_pending = operation_id in boundary_operation_ids
+                    if not boundary_pending:
+                        schedule_compaction(session_id, operation_id)
 
     def authenticate(request: Request, session) -> AuthContext:
         raw = request.headers.get("authorization", "")
@@ -516,6 +582,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 ),
             )
 
+        prepared_classification: PreparedClassification | None = None
         anchored = await asyncio.to_thread(
             _preflight_chat_replay,
             deps,
@@ -537,14 +604,20 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                     outcome=None,
                 )
             else:
-                resolved_classification = await asyncio.to_thread(
-                    _classify_chat_boundary,
+                prepared_classification = await asyncio.to_thread(
+                    _prepare_chat_boundary,
                     deps,
-                    auth,
-                    key,
                     conversation_id,
                     text,
                     clarification_of,
+                )
+                resolved_classification = ResolvedClassification(
+                    expected_session_id=prepared_classification.expected_session_id,
+                    expected_last_event_at=prepared_classification.expected_last_event_at,
+                    expected_timeline_sequence=(
+                        prepared_classification.expected_timeline_sequence
+                    ),
+                    outcome=None,
                 )
             anchored = await asyncio.to_thread(
                 _anchor_chat,
@@ -584,6 +657,15 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 )
             )
             operation_tasks[anchored.operation_id] = task
+            if (
+                not start_new_session
+                and clarification_of is None
+                and prepared_classification is not None
+                and prepared_classification.request is not None
+            ):
+                boundary_prepared[anchored.operation_id] = prepared_classification
+                with boundary_lock:
+                    boundary_operation_ids.add(anchored.operation_id)
             task.add_done_callback(
                 lambda done, operation_id=anchored.operation_id: forget_task(
                     operation_id, done
@@ -969,6 +1051,12 @@ class _ProcessedChat:
     compact_session_id: str | None = None
 
 
+def _join_boundary_workers(workers: tuple[threading.Thread, ...]) -> None:
+    """Join the bounded background classifier workers during orderly shutdown."""
+    for worker in tuple(workers):
+        worker.join(timeout=30.0)
+
+
 def _authenticate_once(request, deps, authenticate) -> AuthContext:
     with deps.session_factory() as session:
         return authenticate(request, session)
@@ -1115,20 +1203,17 @@ def _preflight_chat_replay(
             raise
 
 
-def _classify_chat_boundary(
+def _prepare_chat_boundary(
     deps: AgentApiDeps,
-    auth: AuthContext,
-    client_request_id: str,
     conversation_id: str,
     text: str,
     clarification_of: str | None,
-) -> ResolvedClassification:
-    """Prepare under SQLite, then call the classifier with no transaction open.
+) -> PreparedClassification:
+    """Prepare a possible asynchronous boundary judgement before anchoring.
 
-    The write transaction has not started yet: a crash or timeout here leaves no
-    durable accepted operation without its anchoring event. A concurrent request
-    may change the Session while the model runs; `select_session` compares the
-    prepared Session snapshot in the fresh write transaction and fails closed.
+    This is only a bounded local read.  The potentially slow model call is made
+    after the turn has been accepted, so an unavailable classifier cannot turn
+    into user-visible chat latency.
     """
 
     with deps.session_factory() as session:
@@ -1154,14 +1239,53 @@ def _classify_chat_boundary(
         except Exception:
             session.rollback()
             raise
-    with deps.recorder.turn(
-        TurnIdentity(
-            client_request_id=client_request_id,
-            conversation_id=timeline_id,
-            device_id=auth.device_id,
-        )
-    ):
+    return prepared
+
+
+def _resolve_chat_boundary(
+    deps: AgentApiDeps,
+    prepared: PreparedClassification,
+    operation_id: str,
+) -> ResolvedClassification:
+    """Call the classifier after anchoring, with the durable turn identity."""
+    with deps.session_factory() as session:
+        try:
+            operation = get_operation(session, operation_id)
+            anchor = _anchor_event(session, operation_id)
+            identity = _turn_identity(operation, anchor)
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+    with deps.recorder.turn(identity):
         return deps.session_manager.resolve_classification(prepared)
+
+
+def _apply_chat_boundary(
+    deps: AgentApiDeps,
+    operation_id: str,
+    resolved: ResolvedClassification,
+) -> str | None:
+    """Apply a ready retrospective boundary in a fresh retryable transaction."""
+    with deps.session_factory() as session:
+        try:
+            def work() -> str | None:
+                anchor = _anchor_event(session, operation_id)
+                decision = deps.session_manager.apply_retroactive_boundary(
+                    session,
+                    conversation_id=anchor.conversation_id,
+                    operation_id=operation_id,
+                    resolved=resolved,
+                    now=deps.now(),
+                )
+                return decision.session_id if decision is not None else None
+
+            applied = run_write_transaction(session, work)
+            session.commit()
+            return applied
+        except Exception:
+            session.rollback()
+            raise
 
 
 def _anchor_chat(

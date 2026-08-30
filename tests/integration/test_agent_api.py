@@ -50,6 +50,11 @@ from personal_agent.auth.tokens import (
     issue_access_token,
 )
 from personal_agent.context.budget import ComponentKind
+from personal_agent.context.config import default_context_config
+from personal_agent.context.session_manager import (
+    CompactSessionState,
+    SessionManager,
+)
 from personal_agent.diagnostics import transcript
 from personal_agent.diagnostics.recording_dispatcher import RecordingDispatcher
 from personal_agent.diagnostics.transcript import TranscriptRecorder
@@ -217,6 +222,7 @@ def _client(
     ledger_url=None,
     compact_session=None,
     recorder=None,
+    session_manager=None,
 ) -> TestClient:
     def build_dispatcher(auth, trace_id):
         if dispatcher_traces is not None:
@@ -238,6 +244,7 @@ def _client(
         sync_wait_seconds=sync_wait_seconds,
         ledger_url=ledger_url,
         compact_session=compact_session,
+        **({"session_manager": session_manager} if session_manager is not None else {}),
         **({"recorder": recorder} if recorder is not None else {}),
     )
     return TestClient(build_app(deps))
@@ -245,6 +252,143 @@ def _client(
 
 def _auth(token_ring, key=REQUEST_ID_1) -> dict:
     return {"Authorization": f"Bearer {_token(token_ring)}", "Idempotency-Key": key}
+
+
+class _BoundaryClassifier:
+    def __init__(self, answer) -> None:
+        self.answer = answer
+        self.calls = []
+
+    def classify(self, request):
+        self.calls.append(request)
+        return self.answer
+
+
+class _BoundaryStateProvider:
+    def compact_state(self, db, *, session):
+        return CompactSessionState(
+            topic_summary="已完成的旧话题",
+            domain="chat",
+            task_state="completed",
+        )
+
+
+def _boundary_manager(classifier: _BoundaryClassifier) -> SessionManager:
+    return SessionManager(
+        default_context_config(),
+        classifier=classifier,
+        state_provider=_BoundaryStateProvider(),
+    )
+
+
+def test_async_classifier_reassigns_a_completed_new_topic_turn(
+    engine, token_ring, keyring
+) -> None:
+    classifier = _BoundaryClassifier(
+        {
+            "decision": "open_new_session",
+            "reason": "task_boundary",
+            "confidence_band": "high",
+        }
+    )
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=FakeInterpreter(DirectAnswer("收到")),
+        dispatcher=FakeDispatcher(),
+        session_manager=_boundary_manager(classifier),
+    )
+
+    first = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "整理上周的项目复盘"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    second = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "帮我规划周末爬山"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    asyncio.run(client.app.state.drain_background_tasks())
+    assert len(classifier.calls) == 1
+
+    with session_factory(engine)() as session:
+        sessions = (
+            session.query(ContextSession)
+            .order_by(ContextSession.opened_at, ContextSession.session_id)
+            .all()
+        )
+        assert len(sessions) == 2
+        moved = (
+            session.query(ConversationEvent)
+            .filter(ConversationEvent.operation_id == second.json()["operation_id"])
+            .all()
+        )
+        assert moved
+        moved_session_ids = {event.session_id for event in moved}
+        assert len(moved_session_ids) == 1
+        new = next(item for item in sessions if item.session_id in moved_session_ids)
+        old = next(item for item in sessions if item.session_id != new.session_id)
+        assert old.status == "closed"
+        assert new.status == "open"
+        assert new.boundary_reason == "task_boundary"
+        original = (
+            session.query(ConversationEvent)
+            .filter(ConversationEvent.operation_id == first.json()["operation_id"])
+            .all()
+        )
+        assert original and {event.session_id for event in original} == {old.session_id}
+    assert len(classifier.calls) == 1
+
+
+def test_async_classifier_never_splits_a_parked_clarification(
+    engine, token_ring, keyring
+) -> None:
+    classifier = _BoundaryClassifier(
+        {
+            "decision": "open_new_session",
+            "reason": "task_boundary",
+            "confidence_band": "high",
+        }
+    )
+
+    class SequencedInterpreter:
+        def __init__(self) -> None:
+            self.results = [DirectAnswer("收到"), Clarification("请确认分类")]
+
+        def interpret(self, *, envelope):
+            return self.results.pop(0)
+
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=SequencedInterpreter(),
+        dispatcher=FakeDispatcher(),
+        session_manager=_boundary_manager(classifier),
+    )
+    client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "整理上周的项目复盘"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "帮我规划周末爬山"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert parked.json()["state"] == "waiting_for_clarification"
+    asyncio.run(client.app.state.drain_background_tasks())
+
+    with session_factory(engine)() as session:
+        sessions = session.query(ContextSession).all()
+        assert len(sessions) == 1
+        assert sessions[0].status == "open"
+    assert len(classifier.calls) == 1
 
 
 # --- auth --------------------------------------------------------------------

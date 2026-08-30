@@ -95,6 +95,7 @@ from personal_agent_core.finance_tools import (
     FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS,
     FINANCE_INCOME_TOOL,
     FINANCE_QUERY_TOOL,
+    FINANCE_WRITE_TOOLS,
 )
 from personal_agent_core.manifest import canonical_json
 
@@ -638,36 +639,11 @@ class ContextBuilder:
                 ComponentKind.USER_INPUT, user_text, label="user_input"
             )
         )
-        declarations = self._tool_declarations(
-            effective_tools,
-            candidate_tools=candidate_tools,
-            essential_tools=essential_tools,
-        )
-        components.extend(declarations)
-
-        if covered_through is not None:
-            components = list(
-                mark_covered(components, through_sequence=covered_through)
-            )
-
-        outcome, lineage_dropped = self._fit(
-            components,
-            ancestor_labels=[
-                _checkpoint_label(row.checkpoint_id) for _, row in lineage
-            ],
-        )
-        trimmed = (
-            tuple(outcome.trimmed)
-            + ((RAW_WINDOW_CAPPED,) if capped else ())
-            + ((LINEAGE_CHECKPOINTS_TRIMMED,) if lineage_dropped else ())
-        )
-        surviving_labels = {item.label for item in outcome.components}
-        surviving_lineage = tuple(
-            row.checkpoint_id
-            for _, row in lineage
-            if _checkpoint_label(row.checkpoint_id) in surviving_labels
-        )
-
+        # Finance routing is Host-owned state, derived from the original request
+        # for a continuation.  It has to be resolved *before* declarations are
+        # given to the Budgeter: otherwise a long ordinary Session can trim away
+        # every governed Finance tool and leave a self-contradictory envelope
+        # (Finance required, but unavailable to the provider).
         finance_source_text = (
             finance_retry_context.original_user_text
             if finance_retry_context is not None
@@ -695,6 +671,11 @@ class ContextBuilder:
                 )
             )
         )
+        finance_essential_tools = (
+            frozenset({finance_required_tool})
+            if finance_required_tool is not None
+            else (FINANCE_WRITE_TOOLS if finance_intent_required else frozenset())
+        )
         finance_date_default_eligible = (
             finance_intent_required
             and (
@@ -712,6 +693,35 @@ class ContextBuilder:
             clarification_context is None
             and finance_retry_context is None
             and is_finance_retry_request(user_text)
+        )
+        declarations = self._tool_declarations(
+            effective_tools,
+            candidate_tools=candidate_tools,
+            essential_tools=(*essential_tools, *finance_essential_tools),
+        )
+        components.extend(declarations)
+
+        if covered_through is not None:
+            components = list(
+                mark_covered(components, through_sequence=covered_through)
+            )
+
+        outcome, lineage_dropped = self._fit(
+            components,
+            ancestor_labels=[
+                _checkpoint_label(row.checkpoint_id) for _, row in lineage
+            ],
+        )
+        trimmed = (
+            tuple(outcome.trimmed)
+            + ((RAW_WINDOW_CAPPED,) if capped else ())
+            + ((LINEAGE_CHECKPOINTS_TRIMMED,) if lineage_dropped else ())
+        )
+        surviving_labels = {item.label for item in outcome.components}
+        surviving_lineage = tuple(
+            row.checkpoint_id
+            for _, row in lineage
+            if _checkpoint_label(row.checkpoint_id) in surviving_labels
         )
 
         return ContextEnvelope(
@@ -1297,7 +1307,11 @@ class ContextBuilder:
         selected = [
             tool
             for tool in effective_tools
-            if candidates is None or tool.alias in candidates
+            if (
+                candidates is None
+                or tool.alias in candidates
+                or tool.alias in essential
+            )
         ]
         # The caller's order is relevance order: the Router puts its best
         # candidate first, and the governed catalog puts the business tool ahead
