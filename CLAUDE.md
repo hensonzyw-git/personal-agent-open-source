@@ -1,6 +1,6 @@
 # Personal Agent — Agent Collaboration Guide
 
-> Last updated: 2026-07-29
+> Last updated: 2026-08-31
 >
 > `AGENTS.md` and `CLAUDE.md` must remain byte-for-byte equivalent. Update both
 > in the same change.
@@ -85,6 +85,13 @@ The authoritative handoff point and ordered next work is always
   for the task, and report what was read or written.
 - Before changes, inspect the worktree and preserve unrelated user changes.
   Use focused edits; do not refactor adjacent code or documents unless asked.
+- For requested implementation or documentation changes, after the work and
+  required verification are complete, local staging and `git commit` are
+  pre-authorized; do not wait for a second commit authorization. An explicit
+  read-only, no-commit, or review-only instruction in the current request
+  overrides this default. `git push` and merge operations always require
+  Henson's explicit authorization, and this rule does not authorize deploys,
+  PR creation, provider calls, or other external writes.
 
 ### 5.1 Non-deterministic and adversarial boundaries
 
