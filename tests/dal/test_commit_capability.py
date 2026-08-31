@@ -553,6 +553,39 @@ def test_consume_revoked_capability_refuses_stale() -> None:
     assert result.declared_write_set == ()
 
 
+def test_consume_future_revoked_at_refuses_stale() -> None:
+    """A revocation timestamp in the future is still a revocation on record:
+    the controller wrote it, so the capability is dead now (evidence §5's
+    declared local choice, pinned so it cannot silently change)."""
+    row = _capability_row(revoked_at=NOW + 10)
+    result = consume_commit_capability(_consume_facts(capability=row))
+    assert result.receipt.code is ReceiptCode.CAPABILITY_STALE
+    assert result.declared_write_set == ()
+    assert result.event_trace == ()
+    assert result.violations == ()
+
+
+def test_consume_combined_death_causes_refuse_stale() -> None:
+    """Expired AND revoked AND consumed at once: still one clean stale
+    refusal — the death causes do not compose into a different verdict."""
+    row = _capability_row(uses_consumed=1, revoked_at=NOW - 5)
+    row["consumed_by"] = "commit-command-0001"
+    row["expires_at"] = NOW - 1
+    result = consume_commit_capability(_consume_facts(capability=row, now=NOW))
+    assert result.receipt.code is ReceiptCode.CAPABILITY_STALE
+    assert result.declared_write_set == ()
+
+
+def test_consume_uppercase_sha_binding_raises_trusted_drift() -> None:
+    """SHAs are lowercase 40-hex by git construction: an uppercase binding is
+    trusted drift (fail-closed; pinned so the alphabet cannot widen)."""
+    row = _capability_row()
+    row["base_sha"] = row["base_sha"].upper()
+    with pytest.raises(DalError) as raised:
+        consume_commit_capability(_consume_facts(capability=row))
+    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+
+
 def test_consume_epoch_bump_refuses_stale() -> None:
     """A revoke-by-epoch (kill switch, policy upgrade) leaves the bound epoch
     behind the current one — the DAL-016 stale rule at the commit boundary."""
