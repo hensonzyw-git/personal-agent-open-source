@@ -642,6 +642,23 @@ def test_presented_path_outside_the_allowed_set_blocks() -> None:
     _assert_policy_block(result)
 
 
+def test_touched_git_component_inside_an_allowed_directory_blocks() -> None:
+    """The exact-``.git``-component ban is an independent gate, not a
+    consequence of "outside the allowed set": the allowed set here is the
+    ``src/app`` directory, so the path is *inside* it — only the ``.git``
+    rule rejects ``src/app/.git/config``. Killing the ``.git`` line alone
+    must flip this test (review M8 survivor)."""
+    result = consume_commit_capability(
+        _tampered(
+            presented_mutate=lambda p: p.__setitem__(
+                "touched_paths", ["src/app/.git/config"]
+            )
+        )
+    )
+    _assert_policy_block(result)
+    assert any(".git" in violation for violation in result.violations)
+
+
 def test_consume_tampering_labels_are_collected_not_short_circuited() -> None:
     """Every divergence is labelled: an audit trail names all of them."""
     presented = _presented()
