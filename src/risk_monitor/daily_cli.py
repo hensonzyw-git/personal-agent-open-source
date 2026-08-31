@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from sqlalchemy import select
 
@@ -35,7 +37,7 @@ from personal_agent.storage.engine import (
     session_factory,
 )
 from personal_agent_core.sqlite import run_write_transaction
-from personal_agent_core.timeutil import utc_now
+from personal_agent_core.timeutil import ledger_date, utc_now
 
 from risk_monitor import daily
 from risk_monitor.push import push_risk_report
@@ -65,7 +67,10 @@ def _card_content(report: dict) -> dict:
     decoder). ``as_of``/``state`` are mandatory — a missing value makes the
     client treat the card as unrecognised rather than render a half card.
     ``components`` carries the per-indicator breakdown behind MBS/CSS (each row
-    ``label``/``value``/``band``); it is optional so an older card still decodes."""
+    ``label``/``value``/``band``); it is optional so an older card still decodes.
+    ``sealed_on`` (the Asia/Shanghai run day) is added by ``seal_risk_event``;
+    the iOS decoder ignores unknown keys, so cards sealed before this field
+    existed still decode."""
     scores = report["scores"]
     return {
         "as_of": report["as_of"],
@@ -81,19 +86,31 @@ def _card_content(report: dict) -> dict:
     }
 
 
-def seal_risk_event(sessions, keyring, session_manager, report) -> str | None:
+def seal_risk_event(
+    sessions,
+    keyring,
+    session_manager,
+    report,
+    now: Optional[datetime] = None,
+) -> str | None:
     """Seal today's risk card as a frozen ``risk_report`` Timeline event.
 
-    Idempotent on ``as_of``: one card per trading day. A repeat fire (a weekend,
-    a holiday, a manual rerun) finds the existing card and returns ``None``
-    without appending, so the Timeline never stacks identical cards. The content
-    is read from ``build_report`` output — no Feishu round-trip — and the
-    existence check plus the append stay inside one ``run_write_transaction``
-    (§5.2), so check-then-append is a single unit.
+    Idempotent on ``sealed_on`` (the Asia/Shanghai calendar day of the run), not
+    on ``as_of``: every morning gets exactly one card, and a same-day rerun
+    finds it and returns ``None``. Keying on ``as_of`` instead was a live defect
+    (fixed 2026-08-31): on weekends and US holidays the market data has not
+    moved, so the same ``as_of`` was computed for several consecutive mornings
+    and only the first morning's card was sealed — Monday woke to no card at
+    all, while the push had still gone out. Weekend recomputes also drift (the
+    Tencent breadth/inputs move), so "same as_of = same card" was never true in
+    production. The content is read from ``build_report`` output — no Feishu
+    round-trip — and the existence check plus the append stay inside one
+    ``run_write_transaction`` (§5.2), so check-then-append is a single unit.
     """
-    now = utc_now()
+    now = now or utc_now()
     content = _card_content(report)
-    as_of = content["as_of"]
+    content["sealed_on"] = ledger_date(now).isoformat()
+    sealed_on = content["sealed_on"]
 
     with sessions() as session:
 
@@ -102,8 +119,8 @@ def seal_risk_event(sessions, keyring, session_manager, report) -> str | None:
                 session,
                 keyring,
                 event_type=events.RISK_REPORT,
-                content_key="as_of",
-                content_value=as_of,
+                content_key="sealed_on",
+                content_value=sealed_on,
             ):
                 return None
             timeline_id = events.canonical_timeline_id(session, now=now)
