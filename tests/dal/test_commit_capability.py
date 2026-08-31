@@ -13,8 +13,8 @@ Test groups follow the Roadmap coverage line (单次消费、过期、SHA/path �
 - (A) trusted shape drift on both gates → ``INVALID_ARGUMENT``;
 - (B) the issue gate: a verified feature yields a go verdict; any drift in
   the binding (state, expiry, trailers, paths, max_uses) raises;
-- (C) the consume gate lifecycle: a live capability is consumed once; a
-  second tap, expiry, revocation and an epoch bump each refuse
+- (C) the consume gate lifecycle facts: an unused live row is eligible; a
+  previously consumed row, expiry, revocation and an epoch bump each refuse
   ``CAPABILITY_STALE`` with zero writes (the lease-family refusal);
 - (D) binding tampering on a live capability: any divergence between the
   issued binding and the presented commit intent — SHAs, id, idempotency
@@ -100,6 +100,8 @@ def _target(state: str = "verified") -> dict:
 def _binding() -> dict:
     return {
         "capability_id": "cap-0001",
+        "approval_id": "approval-0001",
+        "lease_epoch": 7,
         "base_sha": BASE,
         "result_sha": RESULT,
         "allowed_paths": deepcopy(ALLOWED_PATHS),
@@ -133,6 +135,8 @@ def _capability_row(
 ) -> dict:
     return {
         "capability_id": "cap-0001",
+        "approval_id": "approval-0001",
+        "lease_epoch": 7,
         "base_sha": BASE,
         "result_sha": RESULT,
         "allowed_paths": deepcopy(ALLOWED_PATHS),
@@ -141,6 +145,7 @@ def _capability_row(
         "expires_at": LATER,
         "max_uses": 1,
         "uses_consumed": uses_consumed,
+        "consumed_by": "commit-command-0001" if uses_consumed else None,
         "revoked_at": revoked_at,
         "capability_epoch": EPOCH,
     }
@@ -149,6 +154,7 @@ def _capability_row(
 def _presented() -> dict:
     return {
         "capability_id": "cap-0001",
+        "approval_id": "approval-0001",
         "base_sha": BASE,
         "result_sha": RESULT,
         "touched_paths": list(LEGAL_TOUCHED),
@@ -172,6 +178,7 @@ def _consume_facts(
         "presented": dict(presented) if presented is not None else _presented(),
         "now": now,
         "current_epoch": current_epoch,
+        "current_lease_epoch": 7,
     }
 
 
@@ -418,15 +425,11 @@ def test_consume_capability_row_shape_is_closed() -> None:
 def test_consume_presented_shape_is_closed() -> None:
     presented = _presented()
     presented["extra"] = 1
-    with pytest.raises(DalError) as raised:
-        consume_commit_capability(_consume_facts(presented=presented))
-    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+    _assert_policy_block(consume_commit_capability(_consume_facts(presented=presented)))
 
     presented = _presented()
     del presented["touched_paths"]
-    with pytest.raises(DalError) as raised:
-        consume_commit_capability(_consume_facts(presented=presented))
-    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+    _assert_policy_block(consume_commit_capability(_consume_facts(presented=presented)))
 
 
 def test_consume_time_fields_are_epoch_seconds() -> None:
@@ -485,21 +488,15 @@ def test_consume_touched_paths_must_be_normalized() -> None:
     for path in ("/abs/x.py", "src/../x.py", "src//x.py", ""):
         presented = _presented()
         presented["touched_paths"] = list(LEGAL_TOUCHED) + [path]
-        with pytest.raises(DalError) as raised:
-            consume_commit_capability(_consume_facts(presented=presented))
-        assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+        _assert_policy_block(consume_commit_capability(_consume_facts(presented=presented)))
 
     presented = _presented()
     presented["touched_paths"] = "src/app/core.py"  # not a list
-    with pytest.raises(DalError) as raised:
-        consume_commit_capability(_consume_facts(presented=presented))
-    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+    _assert_policy_block(consume_commit_capability(_consume_facts(presented=presented)))
 
     presented = _presented()
     presented["touched_paths"] = [_UnhashableStr("src/app/core.py")]
-    with pytest.raises(DalError) as raised:
-        consume_commit_capability(_consume_facts(presented=presented))
-    assert raised.value.code is DalErrorCode.INVALID_ARGUMENT
+    _assert_policy_block(consume_commit_capability(_consume_facts(presented=presented)))
 
 
 # ---------------------------------------------------------------------------
@@ -582,6 +579,8 @@ def _tampered(presented_mutate=None, capability_mutate=None):  # type: ignore[no
 
 def _assert_policy_block(result) -> None:  # type: ignore[no-untyped-def]
     assert result.receipt.code is ReceiptCode.APPLIED
+    assert result.receipt.schema_version == "dal.transition-receipt/1.0"
+    assert result.final_entity_type == "feature"
     assert result.state_trace == ("verified", "needs_human")
     assert result.final_state == "needs_human"
     assert result.final_reason_code == "POLICY_FAILURE"
@@ -703,21 +702,52 @@ def test_a_dead_capability_refuses_before_judging_tampering(dead: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _assert_pure_source(source: str) -> None:
+    """A bounded regression guard, not a proof of process isolation."""
+    tree = ast.parse(source)
+    nodes = list(ast.walk(tree))
+    assert not any(isinstance(n, ast.Import) for n in nodes)
+    imports = set()
+    for node in nodes:
+        if isinstance(node, ast.ImportFrom):
+            assert node.level == 0
+            for alias in node.names:
+                assert alias.asname is None
+                imports.add((node.module, alias.name))
+    assert imports == {
+        ("__future__", "annotations"), ("dataclasses", "dataclass"),
+        ("typing", "Any"), ("typing", "Final"),
+        ("personal_agent_dal.errors", "DalError"),
+        ("personal_agent_dal.errors", "DalErrorCode"),
+        ("personal_agent_dal.receipt", "OperationReceipt"),
+        ("personal_agent_dal.receipt", "ReceiptCode"),
+    }
+    local_functions = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+    allowed_calls = local_functions | {
+        "dataclass", "DalError", "OperationReceipt", "CommitCapabilityEvaluation",
+        "all", "any", "bool", "frozenset", "isinstance", "len", "set", "tuple", "type",
+        "enumerate",
+    }
+    for node in nodes:
+        if isinstance(node, ast.Name):
+            assert node.id not in {
+                "open", "__import__", "eval", "exec", "compile", "getattr",
+                "setattr", "delattr", "globals", "locals", "vars", "__builtins__",
+                "input", "print", "breakpoint",
+            }
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                assert node.func.id in allowed_calls
+            else:
+                assert isinstance(node.func, ast.Attribute)
+                assert node.func.attr in {"append", "add", "get", "items", "values", "split", "startswith"}
+        if isinstance(node, ast.Attribute):
+            assert not node.attr.startswith("__")
+            assert node.attr not in {"environ", "stdin", "stdout", "stderr"}
+
+
 def test_pure_module_dependency_surface_is_closed() -> None:
-    expected_imports = {
-        "__future__",
-        "dataclasses",
-        "typing",
-        "personal_agent_dal.errors",
-        "personal_agent_dal.receipt",
-    }
-    tree = ast.parse(Path(commit_capability.__file__).read_text(encoding="utf-8"))
-    imports = {
-        node.module
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module is not None
-    }
-    assert imports == expected_imports
+    _assert_pure_source(Path(commit_capability.__file__).read_text(encoding="utf-8"))
 
 
 def test_module_declares_no_operation_spec_id() -> None:

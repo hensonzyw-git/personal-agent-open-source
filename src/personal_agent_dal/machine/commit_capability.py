@@ -7,7 +7,8 @@ dispatch-graph import):
 
 - **issue_commit_capability** — call-before. The trusted controller asserts
   the feature is `verified` and presents the binding the capability will
-  carry: base/result SHAs, the approved plan's allowed paths, the four
+  carry: approval identity, capability/lease epochs, base/result SHAs,
+  the approved plan's allowed paths, the four
   frozen commit trailers, the issuing idempotency key, an expiry, and
   ``max_uses`` (frozen to 1). A go verdict here authorises exactly one
   candidate-commit consumption under exactly this binding.
@@ -33,9 +34,10 @@ dispatch-graph import):
      the audit trail names all of them, never a crash and never a silent
      pass.
 
-The provider subprocess never sees any of this: the capability lives in
-controller state, and the executor presents the commit intent it was
-handed. Trailers are frozen by the technical design §9.3
+These are eligibility predicates, not persistent issue/consume operations.
+No controller or executor composition calls them yet. This module has no I/O;
+that alone does not prove provider process isolation or single consumption.
+Trailers are frozen by the technical design §9.3
 (``Feature-Id``/``Task-Id``/``Plan-Hash``/``Review-Id``); the issue gate
 binds ``Feature-Id`` to the target so a capability cannot be issued for one
 feature and spent on another. Path semantics are the frozen plan semantics
@@ -90,6 +92,8 @@ ISSUE_FACT_FIELDS: Final[frozenset[str]] = frozenset(
 BINDING_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "capability_id",
+        "approval_id",
+        "lease_epoch",
         "base_sha",
         "result_sha",
         "allowed_paths",
@@ -103,15 +107,20 @@ BINDING_FIELDS: Final[frozenset[str]] = frozenset(
 ALLOWED_PATH_FIELDS: Final[frozenset[str]] = frozenset({"path", "path_type"})
 
 CONSUME_FACT_FIELDS: Final[frozenset[str]] = frozenset(
-    {"schema_version", "target", "capability", "presented", "now", "current_epoch"}
+    {
+        "schema_version", "target", "capability", "presented", "now",
+        "current_epoch", "current_lease_epoch",
+    }
 )
 CAPABILITY_FIELDS: Final[frozenset[str]] = BINDING_FIELDS | {
     "uses_consumed",
+    "consumed_by",
     "revoked_at",
 }
 PRESENTED_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "capability_id",
+        "approval_id",
         "base_sha",
         "result_sha",
         "touched_paths",
@@ -174,26 +183,36 @@ def _is_epoch_seconds(value: Any) -> bool:
     return type(value) is int and value >= 0
 
 
+def _native_object(value: Any) -> bool:
+    """Do not hash or look up attacker-controlled keys before checking types."""
+    return type(value) is dict and all(type(key) is str for key in value)
+
+
+def _closed_object(value: Any, fields: frozenset[str]) -> bool:
+    return _native_object(value) and frozenset(value) == fields
+
+
+def _is_normalized_repo_path(value: Any) -> bool:
+    if not _is_non_empty_str(value) or value.startswith("/") or "\0" in value:
+        return False
+    return all(component not in ("", ".", "..") for component in value.split("/"))
+
+
 def _normalized_repo_path(value: Any, *, field: str) -> str:
     """Validate a canonical repo-relative POSIX path (DAL021-024 §plan)."""
-    if not _is_non_empty_str(value):
-        raise _invalid(f"{field} must be a non-empty string")
-    if value.startswith("/"):
-        raise _invalid(f"{field} must be repo-relative, not absolute")
-    components = value.split("/")
-    if any(component in (".", "..") for component in components):
-        raise _invalid(f"{field} must not contain . or .. segments")
-    if any(component == "" for component in components):
-        raise _invalid(f"{field} must be a normalized path without empty segments")
+    if not _is_normalized_repo_path(value):
+        raise _invalid(f"{field} must be a normalized repo-relative POSIX path")
     return value
 
 
 def _validate_target(target: Any) -> None:
-    if not isinstance(target, dict) or frozenset(target) != TARGET_FIELDS:
+    if not _closed_object(target, TARGET_FIELDS):
         raise _invalid("target shape is not closed")
     if (
         not _is_non_empty_str(target.get("entity_id"))
+        or type(target.get("entity_type")) is not str
         or target.get("entity_type") != "feature"
+        or type(target.get("state")) is not str
         or target.get("state") != VERIFIED_STATE
         or not _is_epoch_seconds(target.get("version"))
     ):
@@ -202,7 +221,7 @@ def _validate_target(target: Any) -> None:
 
 def _validate_trailers(trailers: Any, *, field: str) -> None:
     """The closed four-trailer set with value-class checks."""
-    if not isinstance(trailers, dict) or frozenset(trailers) != TRAILER_KEYS:
+    if not _closed_object(trailers, TRAILER_KEYS):
         raise _invalid(f"{field} must carry exactly the four frozen trailers")
     for key in ("Feature-Id", "Task-Id", "Review-Id"):
         if not _is_non_empty_str(trailers[key]):
@@ -212,17 +231,17 @@ def _validate_trailers(trailers: Any, *, field: str) -> None:
 
 
 def _validate_allowed_paths(allowed_paths: Any) -> None:
-    if not isinstance(allowed_paths, list) or not allowed_paths:
+    if type(allowed_paths) is not list or not allowed_paths:
         raise _invalid("allowed_paths must be a non-empty list")
     for entry in allowed_paths:
-        if not isinstance(entry, dict) or frozenset(entry) != ALLOWED_PATH_FIELDS:
+        if not _closed_object(entry, ALLOWED_PATH_FIELDS):
             raise _invalid("allowed path shape is not closed")
         path = _normalized_repo_path(entry.get("path"), field="allowed path")
         # The frozen plan-artifact schema forbids the exact ``.git`` component
         # (``.github``/``.gitignore`` remain expressible in a plan).
         if any(component == ".git" for component in path.split("/")):
             raise _invalid("allowed path must not name a .git subtree")
-        if entry.get("path_type") not in PATH_TYPES:
+        if type(entry.get("path_type")) is not str or entry["path_type"] not in PATH_TYPES:
             raise _invalid("allowed path_type must be file or directory")
 
 
@@ -231,17 +250,19 @@ def _validate_binding_core(binding: dict[str, Any]) -> None:
 
     The closed-set check lives at the two entries: the issue binding is
     exactly ``BINDING_FIELDS``, the consume row additionally carries the
-    lifecycle fields (``uses_consumed``, ``revoked_at``).
+    lifecycle fields (``uses_consumed``, ``consumed_by``, ``revoked_at``).
     """
-    if not isinstance(binding, dict):
+    if not _native_object(binding):
         raise _invalid("capability binding must be an object")
     if (
         not _is_non_empty_str(binding.get("capability_id"))
+        or not _is_non_empty_str(binding.get("approval_id"))
         or not _is_git_sha_hex(binding.get("base_sha"))
         or not _is_git_sha_hex(binding.get("result_sha"))
         or not _is_non_empty_str(binding.get("idempotency_key"))
         or not _is_epoch_seconds(binding.get("expires_at"))
         or not _is_epoch_seconds(binding.get("capability_epoch"))
+        or not _is_epoch_seconds(binding.get("lease_epoch"))
         or type(binding.get("max_uses")) is not int
         # ``max_uses`` is frozen to 1 (技术方案 §6.2): a one-time capability.
         # Any other value is trusted drift — a row with one could never have
@@ -254,13 +275,13 @@ def _validate_binding_core(binding: dict[str, Any]) -> None:
 
 
 def _validate_issue_facts(facts: dict[str, Any]) -> None:
-    if not isinstance(facts, dict) or frozenset(facts) != ISSUE_FACT_FIELDS:
+    if not _closed_object(facts, ISSUE_FACT_FIELDS):
         raise _invalid("issue facts shape is not closed")
-    if facts.get("schema_version") != ISSUE_FACTS_SCHEMA:
+    if type(facts.get("schema_version")) is not str or facts["schema_version"] != ISSUE_FACTS_SCHEMA:
         raise _invalid("wrong issue facts schema")
     _validate_target(facts.get("target"))
     binding = facts.get("binding")
-    if not isinstance(binding, dict) or frozenset(binding) != BINDING_FIELDS:
+    if not _closed_object(binding, BINDING_FIELDS):
         raise _invalid("binding shape is not closed")
     _validate_binding_core(binding)
     if not _is_epoch_seconds(facts.get("now")):
@@ -274,43 +295,37 @@ def _validate_issue_facts(facts: dict[str, Any]) -> None:
 
 
 def _validate_consume_facts(facts: dict[str, Any]) -> None:
-    if not isinstance(facts, dict) or frozenset(facts) != CONSUME_FACT_FIELDS:
+    if not _closed_object(facts, CONSUME_FACT_FIELDS):
         raise _invalid("consume facts shape is not closed")
-    if facts.get("schema_version") != CONSUME_FACTS_SCHEMA:
+    if type(facts.get("schema_version")) is not str or facts["schema_version"] != CONSUME_FACTS_SCHEMA:
         raise _invalid("wrong consume facts schema")
     _validate_target(facts.get("target"))
     capability = facts.get("capability")
-    if not isinstance(capability, dict) or frozenset(capability) != CAPABILITY_FIELDS:
+    if not _closed_object(capability, CAPABILITY_FIELDS):
         raise _invalid("capability row shape is not closed")
     _validate_binding_core(capability)
+    if capability["trailers"]["Feature-Id"] != facts["target"]["entity_id"]:
+        raise _invalid("capability trailers Feature-Id must name the target feature")
     if not _is_epoch_seconds(capability.get("uses_consumed")):
         raise _invalid("capability uses_consumed must be epoch-less non-negative int")
+    if capability["uses_consumed"] > capability["max_uses"]:
+        raise _invalid("capability uses_consumed exceeds max_uses")
+    consumed_by = capability["consumed_by"]
+    if consumed_by is not None and not _is_non_empty_str(consumed_by):
+        raise _invalid("capability consumed_by must name an effect/command or be null")
+    if (capability["uses_consumed"] == 0) != (consumed_by is None):
+        raise _invalid("capability consumption count and identity disagree")
     if capability.get("revoked_at") is not None and not _is_epoch_seconds(
         capability.get("revoked_at")
     ):
         raise _invalid("capability revoked_at must be epoch seconds or null")
-    presented = facts.get("presented")
-    if not isinstance(presented, dict) or frozenset(presented) != PRESENTED_FIELDS:
-        raise _invalid("presented shape is not closed")
-    #: The presented commit intent is executor output, not trusted controller
-    #: state — a str subclass can override hash/equality (round-7 review F5
-    #: family), so here the non-native check is *not* a raise: values pass
-    #: through to the binding comparison, where inequality (or a failed set
-    #: operation) lands the tamper block, never a crash. Only list-shaped
-    #: drift still raises, because the derivation dereferences it directly.
-    touched = presented.get("touched_paths")
-    if not isinstance(touched, list) or not touched:
-        raise _invalid("touched_paths must be a non-empty list")
-    for path in touched:
-        _normalized_repo_path(path, field="touched path")
-        if any(component == ".git" for component in path.split("/")):
-            raise _invalid("touched path must not name a .git subtree")
-    if len(set(touched)) != len(touched):
-        raise _invalid("touched_paths must not repeat a path")
-    if not _is_epoch_seconds(facts.get("now")) or not _is_epoch_seconds(
-        facts.get("current_epoch")
-    ):
-        raise _invalid("consume time fields must be epoch seconds")
+    # Only the outer controller envelope is trusted. Do not even inspect
+    # presented until liveness has been decided.
+    if not _is_epoch_seconds(facts.get("now")):
+        raise _invalid("consume time must be epoch seconds")
+    for current in ("current_epoch", "current_lease_epoch"):
+        if not _is_epoch_seconds(facts.get(current)):
+            raise _invalid("current epochs must be non-negative native integers")
     #: The controller issues under the feature's *current* epoch, so a bound
     #: epoch ahead of the current one is history the controller could not
     #: have produced — forged state, not staleness (the reverse direction,
@@ -318,6 +333,8 @@ def _validate_consume_facts(facts: dict[str, Any]) -> None:
     #: as liveness below).
     if capability["capability_epoch"] > facts["current_epoch"]:
         raise _invalid("capability epoch is ahead of the current epoch")
+    if capability["lease_epoch"] > facts["current_lease_epoch"]:
+        raise _invalid("lease epoch is ahead of the current lease epoch")
 
 
 def _is_within(path: str, prefix: str) -> bool:
@@ -335,6 +352,59 @@ def _inside_allowed(path: str, allowed_paths: list[dict[str, Any]]) -> bool:
         elif _is_within(path, entry["path"]):
             return True
     return False
+
+
+def _presentation_violations(presented: Any, capability: dict[str, Any]) -> tuple[str, ...]:
+    """Inspect only native containers/values; never invoke executor callbacks.
+
+    An unsafe container cannot be dereferenced. Safe sibling fields are still
+    checked, including trailer values when the trailer key set differs.
+    """
+    if not _native_object(presented):
+        return ("presented must be a native object with native string keys",)
+    violations: list[str] = []
+    if frozenset(presented) != PRESENTED_FIELDS:
+        violations.append("presented shape is not closed")
+    for field in ("capability_id", "approval_id", "base_sha", "result_sha", "idempotency_key"):
+        value = presented.get(field)
+        if type(value) is not str:
+            violations.append(f"presented {field} is not a native string")
+        elif value != capability[field]:
+            violations.append(f"presented {field} does not match the issued binding")
+
+    trailers = presented.get("trailers")
+    if not _native_object(trailers):
+        violations.append("presented trailers must be a native object with native string keys")
+    else:
+        if frozenset(trailers) != TRAILER_KEYS:
+            violations.append("presented trailer set diverges from the issued binding")
+        if any(type(value) is not str for value in trailers.values()):
+            violations.append("presented trailers are not native string pairs")
+        for key in ("Feature-Id", "Task-Id", "Plan-Hash", "Review-Id"):
+            value = trailers.get(key)
+            if type(value) is not str:
+                violations.append(f"presented trailer {key} is missing or not a native string")
+            elif value != capability["trailers"][key]:
+                violations.append(f"presented trailer {key} diverges from the issued binding")
+
+    touched = presented.get("touched_paths")
+    if type(touched) is not list or not touched:
+        violations.append("presented touched_paths must be a non-empty native list")
+    else:
+        seen: set[str] = set()
+        for index, path in enumerate(touched):
+            if not _is_normalized_repo_path(path):
+                violations.append(f"touched path at index {index} is not a native normalized path")
+                continue
+            if any(component == ".git" for component in path.split("/")):
+                violations.append(f"touched path at index {index} names a .git subtree")
+            if path in seen:
+                violations.append(f"touched path at index {index} repeats a path")
+            seen.add(path)
+            if not _inside_allowed(path, capability["allowed_paths"]):
+                # Labels must not echo arbitrary executor strings into audit.
+                violations.append(f"touched path at index {index} is outside the allowed set")
+    return tuple(violations)
 
 
 def _policy_block(
@@ -420,50 +490,14 @@ def consume_commit_capability(facts: dict[str, Any]) -> CommitCapabilityEvaluati
         return _stale_refusal(target)
     if capability["capability_epoch"] != facts["current_epoch"]:
         return _stale_refusal(target)
+    if capability["lease_epoch"] != facts["current_lease_epoch"]:
+        return _stale_refusal(target)
 
     # Binding tampering on a live capability (class 3): label every
     # divergence, then land the frozen block once.
-    violations: list[str] = []
-    #: Presentation values are executor output (untrusted): a str subclass can
-    #: override hash/equality so an equal-value subclass would survive every
-    #: comparison below — the native check is a labelled violation (block, not
-    #: raise), the paired trusted-side shape in the capability row raises.
-    for field in ("capability_id", "base_sha", "result_sha", "idempotency_key"):
-        if type(presented[field]) is not str:
-            violations.append(f"presented {field} is not a native string")
-    if type(presented["trailers"]) is not dict or not all(
-        type(key) is str and type(value) is str
-        for key, value in presented["trailers"].items()
-    ):
-        violations.append("presented trailers are not native string pairs")
-    for path in presented["touched_paths"]:
-        if type(path) is not str:
-            violations.append("presented touched_paths carry a non-native string")
-    if presented["capability_id"] != capability["capability_id"]:
-        violations.append(
-            "presented capability_id does not match the issued capability"
-        )
-    if presented["base_sha"] != capability["base_sha"]:
-        violations.append("presented base_sha does not match the issued binding")
-    if presented["result_sha"] != capability["result_sha"]:
-        violations.append("presented result_sha does not match the issued binding")
-    if presented["idempotency_key"] != capability["idempotency_key"]:
-        violations.append(
-            "presented idempotency_key does not match the issuing key"
-        )
-    if frozenset(presented["trailers"]) != frozenset(capability["trailers"]):
-        violations.append("presented trailer set diverges from the issued binding")
-    else:
-        for key in ("Task-Id", "Plan-Hash", "Review-Id"):
-            if presented["trailers"][key] != capability["trailers"][key]:
-                violations.append(f"presented trailer {key} diverges from the issued binding")
-        if presented["trailers"]["Feature-Id"] != target["entity_id"]:
-            violations.append("presented trailer Feature-Id does not name the target feature")
-    for path in presented["touched_paths"]:
-        if not _inside_allowed(path, capability["allowed_paths"]):
-            violations.append(f"touched path {path} is outside the allowed set")
+    violations = _presentation_violations(presented, capability)
     if violations:
-        return _policy_block(target, tuple(violations))
+        return _policy_block(target, violations)
 
     return CommitCapabilityEvaluation(
         receipt=OperationReceipt(
