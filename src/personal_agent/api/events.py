@@ -320,9 +320,9 @@ def event_exists_with(
     ``content[content_key] == content_value`` (decrypted).
 
     The idempotency primitive for scheduler-written cards: the risk report is
-    sealed once per ``as_of``, so a repeat fire (a weekend, a holiday, a manual
-    rerun) finds the existing card and adds nothing. Scans only that event type,
-    not the whole Timeline.
+    sealed once per Shanghai calendar day (its ``sealed_on``), so a same-day
+    rerun finds the existing card and adds nothing, while a new morning always
+    seals a fresh card. Scans only that event type, not the whole Timeline.
     """
     rows = (
         session.query(ConversationEvent)

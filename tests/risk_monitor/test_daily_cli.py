@@ -137,6 +137,7 @@ def test_seal_risk_event_appends_risk_report(monkeypatch):
         keyring=object(),
         session_manager=_FakeSessionManager(),
         report=report,
+        now=datetime(2026, 8, 31, 2, 0, tzinfo=timezone.utc),  # 10:00 Shanghai
     )
 
     assert event_id == "evt-1"
@@ -156,6 +157,7 @@ def test_seal_risk_event_appends_risk_report(monkeypatch):
         "stale_days": 0,
         "anomalous": False,
         "components": None,
+        "sealed_on": "2026-08-31",
     }
 
 
@@ -204,10 +206,10 @@ def test_seal_risk_event_writes_a_real_timeline_event(tmp_path):
     assert entry.content["components"]["css"][0]["band"] == "orange"
 
 
-def test_seal_risk_event_is_idempotent_on_as_of(tmp_path):
-    """Sealing the same as_of twice adds nothing: the second call finds the
-    existing card and returns None, so a weekend/holiday/manual rerun never
-    stacks a duplicate."""
+def test_seal_risk_event_is_idempotent_within_a_day(tmp_path):
+    """Sealing twice on the same Shanghai day adds nothing: the second call
+    finds the existing card and returns None, so a manual rerun never stacks a
+    duplicate."""
     engine = create_database_engine(tmp_path / "agent.sqlite")
     create_all(engine)
     sessions = session_factory(engine)
@@ -221,9 +223,14 @@ def test_seal_risk_event_is_idempotent_on_as_of(tmp_path):
         "action": "持有（无需操作）",
         "components": {"mbs": [], "css": []},
     }
+    morning = datetime(2026, 8, 31, 2, 0, tzinfo=timezone.utc)  # 10:00 Shanghai
 
-    first = daily_cli.seal_risk_event(sessions, keyring, session_manager, report)
-    second = daily_cli.seal_risk_event(sessions, keyring, session_manager, report)
+    first = daily_cli.seal_risk_event(
+        sessions, keyring, session_manager, report, now=morning
+    )
+    second = daily_cli.seal_risk_event(
+        sessions, keyring, session_manager, report, now=morning
+    )
 
     assert first is not None
     assert second is None
@@ -237,3 +244,60 @@ def test_seal_risk_event_is_idempotent_on_as_of(tmp_path):
 
     assert [entry.event_type for entry in entries] == ["risk_report"]
     assert len(entries) == 1
+
+
+def test_seal_risk_event_seals_a_fresh_card_on_a_new_day(tmp_path):
+    """The live defect fixed 2026-08-31: keying idempotency on ``as_of`` meant a
+    weekend (whose market data, and therefore whose as_of, had not moved)
+    suppressed every card after the first morning — Monday woke to no card even
+    though the push had gone out. Idempotency is on the Shanghai seal day: the
+    same as_of re-sealed on a later morning lands a new card."""
+    engine = create_database_engine(tmp_path / "agent.sqlite")
+    create_all(engine)
+    sessions = session_factory(engine)
+    keyring = KeyRing([generate_key("risk-seal-fixture")], service="personal-agent-api")
+    session_manager = SessionManager(default_context_config())
+
+    saturday_report = {
+        "as_of": "2026-08-28",
+        "state": "NORMAL",
+        "scores": {"mbs": 0.0, "css": 8.75, "afrs": 27.9697},
+        "action": "持有（无需操作）",
+    }
+    monday_report = {
+        "as_of": "2026-08-28",  # same market data, three days later
+        "state": "NORMAL",
+        "scores": {"mbs": 0.0, "css": 21.875, "afrs": 27.9697},  # drifted recompute
+        "action": "持有（无需操作）",
+    }
+    saturday = datetime(2026, 8, 29, 2, 0, tzinfo=timezone.utc)
+    monday = datetime(2026, 8, 31, 2, 0, tzinfo=timezone.utc)
+
+    saturday_id = daily_cli.seal_risk_event(
+        sessions, keyring, session_manager, saturday_report, now=saturday
+    )
+    monday_id = daily_cli.seal_risk_event(
+        sessions, keyring, session_manager, monday_report, now=monday
+    )
+
+    assert saturday_id is not None
+    assert monday_id is not None
+    assert saturday_id != monday_id
+
+    with sessions() as session:
+        timeline_id = events.canonical_timeline_id(
+            session, now=datetime.now(timezone.utc)
+        )
+        entries = events.list_timeline(session, keyring, conversation_id=timeline_id)
+    engine.dispose()
+
+    assert [entry.event_type for entry in entries] == [
+        "risk_report",
+        "risk_report",
+    ]
+    assert entries[0].content["as_of"] == "2026-08-28"
+    assert entries[0].content["sealed_on"] == "2026-08-29"
+    assert entries[0].content["css"] == 8.75
+    assert entries[1].content["as_of"] == "2026-08-28"
+    assert entries[1].content["sealed_on"] == "2026-08-31"
+    assert entries[1].content["css"] == 21.875
