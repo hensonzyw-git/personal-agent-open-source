@@ -28,6 +28,8 @@ effect/command identity, not that key.
 
 from __future__ import annotations
 
+import copy
+import inspect
 import json
 import threading
 
@@ -207,6 +209,39 @@ def test_issue_key_reuse_with_different_content_conflicts(engine):
     assert excinfo.value.code == DalErrorCode.IDEMPOTENCY_CONFLICT
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda facts, repository_id: facts["binding"]["allowed_paths"].append(
+            {"path": "docs", "path_type": "directory"}
+        ),
+        lambda facts, repository_id: facts["binding"]["trailers"].__setitem__(
+            "Task-Id", "task-drift"
+        ),
+        lambda facts, repository_id: facts["target"].__setitem__("version", 99),
+        lambda facts, repository_id: repository_id.__setitem__("value", "other-repo"),
+    ),
+)
+def test_issue_key_reuse_rejects_every_authority_content_drift(engine, mutate):
+    facts = _issue_facts()
+    store.issue_commit_capability_row(engine, facts, repository_id=REPO)
+    replay = copy.deepcopy(facts)
+    repository_id = {"value": REPO}
+    mutate(replay, repository_id)
+    with pytest.raises(DalError) as excinfo:
+        store.issue_commit_capability_row(
+            engine, replay, repository_id=repository_id["value"]
+        )
+    assert excinfo.value.code == DalErrorCode.IDEMPOTENCY_CONFLICT
+
+
+def test_consume_cas_keeps_both_state_and_version_predicates():
+    """Mutation guard: SQLite serialization can hide either missing predicate."""
+    source = inspect.getsource(store.consume_commit_capability_row)
+    assert ".where(CommitCapability.state_version == row.state_version)" in source
+    assert ".where(CommitCapability.state == \"issued\")" in source
+
+
 # --- (C) consume CAS ----------------------------------------------------------
 
 
@@ -249,6 +284,20 @@ def test_tampered_presentation_lands_block_evidence(engine):
     # The block verdict does not consume the capability: the engine's block
     # transition is the controller's separate step.
     assert row.state == "issued"
+    assert len(_intents(engine, f"{WORKER}:block")) == 1
+
+
+def test_block_replay_ignores_a_new_observation_time(engine):
+    _issued(engine)
+    facts = _consume_facts()
+    facts["presented"]["base_sha"] = "1" * 40
+    first = store.consume_commit_capability_row(engine, facts, consumed_by=WORKER)
+    assert first.replayed is False
+    replay = copy.deepcopy(facts)
+    replay["now"] += 1
+    second = store.consume_commit_capability_row(engine, replay, consumed_by=WORKER)
+    assert second.verdict == "blocked"
+    assert second.replayed is True
     assert len(_intents(engine, f"{WORKER}:block")) == 1
 
 

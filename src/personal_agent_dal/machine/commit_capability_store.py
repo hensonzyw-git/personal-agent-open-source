@@ -21,14 +21,11 @@ Composition per call (all inside one :func:`run_write_transaction` unit):
   consume intent, audit and outbox; the loser re-reads a dead row and gets
   ``CAPABILITY_STALE``. A replay returns the original consume receipt.
 
-The block landing (live capability + tampered presentation) is also
-persistent: the feature's ``needs_human`` landing and its seven-write set
-belong to the engine transition, which the controller applies through the
-frozen registry — this module records the block verdict's own evidence rows
-(intent, audit, outbox) and returns the pure gate's block evaluation
-unchanged. It never invents a transition spec id: no row here claims
-``BLK-POLICY--verified`` was applied by the engine unless the caller applied
-it.
+The block path (live capability + tampered presentation) first records a
+durable **pending** recovery record. The feature's ``needs_human`` landing
+and seven-write set belong to the engine transition, which the controller
+must complete through the frozen registry before reporting a completed block.
+This module never claims ``BLK-POLICY--verified`` was applied by the engine.
 """
 
 from __future__ import annotations
@@ -75,7 +72,7 @@ BLOCK_EFFECT_SCOPE: Final[str] = "commit-capability:block"
 
 ISSUE_EVENT_TYPE: Final[str] = "commit_capability.issued"
 CONSUME_EVENT_TYPE: Final[str] = "commit_capability.consumed"
-BLOCK_EVENT_TYPE: Final[str] = "commit_capability.blocked"
+BLOCK_EVENT_TYPE: Final[str] = "commit_capability.block_pending"
 
 #: The outbox topic carries the concrete event, not a generic channel: the
 #: ``outbox_events`` unique constraint ``(aggregate_type, aggregate_id,
@@ -89,7 +86,7 @@ OUTBOX_TOPIC_PREFIX: Final[str] = "commit_capability."
 ISSUE_SUMMARY: Final[str] = "commit capability issued for a verified feature"
 CONSUME_SUMMARY: Final[str] = "commit capability consumed by the git executor"
 BLOCK_SUMMARY: Final[str] = (
-    "commit capability presentation diverged; feature blocked for human"
+    "commit capability presentation diverged; engine block transition pending recovery"
 )
 
 
@@ -121,6 +118,59 @@ def _invalid(detail: str) -> DalError:
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _issue_request_digest(facts: dict[str, Any], repository_id: str) -> str:
+    """The stable identity of an issue request.
+
+    ``now`` is an observation instant, not authority content: a response-loss
+    retry may be made one second later. Target and the complete binding are
+    authority content and must therefore remain fixed under one issue key.
+    """
+    return _digest(
+        {
+            "target": facts["target"],
+            "binding": facts["binding"],
+            "repository_id": repository_id,
+        }
+    )
+
+
+def _block_request_digest(
+    row: CommitCapability,
+    target: dict[str, Any],
+    consumed_by: str,
+    violations: tuple[str, ...],
+) -> str:
+    """Stable identity of the durable pending block command.
+
+    Do not hash the raw presentation: this branch deliberately accepts
+    malformed attacker-controlled values. The pure gate has reduced those
+    values to fixed violation labels, which are both safe and sufficient to
+    distinguish the effect being recorded. Time/epoch observations are not
+    part of an idempotent command identity.
+    """
+    return _digest(
+        {
+            "capability_id": row.capability_id,
+            "target": target,
+            "consumed_by": consumed_by,
+            "violations": list(violations),
+        }
+    )
+
+
+def _consume_request_digest(
+    target: dict[str, Any], presented: dict[str, Any], consumed_by: str
+) -> str:
+    """Stable identity of a clean consume effect after gate validation."""
+    return _digest(
+        {
+            "target": target,
+            "presented": presented,
+            "consumed_by": consumed_by,
+        }
+    )
 
 
 def _row_to_binding(row: CommitCapability) -> dict[str, Any]:
@@ -236,7 +286,7 @@ def issue_commit_capability_row(
     target = facts["target"]
     issue_key = binding["idempotency_key"]
     now_dt = utc_now()
-    request_sha = _digest({"facts": facts, "repository_id": repository_id})
+    request_sha = _issue_request_digest(facts, repository_id)
     sessions = session_factory(engine)
 
     def _body(session: Session) -> CapabilityIssueOutcome:
@@ -247,6 +297,19 @@ def issue_commit_capability_row(
         ).first()
         if existing is not None:
             _replay_guard(existing, facts["binding"], "issue")
+            existing_intent = session.scalars(
+                select(ExternalEffect).where(
+                    ExternalEffect.effect_scope_key == ISSUE_EFFECT_SCOPE,
+                    ExternalEffect.remote_idempotency_key == f"{issue_key}:intent",
+                )
+            ).first()
+            if existing_intent is None:
+                raise _invalid("issue replay is missing its durable intent")
+            if existing_intent.target_fingerprint != request_sha:
+                raise DalError(
+                    DalErrorCode.IDEMPOTENCY_CONFLICT,
+                    internal_detail="issue key reused with different content",
+                )
             return CapabilityIssueOutcome(
                 receipt=OperationReceipt(ReceiptCode.APPLIED),
                 capability_id=existing.capability_id,
@@ -419,7 +482,6 @@ def consume_commit_capability_row(
     presented = facts["presented"]
     consume_key = consumed_by
     now_dt = utc_now()
-    request_sha = _digest({"facts": facts, "consumed_by": consumed_by})
     sessions = session_factory(engine)
 
     def _body(session: Session) -> CapabilityConsumeOutcome:
@@ -466,9 +528,9 @@ def consume_commit_capability_row(
             )
 
         if evaluation.violations:
-            # The block landing: evidence rows now; the engine's block
+            # The block pending record: evidence rows now; the engine's block
             # transition (seven-write set) is the controller's separate,
-            # registry-driven step and is not claimed here.
+            # registry-driven recovery step and is not claimed here.
             #
             # The block replay fence first: a block does not consume the
             # capability, so the row above stays ``issued`` and the same
@@ -481,6 +543,9 @@ def consume_commit_capability_row(
             # constraint would turn the replay into a crash). A different
             # digest under the same identity is the key being spent on new
             # content: conflict, never a silent second judgement.
+            request_sha = _block_request_digest(
+                row, target, consume_key, evaluation.violations
+            )
             existing_block = session.scalars(
                 select(ExternalEffect).where(
                     ExternalEffect.effect_scope_key == BLOCK_EFFECT_SCOPE,
@@ -521,7 +586,7 @@ def consume_commit_capability_row(
             _write_outbox(
                 session,
                 owner_feature_id=target["entity_id"],
-                event="blocked",
+                event="block_pending",
                 payload={
                     "capability_id": row.capability_id,
                     "feature_id": target["entity_id"],
@@ -558,6 +623,7 @@ def consume_commit_capability_row(
         if result.rowcount != 1:
             raise _SnapshotRetry()
 
+        request_sha = _consume_request_digest(target, presented, consume_key)
         _write_intent(
             session,
             scope=CONSUME_EFFECT_SCOPE,
@@ -629,6 +695,7 @@ def _stale_after_race(
         if row is None:
             raise _invalid("consume names no persisted capability row")
         if row.consumed_by == consumed_by and row.consumed_at is not None:
+            _consume_replay_guard(row, facts)
             return CapabilityConsumeOutcome(
                 receipt=OperationReceipt(ReceiptCode.APPLIED),
                 capability_id=row.capability_id,

@@ -8,37 +8,36 @@ and result binding — belongs to the pure consume gate
 presentation of *actual* git state. This module refuses on mechanics and
 reports actuals; it never decides whether a commit is allowed.
 
-Determinism. No model, no clock, no environment read influences the result:
-same base tree + same declared file contents ⇒ same result tree SHA
+Determinism. No model, clock, inherited environment or repository execution
+configuration influences the result: same base tree + same declared file
+contents ⇒ same result tree SHA
 (commit SHAs embed timestamps; trees do not). The helper
 :func:`result_tree_for` computes the binding's ``result_sha`` the same way
 git will: base tree + blobs through plumbing on a throwaway index — no ref,
 no worktree mutation.
 
 Hygiene (CLAUDE.md §5.1, the tampered-environment failure shape). Every
-subprocess runs with an env that drops **every** ``GIT_*`` variable and
-pins ``GIT_CONFIG_NOSYSTEM=1`` / ``GIT_CONFIG_GLOBAL=/dev/null`` — a
-hostile ``GIT_DIR``, ``GIT_INDEX_FILE``, ``GIT_AUTHOR_*`` or
-``GIT_CONFIG_*`` cannot redirect the commit. Hooks are neutralized twice:
-an empty ``core.hooksPath`` *and* ``--no-verify``; GPG signing is disabled
-by ``-c commit.gpgSign=false`` and ``--no-gpg-sign`` so repo config cannot
-demand it. Identity comes from the repository's own local config.
+subprocess uses the fixed ``/usr/bin/git`` binary, an allowlisted env and
+``GIT_CONFIG_NOSYSTEM=1`` / ``GIT_CONFIG_GLOBAL=/dev/null``. Every command
+also disables hooks and filesystem monitors. The executor deliberately avoids
+``git add``: local clean filters and attributes are executable configuration,
+not candidate-commit input. It reads only ``user.name`` and ``user.email``
+from local config, validates them, and supplies them explicitly to
+``commit-tree``.
 
 Every refusal is a typed fixed phrase — git stderr is never echoed into
 refusals or receipts (leak discipline; the same rule the patch policy
 applies to provider output).
 
 The binding commits **tree SHAs**: ``base_sha`` is the tree the candidate
-must sit on, ``result_sha`` is the tree the declared change produces. A
-declared file with the executable bit set would commit as mode ``100755``
-and diverge from the helper's ``100644`` — that divergence is not judged
-here; it surfaces as a result-tree mismatch in the consume gate and lands
-the block. Fail closed at the gate, not repaired here.
+must sit on, ``result_sha`` is the tree the declared change produces. Files
+are represented as regular ``100644`` blobs; symlinks, non-UTF-8 content and
+any declared set that does not exactly equal the candidate tree diff refuse
+before HEAD moves.
 """
 
 from __future__ import annotations
 
-import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -58,6 +57,13 @@ TRAILER_ORDER: Final[tuple[str, ...]] = (
 )
 
 _GIT_TIMEOUT_SECONDS: Final[int] = 60
+_GIT_BINARY: Final[str] = "/usr/bin/git"
+_SAFE_GIT_CONFIG: Final[tuple[str, ...]] = (
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.fsmonitor=false",
+    "-c", "core.useBuiltinFSMonitor=true",
+    "-c", "commit.gpgSign=false",
+)
 
 
 @dataclass(frozen=True)
@@ -95,21 +101,23 @@ def _refuse(reason: str, detail: str = "") -> CommitExecutorResult:
 
 
 def _git_env() -> dict[str, str]:
-    """A clean env: every ``GIT_*`` variable dropped, config sources pinned.
+    """The executor's allowlisted subprocess environment.
 
-    A credential must only ever travel to a pinned endpoint (§5.1); the same
-    pinning discipline applies to the commit: it can only land in the
-    repository we point ``-C`` at, through the index we build, with no
-    environment-supplied redirection.
+    Do not inherit ``PATH`` (binary replacement), arbitrary loader variables,
+    or any host-provided ``GIT_*`` setting. Repository-local config is still
+    read for the two explicit identity values, but every git command runs with
+    hooks and optional filesystem monitors disabled; the commit path itself
+    never calls ``git add`` and therefore cannot run attributes filters.
     """
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith("GIT_")
+    return {
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
     }
-    env["GIT_CONFIG_NOSYSTEM"] = "1"
-    env["GIT_CONFIG_GLOBAL"] = os.devnull
-    return env
 
 
 def _git(
@@ -119,7 +127,7 @@ def _git(
     input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["git", "-C", str(repo), *args],
+        [_GIT_BINARY, "-C", str(repo), *_SAFE_GIT_CONFIG, *args],
         capture_output=True,
         text=True,
         check=False,
@@ -211,6 +219,18 @@ def _trailers_from_message(repo: Path, message: str) -> dict[str, str] | None:
     return trailers
 
 
+def _local_identity(repo: Path) -> tuple[str, str] | None:
+    """Read only the two local identity values needed for ``commit-tree``."""
+    values: list[str] = []
+    for key in ("user.name", "user.email"):
+        result = _git(repo, "config", "--local", "--get", key)
+        value = result.stdout.rstrip("\n")
+        if result.returncode != 0 or not value or "\n" in value or "\r" in value:
+            return None
+        values.append(value)
+    return values[0], values[1]
+
+
 def run_candidate_commit(
     repo_path: Path,
     *,
@@ -220,13 +240,11 @@ def run_candidate_commit(
 ) -> CommitExecutorResult:
     """Form exactly one candidate commit inside the issued binding.
 
-    The declared paths (whose new contents are already in the worktree) are
-    staged alone — unrelated worktree noise is never committed — and the
-    commit carries the binding's four trailers. Everything the caller
-    receives about the commit is read back from the commit object, not
-    from the arguments.
-
-    Refusals leave the repository's refs exactly as they were.
+    The declared paths are read as regular files and overlaid on a throwaway
+    index. This intentionally does not invoke ``git add``: repository
+    attributes filters and index hooks are executable configuration, not
+    candidate-commit input. The fully validated commit object is created
+    before a compare-and-swap ``update-ref`` advances HEAD.
     """
     if not repo_path.is_dir() or repo_path.is_symlink():
         return _refuse("repository path is not a real directory")
@@ -246,6 +264,8 @@ def run_candidate_commit(
         for value in trailers.values()
     ):
         return _refuse("trailer values cannot carry line breaks")
+    if type(declared_paths) is not list:
+        return _refuse("declared paths must be a native list")
     for path in declared_paths:
         if type(path) is not str or not _is_normalized_declared_path(path):
             return _refuse("declared path is not a normalized repo-relative path")
@@ -253,6 +273,14 @@ def run_candidate_commit(
             return _refuse("declared path names a .git subtree")
     if not declared_paths:
         return _refuse("declared paths must be non-empty")
+    if len(set(declared_paths)) != len(declared_paths):
+        return _refuse("declared paths must not repeat a path")
+    if any(
+        line.partition(": ")[0] in TRAILER_ORDER
+        for line in message.splitlines()
+        if ": " in line
+    ):
+        return _refuse("commit message must not predeclare frozen trailers")
 
     head_commit = _rev(repo_path, "HEAD")
     if head_commit is None:
@@ -267,81 +295,82 @@ def run_candidate_commit(
             "base tree drift: head tree no longer matches the issued base"
         )
 
-    staged = _git(repo_path, "add", "--", *sorted(declared_paths))
-    if staged.returncode != 0:
-        return _refuse("declared path could not be staged")
+    existing_staged = _git(repo_path, "diff", "--cached", "--name-only")
+    if existing_staged.returncode != 0:
+        return _refuse("existing staged set could not be read")
+    if any(line for line in existing_staged.stdout.splitlines() if line):
+        return _refuse("repository has pre-existing staged changes")
 
-    staged_names = _git(repo_path, "diff", "--cached", "--name-only")
-    if staged_names.returncode != 0:
-        return _refuse("staged set could not be read")
-    touched = tuple(
-        line for line in staged_names.stdout.splitlines() if line
+    files: dict[str, str] = {}
+    for path in declared_paths:
+        candidate = repo_path / path
+        if candidate.is_symlink() or not candidate.is_file():
+            return _refuse("declared path is not a regular file")
+        try:
+            files[path] = candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return _refuse("declared file could not be read as UTF-8")
+    try:
+        commit_tree = result_tree_for(repo_path, head_tree, files=files)
+    except RuntimeError:
+        return _refuse("candidate tree could not be built")
+
+    changed = _git(
+        repo_path, "diff-tree", "--no-commit-id", "--name-only", "-r",
+        head_tree, commit_tree,
     )
-    if not touched:
-        return _refuse("nothing to commit for the declared paths")
-    if any(path not in set(declared_paths) for path in touched):
-        return _refuse("staged set diverged from the declared paths")
+    if changed.returncode != 0:
+        return _refuse("candidate paths could not be read")
+    committed_paths = tuple(line for line in changed.stdout.splitlines() if line)
+    if tuple(sorted(committed_paths)) != tuple(sorted(declared_paths)):
+        return _refuse("candidate set diverged from the declared paths")
 
-    with tempfile.TemporaryDirectory(prefix="dal-hooks-") as hooks_dir:
-        committed = _git(
-            repo_path,
-            "-c",
-            f"core.hooksPath={hooks_dir}",
-            "-c",
-            "commit.gpgSign=false",
-            "commit",
-            "--no-verify",
-            "--no-gpg-sign",
-            "-q",
-            "-m",
-            message,
-            *[
-                f"--trailer={key}={trailers[key]}"
-                for key in TRAILER_ORDER
-            ],
-        )
+    identity = _local_identity(repo_path)
+    if identity is None:
+        return _refuse("repository local author identity is unavailable")
+    commit_message = message.rstrip() + "\n\n" + "\n".join(
+        f"{key}: {trailers[key]}" for key in TRAILER_ORDER
+    ) + "\n"
+    commit_env = _git_env()
+    commit_env.update(
+        {
+            "GIT_AUTHOR_NAME": identity[0],
+            "GIT_AUTHOR_EMAIL": identity[1],
+            "GIT_COMMITTER_NAME": identity[0],
+            "GIT_COMMITTER_EMAIL": identity[1],
+        }
+    )
+    committed = _git(
+        repo_path, "commit-tree", commit_tree, "-p", head_commit,
+        env=commit_env, input_text=commit_message,
+    )
     if committed.returncode != 0:
-        return _refuse("git commit failed")
-
-    commit_sha = _rev(repo_path, "HEAD")
-    if commit_sha is None:
-        return _refuse("new head could not be resolved after commit")
-    commit_tree = _rev(repo_path, f"{commit_sha}^{{tree}}")
-    parent_commit = _rev(repo_path, f"{commit_sha}^")
-    if commit_tree is None or parent_commit is None:
-        return _refuse("commit ancestry could not be read after commit")
-    if parent_commit != head_commit:
-        return _refuse("head moved while the candidate commit formed")
-    parent_tree = _rev(repo_path, f"{parent_commit}^{{tree}}")
-    if parent_tree is None:
-        return _refuse("parent tree could not be read after commit")
+        return _refuse("candidate commit object could not be created")
+    commit_sha = committed.stdout.strip()
+    if _rev(repo_path, f"{commit_sha}^{{tree}}") != commit_tree or (
+        _rev(repo_path, f"{commit_sha}^") != head_commit
+    ):
+        return _refuse("candidate commit object failed ancestry readback")
 
     shown = _git(repo_path, "show", "-s", "--format=%B", commit_sha)
     if shown.returncode != 0:
         return _refuse("commit message could not be read back")
     trailers_readback = _trailers_from_message(repo_path, shown.stdout)
-    if trailers_readback is None or any(
-        key not in trailers_readback or trailers_readback[key] != trailers[key]
-        for key in TRAILER_ORDER
-    ):
+    if trailers_readback != {key: trailers[key] for key in TRAILER_ORDER}:
         return _refuse("trailer readback did not reproduce the binding trailers")
 
-    committed_names = _git(
-        repo_path, "diff-tree", "--no-commit-id", "--name-only", "-r", commit_sha
-    )
-    if committed_names.returncode != 0:
-        return _refuse("committed paths could not be read back")
-    committed_paths = tuple(
-        line for line in committed_names.stdout.splitlines() if line
-    )
-    if not committed_paths:
-        return _refuse("committed set could not be read back")
+    updated = _git(repo_path, "update-ref", "HEAD", commit_sha, head_commit)
+    if updated.returncode != 0:
+        return _refuse("head moved while the candidate commit formed")
+    synchronized = _git(repo_path, "read-tree", commit_tree)
+    if synchronized.returncode != 0:
+        raise RuntimeError("candidate ref advanced but index synchronization failed")
 
     return CommitExecutorResult(
         commit_sha=commit_sha,
         tree_sha=commit_tree,
-        parent_commit_sha=parent_commit,
-        parent_tree_sha=parent_tree,
+        parent_commit_sha=head_commit,
+        parent_tree_sha=head_tree,
         touched_paths=committed_paths,
         trailers_readback=dict(trailers_readback),
         refusal=None,

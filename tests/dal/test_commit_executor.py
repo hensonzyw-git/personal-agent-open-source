@@ -39,13 +39,16 @@ from sqlalchemy import select
 
 from personal_agent_core.ids import new_id
 from personal_agent_dal.machine.commit_controller import execute_candidate_commit
+from personal_agent_dal.machine import commit_capability
 from personal_agent_dal.machine.commit_executor import (
     run_candidate_commit,
     result_tree_for,
 )
 from personal_agent_dal.machine.commit_capability_store import (
+    consume_commit_capability_row,
     issue_commit_capability_row,
 )
+from personal_agent_dal.errors import DalError, DalErrorCode
 from personal_agent_dal.storage.engine import (
     create_all,
     create_database_engine,
@@ -400,6 +403,79 @@ def test_hostile_environment_and_hooks_cannot_influence_the_commit(repo):
     assert author == "DAL Executor Test"
 
 
+def test_executor_ignores_path_filters_and_post_index_hooks(repo, tmp_path, monkeypatch):
+    """All three used to execute before or outside ``git commit`` itself."""
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    (repo_path / "src" / "app" / "core.py").write_text(DECLARED["src/app/core.py"])
+
+    marker = tmp_path / "unexpected-execution"
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text(f"#!/bin/sh\ntouch {marker}\nexit 99\n")
+    fake_git.chmod(0o755)
+    filter_script = tmp_path / "filter.sh"
+    filter_script.write_text(f"#!/bin/sh\ntouch {marker}\ncat\n")
+    filter_script.chmod(0o755)
+    (repo_path / ".gitattributes").write_text("src/app/core.py filter=evil\n")
+    _git(repo_path, "config", "filter.evil.clean", str(filter_script))
+    hook = repo_path / ".git" / "hooks" / "post-index-change"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    hook.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:/usr/bin:/bin")
+
+    result = run_candidate_commit(
+        repo_path,
+        binding=binding,
+        declared_paths=["src/app/core.py"],
+        message="candidate: update core",
+    )
+
+    assert result.refusal is None
+    assert not marker.exists()
+
+
+def test_executor_requires_an_exact_declared_change_set(repo):
+    repo_path, _ = repo
+    files = {
+        "src/app/core.py": DECLARED["src/app/core.py"],
+        "tests/app/test_service.py": "def test_ok(): pass\n",
+    }
+    binding = _binding_for(repo_path, files)
+    (repo_path / "src" / "app" / "core.py").write_text(files["src/app/core.py"])
+    before = _commit_count(repo_path)
+
+    result = run_candidate_commit(
+        repo_path,
+        binding=binding,
+        declared_paths=list(files),
+        message="candidate: exact-set",
+    )
+
+    assert result.refusal is not None
+    assert "diverged" in result.refusal.reason
+    assert _commit_count(repo_path) == before
+
+
+def test_post_commit_validation_failure_cannot_move_head(repo):
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    (repo_path / "src" / "app" / "core.py").write_text(DECLARED["src/app/core.py"])
+    before = _head_commit(repo_path)
+
+    result = run_candidate_commit(
+        repo_path,
+        binding=binding,
+        declared_paths=["src/app/core.py"],
+        message="candidate\n\nFeature-Id: injected",
+    )
+
+    assert result.refusal is not None
+    assert _head_commit(repo_path) == before
+    assert _commit_count(repo_path) == 1
+
+
 # --- the composed controller ------------------------------------------------------
 
 
@@ -479,6 +555,81 @@ def test_blocked_composition_replay_returns_original_block_receipt(engine, repo)
             select(Feature).where(Feature.feature_id == "feature-0001")
         ).one()
     assert feature.state == "needs_human"
+
+
+def test_pending_block_recovers_engine_transition_without_rerunning_git(engine, repo):
+    """A crash after the store commit leaves a pending record, not success."""
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    issue_facts = _issue_facts(binding=binding)
+    issue_commit_capability_row(engine, issue_facts, repository_id=REPO_ID)
+    pending_facts = {
+        "schema_version": commit_capability.CONSUME_FACTS_SCHEMA,
+        "target": issue_facts["target"],
+        "capability": {
+            **binding,
+            "uses_consumed": 0,
+            "consumed_by": None,
+            "revoked_at": None,
+        },
+        "presented": {
+            "capability_id": binding["capability_id"],
+            "approval_id": binding["approval_id"],
+            "base_sha": binding["base_sha"],
+            "result_sha": binding["result_sha"],
+            "touched_paths": ["deploy/notes.txt"],
+            "trailers": dict(binding["trailers"]),
+            "idempotency_key": binding["idempotency_key"],
+        },
+        "now": NOW,
+        "current_epoch": EPOCH,
+        "current_lease_epoch": 7,
+    }
+    pending = consume_commit_capability_row(
+        engine, pending_facts, consumed_by=IDENTITY
+    )
+    assert pending.verdict == "blocked"
+    assert _commit_count(repo_path) == 1
+
+    replay = _compose(engine, repo_path, binding)
+    assert replay.phase == "blocked"
+    assert replay.replayed is True
+    assert _commit_count(repo_path) == 1
+    sessions = session_factory(engine)
+    with sessions() as session:
+        feature = session.scalars(
+            select(Feature).where(Feature.feature_id == "feature-0001")
+        ).one()
+    assert feature.state == "needs_human"
+
+
+def test_controller_rejects_invalid_time_before_issue_or_git(engine, repo):
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    (repo_path / "src" / "app" / "core.py").write_text(DECLARED["src/app/core.py"])
+
+    with pytest.raises(DalError) as excinfo:
+        _compose(engine, repo_path, binding, now=-1)
+    assert excinfo.value.code == DalErrorCode.INVALID_ARGUMENT
+    assert _commit_count(repo_path) == 1
+    assert _intent_keys(engine) == set()
+
+
+def test_controller_rejects_missing_feature_before_issue_or_git(tmp_path, repo):
+    repo_path, _ = repo
+    engine = create_database_engine(tmp_path / "empty.sqlite")
+    create_all(engine)
+    binding = _binding_for(repo_path)
+    (repo_path / "deploy").mkdir()
+    (repo_path / "deploy" / "notes.txt").write_text("escape attempt\n")
+
+    with pytest.raises(DalError) as excinfo:
+        _compose(
+            engine, repo_path, binding, declared=["deploy/notes.txt"]
+        )
+    assert excinfo.value.code == DalErrorCode.INVALID_ARGUMENT
+    assert _commit_count(repo_path) == 1
+    assert _intent_keys(engine) == set()
 
 
 def test_composition_refuses_revoked_capability_without_git(engine, repo):
