@@ -200,6 +200,17 @@ def test_issue_replay_returns_original_without_new_rows(engine):
     assert before == after
 
 
+def test_issue_replay_ignores_a_new_observation_time(engine):
+    facts = _issue_facts()
+    first = store.issue_commit_capability_row(engine, facts, repository_id=REPO)
+    replay = copy.deepcopy(facts)
+    replay["now"] += 1
+    second = store.issue_commit_capability_row(engine, replay, repository_id=REPO)
+    assert first.replayed is False
+    assert second.replayed is True
+    assert second.capability_id == first.capability_id
+
+
 def test_issue_key_reuse_with_different_content_conflicts(engine):
     store.issue_commit_capability_row(engine, _issue_facts(), repository_id=REPO)
     drifted = _issue_facts()

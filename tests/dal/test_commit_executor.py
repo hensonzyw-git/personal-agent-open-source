@@ -38,6 +38,7 @@ import pytest
 from sqlalchemy import select
 
 from personal_agent_core.ids import new_id
+from personal_agent_dal.machine import commit_controller, commit_executor
 from personal_agent_dal.machine.commit_controller import execute_candidate_commit
 from personal_agent_dal.machine import commit_capability
 from personal_agent_dal.machine.commit_executor import (
@@ -601,6 +602,155 @@ def test_pending_block_recovers_engine_transition_without_rerunning_git(engine, 
             select(Feature).where(Feature.feature_id == "feature-0001")
         ).one()
     assert feature.state == "needs_human"
+
+
+def test_pending_block_recovers_after_consumer_identity_changes(engine, repo):
+    """A restart may mint a new command identity after response loss."""
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    issue_facts = _issue_facts(binding=binding)
+    issue_commit_capability_row(engine, issue_facts, repository_id=REPO_ID)
+    pending_facts = {
+        "schema_version": commit_capability.CONSUME_FACTS_SCHEMA,
+        "target": issue_facts["target"],
+        "capability": {
+            **binding,
+            "uses_consumed": 0,
+            "consumed_by": None,
+            "revoked_at": None,
+        },
+        "presented": {
+            "capability_id": binding["capability_id"],
+            "approval_id": binding["approval_id"],
+            "base_sha": binding["base_sha"],
+            "result_sha": binding["result_sha"],
+            "touched_paths": ["deploy/notes.txt"],
+            "trailers": dict(binding["trailers"]),
+            "idempotency_key": binding["idempotency_key"],
+        },
+        "now": NOW,
+        "current_epoch": EPOCH,
+        "current_lease_epoch": 7,
+    }
+    assert (
+        consume_commit_capability_row(
+            engine, pending_facts, consumed_by=IDENTITY
+        ).verdict
+        == "blocked"
+    )
+
+    replay = _compose(
+        engine,
+        repo_path,
+        binding,
+        identity="git-executor:op-after-restart",
+    )
+    assert replay.phase == "blocked"
+    assert replay.replayed is True
+    assert _commit_count(repo_path) == 1
+
+
+def test_retry_recovers_a_commit_formed_before_consume(engine, repo, monkeypatch):
+    """A post-git/pre-store crash must consume the read-back HEAD, not rerun git."""
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    (repo_path / "src" / "app" / "core.py").write_text(DECLARED["src/app/core.py"])
+    original = commit_controller.consume_commit_capability_row
+
+    def crash_before_store(*args, **kwargs):
+        raise RuntimeError("synthetic crash before consume")
+
+    monkeypatch.setattr(
+        commit_controller,
+        "consume_commit_capability_row",
+        crash_before_store,
+    )
+    with pytest.raises(RuntimeError, match="synthetic crash"):
+        _compose(engine, repo_path, binding)
+    assert _commit_count(repo_path) == 2
+
+    monkeypatch.setattr(
+        commit_controller,
+        "consume_commit_capability_row",
+        original,
+    )
+    retry = _compose(engine, repo_path, binding)
+    assert retry.phase == "consumed"
+    assert retry.commit_sha == _head_commit(repo_path)
+    assert _commit_count(repo_path) == 2
+    assert _row(engine).state == "consumed"
+
+
+def test_index_sync_failure_refuses_before_head_moves(repo, monkeypatch):
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    (repo_path / "src" / "app" / "core.py").write_text(DECLARED["src/app/core.py"])
+    before = _head_commit(repo_path)
+    original = commit_executor._git
+
+    def fail_candidate_index(repo_arg, *args, env=None, input_text=None):
+        if args == ("read-tree", binding["result_sha"]) and env is None:
+            return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+        return original(repo_arg, *args, env=env, input_text=input_text)
+
+    monkeypatch.setattr(commit_executor, "_git", fail_candidate_index)
+    result = run_candidate_commit(
+        repo_path,
+        binding=binding,
+        declared_paths=["src/app/core.py"],
+        message="candidate: update core",
+    )
+    assert result.refusal is not None
+    assert "index" in result.refusal.reason
+    assert _head_commit(repo_path) == before
+
+
+def test_symlink_swap_cannot_read_outside_the_repository(repo, tmp_path, monkeypatch):
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    candidate = repo_path / "src" / "app" / "core.py"
+    candidate.write_text(DECLARED["src/app/core.py"])
+    outside = tmp_path / "outside-secret"
+    outside.write_text("must not enter a git object\n")
+    original_open = commit_executor.os.open
+    swapped = False
+
+    def race_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if path == "core.py" and kwargs.get("dir_fd") is not None and not swapped:
+            candidate.unlink()
+            candidate.symlink_to(outside)
+            swapped = True
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(commit_executor.os, "open", race_open)
+    result = run_candidate_commit(
+        repo_path,
+        binding=binding,
+        declared_paths=["src/app/core.py"],
+        message="candidate: update core",
+    )
+    assert result.refusal is not None
+    assert _commit_count(repo_path) == 1
+
+
+def test_executor_refuses_an_executable_declared_file(repo):
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    candidate = repo_path / "src" / "app" / "core.py"
+    candidate.write_text(DECLARED["src/app/core.py"])
+    candidate.chmod(0o755)
+    before = _head_commit(repo_path)
+
+    result = run_candidate_commit(
+        repo_path,
+        binding=binding,
+        declared_paths=["src/app/core.py"],
+        message="candidate: update core",
+    )
+    assert result.refusal is not None
+    assert "non-executable" in result.refusal.reason
+    assert _head_commit(repo_path) == before
 
 
 def test_controller_rejects_invalid_time_before_issue_or_git(engine, repo):

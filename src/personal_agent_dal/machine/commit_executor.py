@@ -38,6 +38,8 @@ before HEAD moves.
 
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -231,6 +233,101 @@ def _local_identity(repo: Path) -> tuple[str, str] | None:
     return values[0], values[1]
 
 
+def _read_declared_regular_utf8(repo_path: Path, path: str) -> str | None:
+    """Read one declared file without following any symlink component.
+
+    The earlier ``is_symlink()`` then ``read_text()`` sequence was a TOCTOU:
+    an attacker could replace the checked leaf (or one of its parents) with a
+    link before the second operation.  Walk from a no-follow directory fd and
+    keep each directory fd open, so a rename cannot redirect the following
+    lookup.  Candidate commits deliberately support only non-executable,
+    UTF-8 regular files: silently turning ``100755`` into ``100644`` would be
+    a semantic change, not deterministic execution.
+    """
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        return None
+    directory = getattr(os, "O_DIRECTORY", 0)
+    directory_fd: int | None = None
+    file_fd: int | None = None
+    try:
+        directory_fd = os.open(
+            repo_path,
+            os.O_RDONLY | directory | nofollow,
+        )
+        components = path.split("/")
+        for component in components[:-1]:
+            next_fd = os.open(
+                component,
+                os.O_RDONLY | directory | nofollow,
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        file_fd = os.open(
+            components[-1],
+            os.O_RDONLY | nofollow,
+            dir_fd=directory_fd,
+        )
+        mode = os.fstat(file_fd).st_mode
+        if not stat.S_ISREG(mode) or mode & 0o111:
+            return None
+        with os.fdopen(file_fd, "rb", closefd=True) as source:
+            file_fd = None
+            return source.read().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+def read_head_commit_actuals(repo_path: Path) -> CommitExecutorResult:
+    """Read the current candidate head as immutable git actuals.
+
+    This performs no policy judgement and moves no ref.  The controller uses
+    it only when a retry finds a head-tree drift: a crash may have happened
+    after ``commit-tree``/``update-ref`` but before capability consumption.
+    Re-judging these object read-backs lets a matching candidate consume once;
+    a non-matching head becomes the existing policy-block path rather than an
+    issued capability stranded beside an unrecorded commit.
+    """
+    if not repo_path.is_dir() or repo_path.is_symlink():
+        return _refuse("repository path is not a real directory")
+    head_commit = _rev(repo_path, "HEAD")
+    head_tree = _rev(repo_path, "HEAD^{tree}")
+    parent_commit = _rev(repo_path, "HEAD^")
+    parent_tree = _rev(repo_path, "HEAD^^{tree}")
+    if None in (head_commit, head_tree, parent_commit, parent_tree):
+        return _refuse("head candidate could not be read")
+    changed = _git(
+        repo_path,
+        "diff-tree",
+        "--no-commit-id",
+        "--name-only",
+        "-r",
+        parent_tree,
+        head_tree,
+    )
+    if changed.returncode != 0:
+        return _refuse("head candidate paths could not be read")
+    shown = _git(repo_path, "show", "-s", "--format=%B", head_commit)
+    if shown.returncode != 0:
+        return _refuse("head candidate message could not be read")
+    trailers = _trailers_from_message(repo_path, shown.stdout)
+    return CommitExecutorResult(
+        commit_sha=head_commit,
+        tree_sha=head_tree,
+        parent_commit_sha=parent_commit,
+        parent_tree_sha=parent_tree,
+        touched_paths=tuple(line for line in changed.stdout.splitlines() if line),
+        trailers_readback={} if trailers is None else dict(trailers),
+        refusal=None,
+    )
+
+
 def run_candidate_commit(
     repo_path: Path,
     *,
@@ -303,13 +400,10 @@ def run_candidate_commit(
 
     files: dict[str, str] = {}
     for path in declared_paths:
-        candidate = repo_path / path
-        if candidate.is_symlink() or not candidate.is_file():
-            return _refuse("declared path is not a regular file")
-        try:
-            files[path] = candidate.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return _refuse("declared file could not be read as UTF-8")
+        content = _read_declared_regular_utf8(repo_path, path)
+        if content is None:
+            return _refuse("declared path is not a UTF-8 non-executable regular file")
+        files[path] = content
     try:
         commit_tree = result_tree_for(repo_path, head_tree, files=files)
     except RuntimeError:
@@ -359,12 +453,16 @@ def run_candidate_commit(
     if trailers_readback != {key: trailers[key] for key in TRAILER_ORDER}:
         return _refuse("trailer readback did not reproduce the binding trailers")
 
-    updated = _git(repo_path, "update-ref", "HEAD", commit_sha, head_commit)
-    if updated.returncode != 0:
-        return _refuse("head moved while the candidate commit formed")
     synchronized = _git(repo_path, "read-tree", commit_tree)
     if synchronized.returncode != 0:
-        raise RuntimeError("candidate ref advanced but index synchronization failed")
+        return _refuse("candidate index could not be synchronized")
+    updated = _git(repo_path, "update-ref", "HEAD", commit_sha, head_commit)
+    if updated.returncode != 0:
+        # This is only local index restoration: the failed CAS moved no ref,
+        # and the original index was the base tree because staged changes were
+        # rejected above.
+        _git(repo_path, "read-tree", head_tree)
+        return _refuse("head moved while the candidate commit formed")
 
     return CommitExecutorResult(
         commit_sha=commit_sha,

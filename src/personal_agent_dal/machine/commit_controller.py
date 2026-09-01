@@ -62,6 +62,7 @@ from personal_agent_dal.machine.commit_capability_store import (
 )
 from personal_agent_dal.machine.commit_executor import (
     CommitExecutorResult,
+    read_head_commit_actuals,
     run_candidate_commit,
 )
 from personal_agent_dal.machine.engine import TransitionCommand, apply_transition
@@ -240,9 +241,15 @@ def _has_pending_block(
     *,
     capability_id: str,
     feature_id: str,
-    consumed_by: str,
 ) -> bool:
-    """Find only this capability's durable, not-yet-engine-confirmed block."""
+    """Find this capability's durable, not-yet-engine-confirmed block.
+
+    ``consumed_by`` identifies the first attempt, not the capability itself.
+    A process restart may need a new command identity after a response loss;
+    requiring it here would strand a pending policy block beside a still-live
+    feature.  Capability and feature ownership make this lookup exact without
+    coupling recovery to that transient caller identity.
+    """
     sessions = session_factory(engine)
     with sessions() as session:
         return (
@@ -250,7 +257,6 @@ def _has_pending_block(
                 sqlalchemy.select(ExternalEffect).where(
                     ExternalEffect.effect_scope_key
                     == commit_capability_store.BLOCK_EFFECT_SCOPE,
-                    ExternalEffect.remote_idempotency_key == f"{consumed_by}:block",
                     ExternalEffect.capability_id == capability_id,
                     ExternalEffect.owner_aggregate_type == "feature",
                     ExternalEffect.owner_aggregate_id == feature_id,
@@ -325,6 +331,16 @@ def execute_candidate_commit(
             ).first()
         if row is None:
             raise _invalid("block receipt exists without its capability row")
+        # The receipt key alone is not a replay authority.  Re-enter the
+        # store's complete issue digest fence before returning the completed
+        # transition, so a caller cannot reuse an old issue key with altered
+        # binding/repository facts merely because the feature has since left
+        # ``verified``.
+        replay = issue_commit_capability_row(
+            engine, issue_facts, repository_id=repository_id
+        )
+        if replay.capability_id != row.capability_id:
+            raise _invalid("block receipt capability does not match its issue row")
         return CommitControllerOutcome(
             phase="blocked",
             capability_id=row.capability_id,
@@ -366,7 +382,6 @@ def execute_candidate_commit(
         engine,
         capability_id=row.capability_id,
         feature_id=issue_facts["target"]["entity_id"],
-        consumed_by=consumed_by,
     ):
         _apply_block_transition(
             engine,
@@ -401,22 +416,40 @@ def execute_candidate_commit(
         message=message,
     )
     if result.refusal is not None:
-        # A mechanical refusal forms no commit and judges nothing: the
-        # capability stays issued and the feature stays verified. The
-        # caller sees the refusal's fixed phrase and can re-issue later
-        # (the issue key replays; the row is intact).
-        return CommitControllerOutcome(
-            phase="issued",
-            capability_id=row.capability_id,
-            commit_sha=None,
-            violations=(f"executor_refused:{result.refusal.reason}",),
-        )
+        if result.refusal.reason == (
+            "base tree drift: head tree no longer matches the issued base"
+        ):
+            # A candidate commit can survive a crash after its ref advanced
+            # but before the store consumed the capability.  Read only the
+            # current object; it will either re-judge as the matching consume
+            # or as a policy block.  Never create a second candidate commit.
+            recovered = read_head_commit_actuals(repo_path)
+            if recovered.refusal is None:
+                result = recovered
+            else:
+                return CommitControllerOutcome(
+                    phase="issued",
+                    capability_id=row.capability_id,
+                    commit_sha=None,
+                    violations=(f"executor_refused:{result.refusal.reason}",),
+                )
+        else:
+            # A mechanical refusal forms no commit and judges nothing: the
+            # capability stays issued and the feature stays verified. The
+            # caller sees the refusal's fixed phrase and can re-issue later
+            # (the issue key replays; the row is intact).
+            return CommitControllerOutcome(
+                phase="issued",
+                capability_id=row.capability_id,
+                commit_sha=None,
+                violations=(f"executor_refused:{result.refusal.reason}",),
+            )
 
     # --- 6. the consume gate + CAS over the executor's actuals --------
     presented = {
         "capability_id": row.capability_id,
         "approval_id": row.approval_id,
-        "base_sha": row.base_sha,
+        "base_sha": result.parent_tree_sha,
         "result_sha": result.tree_sha,
         "touched_paths": list(result.touched_paths),
         "trailers": dict(result.trailers_readback),
