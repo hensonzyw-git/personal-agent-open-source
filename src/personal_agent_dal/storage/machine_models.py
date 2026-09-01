@@ -576,3 +576,114 @@ class NotificationDelivery(Base):
         CheckConstraint("attempt_count >= 0", name="attempt_count_non_negative"),
         Index("ix_notification_deliveries_batch_id", "batch_id"),
     )
+
+
+#: The one legal value of `commit_capabilities.action` (DAL-004 §5). A
+#: one-time commit capability authorises exactly one candidate commit.
+COMMIT_CAPABILITY_ACTIONS: Final[tuple[str, ...]] = ("commit_candidate",)
+
+#: The frozen state set for the consume CAS (DAL-004 §5: sign, consume, and
+#: receipt persistence all go through a capability version CAS). `issued` is
+#: the only live state; `consumed` and `superseded` are terminal and refused
+#: by the pure gate's liveness classes.
+COMMIT_CAPABILITY_STATES: Final[tuple[str, ...]] = (
+    "issued",
+    "consumed",
+    "superseded",
+)
+
+
+class CommitCapability(Base):
+    """The persistent one-time commit capability row (DAL-031, R09-A3).
+
+    The column set is the field-by-field mapping from
+    `DAL_R09-A3_commit-capability_2026-08-31.md` §5 onto DAL-004 §5's
+    persistent model. It extends what the pure gate's binding already
+    validates (never loosens it) with exactly the fields that mapping
+    declared missing: `action`, `repository_id`,
+    `artifact_or_diff_sha256`, `policy_version`, `consumed_at` and a
+    row-level `schema_version`.
+
+    `state_version` is the CAS column. Every consume carries the version it
+    expects to replace and moves `issued -> consumed` with the consuming
+    identity in the same statement, so two racing consumes produce exactly
+    one winner and one loser that re-reads a dead row. Consumption,
+    the external-effect intent, the audit append and the outbox row are
+    written in the caller's one transaction (DAL-004 §5: they must be
+    atomic); this model only owns the capability row itself.
+    """
+
+    __tablename__ = "commit_capabilities"
+
+    capability_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    schema_version: Mapped[str] = mapped_column(Text, nullable=False)
+    #: The CAS column: the version the next mutation expects to replace.
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_id: Mapped[str] = mapped_column(Text, nullable=False)
+    feature_id: Mapped[str] = mapped_column(Text, nullable=False)
+    task_id: Mapped[str] = mapped_column(Text, nullable=False)
+    repository_id: Mapped[str] = mapped_column(Text, nullable=False)
+    allowed_paths_json: Mapped[str] = mapped_column(Text, nullable=False)
+    refs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The digest of the artifact or diff the capability was issued against.
+    #: Distinct from `result_sha` (a git tree SHA); the two must never be
+    #: conflated (evidence §5 mapping row `artifact_or_diff_sha256`).
+    artifact_or_diff_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    base_sha: Mapped[str] = mapped_column(Text, nullable=False)
+    result_sha: Mapped[str] = mapped_column(Text, nullable=False)
+    lease_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    capability_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    expires_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_uses: Mapped[int] = mapped_column(Integer, nullable=False)
+    uses_consumed: Mapped[int] = mapped_column(Integer, nullable=False)
+    policy_version: Mapped[str] = mapped_column(Text, nullable=False)
+    issue_idempotency_key: Mapped[str] = mapped_column(
+        Text, nullable=False, unique=True
+    )
+    trailers_json: Mapped[str] = mapped_column(Text, nullable=False)
+    revoked_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    consumed_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consumed_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            _in_set("state", COMMIT_CAPABILITY_STATES), name="state"
+        ),
+        CheckConstraint(
+            _in_set("action", COMMIT_CAPABILITY_ACTIONS), name="action"
+        ),
+        CheckConstraint("state_version >= 1", name="state_version_positive"),
+        CheckConstraint(
+            "uses_consumed >= 0 AND uses_consumed <= max_uses",
+            name="uses_within_max",
+        ),
+        CheckConstraint("max_uses = 1", name="max_uses_is_one"),
+        CheckConstraint(
+            "(consumed_by IS NULL) = (consumed_at IS NULL)",
+            name="consumption_is_all_or_nothing",
+        ),
+        CheckConstraint(
+            "(consumed_by IS NULL) = (state = 'issued') OR "
+            "(state = 'consumed' AND consumed_by IS NOT NULL)",
+            name="state_matches_consumption",
+        ),
+        CheckConstraint(
+            _hex_of_length("base_sha", 40, nullable=False), name="base_sha_hex"
+        ),
+        CheckConstraint(
+            _hex_of_length("result_sha", 40, nullable=False), name="result_sha_hex"
+        ),
+        CheckConstraint(
+            _hex_of_length("artifact_or_diff_sha256", 64, nullable=False),
+            name="artifact_or_diff_sha256_hex",
+        ),
+        CheckConstraint(
+            "lease_epoch >= 0 AND capability_epoch >= 0",
+            name="epochs_non_negative",
+        ),
+        CheckConstraint("expires_at >= 0", name="expires_at_non_negative"),
+        Index("ix_commit_capabilities_feature_id", "feature_id"),
+    )
