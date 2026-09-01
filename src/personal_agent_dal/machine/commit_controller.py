@@ -94,11 +94,19 @@ BLOCK_COMMAND_KEY: str = "block"
 class CommitControllerOutcome:
     """What one composed candidate-commit attempt did.
 
-    ``phase`` names the last stage reached: ``issued`` (reserved), ``stale``
-    (zero git), ``blocked`` (a commit exists; the gate blocked it; the
-    feature is needs_human), ``consumed`` (a candidate commit exists and
-    the capability is spent), or ``replayed`` (the original receipt, git
-    not rerun). ``replayed`` is True only on the ``replayed`` phase.
+    ``phase`` names the last stage reached. ``issued``: the executor
+    refused mechanically — no commit exists, the capability stays issued.
+    ``stale``: the capability was dead on arrival (zero git) or died
+    between the pre-check and the CAS (a candidate commit exists as
+    evidence). ``blocked``: the gate blocked the presentation — a commit
+    exists as evidence and the feature is needs_human. ``consumed``: a
+    candidate commit exists and the capability is spent. ``replayed``:
+    the original receipt, git not rerun. ``replayed`` is True only where
+    the outcome replays a previously persisted verdict instead of a
+    fresh execution: the ``replayed`` phase, and a ``blocked`` phase
+    answered from an existing engine block receipt or a recovered
+    pending block record. A fresh ``blocked`` or ``consumed`` outcome
+    carries ``replayed=False``.
     """
 
     phase: str
