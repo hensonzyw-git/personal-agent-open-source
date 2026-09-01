@@ -469,6 +469,38 @@ def consume_commit_capability_row(
             # The block landing: evidence rows now; the engine's block
             # transition (seven-write set) is the controller's separate,
             # registry-driven step and is not claimed here.
+            #
+            # The block replay fence first: a block does not consume the
+            # capability, so the row above stays ``issued`` and the same
+            # command identity replaying its block request re-enters this
+            # branch instead of the consumed-replay branch at the top. The
+            # facts digest is deterministic across replays (same row, same
+            # presentation, same caller facts), so a matching fingerprint is
+            # the same request: return the original verdict as a replay
+            # rather than writing a second block intent (the unique
+            # constraint would turn the replay into a crash). A different
+            # digest under the same identity is the key being spent on new
+            # content: conflict, never a silent second judgement.
+            existing_block = session.scalars(
+                select(ExternalEffect).where(
+                    ExternalEffect.effect_scope_key == BLOCK_EFFECT_SCOPE,
+                    ExternalEffect.remote_idempotency_key
+                    == f"{consume_key}:block",
+                )
+            ).first()
+            if existing_block is not None:
+                if existing_block.target_fingerprint == request_sha:
+                    return CapabilityConsumeOutcome(
+                        receipt=evaluation.receipt,
+                        capability_id=row.capability_id,
+                        verdict="blocked",
+                        replayed=True,
+                        violations=(),
+                    )
+                raise DalError(
+                    DalErrorCode.IDEMPOTENCY_CONFLICT,
+                    internal_detail="block key reused with different content",
+                )
             _write_intent(
                 session,
                 scope=BLOCK_EFFECT_SCOPE,
