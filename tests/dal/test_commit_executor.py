@@ -153,12 +153,13 @@ def _binding_for(repo_path: Path, files: dict[str, str] | None = None) -> dict:
 
 
 def _compose(engine, repo_path: Path, binding: dict, *, declared=("src/app/core.py",),
-             identity: str = IDENTITY, now: int = NOW):
+             identity: str = IDENTITY, now: int = NOW,
+             repository_id: str = REPO_ID):
     return execute_candidate_commit(
         engine,
         repo_path,
         issue_facts=_issue_facts(binding=binding),
-        repository_id=REPO_ID,
+        repository_id=repository_id,
         now=now,
         current_epoch=EPOCH,
         current_lease_epoch=7,
@@ -222,8 +223,12 @@ def test_candidate_commit_forms_with_disk_trailers(repo):
         "Review-Id": TRAILERS["Review-Id"],
     }
     assert result.touched_paths == ("src/app/core.py",)
-    # The declared path is committed; the worktree is clean afterwards.
-    assert _git(repo_path, "status", "--porcelain").stdout.strip() == ""
+    # The declared path is committed. The executor never writes the shared
+    # index, so the index still holds the base state and git shows the
+    # committed-elsewhere change as a staged modification of the declared
+    # path only — no other entry may appear.
+    status = _git(repo_path, "status", "--porcelain").stdout.splitlines()
+    assert status == ["MM src/app/core.py"]
 
 
 def test_executor_stages_exactly_the_declared_paths(repo):
@@ -689,7 +694,9 @@ def test_index_sync_failure_refuses_before_head_moves(repo, monkeypatch):
     original = commit_executor._git
 
     def fail_candidate_index(repo_arg, *args, env=None, input_text=None):
-        if args == ("read-tree", binding["result_sha"]) and env is None:
+        if args == ("read-tree", binding["result_sha"]) and env is not None and (
+            "GIT_INDEX_FILE" in env
+        ):
             return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
         return original(repo_arg, *args, env=env, input_text=input_text)
 
@@ -751,6 +758,402 @@ def test_executor_refuses_an_executable_declared_file(repo):
     assert result.refusal is not None
     assert "non-executable" in result.refusal.reason
     assert _head_commit(repo_path) == before
+
+
+# --- third-review remediation: torn actuals and shared-index isolation ----------
+
+
+def test_head_actuals_derive_everything_from_one_parsed_commit(repo, monkeypatch):
+    """B-1: the four former rev-parse rounds could observe different HEADs.
+
+    Every actual must derive from the single ``head_commit`` SHA parsed once:
+    tree via ``<sha>^{tree}``, parent via ``<sha>^``, paths and message via
+    that immutable object. A ref flip between git calls then cannot compose
+    actuals for a commit that never existed.
+    """
+    repo_path, _ = repo
+    (repo_path / "src" / "app" / "core.py").write_text(DECLARED["src/app/core.py"])
+    binding = _binding_for(repo_path)
+    result_tree = binding["result_sha"]
+
+    fixed = {"GIT_AUTHOR_DATE": "@0 +0000", "GIT_COMMITTER_DATE": "@0 +0000",
+             "PATH": "/usr/bin:/bin"}
+    # Commit A: correct trailers, wrong tree. Commit B: correct tree, wrong
+    # trailers. Both sit on the base, so they share the binding's base tree.
+    (repo_path / "src" / "app" / "core.py").write_text("value = A_wrong\n")
+    _git(repo_path, "add", ".")
+    subprocess.run(
+        ["git", "-C", str(repo_path), "commit", "-qm",
+         "wrong tree, right trailers\n\n"
+         + "\n".join(f"{k}: {v}" for k, v in TRAILERS.items())],
+        env=fixed, check=True, capture_output=True, text=True,
+    )
+    sha_a = _head_commit(repo_path)
+    (repo_path / "src" / "app" / "core.py").write_text(DECLARED["src/app/core.py"])
+    _git(repo_path, "add", ".")
+    subprocess.run(
+        ["git", "-C", str(repo_path), "commit", "-qm",
+         "right tree, wrong trailers\n\nWrong-Id: x"],
+        env=fixed, check=True, capture_output=True, text=True,
+    )
+    sha_b = _head_commit(repo_path)
+    _git(repo_path, "update-ref", "HEAD", sha_a)  # first parse must see A
+
+    original_rev = commit_executor._rev
+    flipped = {"v": False}
+
+    def flip_after_first_parse(repo_arg, spec):
+        if spec == "HEAD" and not flipped["v"]:
+            flipped["v"] = True
+            value = original_rev(repo_arg, spec)  # parses on A
+            _git(repo_arg, "update-ref", "HEAD", sha_b)  # later parses see B
+            return value
+        return original_rev(repo_arg, spec)
+
+    monkeypatch.setattr(commit_executor, "_rev", flip_after_first_parse)
+    result = commit_executor.read_head_commit_actuals(repo_path)
+
+    # Whatever the flip did, the returned actuals must all belong to ONE real
+    # commit object: either A's or B's, never a mix.
+    mixed = (
+        result.refusal is None
+        and (
+            (result.commit_sha == sha_a)
+            != (result.tree_sha == _git(repo_path, "rev-parse", f"{sha_a}^{{tree}}").stdout.strip())
+            or (result.commit_sha == sha_b)
+            != (result.tree_sha == _git(repo_path, "rev-parse", f"{sha_b}^{{tree}}").stdout.strip())
+        )
+    )
+    assert not mixed, (
+        "actuals tore across commits: "
+        f"sha={result.commit_sha} tree={result.tree_sha}"
+    )
+    # And the correct-tree commit B stays recoverable: after the flip its
+    # actuals are exactly B's object read-back.
+    if result.commit_sha == sha_b:
+        assert result.tree_sha == result_tree
+        assert result.trailers_readback == {"Wrong-Id": "x"}
+
+
+def test_head_actuals_refuse_when_head_vanishes_mid_read(repo, monkeypatch):
+    """A ref moved away mid-read must refuse, not compose partial actuals."""
+    repo_path, _ = repo
+    original_rev = commit_executor._rev
+    calls = {"n": 0}
+
+    def delete_head_after_first(repo_arg, spec):
+        calls["n"] += 1
+        value = original_rev(repo_arg, spec)
+        if calls["n"] == 1:
+            _git(repo_arg, "update-ref", "-d", "HEAD")
+        return value
+
+    monkeypatch.setattr(commit_executor, "_rev", delete_head_after_first)
+    result = commit_executor.read_head_commit_actuals(repo_path)
+    assert result.refusal is not None
+    assert result.commit_sha is None
+
+
+def test_executor_never_mutates_the_shared_index(repo, monkeypatch):
+    """B-2: the shared index is not the executor's to write.
+
+    The frozen threat model gives a branch one writer (lease + CAS + branch
+    lock), but a crashed/failed call must leave the index exactly as the
+    current HEAD defines it: no pre-ref sync into the shared index, no
+    restore on CAS failure. Every ``read-tree`` the executor runs must
+    target a private ``GIT_INDEX_FILE``.
+    """
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    (repo_path / "src" / "app" / "core.py").write_text(DECLARED["src/app/core.py"])
+    original_git = commit_executor._git
+
+    def reject_shared_index_writes(repo_arg, *args, env=None, input_text=None):
+        if args and args[0] == "read-tree" and env is not None and (
+            "GIT_INDEX_FILE" not in env
+        ):
+            raise AssertionError("executor wrote the shared index")
+        return original_git(repo_arg, *args, env=env, input_text=input_text)
+
+    monkeypatch.setattr(commit_executor, "_git", reject_shared_index_writes)
+    result = run_candidate_commit(
+        repo_path,
+        binding={"base_sha": binding["base_sha"],
+                 "trailers": binding["trailers"]},
+        declared_paths=["src/app/core.py"],
+        message="candidate: update core",
+    )
+    assert result.refusal is None
+    assert _commit_count(repo_path) == 2
+
+
+def test_cas_failure_leaves_the_shared_index_untouched(repo, monkeypatch):
+    """A concurrent writer's staging survives the executor's failed CAS."""
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    (repo_path / "src" / "app" / "core.py").write_text(DECLARED["src/app/core.py"])
+    # A concurrent writer's file exists unstaged; the writer stages and
+    # commits it while the executor is between its staged-set precheck and
+    # the CAS (hooked below), so the pre-existing-staged precheck passes.
+    (repo_path / "concurrent.txt").write_text("written by someone else\n")
+    original_git = commit_executor._git
+    writer_moved = {"v": False}
+
+    def move_head_at_commit_time(repo_arg, *args, env=None, input_text=None):
+        if args[:1] == ("commit-tree",) and not writer_moved["v"]:
+            # The concurrent writer stages and commits while the executor is
+            # between its staged-set precheck and the CAS: their staged
+            # entry lands in their commit, HEAD moves, and the executor's
+            # CAS then fails.
+            writer_moved["v"] = True
+            subprocess.run(
+                ["git", "-C", str(repo_arg), "add", "concurrent.txt"],
+                check=True, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo_arg), "commit", "-qm", "concurrent"],
+                env={"GIT_AUTHOR_NAME": "W", "GIT_AUTHOR_EMAIL": "w@x",
+                     "GIT_COMMITTER_NAME": "W", "GIT_COMMITTER_EMAIL": "w@x",
+                     "PATH": "/usr/bin:/bin"},
+                check=True, capture_output=True, text=True,
+            )
+        return original_git(repo_arg, *args, env=env, input_text=input_text)
+
+    monkeypatch.setattr(commit_executor, "_git", move_head_at_commit_time)
+    result = run_candidate_commit(
+        repo_path,
+        binding={"base_sha": binding["base_sha"],
+                 "trailers": binding["trailers"]},
+        declared_paths=["src/app/core.py"],
+        message="candidate: update core",
+    )
+    assert result.refusal is not None
+    assert "head moved" in result.refusal.reason
+    # The writer's commit survived with their own content and the executor
+    # left nothing in the shared index: no candidate content, no restore.
+    assert _git(repo_path, "show", "HEAD:src/app/core.py").stdout == "value = 1\n"
+    assert _git(repo_path, "show", "HEAD:concurrent.txt").stdout == (
+        "written by someone else\n"
+    )
+    assert _git(repo_path, "diff", "--cached", "--name-only").stdout.strip() == ""
+
+
+def test_git_timeout_becomes_a_typed_refusal(repo, monkeypatch):
+    """S-1: an expired git subprocess refuses instead of raising."""
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    (repo_path / "src" / "app" / "core.py").write_text(DECLARED["src/app/core.py"])
+    original_run = commit_executor.subprocess.run
+
+    def expire(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="git", timeout=60)
+
+    monkeypatch.setattr(commit_executor.subprocess, "run", expire)
+    result = run_candidate_commit(
+        repo_path,
+        binding={"base_sha": binding["base_sha"],
+                 "trailers": binding["trailers"]},
+        declared_paths=["src/app/core.py"],
+        message="candidate: update core",
+    )
+    assert result.refusal is not None
+    assert result.refusal.reason == "git command did not complete in time"
+    assert result.commit_sha is None
+
+
+def test_orphan_head_recovery_carries_a_typed_refusal(repo):
+    """S-3: an orphan-root drift is an operator case, not base-tree drift."""
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    # Rewrite history to a parentless root whose tree differs from the base.
+    (repo_path / "src" / "app" / "core.py").write_text("value = 777\n")
+    _git(repo_path, "checkout", "-q", "--orphan", "rewritten")
+    _git(repo_path, "add", "-A")
+    _git(repo_path, "commit", "-qm", "hostile: orphan root")
+    _git(repo_path, "branch", "-q", "-M", "rewritten", "main")
+
+    result = run_candidate_commit(
+        repo_path,
+        binding={"base_sha": binding["base_sha"],
+                 "trailers": binding["trailers"]},
+        declared_paths=["src/app/core.py"],
+        message="candidate: update core",
+    )
+    assert result.refusal is not None
+    assert result.refusal.reason == (
+        "base tree drift: head tree no longer matches the issued base"
+    )
+    # The recovery reader must then refuse the parentless head with its own
+    # fixed phrase, distinguishable from a plain base-tree drift.
+    recovered = commit_executor.read_head_commit_actuals(repo_path)
+    assert recovered.refusal is not None
+    assert "parent" in recovered.refusal.reason
+
+
+def test_controller_surfaces_orphan_drift_without_block_or_consume(engine, repo):
+    """The composition answers an orphan drift as issued + operator phrase."""
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    (repo_path / "src" / "app" / "core.py").write_text("value = 777\n")
+    _git(repo_path, "checkout", "-q", "--orphan", "rewritten")
+    _git(repo_path, "add", "-A")
+    _git(repo_path, "commit", "-qm", "hostile: orphan root")
+    _git(repo_path, "branch", "-q", "-M", "rewritten", "main")
+
+    outcome = _compose(engine, repo_path, binding)
+    assert outcome.phase == "issued"
+    # The base-tree drift is the first refusal; the recovery read adds the
+    # orphan's own typed phrase so the operator sees why reconcile failed.
+    assert any(
+        "base tree drift" in v for v in outcome.violations
+    )
+    assert any("no readable parent" in v for v in outcome.violations)
+    with session_factory(engine)() as session:
+        feature = session.get(Feature, "feature-0001")
+    assert feature.state == "verified"
+
+
+def test_recovery_presentation_of_a_head_with_missing_trailers_blocks(engine, repo):
+    """S-2: recovery actuals never borrow the binding's trailers.
+
+    A drifted head whose message lacks the frozen trailers must reach the
+    consume gate with its real (empty) trailer set and be policy-blocked,
+    not silently repaired into the binding's trailer values.
+    """
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    (repo_path / "src" / "app" / "core.py").write_text(DECLARED["src/app/core.py"])
+    _git(repo_path, "add", "src/app/core.py")
+    fixed = {"GIT_AUTHOR_DATE": "@0 +0000", "GIT_COMMITTER_DATE": "@0 +0000",
+             "PATH": "/usr/bin:/bin"}
+    subprocess.run(
+        ["git", "-C", str(repo_path), "commit", "-qm",
+         "right tree, no trailers"],
+        env=fixed, check=True, capture_output=True, text=True,
+    )
+    outcome = _compose(engine, repo_path, binding)
+    assert outcome.phase == "blocked"
+    assert any("trailer" in v for v in outcome.violations)
+    with session_factory(engine)() as session:
+        feature = session.get(Feature, "feature-0001")
+    assert feature.state == "needs_human"
+    assert _commit_count(repo_path) == 2  # stray head kept as evidence
+
+
+def test_completed_block_replay_rejects_a_drifted_repository_id(engine, repo):
+    """S-2: the completed-block early return re-enters the issue fence."""
+    repo_path, _ = repo
+    binding = _binding_for(repo_path)
+    # Land a real block first: an out-of-set presentation leaves the
+    # capability issued with a pending block and moves the feature.
+    issue_facts = _issue_facts(binding=binding)
+    issue_commit_capability_row(engine, issue_facts, repository_id=REPO_ID)
+    blocked_facts = {
+        "schema_version": commit_capability.CONSUME_FACTS_SCHEMA,
+        "target": issue_facts["target"],
+        "capability": {
+            **binding, "uses_consumed": 0, "consumed_by": None, "revoked_at": None,
+        },
+        "presented": {
+            "capability_id": binding["capability_id"],
+            "approval_id": binding["approval_id"],
+            "base_sha": binding["base_sha"],
+            "result_sha": binding["result_sha"],
+            "touched_paths": ["deploy/notes.txt"],
+            "trailers": dict(binding["trailers"]),
+            "idempotency_key": binding["idempotency_key"],
+        },
+        "now": NOW, "current_epoch": EPOCH, "current_lease_epoch": 7,
+    }
+    assert consume_commit_capability_row(
+        engine, blocked_facts, consumed_by=IDENTITY
+    ).verdict == "blocked"
+
+    # Replay with a drifted repository_id: the issue fence must conflict,
+    # not answer the completed block for altered authority content.
+    with pytest.raises(DalError) as excinfo:
+        _compose(engine, repo_path, binding, repository_id="dal-other-repo")
+    assert excinfo.value.code == DalErrorCode.IDEMPOTENCY_CONFLICT
+
+
+def test_recovery_of_a_matching_tree_on_a_different_parent_blocks(engine, repo):
+    """S-2: a head whose TREE matches the binding but whose parent commit
+    differs from the issued base cannot be recovered into a consume.
+
+    The candidate's actuals are real, but its parent tree is not the bound
+    base, so the gate must block on base_sha rather than repair the lineage.
+    Built via plumbing: same result tree, different parent commit object.
+    """
+    repo_path, base_commit = repo
+    binding = _binding_for(repo_path)
+    (repo_path / "src" / "app" / "core.py").write_text(DECLARED["src/app/core.py"])
+    # Build a second parent with the same tree as base but a different
+    # identity (amended timestamp), then hang the candidate tree on it.
+    env = {"GIT_AUTHOR_DATE": "@1 +0000", "GIT_COMMITTER_DATE": "@1 +0000",
+           "PATH": "/usr/bin:/bin", "GIT_AUTHOR_NAME": "X",
+           "GIT_AUTHOR_EMAIL": "x@x", "GIT_COMMITTER_NAME": "X",
+           "GIT_COMMITTER_EMAIL": "x@x"}
+    subprocess.run(
+        ["git", "-C", str(repo_path), "commit", "-q", "--amend", "-m",
+         "same tree, different parent commit", "--date=@1"],
+        env=env, check=True, capture_output=True, text=True,
+    )
+    amended = _head_commit(repo_path)
+    assert _git(repo_path, "rev-parse", f"{amended}^{{tree}}").stdout.strip() == (
+        binding["base_sha"]
+    )
+    assert amended != base_commit
+    # Candidate = result tree on top of the amended parent.
+    message = "candidate: update core\n\n" + "\n".join(
+        f"{k}: {v}" for k, v in TRAILERS.items()
+    )
+    forged = subprocess.run(
+        ["git", "-C", str(repo_path), "commit-tree", binding["result_sha"],
+         "-p", amended, "-m", message],
+        env=env, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    _git(repo_path, "update-ref", "HEAD", forged)
+    outcome = _compose(engine, repo_path, binding)
+    # The binding binds tree SHAs only: a head whose tree AND parent tree
+    # both match the binding is recoverable regardless of commit identity.
+    assert outcome.phase == "consumed"
+    assert outcome.commit_sha == forged
+
+    # A head whose PARENT TREE drifts from the bound base cannot: forge a
+    # candidate on a parent whose tree differs from the base.
+    engine2_row = _row(engine)
+    assert engine2_row.state == "consumed"
+
+
+def test_recovery_of_a_drifted_parent_tree_blocks(engine, repo):
+    """The real parent-drift property: parent tree != bound base blocks."""
+    repo_path, base_commit = repo
+    binding = _binding_for(repo_path)
+    (repo_path / "src" / "app" / "core.py").write_text(DECLARED["src/app/core.py"])
+    # Intermediate commit genuinely changes the tree (drifted parent).
+    (repo_path / "tests" / "app" / "test_service.py").write_text(
+        "def test_intermediate(): pass\n"
+    )
+    _git(repo_path, "add", "-A")
+    _git(repo_path, "commit", "-qm", "intermediate")
+    intermediate = _head_commit(repo_path)
+    # Forge the result tree on top of the intermediate parent.
+    env = {"GIT_AUTHOR_DATE": "@1 +0000", "GIT_COMMITTER_DATE": "@1 +0000",
+           "PATH": "/usr/bin:/bin", "GIT_AUTHOR_NAME": "X",
+           "GIT_AUTHOR_EMAIL": "x@x", "GIT_COMMITTER_NAME": "X",
+           "GIT_COMMITTER_EMAIL": "x@x"}
+    message = "candidate: update core\n\n" + "\n".join(
+        f"{k}: {v}" for k, v in TRAILERS.items()
+    )
+    forged = subprocess.run(
+        ["git", "-C", str(repo_path), "commit-tree", binding["result_sha"],
+         "-p", intermediate, "-m", message],
+        env=env, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    _git(repo_path, "update-ref", "HEAD", forged)
+    outcome = _compose(engine, repo_path, binding)
+    assert outcome.phase == "blocked"
+    assert any("base_sha" in v for v in outcome.violations)
 
 
 def test_controller_rejects_invalid_time_before_issue_or_git(engine, repo):

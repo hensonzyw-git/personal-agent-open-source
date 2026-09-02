@@ -427,11 +427,17 @@ def execute_candidate_commit(
             if recovered.refusal is None:
                 result = recovered
             else:
+                # Surface both phrases: the original drift and why the
+                # head could not be reconciled (e.g. a parentless orphan
+                # root needs an operator decision, not another retry).
                 return CommitControllerOutcome(
                     phase="issued",
                     capability_id=row.capability_id,
                     commit_sha=None,
-                    violations=(f"executor_refused:{result.refusal.reason}",),
+                    violations=(
+                        f"executor_refused:{result.refusal.reason}",
+                        f"executor_refused:{recovered.refusal.reason}",
+                    ),
                 )
         else:
             # A mechanical refusal forms no commit and judges nothing: the

@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import os
 import stat
+from contextlib import contextmanager
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -122,21 +123,43 @@ def _git_env() -> dict[str, str]:
     }
 
 
+class GitTimeout(Exception):
+    """A git subprocess exceeded its deadline."""
+
+
 def _git(
     repo: Path,
     *args: str,
     env: dict[str, str] | None = None,
     input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [_GIT_BINARY, "-C", str(repo), *_SAFE_GIT_CONFIG, *args],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=_GIT_TIMEOUT_SECONDS,
-        env=env if env is not None else _git_env(),
-        input=input_text,
-    )
+    try:
+        return subprocess.run(
+            [_GIT_BINARY, "-C", str(repo), *_SAFE_GIT_CONFIG, *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_GIT_TIMEOUT_SECONDS,
+            env=env if env is not None else _git_env(),
+            input=input_text,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise GitTimeout(f"git {' '.join(args[:2])} exceeded {_GIT_TIMEOUT_SECONDS}s") from exc
+
+
+@contextmanager
+def _private_index():
+    """A ``GIT_INDEX_FILE`` env for git calls that must not touch the shared index.
+
+    The repository index is shared state another writer may be staging into
+    (技术方案 §11: one writer per branch via lease + CAS + branch lock; a
+    failed executor call still has no right to rewrite it).  Every index
+    write the executor performs targets a private ``GIT_INDEX_FILE`` instead.
+    """
+    with tempfile.TemporaryDirectory(prefix="dal-index-") as scratch:
+        env = _git_env()
+        env["GIT_INDEX_FILE"] = str(Path(scratch) / "index")
+        yield env
 
 
 def _is_normalized_declared_path(value: object) -> bool:
@@ -293,15 +316,36 @@ def read_head_commit_actuals(repo_path: Path) -> CommitExecutorResult:
     Re-judging these object read-backs lets a matching candidate consume once;
     a non-matching head becomes the existing policy-block path rather than an
     issued capability stranded beside an unrecorded commit.
+
+    The head commit is parsed exactly once; every other actual (tree, parent,
+    paths, message) derives from that immutable SHA.  Deriving from the SHA
+    instead of re-resolving ``HEAD``-relative revs keeps the read consistent
+    even if the ref moves between git calls: the returned actuals then always
+    describe one real commit object, never a composition of two instants.
+
+    A git deadline overrun is a typed refusal, like every other mechanics
+    failure (S-1 of the third review).
     """
+    try:
+        return _read_head_commit_actuals(repo_path)
+    except GitTimeout:
+        return _refuse("git command did not complete in time")
+
+
+def _read_head_commit_actuals(repo_path: Path) -> CommitExecutorResult:
+    """The mechanics of one head read (may raise GitTimeout)."""
     if not repo_path.is_dir() or repo_path.is_symlink():
         return _refuse("repository path is not a real directory")
     head_commit = _rev(repo_path, "HEAD")
-    head_tree = _rev(repo_path, "HEAD^{tree}")
-    parent_commit = _rev(repo_path, "HEAD^")
-    parent_tree = _rev(repo_path, "HEAD^^{tree}")
-    if None in (head_commit, head_tree, parent_commit, parent_tree):
+    if head_commit is None:
         return _refuse("head candidate could not be read")
+    head_tree = _rev(repo_path, f"{head_commit}^{{tree}}")
+    parent_commit = _rev(repo_path, f"{head_commit}^")
+    if head_tree is None or parent_commit is None:
+        return _refuse("head candidate has no readable parent")
+    parent_tree = _rev(repo_path, f"{parent_commit}^{{tree}}")
+    if parent_tree is None:
+        return _refuse("head candidate has no readable parent")
     changed = _git(
         repo_path,
         "diff-tree",
@@ -336,6 +380,27 @@ def run_candidate_commit(
     message: str,
 ) -> CommitExecutorResult:
     """Form exactly one candidate commit inside the issued binding.
+
+    A git subprocess that exceeds its deadline becomes the typed refusal
+    ``git command did not complete in time`` — never an exception leaking to
+    the controller (S-1 of the third review).
+    """
+    try:
+        return _form_candidate_commit(repo_path, binding=binding,
+                                      declared_paths=declared_paths,
+                                      message=message)
+    except GitTimeout:
+        return _refuse("git command did not complete in time")
+
+
+def _form_candidate_commit(
+    repo_path: Path,
+    *,
+    binding: dict,
+    declared_paths: list[str],
+    message: str,
+) -> CommitExecutorResult:
+    """The mechanics of one candidate commit (may raise GitTimeout).
 
     The declared paths are read as regular files and overlaid on a throwaway
     index. This intentionally does not invoke ``git add``: repository
@@ -453,15 +518,20 @@ def run_candidate_commit(
     if trailers_readback != {key: trailers[key] for key in TRAILER_ORDER}:
         return _refuse("trailer readback did not reproduce the binding trailers")
 
-    synchronized = _git(repo_path, "read-tree", commit_tree)
+    # Verify on a private index that the candidate tree is check-out-able;
+    # this is a read-side check, never a write into the shared index.  The
+    # shared index is other writers' live state (a concurrent stager may hold
+    # entries there), so the executor has no "restore" path for it either:
+    # the CAS-failure branch below simply leaves the index exactly as the
+    # current holder of the branch left it.
+    with _private_index() as index_env:
+        synchronized = _git(repo_path, "read-tree", commit_tree, env=index_env)
     if synchronized.returncode != 0:
         return _refuse("candidate index could not be synchronized")
     updated = _git(repo_path, "update-ref", "HEAD", commit_sha, head_commit)
     if updated.returncode != 0:
-        # This is only local index restoration: the failed CAS moved no ref,
-        # and the original index was the base tree because staged changes were
-        # rejected above.
-        _git(repo_path, "read-tree", head_tree)
+        # The failed CAS moved no ref and the executor never wrote the shared
+        # index, so there is nothing of ours to roll back.
         return _refuse("head moved while the candidate commit formed")
 
     return CommitExecutorResult(
