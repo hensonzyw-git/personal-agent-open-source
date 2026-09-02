@@ -1041,48 +1041,52 @@ def test_recovery_presentation_of_a_head_with_missing_trailers_blocks(engine, re
 
 
 def test_completed_block_replay_rejects_a_drifted_repository_id(engine, repo):
-    """S-2: the completed-block early return re-enters the issue fence."""
+    """S-2: the completed-block early return re-enters the issue fence.
+
+    The setup must land a REAL engine block receipt (a store-only pending
+    block never reaches ``_has_block_receipt``, and the drift would then be
+    rejected by the ordinary issue path with the fence's presence
+    irrelevant — the vacuous shape the fourth review killed). The full
+    composition with an out-of-set touch is what lands the receipt, so the
+    replay below actually enters the early return whose fence is under
+    test.
+    """
     repo_path, _ = repo
     binding = _binding_for(repo_path)
-    # Land a real block first: an out-of-set presentation leaves the
-    # capability issued with a pending block and moves the feature.
-    issue_facts = _issue_facts(binding=binding)
-    issue_commit_capability_row(engine, issue_facts, repository_id=REPO_ID)
-    blocked_facts = {
-        "schema_version": commit_capability.CONSUME_FACTS_SCHEMA,
-        "target": issue_facts["target"],
-        "capability": {
-            **binding, "uses_consumed": 0, "consumed_by": None, "revoked_at": None,
-        },
-        "presented": {
-            "capability_id": binding["capability_id"],
-            "approval_id": binding["approval_id"],
-            "base_sha": binding["base_sha"],
-            "result_sha": binding["result_sha"],
-            "touched_paths": ["deploy/notes.txt"],
-            "trailers": dict(binding["trailers"]),
-            "idempotency_key": binding["idempotency_key"],
-        },
-        "now": NOW, "current_epoch": EPOCH, "current_lease_epoch": 7,
-    }
-    assert consume_commit_capability_row(
-        engine, blocked_facts, consumed_by=IDENTITY
-    ).verdict == "blocked"
+    (repo_path / "deploy").mkdir()
+    (repo_path / "deploy" / "notes.txt").write_text("escape attempt\n")
+    first = _compose(engine, repo_path, binding, declared=["deploy/notes.txt"])
+    assert first.phase == "blocked"
+    sessions = session_factory(engine)
+    with sessions() as session:
+        assert (
+            session.scalars(
+                select(TransitionReceipt).where(
+                    TransitionReceipt.idempotency_key
+                    == f"{binding['idempotency_key']}:block"
+                )
+            ).first()
+            is not None
+        ), "precondition: the engine block receipt must exist"
 
-    # Replay with a drifted repository_id: the issue fence must conflict,
-    # not answer the completed block for altered authority content.
+    # Replay with a drifted repository_id: the completed-block early return
+    # re-enters the issue fence, which must conflict on the changed
+    # composition-level repository identity instead of answering the
+    # completed block for altered authority content.
     with pytest.raises(DalError) as excinfo:
         _compose(engine, repo_path, binding, repository_id="dal-other-repo")
     assert excinfo.value.code == DalErrorCode.IDEMPOTENCY_CONFLICT
 
 
-def test_recovery_of_a_matching_tree_on_a_different_parent_blocks(engine, repo):
-    """S-2: a head whose TREE matches the binding but whose parent commit
-    differs from the issued base cannot be recovered into a consume.
+def test_recovery_of_a_matching_tree_on_a_different_parent_consumes(engine, repo):
+    """S-2: the binding binds TREE SHAs only, so a head whose tree and parent
+    tree both match the binding is recoverable into a consume regardless of
+    which commit object carries that tree — commit identity is not part of
+    the contract. The genuinely drifting property (parent TREE differs from
+    the bound base) blocks, and is pinned by the next test.
 
-    The candidate's actuals are real, but its parent tree is not the bound
-    base, so the gate must block on base_sha rather than repair the lineage.
-    Built via plumbing: same result tree, different parent commit object.
+    Built via plumbing: amend the base commit (same tree, different
+    identity), then hang the binding's result tree on it as a parent.
     """
     repo_path, base_commit = repo
     binding = _binding_for(repo_path)
@@ -1118,11 +1122,7 @@ def test_recovery_of_a_matching_tree_on_a_different_parent_blocks(engine, repo):
     # both match the binding is recoverable regardless of commit identity.
     assert outcome.phase == "consumed"
     assert outcome.commit_sha == forged
-
-    # A head whose PARENT TREE drifts from the bound base cannot: forge a
-    # candidate on a parent whose tree differs from the base.
-    engine2_row = _row(engine)
-    assert engine2_row.state == "consumed"
+    assert _row(engine).state == "consumed"
 
 
 def test_recovery_of_a_drifted_parent_tree_blocks(engine, repo):
