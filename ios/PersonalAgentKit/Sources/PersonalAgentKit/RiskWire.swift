@@ -1,6 +1,6 @@
 /// The frozen systemic-risk daily card, sealed by the risk-monitor job with the
 /// scores read once at build time. `asOf`/`state` are mandatory — a card without
-/// either refuses to decode rather than render a half card. The three scores and
+/// either refuses to decode rather than render a half card. The four scores and
 /// the action conclusion may be absent (`null`) on a day whose surface produced
 /// no value, so they are optional.
 public struct RiskReportSnapshot: Sendable, Equatable {
@@ -9,6 +9,7 @@ public struct RiskReportSnapshot: Sendable, Equatable {
     public let mbs: Double?
     public let css: Double?
     public let afrs: Double?
+    public let ratesCredit: Double?
     public let action: String?
     /// ``ok`` or ``data_quality_warning``. Optional so an older card still
     /// decodes; when ``data_quality_warning`` the card shows a degradation badge.
@@ -32,13 +33,15 @@ public struct RiskReportSnapshot: Sendable, Equatable {
         qualityStatus: String?,
         staleDays: Int?,
         anomalous: Bool?,
-        components: RiskComponents?
+        components: RiskComponents?,
+        ratesCredit: Double? = nil
     ) {
         self.asOf = asOf
         self.state = state
         self.mbs = mbs
         self.css = css
         self.afrs = afrs
+        self.ratesCredit = ratesCredit
         self.action = action
         self.qualityStatus = qualityStatus
         self.staleDays = staleDays
@@ -60,6 +63,15 @@ public struct RiskComponent: Sendable, Equatable, Decodable {
 public struct RiskComponents: Sendable, Equatable, Decodable {
     public let mbs: [RiskComponent]
     public let css: [RiskComponent]
+    /// RCS is optional so cards sealed before the Treasury module existed still
+    /// decode and render their original MBS/CSS breakdown.
+    public let ratesCredit: [RiskComponent]?
+
+    private enum CodingKeys: String, CodingKey {
+        case mbs
+        case css
+        case ratesCredit = "rates_credit"
+    }
 }
 
 extension RiskReportSnapshot: Decodable {
@@ -69,6 +81,7 @@ extension RiskReportSnapshot: Decodable {
         case mbs
         case css
         case afrs
+        case ratesCredit = "rates_credit"
         case action
         case qualityStatus = "quality_status"
         case staleDays = "stale_days"
@@ -83,6 +96,7 @@ extension RiskReportSnapshot: Decodable {
         mbs = try container.decodeIfPresent(Double.self, forKey: .mbs)
         css = try container.decodeIfPresent(Double.self, forKey: .css)
         afrs = try container.decodeIfPresent(Double.self, forKey: .afrs)
+        ratesCredit = try container.decodeIfPresent(Double.self, forKey: .ratesCredit)
         action = try container.decodeIfPresent(String.self, forKey: .action)
         qualityStatus = try container.decodeIfPresent(String.self, forKey: .qualityStatus)
         staleDays = try container.decodeIfPresent(Int.self, forKey: .staleDays)

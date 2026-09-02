@@ -38,6 +38,7 @@ def create_database_engine(path: str | Path | None = None) -> Engine:
 def init_schema(engine: Engine) -> None:
     Base.metadata.create_all(engine)
     _ensure_column(engine, "observations", "value_text", "VARCHAR(32)")
+    _ensure_column(engine, "score_snapshots", "rates_credit", "FLOAT")
 
 
 def _ensure_column(engine: Engine, table: str, column: str, ddl_type: str) -> None:
@@ -67,7 +68,7 @@ def seed_metric_definitions(session: Session, policy: dict) -> None:
     """Register metric definitions from the frozen policy (single source of
     truth for metric_id / unit / band semantics)."""
     version = policy["definition_version"]
-    for score_key in ("mbs", "css"):
+    for score_key in ("mbs", "css", "rates_credit"):
         for ind in policy[score_key]["indicators"]:
             session.merge(MetricDefinition(
                 metric_id=ind["metric_id"],

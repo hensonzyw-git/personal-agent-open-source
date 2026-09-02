@@ -146,11 +146,17 @@ def sector_afrs(
     chain_red_flag: float | None = None,
 ) -> float | None:
     """Sector AFRS = 60% six-company median + 25% worst-two mean + 15% chain
-    red-flag score (PRD §5.3). ``chain_red_flag`` is 0-100 and defaults to 0
-    when no chain-level linked-financing flag is established."""
-    if not company_scores:
-        return None
+    red-flag score (PRD §5.3).
+
+    A sector score must cover at least the policy's ``min_names`` companies.
+    The available-company aggregation is useful for tolerance of a small number
+    of delayed filings, but one issuer is not evidence for a six-name sector.
+    ``chain_red_flag`` is 0-100 and defaults to 0 when no chain-level
+    linked-financing flag is established.
+    """
     agg = policy["afrs"]["sector_aggregation"]
+    if len(company_scores) < agg["min_names"]:
+        return None
     vals = sorted(company_scores.values())
     n = len(vals)
     median = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
@@ -170,6 +176,7 @@ class Scores:
     mbs: float | None = None
     css: float | None = None
     afrs: float | None = None
+    rates_credit: float | None = None
 
 
 @dataclass
@@ -188,12 +195,26 @@ def indicated_state(
     red_combo: bool = False,
     major_override: bool = False,
     early_warning_count: int = 0,
+    rates_credit_trigger: bool = False,
+    rates_credit_complete: bool = False,
 ) -> Indication:
+    """Return the daily state indication from the available score surfaces.
+
+    RCS is intentionally opt-in for state escalation.  Its score is a weighted
+    mean that renormalises unavailable metrics, which is correct for describing
+    the available evidence but unsafe for state changes: a lone 10Y observation
+    must not impersonate a complete rates-and-credit surface.  The daily
+    pipeline therefore passes ``rates_credit_complete`` only after every core
+    RCS input is present; direct callers default to the fail-closed behaviour.
+    """
     if major_override:
         return Indication("DELEVERAGING", ["major_fact_override"])
     mbs, css, afrs = scores.mbs, scores.css, scores.afrs
     if mbs is None or css is None:
         return Indication(None, ["missing confirmation score -> DATA_QUALITY_WARNING"])
+
+    if rates_credit_trigger and rates_credit_complete:
+        return Indication("DELEVERAGING", ["rates_credit_crash_trigger"])
 
     if red_combo or (css >= 75 and mbs >= 70):
         reasons: list[str] = []
@@ -203,17 +224,29 @@ def indicated_state(
             reasons.append("css>=75 and mbs>=70")
         return Indication("DELEVERAGING", reasons)
 
-    if (afrs is not None and afrs >= 55 and css >= 55) or (css >= 70 and mbs >= 55):
+    rates_credit = scores.rates_credit if rates_credit_complete else None
+
+    if (afrs is not None and afrs >= 55 and css >= 55) or (css >= 70 and mbs >= 55) or (
+        rates_credit is not None and rates_credit >= 70 and css >= 55
+    ):
         if afrs is not None and afrs >= 55 and css >= 55:
             return Indication("CREDIT_CONFIRMATION", ["afrs>=55 and css>=55"])
-        return Indication("CREDIT_CONFIRMATION", ["css>=70 and mbs>=55"])
+        if css >= 70 and mbs >= 55:
+            return Indication("CREDIT_CONFIRMATION", ["css>=70 and mbs>=55"])
+        return Indication("CREDIT_CONFIRMATION", ["rates_credit>=70 and css>=55"])
 
-    if css < 55 and ((afrs is not None and afrs >= 55) or early_warning_count >= 2):
+    if css < 55 and (
+        (afrs is not None and afrs >= 55)
+        or early_warning_count >= 2
+        or (rates_credit is not None and rates_credit >= 55)
+    ):
         reasons: list[str] = []
         if afrs is not None and afrs >= 55:
             reasons.append("afrs>=55")
         if early_warning_count >= 2:
             reasons.append(f"{early_warning_count} market early-warning items")
+        if rates_credit is not None and rates_credit >= 55:
+            reasons.append("rates_credit>=55")
         return Indication("RISK_ACCUMULATION", reasons)
 
     return Indication("NORMAL", ["no upgrade condition met"])
@@ -254,6 +287,7 @@ class StateTracker:
         self.down_days = sm["downgrade_days"]
         self._dir = 0
         self._count = 0
+        self._target: str | None = None
 
     def feed(self, indication: Indication | None) -> tuple[str, bool]:
         """Return ``(state, changed)``."""
@@ -269,13 +303,20 @@ class StateTracker:
         else:
             self._dir = 0
             self._count = 0
+            self._target = None
             return self.state, False
 
-        self._count = self._count + 1 if direction == self._dir else 1
+        # The streak belongs to a particular target state, not merely to an
+        # upward direction.  NORMAL -> RISK_ACCUMULATION for one day followed
+        # by four CREDIT_CONFIRMATION days is only four days of credit
+        # confirmation and must not bypass the five-day confirmation gate.
+        self._count = self._count + 1 if (direction == self._dir and target == self._target) else 1
         self._dir = direction
+        self._target = target
         if self._count >= needed:
             self.state = target
             self._dir = 0
             self._count = 0
+            self._target = None
             return self.state, True
         return self.state, False

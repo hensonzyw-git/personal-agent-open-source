@@ -22,8 +22,9 @@ data-source question ("free, no license needed") was resolved with Henson on
    The schema keeps the same table family the PRD names, so a later lift to
    PostgreSQL is a migration, not a redesign.
 2. **FRED as the market/credit source, under its personal non-commercial terms.**
-   HY OAS (`BAMLH0A0HYM2`), BBB OAS (`BAMLC0A4CBBB`), 10Y/30Y treasury
-   (`DGS10`/`DGS30`), SPX (`SP500`), VIX (`VIXCLS`). A free API key is required;
+   HY OAS (`BAMLH0A0HYM2`), BBB OAS (`BAMLC0A4CBBB`), 10Y/2Y/3M/30Y treasury
+   (`DGS10`/`DGS2`/`DGS3MO`/`DGS30`), 10Y inflation-indexed yield (`DFII10`),
+   SPX (`SP500`), VIX (`VIXCLS`). A free API key is required;
    the key is stored only in `.env.local` (mode 600, gitignored). Henson is
    single-user and does not redistribute, which stays inside FRED's personal-use
    terms; the ICE BofA OAS series is third-party-licensed to FRED and its history
@@ -69,3 +70,9 @@ data-source question ("free, no license needed") was resolved with Henson on
   `proxy` status is surfaced, never silently treated as reported.
 - A FRED key outage or API-limit hit must fail closed into `DATA_QUALITY_WARNING`,
   never into a zero/green score.
+- The daily card now has a separate Rates & Credit Score (RCS) module with a
+  20% target weight. It uses Treasury level/real-rate/curve and HY OAS change;
+  MOVE, Treasury liquidity, Fed Funds futures and valuation remain explicit
+  unavailable evidence until a verified daily source is connected. A 10Y yield
+  alone only slows new buying; active equity-exposure review requires rising
+  real yields, widening HY OAS and market/credit confirmation.

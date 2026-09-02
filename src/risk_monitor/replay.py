@@ -25,13 +25,13 @@ from risk_monitor.scoring.policy import load_policy
 
 
 def _observations_for(session: Session, as_of: date) -> dict[str, dict[str, float | str]]:
-    """Group stored observations by score key (mbs/css) and metric_id.
+    """Group stored observations by score key (mbs/css/rates_credit) and metric_id.
 
     A qualitative proxy label is persisted with ``value=None`` and its band
     label in ``value_text``; it is a scoring input exactly like a numeric value,
     so it must be read back here or replay silently renormalises the indicator
     away on every normal day."""
-    out: dict[str, dict[str, float | str]] = {"mbs": {}, "css": {}}
+    out: dict[str, dict[str, float | str]] = {"mbs": {}, "css": {}, "rates_credit": {}}
     for o in session.scalars(select(Observation).where(Observation.as_of_date == as_of)):
         if o.metric_id.startswith("company."):
             continue
@@ -42,11 +42,13 @@ def _observations_for(session: Session, as_of: date) -> dict[str, dict[str, floa
             out["mbs"][o.metric_id] = v
         elif o.metric_id.startswith("credit."):
             out["css"][o.metric_id] = v
+        elif o.metric_id.startswith("rates."):
+            out["rates_credit"][o.metric_id] = v
     return out
 
 
 def replay_score(session: Session, policy: dict, as_of: date) -> dict:
-    """Recompute MBS/CSS from stored observations and compare to the stored
+    """Recompute MBS/CSS/RCS from stored observations and compare to the stored
     snapshot. Returns a comparison record with ``matches`` flags."""
     snap = session.scalars(
         select(ScoreSnapshot).where(ScoreSnapshot.as_of_date == as_of)
@@ -56,15 +58,24 @@ def replay_score(session: Session, policy: dict, as_of: date) -> dict:
 
     mbs = compute_score("mbs", policy, values["mbs"])
     css = compute_score("css", policy, values["css"])
+    rates_credit = compute_score("rates_credit", policy, values["rates_credit"])
 
     stored_mbs = snap.mbs if snap else None
     stored_css = snap.css if snap else None
     return {
         "as_of": as_of.isoformat(),
-        "stored": {"mbs": stored_mbs, "css": stored_css, "afrs": snap.afrs if snap else None},
-        "recomputed": {"mbs": mbs.score, "css": css.score},
+        "stored": {
+            "mbs": stored_mbs,
+            "css": stored_css,
+            "afrs": snap.afrs if snap else None,
+            "rates_credit": snap.rates_credit if snap else None,
+        },
+        "recomputed": {"mbs": mbs.score, "css": css.score, "rates_credit": rates_credit.score},
         "matches_mbs": snap is not None and _eq(stored_mbs, mbs.score),
         "matches_css": snap is not None and _eq(stored_css, css.score),
+        "matches_rates_credit": snap is not None and _eq(
+            snap.rates_credit if snap else None, rates_credit.score
+        ),
     }
 
 
@@ -97,7 +108,11 @@ def _main(argv: list[str] | None = None) -> int:
     result = replay(engine, policy, date.fromisoformat(args.as_of))
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    ok = result.get("matches_mbs", False) and result.get("matches_css", False)
+    ok = (
+        result.get("matches_mbs", False)
+        and result.get("matches_css", False)
+        and result.get("matches_rates_credit", False)
+    )
     print("REPLAY", "PASS" if ok else "MISMATCH")
     return 0 if ok else 1
 

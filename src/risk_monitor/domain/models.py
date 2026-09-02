@@ -92,6 +92,7 @@ class ScoreSnapshot(Base):
     mbs: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     css: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     afrs: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    rates_credit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     component_json: Mapped[str] = mapped_column(Text)  # per-indicator results, for explain/replay
     policy_version: Mapped[str] = mapped_column(String(32))
     quality_status: Mapped[str] = mapped_column(String(24))  # ok | data_quality_warning
@@ -131,6 +132,9 @@ MARKET_ENTITIES: list[dict] = [
     {"entity_id": "HY_OAS",    "name": "US High Yield OAS (ICE BofA)",     "entity_type": "market"},
     {"entity_id": "BBB_OAS",   "name": "US BBB OAS (ICE BofA)",            "entity_type": "market"},
     {"entity_id": "DGS10",     "name": "10-Year Treasury Yield",           "entity_type": "market"},
+    {"entity_id": "DGS2",      "name": "2-Year Treasury Yield",            "entity_type": "market"},
+    {"entity_id": "DGS3MO",    "name": "3-Month Treasury Yield",           "entity_type": "market"},
+    {"entity_id": "DFII10",    "name": "10-Year Treasury Real Yield",      "entity_type": "market"},
     {"entity_id": "DGS30",     "name": "30-Year Treasury Yield",           "entity_type": "market"},
     {"entity_id": "BREADTH",   "name": "S&P 500 breadth (% above 200dma)", "entity_type": "market"},
     {"entity_id": "AI_BASKET", "name": "AI credit basket (6-name equity proxy)", "entity_type": "market"},

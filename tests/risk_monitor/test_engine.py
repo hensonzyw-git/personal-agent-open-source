@@ -10,6 +10,7 @@ import pytest
 
 from risk_monitor.scoring import (
     BAND_SCORE,
+    Indication,
     STATE_ORDER,
     StateTracker,
     Scores,
@@ -114,6 +115,14 @@ def test_sector_afrs_median_and_worst_two(policy):
     assert sector_afrs(policy, company_scores) == pytest.approx(expected)
 
 
+def test_sector_afrs_requires_minimum_company_coverage(policy):
+    # A single issuer cannot represent the six-name AI-capex sector.
+    assert sector_afrs(policy, {"ORCL": 100.0}) is None
+    assert sector_afrs(policy, {
+        "ORCL": 10.0, "MSFT": 20.0, "META": 30.0, "AMZN": 40.0,
+    }) is not None
+
+
 # ---------------------------------------------------------------------------
 # State machine — PRD §14 acceptance cases
 # ---------------------------------------------------------------------------
@@ -171,6 +180,17 @@ def test_upgrade_needs_five_consecutive_days(policy):
     for _ in range(4):
         assert tracker.feed(ind) == ("NORMAL", False)
     assert tracker.feed(ind) == ("RISK_ACCUMULATION", True)
+
+
+def test_upgrade_streak_resets_when_the_target_state_changes(policy):
+    tracker = StateTracker(policy)
+    risk_accumulation = Indication("RISK_ACCUMULATION")
+    credit_confirmation = Indication("CREDIT_CONFIRMATION")
+
+    assert tracker.feed(risk_accumulation) == ("NORMAL", False)
+    for _ in range(4):
+        assert tracker.feed(credit_confirmation) == ("NORMAL", False)
+    assert tracker.feed(credit_confirmation) == ("CREDIT_CONFIRMATION", True)
 
 
 def test_downgrade_one_level_after_twenty_days(policy):

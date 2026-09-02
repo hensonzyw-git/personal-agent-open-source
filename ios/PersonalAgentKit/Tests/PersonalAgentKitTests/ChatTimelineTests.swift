@@ -1142,6 +1142,7 @@ struct TimelineEventTests {
                 content: [
                     "as_of": "2026-08-22",
                     "state": "NORMAL",
+                    "rates_credit": 65.0,
                     "components": [
                         "mbs": [
                             ["label": "VIX", "value": "16.0", "band": "green"],
@@ -1149,6 +1150,9 @@ struct TimelineEventTests {
                         ],
                         "css": [
                             ["label": "AI 篮子", "value": "警戒", "band": "orange"],
+                        ],
+                        "rates_credit": [
+                            ["label": "10Y 美债收益率", "value": "4.80%", "band": "orange"],
                         ],
                     ],
                 ]
@@ -1168,6 +1172,9 @@ struct TimelineEventTests {
         #expect(components.css[0].label == "AI 篮子")
         #expect(components.css[0].value == "警戒")
         #expect(components.css[0].band == "orange")
+        #expect(snapshot.ratesCredit == 65.0)
+        #expect(components.ratesCredit?.count == 1)
+        #expect(components.ratesCredit?[0].label == "10Y 美债收益率")
     }
 
     @Test("a malformed components degrades to a score-only card, not unrecognised")

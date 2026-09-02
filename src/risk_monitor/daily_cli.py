@@ -66,13 +66,13 @@ def _card_content(report: dict) -> dict:
     """The ``risk_report`` Timeline event content (frozen contract with the iOS
     decoder). ``as_of``/``state`` are mandatory — a missing value makes the
     client treat the card as unrecognised rather than render a half card.
-    ``components`` carries the per-indicator breakdown behind MBS/CSS (each row
-    ``label``/``value``/``band``); it is optional so an older card still decodes.
+    ``components`` carries the per-indicator breakdown behind MBS/CSS/RCS (each
+    row ``label``/``value``/``band``); it is optional so an older card still decodes.
     ``sealed_on`` (the Asia/Shanghai run day) is added by ``seal_risk_event``;
     the iOS decoder ignores unknown keys, so cards sealed before this field
     existed still decode."""
     scores = report["scores"]
-    return {
+    content = {
         "as_of": report["as_of"],
         "state": report["state"],
         "mbs": scores.get("mbs"),
@@ -84,6 +84,9 @@ def _card_content(report: dict) -> dict:
         "anomalous": report.get("anomalous", False),
         "components": report.get("components"),
     }
+    if "rates_credit" in scores:
+        content["rates_credit"] = scores["rates_credit"]
+    return content
 
 
 def seal_risk_event(
@@ -208,7 +211,8 @@ def main() -> None:
     scores = report["scores"]
     print(
         f"as_of={report['as_of']} state={report['state']} "
-        f"MBS={scores['mbs']} CSS={scores['css']} AFRS={scores['afrs']}"
+        f"MBS={scores['mbs']} CSS={scores['css']} AFRS={scores['afrs']} "
+        f"RCS={scores.get('rates_credit')}"
     )
     print(
         f"devices={len(devices)} accepted={len(outcome['accepted'])} "

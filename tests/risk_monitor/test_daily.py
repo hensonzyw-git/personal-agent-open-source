@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from risk_monitor import daily as daily_mod
 from risk_monitor.daily import (
     _anomalous_jump,
+    _raw_artifact_rows,
     collect_ai_basket,
     collect_breadth,
     collect_fred,
@@ -312,6 +313,8 @@ class _RunFred:
         self._series = {
             FRED_SERIES["market.spx_close"]: _ramp_end(end, 220, 100.0, 110.0),
             FRED_SERIES["credit.hy_oas_pct"]: _ramp_end(end, 40, 4.4, 5.0),
+            FRED_SERIES["treasury.10y_yield"]: _ramp_end(end, 40, 3.9, 4.0),
+            FRED_SERIES["treasury.10y_real_yield"]: _ramp_end(end, 40, 0.9, 1.0),
             FRED_SERIES["treasury.30y_yield"]: _ramp_end(end, 40, 4.0, 4.01),
         }
 
@@ -355,7 +358,7 @@ class _RunEdgar:
 
 def test_run_composition_and_replay_roundtrip(tmp_path, monkeypatch):
     """The full daily.run() pipeline composed from stub clients must produce all
-    three scores and a deterministic action, persist the qualitative proxy
+    four scores and a deterministic action, persist the qualitative proxy
     labels in ``value_text`` (not drop them), and replay the same day back to
     the identical scores."""
     monkeypatch.setattr(daily_mod, "FredClient", _RunFred)
@@ -370,6 +373,7 @@ def test_run_composition_and_replay_roundtrip(tmp_path, monkeypatch):
     assert result["mbs"] is not None
     assert result["css"] is not None
     assert result["afrs"] is not None
+    assert result["rates_credit"] is not None
     assert result["state"] in ("NORMAL", "RISK_ACCUMULATION", "CREDIT_CONFIRMATION", "DELEVERAGING")
     assert result["action"] == policy["actions"][result["state"]]
     assert result["fred_failures"] == {}
@@ -380,6 +384,7 @@ def test_run_composition_and_replay_roundtrip(tmp_path, monkeypatch):
     # the run really emits the per-indicator breakdown the card consumes.
     assert len(result["mbs_components"]) == 5  # 4 available + fwd_eps_revisions
     assert len(result["css_components"]) == 5
+    assert len(result["rates_credit_components"]) == 9  # 8 core + reserved MOVE
 
     # The qualitative proxy labels were persisted in value_text, not dropped.
     engine = create_database_engine(tmp_path / "run.db")
@@ -399,3 +404,37 @@ def test_run_composition_and_replay_roundtrip(tmp_path, monkeypatch):
         r = replay_score(s, policy, date.fromisoformat(result["as_of"]))
     assert r["matches_mbs"] is True
     assert r["matches_css"] is True
+    assert r["matches_rates_credit"] is True
+
+
+def test_missing_core_rcs_inputs_raise_a_quality_warning(tmp_path, monkeypatch):
+    class PartialFred(_RunFred):
+        def latest(self, series_id):
+            if series_id in {
+                FRED_SERIES["treasury.2y_yield"],
+                FRED_SERIES["treasury.3m_yield"],
+                FRED_SERIES["treasury.10y_real_yield"],
+            }:
+                return ("2026-08-20", None)
+            return super().latest(series_id)
+
+    monkeypatch.setattr(daily_mod, "FredClient", PartialFred)
+    monkeypatch.setattr(daily_mod, "TencentClient", _RunTencent)
+    monkeypatch.setattr(daily_mod, "EdgarClient", _RunEdgar)
+    monkeypatch.setattr(daily_mod, "load_tickers", lambda: ["UP", "DOWN", "UP2"])
+
+    result = run(db_path=str(tmp_path / "partial-rates.db"))
+
+    assert result["fred_failures"] == {}
+    assert result["rates_credit"] is not None
+    assert result["rates_credit_meta"]["missing_core"]
+    assert result["quality_status"] == "data_quality_warning"
+
+
+def test_raw_artifacts_keep_the_dgs10_history_used_for_changes():
+    history = [("2026-08-01", 4.0), ("2026-09-02", 4.2)]
+    rows = dict(_raw_artifact_rows({
+        "dgs10_history": history,
+        "dgs10_latest": ("2026-09-02", 4.2),
+    }))
+    assert rows[FRED_SERIES["treasury.10y_yield"]] == history

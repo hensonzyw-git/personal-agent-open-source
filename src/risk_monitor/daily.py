@@ -4,7 +4,8 @@ Run: ``python -m risk_monitor.daily`` (loads ``FRED_API_KEY`` from ``.env.local`
 
 The state is always *recomputed* from the full score-snapshot history (replay),
 so a fresh run reproduces the identical confirmed state — the PRD's replay
-requirement. AFRS is auto-extracted from SEC EDGAR companyfacts (Phase 3) with
+requirement. RCS covers Treasury/credit conditions. AFRS is auto-extracted from
+SEC EDGAR companyfacts (Phase 3) with
 hardened validation; a company whose fundamentals cannot be extracted is
 omitted from the sector aggregate, never scored zero.
 """
@@ -24,6 +25,7 @@ from risk_monitor import afrs as afrs_mod
 from risk_monitor import breadth as breadth_mod
 from risk_monitor import derive
 from risk_monitor import proxy as proxy_mod
+from risk_monitor import rates_credit as rates_credit_mod
 from risk_monitor.config import load_dotenv_local
 from risk_monitor.constituents import load_tencent_codes, load_tickers
 from risk_monitor.domain.models import (
@@ -62,19 +64,24 @@ def _sha256(text: str) -> str:
 _HISTORY_SERIES = (
     ("spx_history", "market.spx_close"),
     ("hy_oas_history", "credit.hy_oas_pct"),
+    ("dgs10_history", "treasury.10y_yield"),
+    ("dfii10_history", "treasury.10y_real_yield"),
     ("dgs30_history", "treasury.30y_yield"),  # full history for the 20d term-financing proxy
 )
 _LATEST_SERIES = (
     ("bbb_oas_latest", "credit.bbb_oas_pct"),
     ("dgs10_latest", "treasury.10y_yield"),
+    ("dgs2_latest", "treasury.2y_yield"),
+    ("dgs3mo_latest", "treasury.3m_yield"),
+    ("dfii10_latest", "treasury.10y_real_yield"),
     ("vix_latest", "market.vix"),
 )
 
 
 def collect_fred(client: FredClient) -> tuple[dict[str, object], dict[str, str]]:
-    """Pull the raw series: full history for the derived inputs (SPX 200dma,
-    HY OAS 20d change, DGS30 20d term-financing proxy), latest for the direct
-    inputs.
+    """Pull the raw series: full history for derived inputs (SPX 200dma, HY OAS
+    20d change, 10Y/10Y-real/30Y changes), latest for direct inputs (10Y/2Y/3M
+    yields and VIX/BBB OAS).
 
     Fail-closed per series (ADR-0001): a failed series is stored as ``None`` and
     recorded in the returned ``failures`` map rather than crashing the run, so a
@@ -143,13 +150,26 @@ def _latest_as_of(raw: dict[str, object]) -> str:
     whenever any series collected; ``date.today()`` remains only the
     fully-failed-run fallback."""
     dates: list[str] = []
-    for key in ("spx_history", "hy_oas_history", "dgs30_history"):
+    for key in (
+        "spx_history",
+        "hy_oas_history",
+        "dgs10_history",
+        "dfii10_history",
+        "dgs30_history",
+    ):
         series = raw.get(key)
         if series:
             latest = derive.latest(series)
             if latest:
                 dates.append(latest[0])
-    for key in ("vix_latest", "bbb_oas_latest", "dgs10_latest"):
+    for key in (
+        "vix_latest",
+        "bbb_oas_latest",
+        "dgs10_latest",
+        "dgs2_latest",
+        "dgs3mo_latest",
+        "dfii10_latest",
+    ):
         item = raw.get(key)
         if item and item[0] is not None:
             dates.append(item[0])
@@ -163,8 +183,8 @@ MAX_SCORE_DAY_JUMP = 40.0  # a single-day score move this large is flagged anoma
 
 
 def _anomalous_jump(
-    prev: tuple[float, float, float] | None,
-    cur: tuple[float, float, float],
+    prev: tuple[float, ...] | None,
+    cur: tuple[float, ...],
 ) -> bool:
     """True when any score moved more than ``MAX_SCORE_DAY_JUMP`` since the
     previous snapshot — a data error is more likely than a one-day market move."""
@@ -348,8 +368,18 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
         if term_label is not None:
             css_values["credit.term_financing"] = term_label
 
+        # Rates & Credit Score (RCS): Treasury level/real-rate/curve inputs plus
+        # the already-derived HY OAS change. Missing inputs are omitted and the
+        # score renormalises; MOVE, liquidity and valuation are not fabricated.
+        rates_values, rates_meta = rates_credit_mod.derive_values(
+            raw,
+            hy_oas_20d_change_bp=css_values.get("credit.hy_oas_20d_change"),
+        )
+        rates_credit_complete = not rates_meta["missing_core"]
+
         mbs = compute_score("mbs", policy, mbs_values)
         css = compute_score("css", policy, css_values)
+        rates_credit = compute_score("rates_credit", policy, rates_values)
 
         # AFRS: auto-extracted fundamentals + hardened validation. A company
         # with no extractable fundamentals contributes no score; sector AFRS is
@@ -368,22 +398,35 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
             "credit.hy_oas_pct": css_values.get("credit.hy_oas_pct"),
         }
         red = red_combo_today(red_combo_day, policy)
+        # The crash rule is intentionally stronger than a high RCS score, but
+        # it remains an RCS-driven escalation.  It therefore needs the same
+        # complete core evidence gate as every other rates-and-credit upgrade.
+        rates_crash = rates_credit_complete and rates_credit_mod.crash_trigger(
+            rates_values,
+            mbs=mbs.score,
+            css=css.score,
+        )
         ind = indicated_state(
-            Scores(mbs=mbs.score, css=css.score, afrs=afrs),
+            Scores(mbs=mbs.score, css=css.score, afrs=afrs, rates_credit=rates_credit.score),
             red_combo=red,
             early_warning_count=mbs.early_warning_count + css.early_warning_count,
+            rates_credit_trigger=rates_crash,
+            rates_credit_complete=rates_credit_complete,
         )
 
         component = {
             "mbs": _serialise_outcome(mbs),
             "css": _serialise_outcome(css),
+            "rates_credit": _serialise_outcome(rates_credit),
             "afrs": {
                 "score": afrs,
                 "company_scores": company_scores,
                 "details": afrs_details,
             },
             "indication": {"state": ind.state, "reasons": ind.reasons, "red_combo": red},
-            "raw_values": {"mbs": mbs_values, "css": css_values},
+            "raw_values": {"mbs": mbs_values, "css": css_values, "rates_credit": rates_values},
+            "rates_credit_meta": rates_meta,
+            "rates_credit_crash_trigger": rates_crash,
             "breadth": breadth_meta,
             "proxies": {
                 "ai_basket": {"label": ai_label, "per_name_pct": ai_per_name, "errors": ai_basket_errors},
@@ -401,6 +444,8 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
         quality_ok = (
             mbs.score is not None
             and css.score is not None
+            and rates_credit.score is not None
+            and rates_credit_complete
             and afrs is not None
             and not fred_failures
             and not breadth_meta.get("below_threshold")
@@ -422,9 +467,9 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
                 select(ScoreSnapshot).order_by(ScoreSnapshot.id.desc()).limit(1)
             ).first()
         prev_scores = None
-        if prev is not None and None not in (prev.mbs, prev.css, prev.afrs):
-            prev_scores = (prev.mbs, prev.css, prev.afrs)
-        cur_scores = (mbs.score, css.score, afrs)
+        if prev is not None and None not in (prev.mbs, prev.css, prev.afrs, prev.rates_credit):
+            prev_scores = (prev.mbs, prev.css, prev.afrs, prev.rates_credit)
+        cur_scores = (mbs.score, css.score, afrs, rates_credit.score)
         anomalous = (
             _anomalous_jump(prev_scores, cur_scores)
             if None not in cur_scores
@@ -454,7 +499,10 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
                     content=bbody,
                 ))
             for mid, v in mbs_values.items():
-                _store_observation(session, mid, _entity_for(mid), v, as_of)
+                _store_observation(
+                    session, mid, _entity_for(mid), v, as_of,
+                    definition_version=policy["definition_version"],
+                )
             for mid, v in css_values.items():
                 if isinstance(v, str):
                     # A qualitative proxy label IS a scoring input: it must be
@@ -465,21 +513,34 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
                         session, mid, _entity_for(mid), None, as_of,
                         value_text=v, unit="band", confidence="proxy",
                         source_id=("fred" if mid == "credit.term_financing" else "tencent"),
+                        definition_version=policy["definition_version"],
                     )
                 else:
-                    _store_observation(session, mid, _entity_for(mid), v, as_of)
+                    _store_observation(
+                        session, mid, _entity_for(mid), v, as_of,
+                        definition_version=policy["definition_version"],
+                    )
+            for mid, v in rates_values.items():
+                _store_observation(
+                    session, mid, _entity_for(mid), v, as_of,
+                    definition_version=policy["definition_version"],
+                )
             # Company fundamentals: one observation per auto-extracted indicator.
             # The giant companyfacts JSON is NOT stored as a raw artifact (it can
             # be several MB per CIK); instead the score snapshot's component_json
             # carries the per-company scores + extraction method/flags for replay.
             for entity_id, values in per_company.items():
                 for mid, v in values.items():
-                    _store_company_observation(session, mid, entity_id, v, as_of)
+                    _store_company_observation(
+                        session, mid, entity_id, v, as_of,
+                        definition_version=policy["definition_version"],
+                    )
             session.add(ScoreSnapshot(
                 as_of_date=date.fromisoformat(as_of),
                 mbs=mbs.score,
                 css=css.score,
                 afrs=afrs,
+                rates_credit=rates_credit.score,
                 component_json=json.dumps(component),
                 policy_version=policy["policy_version"],
                 quality_status=quality_status,
@@ -491,7 +552,13 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
         # The deterministic action conclusion (policy `actions`), derived from
         # the *confirmed* state — not the daily indication. This is the thing
         # the push must carry so Henson reads a conclusion, not raw scores.
-        action = policy["actions"].get(state, state)
+        action, action_reasons = rates_credit_mod.position_action(
+            policy,
+            state=state,
+            values=rates_values,
+            mbs=mbs.score,
+            css=css.score,
+        )
         with Session(engine) as session:
             session.add(StateSnapshot(
                 as_of_date=date.fromisoformat(as_of),
@@ -508,12 +575,14 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
         "mbs": mbs.score,
         "css": css.score,
         "afrs": afrs,
+        "rates_credit": rates_credit.score,
         "state": state,
         "action": action,
         "indication": ind.state,
         "reasons": reasons or ind.reasons,
         "mbs_unavailable": mbs.unavailable,
         "css_unavailable": css.unavailable,
+        "rates_credit_unavailable": rates_credit.unavailable,
         "breadth": breadth_meta,
         "fred_failures": fred_failures,
         "quality_status": quality_status,
@@ -523,6 +592,10 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
         # card can show the indicators *behind* each score, not just the score.
         "mbs_components": _serialise_outcome(mbs),
         "css_components": _serialise_outcome(css),
+        "rates_credit_components": _serialise_outcome(rates_credit),
+        "rates_credit_meta": rates_meta,
+        "rates_credit_crash_trigger": rates_crash,
+        "action_reasons": action_reasons,
     }
 
 
@@ -536,6 +609,15 @@ _ENTITY_MAP = {
     "credit.bbb_oas_pct": "BBB_OAS",
     "credit.ai_basket": "AI_BASKET",
     "credit.term_financing": "DGS30",
+    "rates.10y_yield_pct": "DGS10",
+    "rates.10y_real_yield_pct": "DFII10",
+    "rates.10y_20d_change_bp": "DGS10",
+    "rates.10y_real_20d_change_bp": "DFII10",
+    "rates.10y_2y_spread_bp": "DGS10_DGS2",
+    "rates.10y_3m_spread_bp": "DGS10_DGS3MO",
+    "rates.30y_20d_change_bp": "DGS30",
+    "rates.hy_oas_20d_change_bp": "HY_OAS",
+    "rates.move_index": "MOVE",
 }
 
 
@@ -554,6 +636,7 @@ def _store_observation(
     unit: Optional[str] = None,
     confidence: str = "derived",
     source_id: str = "fred",
+    definition_version: str = "2026-09-03.2",
 ) -> None:
     session.add(Observation(
         metric_id=metric_id,
@@ -568,11 +651,19 @@ def _store_observation(
         extraction_method="derived",
         confidence=confidence,
         status="active",
-        definition_version="2026-08-21.1",
+        definition_version=definition_version,
     ))
 
 
-def _store_company_observation(session: Session, metric_id: str, entity_id: str, value: Optional[float], as_of: str) -> None:
+def _store_company_observation(
+    session: Session,
+    metric_id: str,
+    entity_id: str,
+    value: Optional[float],
+    as_of: str,
+    *,
+    definition_version: str = "2026-09-03.2",
+) -> None:
     """An annual, XBRL-extracted company fundamental. ``confidence`` is ``reported``
     (a directly reported 10-K fact), unlike the market metrics which are ``derived``."""
     session.add(Observation(
@@ -587,7 +678,7 @@ def _store_company_observation(session: Session, metric_id: str, entity_id: str,
         extraction_method="xbrl",
         confidence="reported",
         status="active",
-        definition_version="2026-08-21.1",
+        definition_version=definition_version,
     ))
 
 
@@ -601,7 +692,10 @@ def _raw_artifact_rows(raw: dict[str, object]) -> list[tuple[str, list]]:
         (FRED_SERIES["market.spx_close"], raw.get("spx_history")),
         (FRED_SERIES["credit.hy_oas_pct"], raw.get("hy_oas_history")),
         (FRED_SERIES["credit.bbb_oas_pct"], [raw["bbb_oas_latest"]] if raw.get("bbb_oas_latest") else []),
-        (FRED_SERIES["treasury.10y_yield"], [raw["dgs10_latest"]] if raw.get("dgs10_latest") else []),
+        (FRED_SERIES["treasury.10y_yield"], raw.get("dgs10_history")),
+        (FRED_SERIES["treasury.2y_yield"], [raw["dgs2_latest"]] if raw.get("dgs2_latest") else []),
+        (FRED_SERIES["treasury.3m_yield"], [raw["dgs3mo_latest"]] if raw.get("dgs3mo_latest") else []),
+        (FRED_SERIES["treasury.10y_real_yield"], raw.get("dfii10_history")),
         (FRED_SERIES["treasury.30y_yield"], raw.get("dgs30_history")),
         (FRED_SERIES["market.vix"], [raw["vix_latest"]] if raw.get("vix_latest") else []),
     ):

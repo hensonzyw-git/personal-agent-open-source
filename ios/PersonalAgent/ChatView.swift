@@ -523,6 +523,9 @@ struct ChatView: View {
             if let components = snapshot.components {
                 riskComponentGroup("MBS 指标", components.mbs)
                 riskComponentGroup("CSS 指标", components.css)
+                if let ratesCredit = components.ratesCredit, !ratesCredit.isEmpty {
+                    riskComponentGroup("RCS 美债与金融条件", ratesCredit)
+                }
             }
 
             if let action = snapshot.action, !action.isEmpty {
@@ -558,7 +561,7 @@ struct ChatView: View {
             guard let value else { return "-" }
             return String(format: "%.1f", value)
         }
-        return "MBS \(fmt(snapshot.mbs)) / CSS \(fmt(snapshot.css)) / AFRS \(fmt(snapshot.afrs))"
+        return "MBS \(fmt(snapshot.mbs)) / CSS \(fmt(snapshot.css)) / AFRS \(fmt(snapshot.afrs)) / RCS \(fmt(snapshot.ratesCredit))"
     }
 
     /// A small status capsule for a quality signal (degraded / stale / anomalous)

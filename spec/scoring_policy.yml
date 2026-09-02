@@ -8,8 +8,8 @@
 # All thresholds are TRANSPARENT HEURISTICS, not statistically validated
 # (PRD §15.6). They are a risk-review scaffold, not investment advice.
 
-policy_version: "2026-08-22.1"
-definition_version: "2026-08-21.1"
+policy_version: "2026-09-03.3"
+definition_version: "2026-09-03.3"
 description: >
   First frozen baseline for the US/AI systemic-risk monitor. Bands are
   green/yellow/orange/red mapped to 0/35/65/100; each score is the weighted
@@ -192,6 +192,106 @@ css:
         red:    "rates + spreads + issuance window all worsening"
 
 # ---------------------------------------------------------------------------
+# §5.4 Rates & Credit Score (RCS) — Treasury as a financing-condition layer
+# ---------------------------------------------------------------------------
+# RCS is a separate 20% target module. The existing monitor has no linear
+# all-score total; RCS therefore feeds the state/action rules directly: a high
+# 10Y yield alone only slows new
+# buying; rates + real-yield + credit deterioration is required before an
+# exposure-reduction review. The thresholds are transparent heuristics, not
+# statistically validated and not investment advice.
+rates_credit:
+  purpose: "Treasury level, real rates, curve regime and credit co-movement; high rates alone are not a crash signal"
+  score_weight: 0.20
+  state_input_requirement: >
+    The RCS score may raise the state only when every non-optional core input
+    below is available. A partial score remains visible with
+    DATA_QUALITY_WARNING but cannot be renormalised into an escalation signal.
+  indicators:
+    - metric_id: rates.10y_yield_pct
+      weight: 20
+      unit: percent
+      bands:
+        green:  { lo: null, hi: 4.5 }
+        yellow: { lo: 4.5, hi: 4.7 }
+        orange: { lo: 4.7, hi: 5.0 }
+        red:    { lo: 5.0, hi: null }
+    - metric_id: rates.10y_real_yield_pct
+      weight: 15
+      unit: percent
+      note: "10Y TIPS real yield; a rising real discount rate is more important than nominal level alone"
+      bands:
+        green:  { lo: null, hi: 1.5 }
+        yellow: { lo: 1.5, hi: 2.0 }
+        orange: { lo: 2.0, hi: 2.5 }
+        red:    { lo: 2.5, hi: null }
+    - metric_id: rates.10y_20d_change_bp
+      weight: 15
+      unit: basis_points
+      bands:
+        green:  { lo: null, hi: 0.0 }
+        yellow: { lo: 0.0, hi: 10.0 }
+        orange: { lo: 10.0, hi: 25.0 }
+        red:    { lo: 25.0, hi: null }
+    - metric_id: rates.10y_real_20d_change_bp
+      weight: 15
+      unit: basis_points
+      bands:
+        green:  { lo: null, hi: 0.0 }
+        yellow: { lo: 0.0, hi: 10.0 }
+        orange: { lo: 10.0, hi: 20.0 }
+        red:    { lo: 20.0, hi: null }
+    - metric_id: rates.10y_2y_spread_bp
+      weight: 5
+      unit: basis_points
+      note: "Curve level is context only; inversion is not treated as an automatic crash trigger"
+      bands:
+        green:  { lo: 0.0, hi: null }
+        yellow: { lo: -50.0, hi: 0.0 }
+        orange: { lo: -100.0, hi: -50.0 }
+        red:    { lo: null, hi: -100.0 }
+    - metric_id: rates.10y_3m_spread_bp
+      weight: 5
+      unit: basis_points
+      note: "Curve level is context only; inversion is not treated as an automatic crash trigger"
+      bands:
+        green:  { lo: 0.0, hi: null }
+        yellow: { lo: -100.0, hi: 0.0 }
+        orange: { lo: -200.0, hi: -100.0 }
+        red:    { lo: null, hi: -200.0 }
+    - metric_id: rates.30y_20d_change_bp
+      weight: 10
+      unit: basis_points
+      bands:
+        green:  { lo: null, hi: 0.0 }
+        yellow: { lo: 0.0, hi: 15.0 }
+        orange: { lo: 15.0, hi: 30.0 }
+        red:    { lo: 30.0, hi: null }
+    - metric_id: rates.hy_oas_20d_change_bp
+      weight: 15
+      unit: basis_points
+      note: "Credit widening is the confirmation half of the rates + credit signal"
+      bands:
+        green:  { lo: null, hi: 25.0 }
+        yellow: { lo: 25.0, hi: 50.0 }
+        orange: { lo: 50.0, hi: 100.0 }
+        red:    { lo: 100.0, hi: null }
+    - metric_id: rates.move_index
+      weight: 0
+      unit: index
+      note: "Reserved for a verified MOVE daily source; unavailable in the current free-source baseline"
+      bands:
+        green:  { lo: null, hi: 100.0 }
+        yellow: { lo: 100.0, hi: 120.0 }
+        orange: { lo: 120.0, hi: 150.0 }
+        red:    { lo: 150.0, hi: null }
+  optional_evidence:
+    - rates.move_index
+    - rates.treasury_liquidity
+    - rates.fed_funds_futures
+    - market.valuation
+
+# ---------------------------------------------------------------------------
 # §5.3 AI Fundamental Risk Score (AFRS) — leading indicator, not a sell signal
 # ---------------------------------------------------------------------------
 afrs:
@@ -200,6 +300,7 @@ afrs:
     median_six: 0.60          # equal-weight median of the 6 companies
     worst_two_mean: 0.25      # mean of the two worst company_afrs
     chain_red_flags: 0.15     # chain-level vendor-financing/guarantee flags
+    min_names: 4              # fewer extracted company scores -> unavailable; never extrapolate one issuer into a sector signal
   company_indicators:
     - metric_id: company.capex_ocf_pct
       weight: 18

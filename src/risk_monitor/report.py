@@ -3,7 +3,7 @@
 Pure and deterministic given a snapshot; the only input is the structured
 result of a daily run (or a replay of stored snapshots). No network, no
 database. The push summary is deliberately *concise* — it names the state and
-the three scores, and never carries a raw metric value that would belong in the
+the four scores, and never carries a raw metric value that would belong in the
 full report rather than a lock screen.
 """
 
@@ -38,6 +38,18 @@ _METRIC_LABELS = {
     "credit.bbb_oas_pct": ("BBB OAS", "%", False, 2),
     "credit.ai_basket": ("AI 篮子", None, False, 0),
     "credit.term_financing": ("期限融资", None, False, 0),
+    "rates.10y_yield_pct": ("10Y 美债收益率", "%", False, 2),
+    "rates.10y_real_yield_pct": ("10Y 实际利率", "%", False, 2),
+    "rates.10y_20d_change_bp": ("10Y 20 日变化", "bp", True, 1),
+    "rates.10y_real_20d_change_bp": ("10Y 实际利率 20 日变化", "bp", True, 1),
+    "rates.10y_2y_spread_bp": ("10Y-2Y 曲线", "bp", True, 1),
+    "rates.10y_3m_spread_bp": ("10Y-3M 曲线", "bp", True, 1),
+    "rates.30y_20d_change_bp": ("30Y 20 日变化", "bp", True, 1),
+    "rates.hy_oas_20d_change_bp": ("HY OAS 20 日变化", "bp", True, 1),
+    "rates.move_index": ("MOVE", "", False, 1),
+    "rates.treasury_liquidity": ("国债流动性", None, False, 0),
+    "rates.fed_funds_futures": ("联邦基金期货", None, False, 0),
+    "market.valuation": ("市场估值", None, False, 0),
 }
 
 _BAND_LABEL = {
@@ -87,16 +99,48 @@ def _component_rows(raw: list[dict]) -> list[dict]:
     return rows
 
 
+def _unavailable_component_rows(metric_ids: list[str]) -> list[dict]:
+    """Render the RCS evidence deliberately absent from the free-data baseline.
+
+    Unlike permanently unavailable MBS inputs, these rows are material to how a
+    Treasury/credit reading should be interpreted.  Keep them in the sealed card
+    instead of silently dropping them during presentation.
+    """
+    rows: list[dict] = []
+    for metric_id in dict.fromkeys(metric_ids):
+        spec = _METRIC_LABELS.get(metric_id)
+        rows.append({
+            "label": spec[0] if spec is not None else metric_id,
+            "value": "不可用",
+            "band": "unavailable",
+        })
+    return rows
+
+
+def _rates_credit_component_rows(run: dict) -> list[dict]:
+    rows = _component_rows(run.get("rates_credit_components") or [])
+    metadata = run.get("rates_credit_meta") or {}
+    missing = [
+        *(run.get("rates_credit_unavailable") or []),
+        *(metadata.get("missing_core") or []),
+        *(metadata.get("optional_missing") or []),
+    ]
+    return rows + _unavailable_component_rows(missing)
+
+
 def build_report(run: dict) -> dict:
     """The daily JSON report. ``run`` is the ``daily.run()`` result (or the
     equivalent dict replayed from stored snapshots)."""
+    scores = {
+        "mbs": run["mbs"],
+        "css": run["css"],
+        "afrs": run["afrs"],
+    }
+    if "rates_credit" in run:
+        scores["rates_credit"] = run["rates_credit"]
     return {
         "as_of": run["as_of"],
-        "scores": {
-            "mbs": run["mbs"],
-            "css": run["css"],
-            "afrs": run["afrs"],
-        },
+        "scores": scores,
         "state": run["state"],
         "action": run.get("action"),
         "indication": run.get("indication"),
@@ -104,6 +148,7 @@ def build_report(run: dict) -> dict:
         "reasons": run.get("reasons") or [],
         "mbs_unavailable": run.get("mbs_unavailable") or [],
         "css_unavailable": run.get("css_unavailable") or [],
+        "rates_credit_unavailable": run.get("rates_credit_unavailable") or [],
         "breadth": run.get("breadth") or {},
         "quality_status": run.get("quality_status", "ok"),
         "stale_days": run.get("stale_days", 0),
@@ -111,12 +156,13 @@ def build_report(run: dict) -> dict:
         "components": {
             "mbs": _component_rows(run.get("mbs_components") or []),
             "css": _component_rows(run.get("css_components") or []),
+            "rates_credit": _rates_credit_component_rows(run),
         },
     }
 
 
 def push_summary(report: dict) -> str:
-    """The one line that belongs on a lock screen: state + the three scores.
+    """The one line that belongs on a lock screen: state + the four scores.
 
     ``afrs`` may be ``None`` before the fundamental layer is wired; it is shown
     as ``-``, never as a fabricated zero."""
@@ -124,6 +170,7 @@ def push_summary(report: dict) -> str:
     mbs = _fmt(scores.get("mbs"))
     css = _fmt(scores.get("css"))
     afrs = _fmt(scores.get("afrs"))
+    rates_credit = _fmt(scores.get("rates_credit"))
     state = report.get("state", "NORMAL")
     label = _STATE_LABEL.get(state, state)
     action = report.get("action")
@@ -135,7 +182,8 @@ def push_summary(report: dict) -> str:
         prefix += "⚠ 数据过期 "
     if report.get("quality_status") == "data_quality_warning":
         prefix += "⚠ 数据不完整 "
-    return f"{prefix}{head} — MBS {mbs} / CSS {css} / AFRS {afrs}"
+    suffix = f" / RCS {rates_credit}" if "rates_credit" in scores else ""
+    return f"{prefix}{head} — MBS {mbs} / CSS {css} / AFRS {afrs}{suffix}"
 
 
 def render_markdown(report: dict) -> str:
@@ -148,12 +196,17 @@ def render_markdown(report: dict) -> str:
         f"- 状态：{report['state']}（{_STATE_LABEL.get(report['state'], report['state'])}）",
         f"- 操作：{report.get('action', '-')}",
         f"- 严重度：{report['severity']}",
-        f"- MBS：{_fmt(scores.get('mbs'))}  / CSS：{_fmt(scores.get('css'))}  / AFRS：{_fmt(scores.get('afrs'))}",
+        f"- MBS：{_fmt(scores.get('mbs'))}  / CSS：{_fmt(scores.get('css'))}  / AFRS：{_fmt(scores.get('afrs'))}"
+        + (f"  / RCS：{_fmt(scores.get('rates_credit'))}" if "rates_credit" in scores else ""),
     ]
     reasons = report.get("reasons") or []
     if reasons:
         lines.append("- 触发原因：" + "；".join(reasons))
-    for label, key in (("MBS", "mbs_unavailable"), ("CSS", "css_unavailable")):
+    for label, key in (
+        ("MBS", "mbs_unavailable"),
+        ("CSS", "css_unavailable"),
+        ("RCS", "rates_credit_unavailable"),
+    ):
         unavail = report.get(key) or []
         if unavail:
             lines.append(f"- {label} 不可用指标：" + "、".join(unavail))
