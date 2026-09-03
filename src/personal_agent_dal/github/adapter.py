@@ -125,6 +125,45 @@ class CheckRunOutcome:
 
 
 @dataclass(frozen=True)
+class BranchReadBack:
+    """One authoritative branch read (DAL-034 reconciliation).
+
+    ``found`` is tri-state: ``True`` (exists at ``head_sha``), ``False``
+    (the server proves absence with a 404), ``None`` (unknowable — the
+    response shape is wrong or the transport failed). A drifted head SHA
+    reads as ``None``-found with a drift refusal, never as a confirmation.
+    """
+
+    found: bool | None
+    head_sha: str | None = None
+    unknown: bool = False
+
+
+@dataclass(frozen=True)
+class OpenPullRequestsReadBack:
+    """One authoritative open-PR read for an exact head/base pair.
+
+    ``matches`` counts only PRs whose head branch, base branch, repository
+    and open state are exact; a PR naming another branch is not a match.
+    """
+
+    matches: int
+    pull_request_number: int | None = None
+    head_sha: str | None = None
+    unknown: bool = False
+
+
+@dataclass(frozen=True)
+class CheckRunReadBack:
+    """One authoritative check-run read for an exact SHA/name/external_id."""
+
+    found: bool | None
+    check_run_id: int | None = None
+    head_sha: str | None = None
+    unknown: bool = False
+
+
+@dataclass(frozen=True)
 class GithubAdapterSettings:
     """Pinned, validated adapter configuration.
 
@@ -378,7 +417,12 @@ class GithubAdapter:
         cached = self._cached_token
         if cached is not None and cached.expires_at_epoch - TOKEN_REFRESH_SKEW_SECONDS > self._now_epoch():
             return cached.token
-        minted = _mint_installation_token(self._settings, transport=self._client, now=self._now_epoch)
+        try:
+            minted = _mint_installation_token(self._settings, transport=self._client, now=self._now_epoch)
+        except httpx.HTTPError:
+            # Credential mint loss is a transport failure like any other: the
+            # caller's read/write path judges it fail-closed, not a crash.
+            return AdapterRefusal("installation token mint lost in transit", stage="pre_write")
         if isinstance(minted, AdapterRefusal):
             return minted
         self._cached_token = minted
@@ -611,6 +655,124 @@ class GithubAdapter:
             head_sha=branch_head_sha, external_id=external_id,
         )
         return judged
+
+    # --- the three authoritative read-backs (DAL-034 reconciliation) ------
+    #
+    # GET-only by construction: a recovery read must not be able to become a
+    # duplicate write. Every method judges its response against the *exact*
+    # target identity and fails closed to the unknown shape.
+
+    def read_feature_branch(self, *, branch: str) -> BranchReadBack:
+        """Does the branch exist, and at which head SHA? (GET ref only.)"""
+        if not _valid_branch_name(branch):
+            return BranchReadBack(found=None, unknown=True)
+        headers = self._headers()
+        if isinstance(headers, AdapterRefusal):
+            return BranchReadBack(found=None, unknown=True)
+        try:
+            read = self._client.get(
+                f"{_repo_url(self._settings)}/git/ref/heads/{branch}",
+                headers=headers,
+            )
+        except httpx.HTTPError:
+            return BranchReadBack(found=None, unknown=True)
+        if read.status_code == 404:
+            return BranchReadBack(found=False)
+        if read.status_code != 200:
+            return BranchReadBack(found=None, unknown=True)
+        try:
+            body = read.json()
+        except ValueError:
+            return BranchReadBack(found=None, unknown=True)
+        if not isinstance(body, dict):
+            return BranchReadBack(found=None, unknown=True)
+        obj = body.get("object")
+        if body.get("ref") != f"refs/heads/{branch}" or not isinstance(obj, dict):
+            return BranchReadBack(found=None, unknown=True)
+        head_sha = obj.get("sha")
+        if not isinstance(head_sha, str) or len(head_sha) != 40:
+            return BranchReadBack(found=None, unknown=True)
+        return BranchReadBack(found=True, head_sha=head_sha)
+
+    def list_open_pull_requests(
+        self, *, branch: str, base_branch: str
+    ) -> OpenPullRequestsReadBack:
+        """How many open PRs does this exact head/base pair have?"""
+        headers = self._headers()
+        if isinstance(headers, AdapterRefusal):
+            return OpenPullRequestsReadBack(0, unknown=True)
+        repository_id = self._settings.repository
+        try:
+            listing = self._client.get(
+                f"{_repo_url(self._settings)}/pulls",
+                headers=headers,
+                params={
+                    "head": f"{repository_id.split('/')[0]}:{branch}",
+                    "base": base_branch,
+                    "state": "open",
+                },
+            )
+        except httpx.HTTPError:
+            return OpenPullRequestsReadBack(0, unknown=True)
+        if listing.status_code != 200:
+            return OpenPullRequestsReadBack(0, unknown=True)
+        try:
+            items = listing.json()
+        except ValueError:
+            return OpenPullRequestsReadBack(0, unknown=True)
+        if not isinstance(items, list):
+            return OpenPullRequestsReadBack(0, unknown=True)
+        matches = 0
+        number: int | None = None
+        head_sha: str | None = None
+        for item in items:
+            judged = _validate_pr_readback(
+                item, repository_id=repository_id,
+                head_branch=branch, base_branch=base_branch,
+            )
+            if judged.refusal is None:
+                matches += 1
+                number, head_sha = judged.pull_request_number, judged.head_sha
+        return OpenPullRequestsReadBack(matches, pull_request_number=number, head_sha=head_sha)
+
+    def read_check_run(
+        self, *, branch_head_sha: str, check_name: str, external_id: str
+    ) -> CheckRunReadBack:
+        """Does a check run exist for this exact SHA/name/external id?"""
+        headers = self._headers()
+        if isinstance(headers, AdapterRefusal):
+            return CheckRunReadBack(found=None, unknown=True)
+        try:
+            listing = self._client.get(
+                f"{_repo_url(self._settings)}/commits/{branch_head_sha}/check-runs",
+                headers=headers,
+                params={"check_name": check_name, "filter": "latest"},
+            )
+        except httpx.HTTPError:
+            return CheckRunReadBack(found=None, unknown=True)
+        if listing.status_code == 404:
+            # The SHA itself is absent: the run cannot exist either.
+            return CheckRunReadBack(found=False)
+        if listing.status_code != 200:
+            return CheckRunReadBack(found=None, unknown=True)
+        try:
+            body = listing.json()
+        except ValueError:
+            return CheckRunReadBack(found=None, unknown=True)
+        if not isinstance(body, dict) or not isinstance(body.get("check_runs"), list):
+            return CheckRunReadBack(found=None, unknown=True)
+        for item in body["check_runs"]:
+            judged = _validate_check_readback(
+                item, repository_id=self._settings.repository,
+                check_name=check_name, head_sha=branch_head_sha,
+                external_id=external_id,
+            )
+            if judged.refusal is None:
+                return CheckRunReadBack(
+                    found=True, check_run_id=judged.check_run_id,
+                    head_sha=judged.head_sha,
+                )
+        return CheckRunReadBack(found=False)
 
 
 def _valid_branch_name(branch: str) -> bool:
