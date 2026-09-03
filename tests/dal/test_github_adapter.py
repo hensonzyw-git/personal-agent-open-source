@@ -138,6 +138,11 @@ class ScriptedTransport:
         self.requests.append(request)
         return self._answer(request)
 
+    def patch(self, url: str, *, headers: dict[str, str], json: Any = None) -> _Response:
+        request = _Request("PATCH", url, dict(headers), json_body=json)
+        self.requests.append(request)
+        return self._answer(request)
+
     def close(self) -> None:
         pass
 
@@ -160,6 +165,7 @@ def make_settings(tmp_path: Path, *, api_base: str = "https://api.github.com") -
     key.write_bytes(pem)
     return GithubAdapterSettings(
         app_id="4807112",
+        installation_id="158537127",
         private_key_path=key,
         repository="example-owner/dal-sandbox",
         api_base=api_base,
@@ -179,9 +185,29 @@ TOKEN_BODY = {
 def script_token(transport: ScriptedTransport, *, status: int = 201) -> None:
     transport.script(
         "POST",
-        "/app/installations/4807112/access_tokens",
+        "/app/installations/158537127/access_tokens",
         _Response(status, TOKEN_BODY),
     )
+
+
+class SequentialGetTransport(ScriptedTransport):
+    """GET answers pop from a queue in call order; everything else follows
+    the script.
+
+    The ref state genuinely changes between the adapter's two reads (the
+    decision probe sees the old head, the post-update read-back sees the
+    new one), so the fake must model sequential responses, not one
+    replayed answer.
+    """
+
+    def __init__(self, get_responses: list[_Response]) -> None:
+        super().__init__()
+        self._get_responses = list(get_responses)
+
+    def get(self, url: str, *, headers: dict[str, str], params: Any = None) -> _Response:
+        request = _Request("GET", url, dict(headers))
+        self.requests.append(request)
+        return self._get_responses.pop(0)
 
 
 # ---------------------------------------------------------------------------
@@ -199,9 +225,35 @@ def test_settings_reject_a_drifted_repository(tmp_path: Path) -> None:
     with pytest.raises(Exception, match="owner/name"):
         GithubAdapterSettings(
             app_id="4807112",
+            installation_id="158537127",
             private_key_path=tmp_path / "missing.pem",
             repository="dal-sandbox",
         )
+
+
+def test_settings_require_a_numeric_installation_id(tmp_path: Path) -> None:
+    """The installation id is its own frozen setting, separate from app_id.
+
+    Missing is a hard construction failure (the dataclass requires it); a
+    non-numeric or wrong-typed value is an AdapterError. A drifted id can
+    never silently mint against some other installation's endpoint.
+    """
+    key = tmp_path / "github-app.pem"
+    key.write_bytes(b"placeholder")
+    with pytest.raises(TypeError):
+        GithubAdapterSettings(  # type: ignore[call-arg]
+            app_id="4807112",
+            private_key_path=key,
+            repository="example-owner/dal-sandbox",
+        )
+    for bad in ("", "  ", "48o7112", "158 537 127", 158537127):
+        with pytest.raises(Exception, match="installation_id"):
+            GithubAdapterSettings(
+                app_id="4807112",
+                installation_id=bad,  # type: ignore[arg-type]
+                private_key_path=key,
+                repository="example-owner/dal-sandbox",
+            )
 
 
 def test_production_construction_pins_tls_and_refuses_redirects() -> None:
@@ -221,6 +273,36 @@ def test_production_construction_pins_tls_and_refuses_redirects() -> None:
 # ---------------------------------------------------------------------------
 # Mechanics: the App JWT → installation token exchange.
 # ---------------------------------------------------------------------------
+
+
+def test_mint_targets_the_installation_id_not_the_app_id(
+    tmp_path: Path, transport: ScriptedTransport
+) -> None:
+    """The R09-B live drill's blocking gap, pinned as a mechanic.
+
+    GitHub mints installation tokens at
+    ``/app/installations/{installation_id}/access_tokens``; the App id
+    belongs only in the JWT ``iss`` claim. The two ids differ for a real
+    App (4807112 vs 158537127) and minting against the App id is a
+    permanent 404 — a defect no offline happy-path could catch, only the
+    live drill did. The endpoint here is asserted to carry the
+    installation id and never the App id.
+    """
+    script_token(transport)
+    transport.script("POST", "/git/refs", _Response(201, {"ref": "refs/heads/dal/task-1"}))
+    transport.set_default(
+        _Response(200, {"ref": "refs/heads/dal/task-1", "object": {"sha": "a" * 40}})
+    )
+    adapter = make_adapter(tmp_path, transport)
+    with adapter:
+        outcome = adapter.push_feature_branch(
+            branch="dal/task-1", head_sha="a" * 40, idempotency_key="idem-1"
+        )
+    assert isinstance(outcome, PushOutcome) and outcome.head_sha == "a" * 40
+    mints = [r for r in transport.requests if "/access_tokens" in r.url]
+    assert len(mints) == 1
+    assert "/app/installations/158537127/access_tokens" in mints[0].url
+    assert "/app/installations/4807112/" not in mints[0].url
 
 
 def test_app_jwt_travels_only_to_the_token_endpoint(
@@ -277,7 +359,7 @@ def test_token_mint_failure_is_a_refusal_and_never_a_write(
     tmp_path: Path, transport: ScriptedTransport
 ) -> None:
     transport.script(
-        "POST", "/app/installations/4807112/access_tokens", _Response(401, {"message": "bad app"})
+        "POST", "/app/installations/158537127/access_tokens", _Response(401, {"message": "bad app"})
     )
     adapter = make_adapter(tmp_path, transport)
     with adapter:
@@ -295,6 +377,7 @@ def test_token_mint_failure_is_a_refusal_and_never_a_write(
 def test_missing_private_key_is_a_refusal(tmp_path: Path, transport: ScriptedTransport) -> None:
     settings = GithubAdapterSettings(
         app_id="4807112",
+        installation_id="158537127",
         private_key_path=tmp_path / "absent.pem",
         repository="example-owner/dal-sandbox",
     )
@@ -400,6 +483,168 @@ def test_push_422_replays_via_the_existing_ref_read_back(
     with adapter:
         outcome = adapter.push_feature_branch(branch=BRANCH, head_sha=HEAD, idempotency_key="k")
     assert isinstance(outcome, PushOutcome) and outcome.head_sha == HEAD
+
+
+def test_push_422_idempotent_replay_sends_no_update(
+    tmp_path: Path, transport: ScriptedTransport
+) -> None:
+    """The ref already sits at the target SHA: a replay, not an update.
+
+    No PATCH may be sent — moving a ref that is already at the target is
+    not this adapter's business, and the exact-head read-back alone is the
+    fact. The R09-B live drill exercised exactly this shape.
+    """
+    script_token(transport)
+    transport.script("POST", "/git/refs", _Response(422, {"message": "Reference already exists"}))
+    transport.script(
+        "GET", "/git/ref/heads/dal/task-1",
+        _Response(200, {"ref": f"refs/heads/{BRANCH}", "object": {"sha": HEAD}}),
+    )
+    adapter = make_adapter(tmp_path, transport)
+    with adapter:
+        outcome = adapter.push_feature_branch(branch=BRANCH, head_sha=HEAD, idempotency_key="k")
+    assert isinstance(outcome, PushOutcome)
+    assert (outcome.refusal, outcome.unknown) == (None, False) and outcome.head_sha == HEAD
+    patches = [r for r in transport.requests if r.method == "PATCH"]
+    assert patches == [], "an idempotent replay must never update the ref"
+
+
+def test_push_422_fast_forward_updates_the_existing_ref(
+    tmp_path: Path, transport: ScriptedTransport
+) -> None:
+    """A new head on an existing branch moves the ref, force-free.
+
+    The live drill proved PATCH ``force=false`` succeeds on a fast-forward
+    and GitHub itself refuses a non-fast-forward with a deterministic 422.
+    The adapter therefore delegates ancestry to the server: after the 422
+    create its decision probe sees the old head, it PATCHes once with
+    force=false, and the exact-head read-back judges the result — it does
+    not compute ancestry itself and never forces.
+    """
+    advanced = "c" * 40
+    transport = SequentialGetTransport([
+        _Response(200, {"ref": f"refs/heads/{BRANCH}", "object": {"sha": HEAD}}),
+        _Response(200, {"ref": f"refs/heads/{BRANCH}", "object": {"sha": advanced}}),
+    ])
+    script_token(transport)
+    transport.script("POST", "/git/refs", _Response(422, {"message": "Reference already exists"}))
+    transport.script(
+        "PATCH", "/git/refs/heads/dal/task-1",
+        _Response(200, {"ref": f"refs/heads/{BRANCH}", "object": {"sha": advanced}}),
+    )
+    adapter = GithubAdapter(make_settings(tmp_path), client=transport)  # type: ignore[arg-type]
+    with adapter:
+        outcome = adapter.push_feature_branch(
+            branch=BRANCH, head_sha=advanced, idempotency_key="k"
+        )
+    assert isinstance(outcome, PushOutcome)
+    assert (outcome.refusal, outcome.unknown) == (None, False)
+    assert outcome.head_sha == advanced
+    patches = [r for r in transport.requests if r.method == "PATCH" and "/git/refs/" in r.url]
+    assert len(patches) == 1, "the update is a single force-free PATCH"
+    assert patches[0].json_body == {"sha": advanced, "force": False}
+
+
+def test_push_non_fast_forward_update_refused_is_not_executed(
+    tmp_path: Path, transport: ScriptedTransport
+) -> None:
+    """GitHub rejects a non-fast-forward PATCH with a deterministic 422.
+
+    The server — not the adapter — is the ancestry oracle. A 4xx on the
+    update itself proves the ref did not move, so the refusal is stage
+    ``write`` (not-executed provable) and no read-back may dress it up.
+    """
+    adapter = SequentialGetTransport([
+        _Response(200, {"ref": f"refs/heads/{BRANCH}", "object": {"sha": OTHER_SHA}}),
+    ])
+    script_token(adapter)
+    adapter.script("POST", "/git/refs", _Response(422, {"message": "Reference already exists"}))
+    adapter.script(
+        "PATCH", "/git/refs/heads/dal/task-1",
+        _Response(422, {"message": "Update is not a fast forward"}),
+    )
+    with GithubAdapter(make_settings(tmp_path), client=adapter) as gh:  # type: ignore[arg-type]
+        outcome = gh.push_feature_branch(branch=BRANCH, head_sha=HEAD, idempotency_key="k")
+    assert isinstance(outcome, PushOutcome) and outcome.refusal is not None
+    assert outcome.refusal.stage == "write" and outcome.unknown is False
+    assert outcome.head_sha is None
+    gets = [r for r in adapter.requests if r.method == "GET" and "/git/ref/" in r.url]
+    assert len(gets) == 1, "one decision probe, no post-refusal read-back"
+
+
+def test_push_5xx_on_the_update_stays_reconcilable(
+    tmp_path: Path, transport: ScriptedTransport
+) -> None:
+    """A 5xx on the PATCH means the ref MAY have moved.
+
+    The adapter reports a write-stage refusal; the controller's
+    persistent-error classes (HTTP 500/502/503/504 in the reason) map that
+    to ``unknown`` so only post-read reconciliation may close it — never a
+    retry and never not-executed at the composition layer.
+    """
+    transport = SequentialGetTransport([
+        _Response(200, {"ref": f"refs/heads/{BRANCH}", "object": {"sha": OTHER_SHA}}),
+    ])
+    script_token(transport)
+    transport.script("POST", "/git/refs", _Response(422, {"message": "Reference already exists"}))
+    transport.script(
+        "PATCH", "/git/refs/heads/dal/task-1", _Response(502, {"message": "boom"})
+    )
+    adapter = make_adapter(tmp_path, transport)
+    with adapter:
+        outcome = adapter.push_feature_branch(branch=BRANCH, head_sha=HEAD, idempotency_key="k")
+    assert isinstance(outcome, PushOutcome)
+    assert outcome.refusal is not None and outcome.refusal.stage == "write"
+    assert outcome.unknown is False and outcome.head_sha is None
+    from personal_agent_dal.github.adapter_controller import _judge
+
+    assert _judge(outcome) == "unknown"
+
+
+def test_push_transport_loss_during_the_update_is_unknown(
+    tmp_path: Path, transport: ScriptedTransport
+) -> None:
+    """A dropped PATCH response is the ack-loss shape: unknown + idem key."""
+    import httpx as real_httpx
+
+    class DyingPatchTransport(SequentialGetTransport):
+        def patch(self, url, *, headers, json=None):
+            if "/git/refs/" in url:
+                raise real_httpx.ConnectError("cable cut")
+            return super().patch(url, headers=headers, json=json)
+
+    transport = DyingPatchTransport([
+        _Response(200, {"ref": f"refs/heads/{BRANCH}", "object": {"sha": OTHER_SHA}}),
+    ])
+    script_token(transport)
+    transport.script("POST", "/git/refs", _Response(422, {"message": "Reference already exists"}))
+    adapter = GithubAdapter(make_settings(tmp_path), client=transport)  # type: ignore[arg-type]
+    with adapter:
+        outcome = adapter.push_feature_branch(branch=BRANCH, head_sha=HEAD, idempotency_key="k")
+    assert isinstance(outcome, PushOutcome)
+    assert outcome.unknown is True and outcome.idempotency_key == "k"
+
+
+def test_push_update_read_back_drift_is_post_write_unknown(
+    tmp_path: Path, transport: ScriptedTransport
+) -> None:
+    """The PATCH returned 200 but the ref GET shows another SHA: the write
+    may have landed with someone else's identity — post_write, unknown."""
+    script_token(transport)
+    transport.script("POST", "/git/refs", _Response(422, {"message": "Reference already exists"}))
+    transport.script(
+        "PATCH", "/git/refs/heads/dal/task-1",
+        _Response(200, {"ref": f"refs/heads/{BRANCH}", "object": {"sha": HEAD}}),
+    )
+    transport.script(
+        "GET", "/git/ref/heads/dal/task-1",
+        _Response(200, {"ref": f"refs/heads/{BRANCH}", "object": {"sha": OTHER_SHA}}),
+    )
+    adapter = make_adapter(tmp_path, transport)
+    with adapter:
+        outcome = adapter.push_feature_branch(branch=BRANCH, head_sha=HEAD, idempotency_key="k")
+    assert isinstance(outcome, PushOutcome) and outcome.refusal is not None
+    assert outcome.refusal.stage == "post_write"
 
 
 def test_pr_happy_path_binds_repo_number_and_head(

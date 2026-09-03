@@ -159,6 +159,7 @@ class _ScriptedReadTransport:
 def _settings(tmp_path: Path) -> GithubAdapterSettings:
     return GithubAdapterSettings(
         app_id="4807112",
+        installation_id="158537127",
         private_key_path=tmp_path / "key.pem",
         repository=REPO,
     )
@@ -211,7 +212,7 @@ def test_branch_readback_found_exact(tmp_path: Path, key_file: Path) -> None:
     # of this branch's ref. (The transport's "seeded" POST marker is cleared
     # before the call.)
     assert transport.requests == [
-        ("POST", "https://api.github.com/app/installations/4807112/access_tokens"),
+        ("POST", "https://api.github.com/app/installations/158537127/access_tokens"),
         ("GET", f"https://api.github.com/repos/{REPO}/git/ref/heads/{BRANCH}"),
     ]
 

@@ -170,14 +170,19 @@ class CheckRunReadBack:
 class GithubAdapterSettings:
     """Pinned, validated adapter configuration.
 
-    ``app_id`` is the numeric App id GitHub assigned; ``private_key_path``
-    points at the ECS-held installation key (root-owned, group 0640);
-    ``repository`` is the single sandbox repo the installation covers, as
-    ``owner/name``. Any drift in these at construction time is a hard
-    failure: the adapter never discovers its own authority.
+    ``app_id`` is the numeric App id GitHub assigned — it names the JWT
+    ``iss`` claim only. ``installation_id`` is the *installation's* numeric
+    id (App id ≠ installation id; the R09-B live drill minted a permanent
+    404 by conflating them) — it names the token endpoint only.
+    ``private_key_path`` points at the ECS-held installation key
+    (root-owned, group 0640); ``repository`` is the single sandbox repo the
+    installation covers, as ``owner/name``. Any drift in these at
+    construction time is a hard failure: the adapter never discovers its
+    own authority.
     """
 
     app_id: str
+    installation_id: str
     private_key_path: Path
     repository: str
     api_base: str = GITHUB_API_BASE
@@ -186,6 +191,10 @@ class GithubAdapterSettings:
     def __post_init__(self) -> None:
         if type(self.app_id) is not str or not self.app_id.isdigit():
             raise AdapterError("app_id must be the numeric GitHub App id")
+        if type(self.installation_id) is not str or not self.installation_id.isdigit():
+            raise AdapterError(
+                "installation_id must be the numeric GitHub App installation id"
+            )
         split = urlsplit(self.api_base)
         if split.scheme != "https" or split.hostname != GITHUB_API_HOST:
             raise AdapterError(
@@ -259,10 +268,15 @@ def _mint_installation_token(
     transport: httpx.Client,
     now: Callable[[], int],
 ) -> _InstallationToken | AdapterRefusal:
-    """Exchange the App JWT for one installation access token."""
+    """Exchange the App JWT for one installation access token.
+
+    The JWT ``iss`` is the App id; the endpoint names the *installation*
+    id. They are different numbers for a real App and only this exact
+    pairing mints.
+    """
     token = _app_jwt(settings, now=now)
     response = transport.post(
-        f"{settings.api_base}/app/installations/{settings.app_id}/access_tokens",
+        f"{settings.api_base}/app/installations/{settings.installation_id}/access_tokens",
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -455,6 +469,15 @@ class GithubAdapter:
 
         The write is the create-ref call; the read-back is the separate
         ref GET. A create-ref response alone is never a fact.
+
+        An existing ref (create 422) splits into two shapes after one
+        decision read of the ref: the ref already at the target SHA is an
+        idempotent replay and only the read-back speaks (no update); the
+        ref at any other head must advance by one PATCH ``force=false``,
+        with GitHub — not this adapter — as the ancestry oracle (its
+        non-fast-forward 422 proves the ref did not move). An unreadable
+        probe takes the pre-existing read-back path and fails closed
+        there. Nothing retries.
         """
         if not _valid_branch_name(branch):
             return PushOutcome(
@@ -481,8 +504,34 @@ class GithubAdapter:
                 None, None, None, unknown=True, idempotency_key=idempotency_key
             )
         if create.status_code == 422:
-            # Either the branch exists or the SHA does not. Only the
-            # read-back decides: get the ref and compare head SHAs.
+            try:
+                probe = self._client.get(
+                    f"{_repo_url(self._settings)}/git/ref/heads/{branch}",
+                    headers=headers,
+                )
+            except httpx.HTTPError:
+                return PushOutcome(
+                    None, None, None, unknown=True, idempotency_key=idempotency_key
+                )
+            current: str | None = None
+            if probe.status_code == 200:
+                try:
+                    body = probe.json()
+                except ValueError:
+                    body = None
+                if isinstance(body, dict):
+                    judged = _validate_push_readback(
+                        body, repository_id=repository_id, branch=branch
+                    )
+                    if judged.refusal is None:
+                        current = judged.head_sha
+            if current is not None and current != head_sha:
+                update = self._update_ref(
+                    branch=branch, head_sha=head_sha, headers=headers,
+                    idempotency_key=idempotency_key,
+                )
+                if update is not None:
+                    return update
             return self._push_readback(branch=branch, head_sha=head_sha, repository_id=repository_id, idempotency_key=idempotency_key)
         if create.status_code != 201:
             return PushOutcome(
@@ -490,6 +539,42 @@ class GithubAdapter:
                 refusal=AdapterRefusal(f"branch create refused: HTTP {create.status_code}", stage="write"),
             )
         return self._push_readback(branch=branch, head_sha=head_sha, repository_id=repository_id, idempotency_key=idempotency_key)
+
+    def _update_ref(
+        self,
+        *,
+        branch: str,
+        head_sha: str,
+        headers: dict[str, str],
+        idempotency_key: str,
+    ) -> PushOutcome | None:
+        """One PATCH ``force=false`` of an existing ref.
+
+        ``None`` means the update was accepted and the caller's read-back
+        decides; a ``PushOutcome`` carries the refusal/unknown to return.
+        """
+        try:
+            update = self._client.patch(
+                f"{_repo_url(self._settings)}/git/refs/heads/{branch}",
+                headers=headers,
+                json={"sha": head_sha, "force": False},
+            )
+        except httpx.HTTPError:
+            return PushOutcome(
+                None, None, None, unknown=True, idempotency_key=idempotency_key
+            )
+        if update.status_code != 200:
+            # A 4xx here is GitHub's deterministic refusal (including the
+            # non-fast-forward 422): the ref provably did not move, so
+            # not-executed is provable. A 5xx may have applied the move;
+            # the controller's persistent-error classes keep that unknown.
+            return PushOutcome(
+                None, None, None,
+                refusal=AdapterRefusal(
+                    f"ref update refused: HTTP {update.status_code}", stage="write"
+                ),
+            )
+        return None
 
     def _push_readback(
         self, *, branch: str, head_sha: str, repository_id: str, idempotency_key: str
