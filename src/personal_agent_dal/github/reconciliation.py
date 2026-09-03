@@ -40,6 +40,15 @@ derive its ~30-clause guard bundle from database rows plus the read-back:
 the semantic binding digest is **recomputed server-side** over the full
 semantic tuple (§3.6) rather than accepted from the device, and the two
 sources' digests are judged equal by the registry's cross-source clauses.
+
+Scope of the cross-source check, stated exactly: this module computes the
+digests for both sources from one shared tuple, so in this composition the
+cross-source stage proves the evidence **package is internally consistent**
+and that the engine re-derives the same digest (tamper detection after the
+fact bundle is built) — not that an independent device recomputed the
+binding, because no independent recomputer exists on this path. The
+digests are input-sensitive: a different semantic tuple produces a
+different binding digest (pinned by test).
 """
 
 from __future__ import annotations
@@ -134,7 +143,9 @@ def parking_checkpoint_state(engine: Engine, feature_id: str) -> str:
                 "SELECT spec_id, from_state FROM transition_receipts "
                 "WHERE aggregate_type = 'feature' AND aggregate_id = :f "
                 f"AND spec_id LIKE '{_PARKING_PREFIX}%' "
-                "ORDER BY recorded_at DESC LIMIT 1"
+                # rowid DESC: recorded_at is wall-clock time, not monotonic
+                # per feature; the tie-break keeps the latest park winning.
+                "ORDER BY recorded_at DESC, rowid DESC LIMIT 1"
             ).bindparams(f=feature_id)
         ).first()
     if row is None:
@@ -351,9 +362,11 @@ def reconcile_github_write(
                 check_name=payload["check_name"],
                 external_id=payload["external_id"],
             )
-    except Exception as error:  # noqa: BLE001 - fail closed to unknown
+    except Exception:  # noqa: BLE001 - fail closed to unknown
+        # Transport loss during the read proves nothing: judging "absent"
+        # from a dropped read is exactly the double-write failure shape,
+        # so the outcome is unknown and STILL-UNKNOWN runs.
         read_back = BranchReadBack(found=None, unknown=True)
-        _last_read_error = error  # noqa: F841 — surfaced via the unknown result
     judged = _judge_read_back(read_back, payload)
 
     if judged == "unknown":
@@ -396,7 +409,6 @@ def build_resume_checkpoint_command(
     *,
     feature_id: str,
     expected_version: int,
-    checkpoint_state: str | None = None,
     effect_id: str,
     effect_outcome: str,
     decision_id: str,
@@ -411,9 +423,9 @@ def build_resume_checkpoint_command(
     The spec is resolved by the exact (from_state, outcome, checkpoint)
     tuple from the live registry; a combination the registry does not
     freeze refuses here rather than shipping a hand-built command. The
-    checkpoint is not caller-chosen: when ``checkpoint_state`` is not
-    given it is read from the parking receipt, per §2.2's rule that the
-    client may not supply an arbitrary target state.
+    checkpoint is not caller-chosen at all: it is read from the parking
+    receipt, per §2.2's rule that the client may not supply an arbitrary
+    target state — the guarantee is structural, not a caller convention.
 
     ``evidence_facts`` is the bundle `derive_resume_facts` produced: the two
     evidence documents (one per source the binding requires) are populated
@@ -425,8 +437,7 @@ def build_resume_checkpoint_command(
 
     if effect_outcome not in ("confirmed_completed", "confirmed_not_executed"):
         raise _invalid(f"effect_outcome must be a confirmed_* outcome, got {effect_outcome!r}")
-    if checkpoint_state is None:
-        checkpoint_state = parking_checkpoint_state(engine, feature_id)
+    checkpoint_state = parking_checkpoint_state(engine, feature_id)
     registry = transition_registry()
     prefix = (
         "RECONCILE-COMPLETED-NONSTATE--"
@@ -501,7 +512,6 @@ def derive_resume_facts(
     *,
     feature_id: str,
     effect_id: str,
-    checkpoint_state: str | None = None,
     effect_outcome: str,
     decision_action: str,
     read_back: BranchReadBack | OpenPullRequestsReadBack | CheckRunReadBack,
@@ -512,15 +522,13 @@ def derive_resume_facts(
     Every ``equals_field`` RHS is read from the database at call time; the
     digests are recomputed server-side over the full semantic tuple (§3.6).
     The caller supplies only the read-back outcome and the human's decision
-    identity — never a binding boolean, and never the checkpoint: when
-    ``checkpoint_state`` is not given it is read from the parking receipt
-    (the server's record of where the work was). Passing it explicitly is
-    allowed for callers that already hold the receipt-derived value.
+    identity — never a binding boolean, and never the checkpoint: the
+    resume target is read from the parking receipt (the server's record of
+    where the work was), so the client cannot steer it.
     """
     from personal_agent_dal.machine.registry import jcs_sha256
 
-    if checkpoint_state is None:
-        checkpoint_state = parking_checkpoint_state(engine, feature_id)
+    checkpoint_state = parking_checkpoint_state(engine, feature_id)
 
     with engine.connect() as connection:
         feature = connection.execute(

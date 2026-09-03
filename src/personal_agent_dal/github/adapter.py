@@ -128,10 +128,13 @@ class CheckRunOutcome:
 class BranchReadBack:
     """One authoritative branch read (DAL-034 reconciliation).
 
-    ``found`` is tri-state: ``True`` (exists at ``head_sha``), ``False``
-    (the server proves absence with a 404), ``None`` (unknowable — the
-    response shape is wrong or the transport failed). A drifted head SHA
-    reads as ``None``-found with a drift refusal, never as a confirmation.
+    ``found`` is tri-state: ``True`` (exists, ``head_sha`` reports the SHA
+    the server actually returned), ``False`` (the server proves absence
+    with a 404), ``None`` (unknowable — the response shape is wrong or the
+    transport failed). The adapter does not know the expected target: the
+    head SHA is an observation, and the composition layer judges whether
+    it matches the intended identity (a mismatch reads "absent" for the
+    exact target, never as a confirmation).
     """
 
     found: bool | None

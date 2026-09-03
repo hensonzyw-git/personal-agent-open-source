@@ -35,7 +35,9 @@ reconciliation start
 
 authoritative read-back
   - transport loss during the read is ``unknown``, never "absent" (fail
-    closed): a dropped read must not be allowed to claim not-executed;
+    closed): a dropped read must not be allowed to claim not-executed —
+    pinned at both the adapter layer (scripted transport errors) and the
+    composition layer (a read-back that raises);
   - a drifted identity (wrong head SHA, wrong PR, wrong external id) reads
     as not-found for the exact target — never as a confirmation;
   - the read-back issues no POST/PUT/PATCH (the duplicate-write guard is
@@ -47,7 +49,8 @@ still-unknown
 
 human resume (the frozen RECONCILE-* root)
   - the human-side fact bundle is derived from rows + read-back; tampered
-    evidence (a forged semantic binding digest) is refused;
+    evidence (a forged semantic binding digest) is refused; the digest is
+    input-sensitive (a different semantic tuple digests differently);
   - the resume moves the feature back to its checkpoint, atomically closes
     the effect, clears the stop reason, and emits exactly one feature
     transition receipt (the frozen push_ack_reconciled oracle count);
@@ -63,6 +66,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 import sqlalchemy as sa
 
@@ -582,6 +586,77 @@ def test_reconcile_inconclusive_read_backs_to_still_unknown(engine) -> None:
     assert effect_row_state(engine, effect_id)[0] == "reconciling", (
         "a still-unknown effect can re-enter reconciliation (no deadlock)"
     )
+
+
+def test_transport_loss_during_read_back_is_unknown_at_composition(engine) -> None:
+    """A raising read-back is judged unknown, never absent (fail closed).
+
+    The adapter layer pins this for scripted transport errors; this pins
+    the composition's own except branch: whatever raises under the read,
+    the judged outcome must be "unknown" and the effect must go back to
+    unknown via STILL-UNKNOWN — a dropped read must never claim
+    not-executed.
+    """
+    feature_id, effect_id = seed_unknown_effect(engine)
+    start_effect_reconciliation(
+        engine, effect_id=effect_id, idempotency_key="recon-0", feature_id=feature_id
+    )
+
+    class _ExplodingReadBack:
+        def read_feature_branch(self, **_: Any) -> Any:
+            raise httpx.ConnectError("connection dropped mid-read")
+
+    outcome = reconcile_github_write(
+        engine,
+        _ExplodingReadBack(),  # type: ignore[arg-type]
+        effect_id=effect_id,
+        action="push_branch",
+        idempotency_key="recon-1",
+        payload={"branch": BRANCH, "head_sha": HEAD},
+        feature_id=feature_id,
+    )
+    assert outcome.authoritative_result == "unknown", outcome.authoritative_result
+    state, _version, _executor = effect_row_state(engine, effect_id)
+    assert state == "unknown", "a transport loss returns the effect to unknown"
+
+
+def test_semantic_binding_digest_is_input_sensitive(engine) -> None:
+    """A different semantic tuple digests differently.
+
+    The cross-source stage in this composition proves the evidence package
+    is internally consistent (one server-side digest recomputation); the
+    thing that makes the tamper test meaningful is that the digest is a
+    function of the tuple's inputs, not a constant. Mutation (c-v2) — a
+    constant binding digest — passed the whole suite before this existed.
+    """
+    feature_id, effect_id, _digest = seed_ready_resume(engine)
+    true_facts = derive_resume_facts(
+        engine,
+        feature_id=feature_id,
+        effect_id=effect_id,
+        effect_outcome="confirmed_completed",
+        decision_action="resume_checkpoint",
+        read_back=BRANCH_FOUND,
+        authoritative_receipt_id="remote-0001",
+    )
+    forged_facts = derive_resume_facts(
+        engine,
+        feature_id=feature_id,
+        effect_id=effect_id,
+        effect_outcome="confirmed_completed",
+        decision_action="resume_checkpoint",
+        read_back=BRANCH_FOUND,
+        # a different authoritative receipt id changes the semantic tuple
+        authoritative_receipt_id="remote-9999",
+    )
+    assert (
+        true_facts.values["evidence.semantic_binding_sha256"]
+        != forged_facts.values["evidence.semantic_binding_sha256"]
+    ), "the binding digest must depend on the tuple's inputs"
+    assert (
+        true_facts.values["evidence.authoritative_readback_sha256"]
+        != forged_facts.values["evidence.authoritative_readback_sha256"]
+    ), "the readback digest must depend on the tuple's inputs"
 
 
 def test_reconcile_unknown_payload_keys_refuse(engine) -> None:
