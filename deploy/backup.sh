@@ -36,6 +36,9 @@ UNIT_DIR=/etc/systemd/system
 # The deletion-manifest export the restore must replay. Produced alongside the
 # Agent snapshot by personal-agent-db-backup; see that unit.
 DELETION_MANIFEST="$STAGING/api/deletion-manifest.json"
+# The DAL workflow database snapshot (R09-B backup-set decision, 2026-09-02).
+# Staged by personal-agent-dal-db-backup from the DAL service's own 0700 dir.
+DAL_DB_SNAPSHOT="$STAGING/dal/dal.latest.sqlite"
 
 # DEV-036 idempotency is one successful offsite snapshot per Shanghai calendar
 # day. systemd serialises starts of this unit, while flock also covers an
@@ -97,6 +100,7 @@ INPUT_LABELS=(
   "mcp unit"
   "mcp observe unit"
   "mcp observe timer"
+  "dal snapshot"
 )
 INPUTS=(
   "$API_DB_SNAPSHOT"
@@ -107,6 +111,7 @@ INPUTS=(
   "$UNIT_DIR/personal-data-mcp.service"
   "$UNIT_DIR/personal-data-mcp-observe.service"
   "$UNIT_DIR/personal-data-mcp-observe.timer"
+  "$DAL_DB_SNAPSHOT"
 )
 
 # Fail closed on a missing snapshot: a backup that ships one DB and not the

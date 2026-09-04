@@ -148,7 +148,18 @@ else
   echo "created user $DAL_USER"
 fi
 install -d -m 0700 -o "$DAL_USER" -g "$DAL_USER" /var/lib/personal-agent-dal
+# R09-B backup-set extension: staging dir (setgid, group=backup) for the DAL
+# snapshot the backup user reads, and the snapshot script's libexec home. The
+# script imports personal_agent_core, so it runs under the DAL venv.
+install -d -m 2770 -o "$DAL_USER" -g "$BACKUP_USER" /var/backups/personal-agent/dal
+install -d -m 0755 -o root -g root /opt/personal-agent-dal/libexec
+install -m 0755 -o root -g root   "$(cd "$(dirname "$0")" && pwd)/libexec/dal_snapshot.py"   /opt/personal-agent-dal/libexec/dal_snapshot.py
 install -m 0644 -o root -g root "$UNIT_SRC/personal-agent-dal-api.service" /etc/systemd/system/
+# R09-B backup-set extension: the DAL snapshot unit + timer, installed but not
+# enabled (the enablement belongs to the DAL runbook, like every other unit).
+install -m 0644 -o root -g root \
+  "$UNIT_SRC/personal-agent-dal-db-backup.service" \
+  "$UNIT_SRC/personal-agent-dal-db-backup.timer" /etc/systemd/system/
 # Installed but NOT enabled, like every other unit: the env file, key material,
 # database and migration do not exist yet, and enabling now would fail-closed
 # into a restart loop. deploy/README.md (DAL section) owns the enablement.

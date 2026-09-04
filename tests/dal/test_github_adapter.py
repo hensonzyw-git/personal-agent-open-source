@@ -72,7 +72,7 @@ from personal_agent_dal.github.adapter_controller import (
 from personal_agent_core.timeutil import utc_now
 from personal_agent_dal.storage.engine import create_database_engine, session_factory
 
-from tests.dal.factories import external_effect_row, feature_row
+from tests.dal.factories import EMPTY_SHA256, external_effect_row, feature_row
 
 
 # ---------------------------------------------------------------------------
@@ -832,10 +832,28 @@ def engine(tmp_path: Path):
     engine.dispose()
 
 
+def stamp_intent_fingerprint(engine, effect_id: str, action: str, payload: dict) -> None:
+    """Stamp the intent row's target fingerprint the way the real caller does."""
+    from personal_agent_dal.github.adapter_controller import fingerprint_for
+    from personal_agent_dal.storage.machine_models import ExternalEffect
+
+    digest = fingerprint_for(action, payload)
+    with session_factory(engine)() as session, session.begin():
+        row = session.get(ExternalEffect, effect_id)
+        assert row is not None
+        row.target_fingerprint = digest
+        row.remote_idempotency_key = "idem-1"
+
+
 def seed_effect_and_feature(
     engine, *, feature_state: str = "awaiting_merge"
 ) -> tuple[str, str]:
-    """One awaiting_merge feature plus its intent_recorded push effect."""
+    """One awaiting_merge feature plus its intent_recorded push effect.
+
+    The intent row is stamped the way the real caller does: the push payload
+    fingerprint and the composition's remote idempotency key. Tests that
+    dispatch a drifted target re-stamp via ``stamp_intent_fingerprint``.
+    """
     feature_id = "feature-gh-1"
     effect_id = "effect-gh-1"
     now = utc_now()
@@ -847,6 +865,7 @@ def seed_effect_and_feature(
                 state="intent_recorded", now=now,
             )
         )
+    stamp_intent_fingerprint(engine, effect_id, "push_branch", push_payload())
     return feature_id, effect_id
 
 
@@ -1039,7 +1058,7 @@ def test_composition_no_second_write_after_unknown(engine) -> None:
         payload=push_payload(), feature_id=feature_id,
     )
     assert effect_state(engine, effect_id) == "unknown"
-    with pytest.raises(ControllerRefusal, match="already written"):
+    with pytest.raises(ControllerRefusal):
         dispatch_github_write(
             engine, adapter,  # type: ignore[arg-type]
             effect_id=effect_id, action="push_branch", idempotency_key="idem-2",
@@ -1057,13 +1076,12 @@ def test_composition_parked_effect_stops_a_replay_write(engine) -> None:
         effect_id=effect_id, action="push_branch", idempotency_key="idem-1",
         payload=push_payload(), feature_id=feature_id,
     )
-    with pytest.raises(ControllerRefusal) as refused:
+    with pytest.raises(ControllerRefusal):
         dispatch_github_write(
             engine, adapter,  # type: ignore[arg-type]
             effect_id=effect_id, action="push_branch", idempotency_key="idem-2",
             payload=push_payload(), feature_id=feature_id,
         )
-    assert "already written" in refused.value.detail
     assert adapter.calls == 1
 
 
@@ -1134,6 +1152,8 @@ def test_composition_pr_flow_binds_base_and_parks_on_confirm(engine) -> None:
     confirmed_pr = PullRequestOutcome(
         repository_id=REPO, pull_request_number=3, head_sha=HEAD,
     )
+    pr_payload = {"branch": BRANCH, "base_branch": "main", "title": "T", "body": "B"}
+    stamp_intent_fingerprint(engine, effect_id, "create_pull_request", pr_payload)
     outcome = dispatch_github_write(
         engine, StubAdapter(confirmed_pr),  # type: ignore[arg-type]
         effect_id=effect_id, action="create_pull_request", idempotency_key="idem-1",
@@ -1149,13 +1169,191 @@ def test_composition_check_flow_confirmed_parks(engine) -> None:
         repository_id=REPO, check_name=CHECK_NAME, head_sha=HEAD,
         check_run_id=9, external_id="cap-1", conclusion="success",
     )
+    check_payload = {
+        "branch_head_sha": HEAD, "check_name": CHECK_NAME,
+        "external_id": "cap-1", "conclusion": "success",
+    }
+    stamp_intent_fingerprint(engine, effect_id, "write_check_run", check_payload)
     outcome = dispatch_github_write(
         engine, StubAdapter(confirmed_check),  # type: ignore[arg-type]
         effect_id=effect_id, action="write_check_run", idempotency_key="idem-1",
-        payload={
-            "branch_head_sha": HEAD, "check_name": CHECK_NAME,
-            "external_id": "cap-1", "conclusion": "success",
-        },
+        payload=check_payload,
         feature_id=feature_id,
     )
     assert outcome.effect_state == "dispatch_started"
+
+
+# ---------------------------------------------------------------------------
+# Composition: intent binding (whole-track review findings 1-3, 2026-09-04).
+# ---------------------------------------------------------------------------
+
+
+def test_composition_refuses_a_payload_that_drifts_from_the_intent(
+    engine,
+) -> None:
+    """The intent row froze one target; dispatch must send exactly that.
+
+    Without the check, any caller key opens any target: the composition
+    would fire a write the recorded intent never named, and the not-executed
+    edge would stamp ``target_matches: True`` over a target never compared.
+    """
+    feature_id, effect_id = seed_effect_and_feature(engine)
+    stamp_intent_fingerprint(engine, effect_id, "push_branch", push_payload())
+    drifted = {"branch": "dal/other-branch", "head_sha": HEAD}
+    with pytest.raises(ControllerRefusal) as refused:
+        dispatch_github_write(
+            engine, StubAdapter(CONFIRMED_PUSH),  # type: ignore[arg-type]
+            effect_id=effect_id, action="push_branch", idempotency_key="idem-1",
+            payload=drifted, feature_id=feature_id,
+        )
+    assert "target fingerprint" in refused.value.detail
+    assert effect_state(engine, effect_id) == "intent_recorded", (
+        "a fingerprint-mismatched dispatch is zero-write"
+    )
+
+
+def test_composition_refuses_an_action_that_drifts_from_the_intent(
+    engine,
+) -> None:
+    """Same key, same fingerprint field, different action: refuse."""
+    feature_id, effect_id = seed_effect_and_feature(engine)
+    stamp_intent_fingerprint(engine, effect_id, "push_branch", push_payload())
+    with pytest.raises(ControllerRefusal):
+        dispatch_github_write(
+            engine, StubAdapter(CONFIRMED_PUSH),  # type: ignore[arg-type]
+            effect_id=effect_id, action="write_check_run", idempotency_key="idem-1",
+            payload={
+                "branch_head_sha": HEAD, "check_name": CHECK_NAME,
+                "external_id": "cap-1", "conclusion": "success",
+            },
+            feature_id=feature_id,
+        )
+    assert effect_state(engine, effect_id) == "intent_recorded"
+
+
+def test_composition_refuses_a_key_that_drifts_from_the_remote_binding(
+    engine,
+) -> None:
+    """The effect row's remote_idempotency_key is the credential's dedupe
+    contract with the counterparty; dispatching under another key would
+    break DAL-034's replay identification."""
+    feature_id, effect_id = seed_effect_and_feature(engine)
+    stamp_intent_fingerprint(engine, effect_id, "push_branch", push_payload())
+    with pytest.raises(ControllerRefusal) as refused:
+        dispatch_github_write(
+            engine, StubAdapter(CONFIRMED_PUSH),  # type: ignore[arg-type]
+            effect_id=effect_id, action="push_branch", idempotency_key="other-key",
+            payload=push_payload(), feature_id=feature_id,
+        )
+    assert "remote idempotency key" in refused.value.detail
+    assert effect_state(engine, effect_id) == "intent_recorded"
+
+
+def test_composition_unstamped_fingerprint_refuses(engine) -> None:
+    """An intent row with the empty placeholder fingerprint never dispatches.
+
+    The stamping is the caller's job; the composition treats an unstamped
+    intent as an unbound target, not as ``anything matches``. (The seed
+    stamps by default; this test resets the row to the empty placeholder.)
+    """
+    feature_id, effect_id = seed_effect_and_feature(engine)
+    from personal_agent_dal.storage.machine_models import ExternalEffect
+
+    with session_factory(engine)() as session, session.begin():
+        row = session.get(ExternalEffect, effect_id)
+        assert row is not None
+        row.target_fingerprint = EMPTY_SHA256
+    with pytest.raises(ControllerRefusal) as refused:
+        dispatch_github_write(
+            engine, StubAdapter(CONFIRMED_PUSH),  # type: ignore[arg-type]
+            effect_id=effect_id, action="push_branch", idempotency_key="idem-1",
+            payload=push_payload(), feature_id=feature_id,
+        )
+    assert "target fingerprint" in refused.value.detail
+
+
+def test_composition_feature_id_must_be_the_effect_owner(engine) -> None:
+    """feature_id is derived from the effect's owner row, never trusted.
+
+    A wrong feature_id with an unknown outcome would park the wrong feature
+    (or none) while the true owner stayed awaiting_merge — the split-brain
+    state the whole-track review's probe produced. The composition refuses
+    the mismatch before the claim and derives the owner server-side.
+    """
+    feature_id, effect_id = seed_effect_and_feature(engine)
+    stamp_intent_fingerprint(engine, effect_id, "push_branch", push_payload())
+    with pytest.raises(ControllerRefusal) as refused:
+        dispatch_github_write(
+            engine, StubAdapter(SERVER_5XX_PUSH),  # type: ignore[arg-type]
+            effect_id=effect_id, action="push_branch", idempotency_key="idem-1",
+            payload=push_payload(), feature_id="feature-gh-OTHER",
+        )
+    assert "owner" in refused.value.detail
+    assert effect_state(engine, effect_id) == "intent_recorded"
+    assert feature_state(engine, feature_id) == ("awaiting_merge", None)
+
+
+def test_composition_unknown_parks_the_derived_owner(engine) -> None:
+    """With feature_id omitted, the owner is derived from the effect row and
+    that owner — not a caller-supplied string — is parked on unknown."""
+    feature_id, effect_id = seed_effect_and_feature(engine)
+    stamp_intent_fingerprint(engine, effect_id, "push_branch", push_payload())
+    outcome = dispatch_github_write(
+        engine, StubAdapter(SERVER_5XX_PUSH),  # type: ignore[arg-type]
+        effect_id=effect_id, action="push_branch", idempotency_key="idem-1",
+        payload=push_payload(), feature_id=None,
+    )
+    assert outcome.effect_state == "unknown"
+    assert feature_state(engine, feature_id) == (
+        "reconciliation_required", "EXTERNAL_RESULT_UNKNOWN"
+    )
+
+
+def test_replay_fence_survives_like_wildcards_and_cross_effect_keys(
+    engine,
+) -> None:
+    """The fence query must match this effect's receipts, and only theirs.
+
+    A ``%`` or ``_`` in the key must not widen the LIKE; another effect's
+    receipt sharing the key prefix must not answer for this one.
+    """
+    from personal_agent_dal.github.adapter_controller import (
+        _apply_step,
+        _composition_was_applied,
+        CONTROLLER_SOURCE,
+    )
+
+    feature_id, effect_id = seed_effect_and_feature(engine)
+    stamp_intent_fingerprint(engine, effect_id, "push_branch", push_payload())
+
+    # A receipt for a DIFFERENT effect whose key shares the prefix.
+    with session_factory(engine)() as session, session.begin():
+        session.add(feature_row(feature_id="feature-gh-2", version=1,
+                                state="awaiting_merge", now=utc_now()))
+        session.add(external_effect_row(effect_id="effect-other",
+                                        owner_id="feature-gh-2", version=1,
+                                        state="intent_recorded", now=utc_now()))
+    from personal_agent_dal.github.adapter_controller import _claim_guard_facts
+    _apply_step(
+        engine, command_type="claim_external_effect", evidence_source=CONTROLLER_SOURCE,
+        effect_id="effect-other", expected_version=1,
+        idempotency_key="shared-prefix:claim",
+        facts=_claim_guard_facts(engine, "effect-other", 1),
+    )
+
+    assert _composition_was_applied(engine, effect_id, "shared-prefix") is False, (
+        "another effect's receipt must not answer this composition's fence"
+    )
+    assert _composition_was_applied(engine, "effect-other", "shared-prefix") is True
+
+    # This effect's own claim receipt makes the fence true...
+    dispatch_github_write(
+        engine, StubAdapter(CONFIRMED_PUSH),  # type: ignore[arg-type]
+        effect_id=effect_id, action="push_branch", idempotency_key="idem-1",
+        payload=push_payload(), feature_id=feature_id,
+    )
+    assert _composition_was_applied(engine, effect_id, "idem-1") is True
+    # ...but a key containing LIKE wildcards must not match it.
+    assert _composition_was_applied(engine, effect_id, "idem_") is False
+    assert _composition_was_applied(engine, effect_id, "id%") is False
+    assert _composition_was_applied(engine, effect_id, "ide") is False

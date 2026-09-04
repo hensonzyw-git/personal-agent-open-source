@@ -129,8 +129,10 @@ def _epoch_of(value: Any) -> float | None:
     return float(value.timestamp())
 
 
-def _composition_was_applied(engine: Engine, idempotency_key: str) -> bool:
-    """Whether any lifecycle receipt already carries this composition's key.
+def _composition_was_applied(
+    engine: Engine, effect_id: str, idempotency_key: str
+) -> bool:
+    """Whether *this effect's* lifecycle receipts already carry this key.
 
     The engine's replay fence matches ``transition_receipts.idempotency_key``
     globally, so the same key re-submitting any of this composition's steps
@@ -139,13 +141,21 @@ def _composition_was_applied(engine: Engine, idempotency_key: str) -> bool:
     already applied will find the effect in ``dispatch_started`` (parked) —
     refusing there would make a delivered-but-acked-late composition
     un-answerable and invite a second write.
+
+    The query binds the effect's aggregate id and escapes the two LIKE
+    wildcards (whole-track review finding 3, 2026-09-04): an unescaped
+    ``%``/``_`` in a key would widen the match to receipts this composition
+    never wrote, and an unbound prefix could answer from another effect's
+    receipts — both fabricate a replay that never happened.
     """
+    escaped = idempotency_key.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     with engine.connect() as connection:
         row = connection.execute(
             text(
                 "SELECT receipt_id FROM transition_receipts "
-                "WHERE idempotency_key LIKE :prefix LIMIT 1"
-            ).bindparams(prefix=f"{idempotency_key}:%")
+                "WHERE idempotency_key LIKE :prefix ESCAPE '\\' "
+                "AND aggregate_id = :eid LIMIT 1"
+            ).bindparams(prefix=f"{escaped}:%", eid=effect_id)
         ).first()
     return row is not None
 
@@ -162,6 +172,31 @@ def _effect_row(engine: Engine, effect_id: str) -> tuple[str, int]:
     if row is None:
         raise _invalid(f"no external effect {effect_id}")
     return row[0], row[1]
+
+
+def _intent_binding(engine: Engine, effect_id: str) -> dict[str, Any]:
+    """The intent row's frozen binding: owner, target fingerprint, remote key.
+
+    Read per call, before any state moves — these three fields are what the
+    composition is allowed to send, and every closing edge's ``target_*``
+    guard fact is judged against this comparison, not asserted.
+    """
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT owner_aggregate_id, target_fingerprint, "
+                "remote_idempotency_key FROM external_effects "
+                "WHERE effect_id = :eid"
+            ).bindparams(eid=effect_id)
+        ).first()
+    if row is None:
+        raise _invalid(f"no external effect {effect_id}")
+    owner_id, fingerprint, remote_key = row
+    return {
+        "owner_aggregate_id": owner_id,
+        "target_fingerprint": fingerprint,
+        "remote_idempotency_key": remote_key,
+    }
 
 
 def _claim_guard_facts(engine: Engine, effect_id: str, now_epoch: int) -> dict[str, Any]:
@@ -373,7 +408,7 @@ def dispatch_github_write(
     action: str,
     idempotency_key: str,
     payload: dict[str, Any],
-    feature_id: str,
+    feature_id: str | None,
     stop_feature_on_unknown: bool = True,
     now_epoch: int | None = None,
 ) -> GithubWriteOutcome:
@@ -403,8 +438,8 @@ def dispatch_github_write(
         raise _invalid(f"action must be one of {ACTIONS}")
     if type(idempotency_key) is not str or not idempotency_key:
         raise _invalid("idempotency_key must be a non-empty native string")
-    if type(feature_id) is not str or not feature_id:
-        raise _invalid("feature_id must be a non-empty native string")
+    if feature_id is not None and (type(feature_id) is not str or not feature_id):
+        raise _invalid("feature_id must be a non-empty native string or None")
     if not isinstance(payload, dict) or not payload:
         raise _invalid(f"action {action} needs its payload object")
     allowed_keys = {
@@ -424,11 +459,51 @@ def dispatch_github_write(
 
     state, version = _effect_row(engine, effect_id)
 
+    # --- intent binding (whole-track review finding 1, 2026-09-04) -------
+    # The intent row froze exactly one target (fingerprint over action +
+    # closed payload) and one remote dedupe key. Dispatching a drifted
+    # target or under another key would fire a write the recorded intent
+    # never named; the refusal is pre-write, so not-executed is provable.
+    # The binding comparison also feeds the closing edges' guard facts —
+    # ``target_matches`` stops being an asserted constant.
+    binding = _intent_binding(engine, effect_id)
+    expected_fingerprint = _canonical_fingerprint({"action": action, **payload})
+    if binding["target_fingerprint"] != expected_fingerprint:
+        raise ControllerRefusal(
+            "POLICY_DENIED",
+            "effect {eid} target fingerprint does not match the dispatch "
+            "intent (action={action}): the effect row names another target; "
+            "refusing zero-write".format(eid=effect_id, action=action),
+        )
+    if binding["remote_idempotency_key"] != idempotency_key:
+        raise ControllerRefusal(
+            "POLICY_DENIED",
+            "effect {eid} remote idempotency key does not match the "
+            "dispatch key; refusing zero-write".format(eid=effect_id),
+        )
+
+    # --- owner derivation (whole-track review finding 2, 2026-09-04) -----
+    # The owner is whatever the effect row says, never what the caller
+    # supplied: a caller-supplied feature_id that disagrees with the row
+    # would park the wrong feature (or none) on unknown while the true
+    # owner stayed awaiting_merge. A supplied id must agree; None derives.
+    if feature_id is None:
+        feature_id = binding["owner_aggregate_id"]
+    elif feature_id != binding["owner_aggregate_id"]:
+        raise ControllerRefusal(
+            "POLICY_DENIED",
+            "effect {eid} owner is {owner}, not the supplied feature "
+            "{feature}: refusing zero-write".format(
+                eid=effect_id, owner=binding["owner_aggregate_id"],
+                feature=feature_id,
+            ),
+        )
+
     # --- 0. the replay fence (§2.6): this exact key already composed -----
     # A replayed composition must answer from its receipts, never re-fire the
     # outward write and never refuse as a second write. Any lifecycle step
     # with this composition's key having been applied is a completed replay.
-    if _composition_was_applied(engine, idempotency_key):
+    if _composition_was_applied(engine, effect_id, idempotency_key):
         state, _ = _effect_row(engine, effect_id)
         return GithubWriteOutcome(
             effect_id=effect_id,
@@ -510,6 +585,8 @@ def dispatch_github_write(
 
     # --- 4. the closing edge the registry actually offers ----------------
     if judged == "not_executed":
+        # The target/key comparison ran against the rows before the write;
+        # the guard facts report that comparison, not a constant.
         _apply_step(
             engine,
             command_type="record_effect_not_executed",
@@ -519,7 +596,10 @@ def dispatch_github_write(
             idempotency_key=f"{idempotency_key}:not-executed",
             facts={
                 "evidence.scope_key_matches": True,
-                "evidence.target_matches": True,
+                "evidence.target_matches": (
+                    binding["target_fingerprint"]
+                    == _canonical_fingerprint({"action": action, **payload})
+                ),
                 "evidence.not_executed_readback_valid": True,
             },
         )

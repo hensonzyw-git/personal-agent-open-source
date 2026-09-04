@@ -1,0 +1,9 @@
+[Unit]
+Description=Personal Agent DAL DB snapshot daily
+
+[Timer]
+OnCalendar=*-*-* 16:03:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

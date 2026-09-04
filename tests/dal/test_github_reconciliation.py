@@ -38,8 +38,10 @@ authoritative read-back
     closed): a dropped read must not be allowed to claim not-executed —
     pinned at both the adapter layer (scripted transport errors) and the
     composition layer (a read-back that raises);
-  - a drifted identity (wrong head SHA, wrong PR, wrong external id) reads
-    as not-found for the exact target — never as a confirmation;
+  - a drifted identity (wrong PR, wrong external id) reads as not-found for
+    the exact target — never as a confirmation; a mutable ref found at a
+    different head SHA is *unknown*, not absent (the push may have landed
+    and the ref advanced afterwards);
   - the read-back issues no POST/PUT/PATCH (the duplicate-write guard is
     structural, verified on the scripted transport).
 
@@ -374,6 +376,7 @@ class _ReadBackStub:
 
 BRANCH_FOUND = BranchReadBack(found=True, head_sha=HEAD)
 BRANCH_ABSENT = BranchReadBack(found=False)
+BRANCH_ADVANCED = BranchReadBack(found=True, head_sha="b" * 40)
 BRANCH_UNKNOWN = BranchReadBack(found=None, unknown=True)
 PR_FOUND = OpenPullRequestsReadBack(matches=1, pull_request_number=7, head_sha=HEAD)
 PR_ABSENT = OpenPullRequestsReadBack(matches=0)
@@ -533,6 +536,29 @@ def test_reconcile_found_read_backs_completed(engine) -> None:
     assert state == "reconciling", (
         "the service may not close a feature-owned effect; the human root does"
     )
+
+
+def test_reconcile_advanced_branch_is_unknown_not_absent(engine) -> None:
+    """A mutable ref found at a different SHA is unprovable, not absent.
+
+    The push may have landed and the ref been advanced afterwards, so the
+    read cannot prove the original write did not execute (the whole-track
+    review finding 4, 2026-09-04). Only a server 404 (found=False) is
+    absence evidence for a mutable ref.
+    """
+    feature_id, effect_id = seed_unknown_effect(engine)
+    outcome = reconcile_github_write(
+        engine,
+        _ReadBackStub(BRANCH_ADVANCED),  # type: ignore[arg-type]
+        effect_id=effect_id,
+        action="push_branch",
+        idempotency_key="recon-1",
+        payload={"branch": BRANCH, "head_sha": HEAD},
+        feature_id=feature_id,
+    )
+    assert outcome.authoritative_result == "unknown"
+    state, _version, _executor = effect_row_state(engine, effect_id)
+    assert state == "unknown", "an unprovable mutable ref returns to unknown"
 
 
 def test_reconcile_absent_read_backs_stays_reconciling(engine) -> None:
@@ -748,6 +774,16 @@ def test_full_drill_matches_frozen_push_ack_reconciled_oracle(engine) -> None:
                 state="intent_recorded", now=now,
             )
         )
+    # The intent row carries the frozen binding the real caller stamps
+    # (target fingerprint over action+payload, the remote dedupe key);
+    # the composition refuses an unstamped or drifted target zero-write.
+    from personal_agent_dal.github.adapter_controller import fingerprint_for
+    from personal_agent_dal.storage.machine_models import ExternalEffect
+    with session_factory(engine)() as session, session.begin():
+        row = session.get(ExternalEffect, effect_id)
+        assert row is not None
+        row.target_fingerprint = fingerprint_for("push_branch", push_payload())
+        row.remote_idempotency_key = "idem-loss"
     dispatch_github_write(
         engine, StubAdapter(SERVER_5XX_PUSH),  # type: ignore[arg-type]
         effect_id=effect_id, action="push_branch", idempotency_key="idem-loss",

@@ -24,7 +24,11 @@ UMask=0077
 # worker endpoints keep working either way.
 Environment=PERSONAL_AGENT_DAL_KILL_SWITCH_FILE=/etc/personal-agent/dal-kill-switch.json
 EnvironmentFile=/etc/personal-agent/dal.env
-ExecStart=/opt/personal-agent/.venv/bin/personal-agent-dal-api \
+# R09-B: the GitHub App credential env (app/installation ids, repo, key path)
+# travels through this root:dal 0640 env file; the key file itself is
+# root:personal-agent-dal 0640 and never enters the Finance trust domain.
+EnvironmentFile=/etc/personal-agent/dal.env.d/github-app.env
+ExecStart=/opt/personal-agent-dal/.venv/bin/personal-agent-dal-api \
     --database /var/lib/personal-agent-dal/dal.sqlite \
     --service-key-file /etc/personal-agent/dal.env.d/service-key \
     --enrollment-secret-file /etc/personal-agent/dal.env.d/enrollment-secret \

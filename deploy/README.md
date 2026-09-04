@@ -513,6 +513,8 @@ on the Finance MCP. Order matters in three places, as below.
 | `/etc/personal-agent/dal.env.d/service-key` | root:dal | 0640 | HMAC key (worker + operator tokens) |
 | `/etc/personal-agent/dal.env.d/enrollment-secret` | root:dal | 0640 | gates `/enroll` |
 | `/etc/personal-agent/dal-kill-switch.json` | root:root | 0644 | PRESENT at install → claims/mutations answer 503 |
+| `/var/backups/personal-agent/dal` | dal:backup | 2770 setgid | staging for `dal.latest.sqlite`, read by the backup user |
+| `/opt/personal-agent-dal/libexec/dal_snapshot.py` | root:root | 0755 | staged snapshot via the shared online_backup primitive |
 | listener `127.0.0.1:8820` | — | loopback | Nginx proxies `/dal/` to it |
 
 The kill switch is the opposite polarity from the Finance write switch, on
@@ -533,8 +535,12 @@ sudo bash ~/personal-agent-deploy/provision_dal_keys.sh  # mint secrets + kill s
 sudo -u personal-agent-dal /opt/personal-agent/.venv/bin/personal-agent-dal-db \
   --database /var/lib/personal-agent-dal/dal.sqlite upgrade
 
-# 3. Enable (order: unit only; no timers exist for DAL yet):
+# 3. Enable (order: unit first; the DAL db-backup timer only once the service
+#    and its database exist, since the snapshot unit needs both):
 sudo systemctl enable --now personal-agent-dal-api
+#    Backup set (R09-B): enable the DAL snapshot timer so dal.sqlite joins the
+#    daily offsite snapshot before the 16:07 backup window:
+sudo systemctl enable --now personal-agent-dal-db-backup.timer
 
 # 4. Nginx: add the /dal/ locations to agent.example.invalid-ssl.conf
 #    (snippet below), then:

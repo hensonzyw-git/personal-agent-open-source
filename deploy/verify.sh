@@ -277,6 +277,7 @@ expect_success "backup user can read mcp staging dir" \
 # every staged file inside was 0600 owner-only under UMask=0077. The backup ran,
 # stat'd all three inputs, and died on its first actual read. Assert the read.
 for pair in "agent.latest.sqlite:api" "deletion-manifest.json:api" \
+            "dal.latest.sqlite:dal" \
             "finance.latest.sqlite:mcp"; do
   f="${pair%%:*}"; sub="${pair##*:}"
   p=/var/backups/personal-agent/$sub/$f
@@ -289,7 +290,7 @@ for pair in "agent.latest.sqlite:api" "deletion-manifest.json:api" \
 done
 # Staging dirs: 2770, owned by the service user, group backup, no 'other'. The
 # setgid bit is what makes new staged files inherit the backup group.
-for pair in "$API_USER:api" "$MCP_USER:mcp"; do
+for pair in "$API_USER:api" "$MCP_USER:mcp" "personal-agent-dal:dal"; do
   owner="${pair%%:*}"; sub="${pair##*:}"
   d=/var/backups/personal-agent/$sub
   m="$(stat -c %a "$d")"; while [ "${#m}" -lt 4 ]; do m="0$m"; done
@@ -304,6 +305,8 @@ expect_success "personal-agent-backup.timer enabled" \
   systemctl is-enabled --quiet personal-agent-backup.timer
 expect_success "personal-agent-db-backup.timer enabled" \
   systemctl is-enabled --quiet personal-agent-db-backup.timer
+expect_success "personal-agent-dal-db-backup.timer enabled" \
+  systemctl is-enabled --quiet personal-agent-dal-db-backup.timer
 expect_success "personal-data-mcp-db-backup.timer enabled" \
   systemctl is-enabled --quiet personal-data-mcp-db-backup.timer
 # DEV-036: the review and cleanup timers must be enabled, and the backup-age

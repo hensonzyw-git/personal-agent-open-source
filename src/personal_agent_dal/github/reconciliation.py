@@ -282,8 +282,10 @@ def _judge_read_back(
         if read_back.found and read_back.head_sha == payload["head_sha"]:
             return "confirmed_completed"
         if read_back.found:
-            # The branch exists at a different SHA: not our write.
-            return "absent"
+            # A mutable ref found at a different SHA proves nothing about the
+            # original write: the push may have landed and the ref advanced
+            # afterwards. Absence for a mutable ref is only ever a server 404.
+            return "unknown"
         return "absent"
     if isinstance(read_back, OpenPullRequestsReadBack):
         if read_back.unknown:

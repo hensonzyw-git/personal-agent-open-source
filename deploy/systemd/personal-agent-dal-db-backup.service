@@ -1,0 +1,50 @@
+# DEV-035 backup-set extension (R09-B decision, 2026-09-02): snapshot the DAL
+# workflow database (Online Backup API) into staging.
+#
+# Runs as the DAL service user against its own 0700 data dir. The backup user
+# cannot read the live DB, so the service produces the snapshot itself; the
+# backup user only reads the staged file. Mirrors personal-agent-db-backup;
+# the DAL database has no deletion manifest.
+#
+# The DAL venv is independent of the Finance venv on purpose (2026-09-04:
+# a Finance-side wheel reinstall from the main branch wiped the DAL
+# entrypoints and left personal-agent-dal-api failed with 203/EXEC).
+[Unit]
+Description=Personal Agent DAL DB snapshot for offsite backup
+After=personal-agent-dal-api.service
+
+[Service]
+Type=oneshot
+User=personal-agent-dal
+Group=personal-agent-dal
+# 0027, not 0077: the staged file exists to be read by personal-agent-backup
+# through the setgid staging dir's group.
+UMask=0027
+ExecStart=/opt/personal-agent-dal/.venv/bin/python /opt/personal-agent-dal/libexec/dal_snapshot.py /var/lib/personal-agent-dal/dal.sqlite /var/backups/personal-agent/dal/dal.latest.sqlite
+TimeoutStartSec=300s
+
+ReadWritePaths=/var/backups/personal-agent/dal
+ReadOnlyPaths=/var/lib/personal-agent-dal
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
+# DEV-035 backup-set extension (R09-B decision, 2026-09-02): snapshot the DAL
+# workflow database daily, ahead of the offsite backup. Off the :00 mark and
+# before the 16:07 backup window, same discipline as the other db-backup
+# timers; the backup script also fails closed on a missing staged snapshot,
+# because timer ordering alone is not the guarantee.
