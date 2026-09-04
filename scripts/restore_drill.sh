@@ -95,25 +95,16 @@ API_DB="$RESTORE_DIR/var/backups/personal-agent/api/agent.latest.sqlite"
 MCP_DB="$RESTORE_DIR/var/backups/personal-agent/mcp/finance.latest.sqlite"
 DAL_DB="$RESTORE_DIR/var/backups/personal-agent/dal/dal.latest.sqlite"
 MANIFEST="$RESTORE_DIR/var/backups/personal-agent/api/deletion-manifest.json"
-for f in "$API_DB" "$MCP_DB" "$MANIFEST"; do
+for f in "$API_DB" "$MCP_DB" "$DAL_DB" "$MANIFEST"; do
   if [ ! -s "$f" ]; then
     echo "FAIL: restored file missing or empty: $f" >&2
     exit 1
   fi
 done
-# The DAL snapshot entered the backup set on 2026-09-02 (R09-B). Restores of
-# snapshots older than that legitimately lack the file; anything newer must
-# carry it, and a drill that skips it verifies two databases and silently
-# ignores the third. The date gate keeps the drill honest without breaking the
-# old-snapshot case.
-DAL_ARGS=()
-if [ -s "$DAL_DB" ]; then
-  DAL_ARGS=(--dal-database "$DAL_DB")
-else
-  echo "NOTE: no dal/dal.latest.sqlite in this snapshot (pre-2026-09-02 snapshot?)"
-  echo "      The DAL restore gates are SKIPPED -- this run is not evidence that"
-  echo "      the DAL database is restorable."
-fi
+# R09-B's current ``latest`` backup contract always includes DAL. Historical
+# compatibility belongs to an explicitly selected, timestamp-bounded drill;
+# silently accepting a missing file in ``latest`` would turn a partial restore
+# into false recovery evidence.
 
 echo "== 2-6. library checks (integrity, schema, refs, AEAD sample, replay) =="
 export PERSONAL_AGENT_DATA_ACTIVE_KID="$DATA_KID"
@@ -131,7 +122,7 @@ fi
   --agent-database "$API_DB" \
   --finance-database "$MCP_DB" \
   --manifest "$MANIFEST" \
-  "${DAL_ARGS[@]}" \
+  --dal-database "$DAL_DB" \
   "${SAMPLE_ARGS[@]}" \
   || { echo "FAIL: library restore checks" >&2; exit 1; }
 

@@ -159,7 +159,9 @@ install -m 0644 -o root -g root "$UNIT_SRC/personal-agent-dal-api.service" /etc/
 # enabled (the enablement belongs to the DAL runbook, like every other unit).
 install -m 0644 -o root -g root \
   "$UNIT_SRC/personal-agent-dal-db-backup.service" \
-  "$UNIT_SRC/personal-agent-dal-db-backup.timer" /etc/systemd/system/
+  "$UNIT_SRC/personal-agent-dal-db-backup.timer" \
+  "$UNIT_SRC/personal-agent-dal-reconcile.service" \
+  "$UNIT_SRC/personal-agent-dal-reconcile.timer" /etc/systemd/system/
 # Installed but NOT enabled, like every other unit: the env file, key material,
 # database and migration do not exist yet, and enabling now would fail-closed
 # into a restart loop. deploy/README.md (DAL section) owns the enablement.

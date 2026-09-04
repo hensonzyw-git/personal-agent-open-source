@@ -1183,6 +1183,38 @@ def test_composition_check_flow_confirmed_parks(engine) -> None:
     assert outcome.effect_state == "dispatch_started"
 
 
+def test_duplicate_dispatch_receipt_loser_never_calls_adapter(engine) -> None:
+    """The dispatch CAS receipt, not an advisory pre-read, owns the write."""
+    from dataclasses import replace
+
+    feature_id, effect_id = seed_effect_and_feature(engine)
+    adapter = StubAdapter(CONFIRMED_PUSH)
+    real_apply_step = dispatch_github_write.__globals__["_apply_step"]
+
+    def raced_apply_step(*args, **kwargs):
+        outcome = real_apply_step(*args, **kwargs)
+        if kwargs.get("command_type") == "record_effect_dispatch":
+            return replace(outcome, duplicate=True)
+        return outcome
+
+    dispatch_github_write.__globals__["_apply_step"] = raced_apply_step
+    try:
+        outcome = dispatch_github_write(
+            engine,
+            adapter,  # type: ignore[arg-type]
+            effect_id=effect_id,
+            action="push_branch",
+            idempotency_key="idem-1",
+            payload=push_payload(),
+            feature_id=feature_id,
+        )
+    finally:
+        dispatch_github_write.__globals__["_apply_step"] = real_apply_step
+    assert outcome.effect_state == "dispatch_started"
+    assert outcome.adapter_outcome is None
+    assert adapter.calls == 0
+
+
 # ---------------------------------------------------------------------------
 # Composition: intent binding (whole-track review findings 1-3, 2026-09-04).
 # ---------------------------------------------------------------------------

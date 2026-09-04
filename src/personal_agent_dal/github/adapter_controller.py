@@ -554,7 +554,7 @@ def dispatch_github_write(
 
     # --- 2. dispatch CAS (claimed -> dispatch_started) -------------------
     if state == CLAIMED_STATE:
-        _apply_step(
+        dispatch_step = _apply_step(
             engine,
             command_type="record_effect_dispatch",
             evidence_source=EXECUTOR_SOURCE,
@@ -564,6 +564,17 @@ def dispatch_github_write(
             facts=_dispatch_guard_facts(engine, effect_id, clock),
         )
         state, version = _effect_row(engine, effect_id)
+        if dispatch_step.duplicate:
+            # The dispatch receipt is the ownership fence for the one outward
+            # call.  A concurrent composer that replays that receipt did not
+            # win dispatch authority, even when both passed the earlier
+            # advisory receipt pre-check.
+            return GithubWriteOutcome(
+                effect_id=effect_id,
+                effect_state=state,
+                adapter_outcome=None,
+                refusal=None,
+            )
     if state != PARKED_COMPLETED:
         raise ControllerRefusal(
             "ILLEGAL_TRANSITION",

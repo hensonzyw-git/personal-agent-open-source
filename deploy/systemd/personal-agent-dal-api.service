@@ -33,6 +33,7 @@ ExecStart=/opt/personal-agent-dal/.venv/bin/personal-agent-dal-api \
     --service-key-file /etc/personal-agent/dal.env.d/service-key \
     --enrollment-secret-file /etc/personal-agent/dal.env.d/enrollment-secret \
     --kill-switch-path /etc/personal-agent/dal-kill-switch.json \
+    --github-app-env-file /etc/personal-agent/dal.env.d/github-app.env \
     --host 127.0.0.1 \
     --port 8820
 Restart=on-failure

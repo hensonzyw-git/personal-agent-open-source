@@ -457,3 +457,14 @@ def test_run_all_verifies_the_dal_database(tmp_path: Path, keyring: KeyRing) -> 
     assert "dal_schema_version" in names
     assert "dal_reference_integrity" in names
     assert all(r["ok"] for r in results), [r for r in results if not r["ok"]]
+
+
+def test_restore_drill_requires_dal_snapshot() -> None:
+    """The latest-snapshot drill cannot downgrade DAL to an optional check."""
+    script = (
+        Path(__file__).resolve().parents[2] / "scripts" / "restore_drill.sh"
+    ).read_text(encoding="utf-8")
+    assert 'for f in "$API_DB" "$MCP_DB" "$DAL_DB" "$MANIFEST"' in script
+    assert '--dal-database "$DAL_DB"' in script
+    assert "DAL_ARGS" not in script
+    assert "DAL restore gates are SKIPPED" not in script

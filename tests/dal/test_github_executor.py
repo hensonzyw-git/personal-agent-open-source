@@ -41,6 +41,7 @@ from personal_agent_dal.github.adapter import (
 from personal_agent_dal.github.executor import (
     ExecutorRefusal,
     record_effect_target,
+    record_github_write_intent,
     run_unknown_sweep,
     unknown_effects,
     wake_effect,
@@ -224,7 +225,19 @@ def test_target_fingerprint_disagreement_refuses_zero_write(engine) -> None:
     """A target record edited behind the intent row is a broken pairing."""
     _feature_id, effect_id = seed_intent(engine)
     drift = {"branch": "dal/other", "head_sha": "b" * 40}
-    record_target(engine, effect_id=effect_id, payload=drift)
+    from personal_agent_core.manifest import canonical_json
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "UPDATE effect_dispatch_targets SET payload_json = :payload, "
+                "target_fingerprint = :fingerprint WHERE effect_id = :effect_id"
+            ).bindparams(
+                payload=canonical_json(drift),
+                fingerprint=fingerprint_for("push_branch", drift),
+                effect_id=effect_id,
+            )
+        )
     adapter = StubAdapter(CONFIRMED_PUSH)
     with pytest.raises(ExecutorRefusal) as excinfo:
         wake_effect(
@@ -237,6 +250,21 @@ def test_target_fingerprint_disagreement_refuses_zero_write(engine) -> None:
     assert adapter.calls == []
 
 
+def test_record_effect_target_refuses_non_atomic_fingerprint_pair(engine) -> None:
+    """The producer cannot bolt a target onto an unrelated intent later."""
+    _feature_id, effect_id = seed_intent(engine, with_target=False)
+    with session_factory(engine)() as session, session.begin():
+        with pytest.raises(ExecutorRefusal) as excinfo:
+            record_effect_target(
+                session,
+                effect_id=effect_id,
+                action="push_branch",
+                payload={"branch": "dal/drift", "head_sha": "b" * 40},
+                now=utc_now(),
+            )
+    assert excinfo.value.code == "FINGERPRINT_MISMATCH"
+
+
 def test_record_effect_target_refuses_an_unknown_action(engine) -> None:
     engine_target = "effect-x"
     with session_factory(engine)() as session, session.begin():
@@ -245,6 +273,77 @@ def test_record_effect_target_refuses_an_unknown_action(engine) -> None:
                 session, effect_id=engine_target, action="merge_pr",
                 payload={"branch": "b"}, now=utc_now(),
             )
+
+
+def test_production_intent_producer_writes_effect_and_target_atomically(engine) -> None:
+    now = utc_now()
+    with session_factory(engine)() as session, session.begin():
+        session.add(feature_row(
+            feature_id="feature-producer", version=3, state="verified", now=now
+        ))
+    effect_id = record_github_write_intent(
+        engine,
+        owner_feature_id="feature-producer",
+        action="push_branch",
+        payload=push_payload(),
+        remote_idempotency_key="producer-key",
+    )
+    replay_id = record_github_write_intent(
+        engine,
+        owner_feature_id="feature-producer",
+        action="push_branch",
+        payload=push_payload(),
+        remote_idempotency_key="producer-key",
+    )
+    assert replay_id == effect_id
+    with engine.connect() as connection:
+        pair = connection.execute(
+            sa.text(
+                "SELECT e.state, t.action, t.payload_json "
+                "FROM external_effects e JOIN effect_dispatch_targets t "
+                "ON t.effect_id = e.effect_id WHERE e.effect_id = :effect_id"
+            ).bindparams(effect_id=effect_id)
+        ).one()
+    assert pair.state == "intent_recorded"
+    assert pair.action == "push_branch"
+    assert json.loads(pair.payload_json) == push_payload()
+
+
+def test_production_intent_producer_rolls_back_both_rows_on_target_failure(
+    engine, monkeypatch
+) -> None:
+    now = utc_now()
+    with session_factory(engine)() as session, session.begin():
+        session.add(feature_row(
+            feature_id="feature-rollback", version=3, state="verified", now=now
+        ))
+
+    def fail_target(*args, **kwargs):
+        raise ExecutorRefusal("TARGET_INVALID", "injected target failure")
+
+    monkeypatch.setattr(
+        "personal_agent_dal.github.executor.record_effect_target", fail_target
+    )
+    with pytest.raises(ExecutorRefusal, match="injected target failure"):
+        record_github_write_intent(
+            engine,
+            owner_feature_id="feature-rollback",
+            action="push_branch",
+            payload=push_payload(),
+            remote_idempotency_key="rollback-key",
+        )
+    with engine.connect() as connection:
+        effects = connection.execute(
+            sa.text(
+                "SELECT count(*) FROM external_effects "
+                "WHERE remote_idempotency_key = 'rollback-key'"
+            )
+        ).scalar_one()
+        targets = connection.execute(
+            sa.text("SELECT count(*) FROM effect_dispatch_targets")
+        ).scalar_one()
+    assert effects == 0
+    assert targets == 0
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +548,124 @@ def test_sweep_drifted_branch_is_unknown_not_absent(engine) -> None:
     assert outcomes[0].reconciled is not None
     assert outcomes[0].reconciled.authoritative_result == "unknown"
     assert effect_row_full(engine, "effect-f5-1")[0] == "unknown"
+
+
+def test_sweep_refuses_malformed_target_before_any_read(engine) -> None:
+    park_unknown(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "UPDATE effect_dispatch_targets SET payload_json = :payload "
+                "WHERE effect_id = :effect_id"
+            ).bindparams(payload="[]", effect_id="effect-f5-1")
+        )
+    adapter = ReadBackAdapter(BranchReadBack(found=True, head_sha=HEAD))
+    outcomes = run_unknown_sweep(engine, adapter)
+    assert outcomes[0].refusal is not None
+    assert outcomes[0].refusal.code == "TARGET_INVALID"
+    assert adapter.calls == []
+
+
+def test_sweep_refuses_semantically_invalid_target_even_if_both_hashes_match(
+    engine,
+) -> None:
+    park_unknown(engine)
+    malformed = {"branch": BRANCH, "head_sha": "not-a-git-sha"}
+    fingerprint = fingerprint_for("push_branch", malformed)
+    from personal_agent_core.manifest import canonical_json
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "UPDATE effect_dispatch_targets SET payload_json = :payload, "
+                "target_fingerprint = :fingerprint WHERE effect_id = :effect_id"
+            ).bindparams(
+                payload=canonical_json(malformed),
+                fingerprint=fingerprint,
+                effect_id="effect-f5-1",
+            )
+        )
+        connection.execute(
+            sa.text(
+                "UPDATE external_effects SET target_fingerprint = :fingerprint "
+                "WHERE effect_id = :effect_id"
+            ).bindparams(fingerprint=fingerprint, effect_id="effect-f5-1")
+        )
+    adapter = ReadBackAdapter(BranchReadBack(found=True, head_sha=HEAD))
+    outcomes = run_unknown_sweep(engine, adapter)
+    assert outcomes[0].refusal is not None
+    assert outcomes[0].refusal.code == "TARGET_INVALID"
+    assert adapter.calls == []
+
+
+def test_expired_dispatch_marker_enters_read_only_reconciliation(engine) -> None:
+    """Crash after dispatch CAS: expiry moves to unknown, then GET-only readback."""
+    feature_id, effect_id = seed_intent(engine)
+    from personal_agent_dal.github.adapter_controller import (
+        _apply_step,
+        _claim_guard_facts,
+        _dispatch_guard_facts,
+    )
+
+    _apply_step(
+        engine,
+        command_type="claim_external_effect",
+        evidence_source="external-effect-controller",
+        effect_id=effect_id,
+        expected_version=1,
+        idempotency_key="crash-expired:claim",
+        facts=_claim_guard_facts(engine, effect_id, 0),
+    )
+    _apply_step(
+        engine,
+        command_type="record_effect_dispatch",
+        evidence_source="effect-executor",
+        effect_id=effect_id,
+        expected_version=2,
+        idempotency_key="crash-expired:dispatch",
+        facts=_dispatch_guard_facts(engine, effect_id, 0),
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "UPDATE external_effects SET claim_expires_at = :expired "
+                "WHERE effect_id = :effect_id"
+            ).bindparams(
+                expired="2020-01-01T00:00:00.000000Z",
+                effect_id=effect_id,
+            )
+        )
+    adapter = ReadBackAdapter(BranchReadBack(found=True, head_sha=HEAD))
+    outcomes = run_unknown_sweep(engine, adapter, now_epoch=1_700_000_000)
+    assert [outcome.effect_id for outcome in outcomes] == [effect_id]
+    assert adapter.calls == ["read_branch"]
+    assert effect_row_full(engine, effect_id)[0] == "reconciling"
+    with engine.connect() as connection:
+        feature = connection.execute(
+            sa.text("SELECT state FROM features WHERE feature_id = :feature_id")
+            .bindparams(feature_id=feature_id)
+        ).scalar_one()
+    assert feature == "reconciliation_required"
+
+
+def test_reconciliation_keys_do_not_collide_across_effects(engine) -> None:
+    """Receipt keys are global; effect identity must be part of the episode key."""
+    park_unknown(engine, effect_id="effect-key-1", feature_id="feature-key-1")
+    park_unknown(engine, effect_id="effect-key-2", feature_id="feature-key-2")
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "UPDATE external_effects SET remote_idempotency_key = :key "
+                "WHERE effect_id IN ('effect-key-1', 'effect-key-2')"
+            ).bindparams(key="shared-remote-key")
+        )
+    adapter = ReadBackAdapter(BranchReadBack(found=True, head_sha=HEAD))
+    outcomes = run_unknown_sweep(engine, adapter)
+    assert {outcome.effect_id for outcome in outcomes} == {
+        "effect-key-1",
+        "effect-key-2",
+    }
+    assert adapter.calls == ["read_branch", "read_branch"]
 
 
 def test_sweep_reports_effects_without_a_target_and_continues(engine) -> None:

@@ -22,11 +22,10 @@ F5 executor commands, both carrying the same state/version fence:
   effects. This is also the persistent-task driver's entry point (the
   systemd timer calls exactly this); it issues no writes.
 
-Token handling: the operator token arrives via `--token-file` (owner-only
-0600 regular file, read through `O_NOFOLLOW` and verified on the same file
-descriptor to close the stat/read race). The token value is never printed;
-only its operator identity prefix and expiry are echoed, and only by the
-`whoami` command.
+Token handling: interactive commands use `--token-file` (owner-only 0600).
+The server-local systemd sweep may instead use `--service-key-file`; that mode
+is structurally restricted to `reconcile-sweep` and mints a two-minute control
+token in memory.  No bearer token is written to disk or printed.
 
 Mutations require an explicit second confirmation (typo-guard). Failures
 print the server's error envelope fields (code, detail) and never a
@@ -51,6 +50,7 @@ from pathlib import Path
 OPERATOR_SCHEMA_VERSION = "dal.operator-transport/1.0"
 DEFAULT_LIMIT = 20
 DEFAULT_TIMEOUT_SECONDS = 10.0
+SERVER_LOCAL_SWEEP_BASE_URL = "http://127.0.0.1:8820"
 READ_COMMANDS = ("list", "show", "checkpoints", "whoami", "effects")
 
 
@@ -207,7 +207,15 @@ def main(argv: list[str] | None = None) -> int:
         description="Minimal read-only operator console for the DAL Dev Workflow Service.",
     )
     parser.add_argument("--base-url", required=True, help="e.g. https://agent.example.invalid/dal/transport/v1")
-    parser.add_argument("--token-file", type=Path, required=True, help="0600 file holding the operator token")
+    credentials = parser.add_mutually_exclusive_group(required=True)
+    credentials.add_argument(
+        "--token-file", type=Path, help="0600 file holding the operator token"
+    )
+    credentials.add_argument(
+        "--service-key-file",
+        type=Path,
+        help="server-local reconcile-sweep only; mint an in-memory short token",
+    )
     parser.add_argument(
         "--ca-bundle", type=Path, default=None,
         help="PEM bundle of a private CA to verify the server certificate "
@@ -253,7 +261,28 @@ def main(argv: list[str] | None = None) -> int:
 
     global _CA_BUNDLE
     _CA_BUNDLE = args.ca_bundle
-    token = _read_token_file(args.token_file)
+    if args.service_key_file is not None:
+        if args.command != "reconcile-sweep":
+            parser.error("--service-key-file is only valid with reconcile-sweep")
+        if args.base_url.rstrip("/") != SERVER_LOCAL_SWEEP_BASE_URL:
+            parser.error(
+                "--service-key-file requires the pinned loopback base URL "
+                f"{SERVER_LOCAL_SWEEP_BASE_URL}"
+            )
+        from personal_agent_dal.service.cli import _read_secret_file
+        from personal_agent_dal.service.operator_tokens import issue_operator_token
+
+        service_key = _read_secret_file(args.service_key_file, "service key file")
+        if service_key is None:
+            return 1
+        token = issue_operator_token(
+            operator_id="dal-reconcile-timer",
+            capabilities=["control"],
+            expires_at_epoch=int(time.time()) + 120,
+            key=service_key,
+        )
+    else:
+        token = _read_token_file(args.token_file)
 
     if args.command == "whoami":
         print(_token_expiry(token))

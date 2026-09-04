@@ -96,9 +96,28 @@ def test_unit_file_and_template_variable_sets_match() -> None:
     unit = (PROJECT_ROOT / "deploy" / "systemd" /
             "personal-agent-dal-api.service").read_text(encoding="utf-8")
     assert "EnvironmentFile=/etc/personal-agent/dal.env.d/github-app.env" in unit
+    assert "--github-app-env-file /etc/personal-agent/dal.env.d/github-app.env" in unit
     provision_text = PROVISION.read_text(encoding="utf-8")
     for var in FOUR_VARS:
         assert var in provision_text
+
+
+def test_reconciliation_timer_is_installed_and_calls_the_operator_console() -> None:
+    """The persistence-driven sweep is a real timer, not only a CLI verb."""
+    systemd = PROJECT_ROOT / "deploy" / "systemd"
+    service = (systemd / "personal-agent-dal-reconcile.service").read_text(
+        encoding="utf-8"
+    )
+    timer = (systemd / "personal-agent-dal-reconcile.timer").read_text(
+        encoding="utf-8"
+    )
+    install = (PROJECT_ROOT / "deploy" / "install.sh").read_text(encoding="utf-8")
+    assert "personal-agent-dal-console" in service
+    assert "--service-key-file /etc/personal-agent/dal.env.d/service-key" in service
+    assert "reconcile-sweep" in service
+    assert "OnUnitActiveSec=5min" in timer
+    assert "personal-agent-dal-reconcile.service" in install
+    assert "personal-agent-dal-reconcile.timer" in install
 
 
 def test_gate_passes_a_complete_configuration(tmp_path: Path) -> None:

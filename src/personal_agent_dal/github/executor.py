@@ -42,15 +42,22 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy import Engine
 
+from personal_agent_core.ids import new_id
+from personal_agent_core.sqlite import run_write_transaction
+from personal_agent_core.timeutil import utc_now
 from personal_agent_dal.github.adapter_controller import (
     ACTIONS,
+    CONTROLLER_SOURCE,
     ControllerRefusal,
     GithubWriteOutcome,
+    _apply_step,
+    _stop_feature_for_unknown,
     dispatch_github_write,
     fingerprint_for,
     INTENT_STATE,
@@ -63,7 +70,11 @@ from personal_agent_dal.github.reconciliation import (
     ReconciliationRefusal,
     reconcile_github_write,
 )
-from personal_agent_dal.storage.machine_models import EffectDispatchTarget
+from personal_agent_dal.storage.machine_models import (
+    EffectDispatchTarget,
+    ExternalEffect,
+)
+from personal_agent_dal.storage.models import Feature
 
 #: The states a wake may operate on. ``intent_recorded`` and ``claimed`` are
 #: composable; a ``dispatch_started`` effect is parked (may have landed) and is
@@ -106,27 +117,253 @@ def record_effect_target(
 ) -> None:
     """Persist the target body in the caller's intent transaction.
 
-    Called from the composition that records the intent (the capability
-    store's consume path), so target and binding are atomic: a row in
+    Called by :func:`record_github_write_intent` inside the same transaction
+    that creates the intent, so target and binding are atomic: a row in
     ``external_effects`` without a target record is a refuse-at-wake defect
     this module's derivation probe reports, never a request-field fallback.
     The fingerprint stored here must equal the intent row's stamped
     fingerprint; a disagreement is a bug at the intent site, refused here.
     """
     from personal_agent_core.manifest import canonical_json
-    from personal_agent_core.timeutil import utc_now
-
     if action not in ACTIONS:
         raise ExecutorRefusal("INVALID_ARGUMENT", f"action must be one of {ACTIONS}")
+    _validate_target_payload(action, payload, effect_id=effect_id)
     fingerprint = fingerprint_for(action, payload)
+    effect = session.get(ExternalEffect, effect_id)
+    if effect is None:
+        raise ExecutorRefusal("NOT_FOUND", f"no external effect {effect_id}")
+    if effect.target_fingerprint != fingerprint:
+        raise ExecutorRefusal(
+            "FINGERPRINT_MISMATCH",
+            f"effect {effect_id} intent fingerprint {effect.target_fingerprint} "
+            f"!= target record {fingerprint}",
+        )
+    payload_json = canonical_json(payload)
+    existing = session.get(EffectDispatchTarget, effect_id)
+    if existing is not None:
+        if (
+            existing.action != action
+            or existing.payload_json != payload_json
+            or existing.target_fingerprint != fingerprint
+        ):
+            raise ExecutorRefusal(
+                "IDEMPOTENCY_CONFLICT",
+                f"effect {effect_id} already has a different dispatch target",
+            )
+        return
     row = EffectDispatchTarget(
         effect_id=effect_id,
         action=action,
-        payload_json=canonical_json(payload),
+        payload_json=payload_json,
         target_fingerprint=fingerprint,
         recorded_at=now or utc_now(),
     )
     session.merge(row)
+
+
+def record_github_write_intent(
+    engine: Engine,
+    *,
+    owner_feature_id: str,
+    action: str,
+    payload: dict[str, Any],
+    remote_idempotency_key: str,
+    capability_id: str | None = None,
+    now: Any = None,
+) -> str:
+    """Atomically persist a GitHub intent and its immutable dispatch target.
+
+    This is the trusted controller's production producer boundary.  It is not
+    an operator endpoint: the later operator request may only name the returned
+    effect id plus state/version.  Replays resolve through the database unique
+    key and verify the complete stored pair instead of creating a second row.
+    """
+    if not isinstance(owner_feature_id, str) or not owner_feature_id:
+        raise ExecutorRefusal(
+            "INVALID_ARGUMENT", "owner_feature_id must be a non-empty string"
+        )
+    if not isinstance(remote_idempotency_key, str) or not remote_idempotency_key:
+        raise ExecutorRefusal(
+            "INVALID_ARGUMENT", "remote_idempotency_key must be a non-empty string"
+        )
+    if capability_id is not None and (
+        not isinstance(capability_id, str) or not capability_id
+    ):
+        raise ExecutorRefusal(
+            "INVALID_ARGUMENT", "capability_id must be a non-empty string or null"
+        )
+    if action not in ACTIONS:
+        raise ExecutorRefusal("INVALID_ARGUMENT", f"action must be one of {ACTIONS}")
+    _validate_target_payload(action, payload, effect_id="new effect")
+    fingerprint = fingerprint_for(action, payload)
+    recorded_at = now or utc_now()
+    scope = f"github:{owner_feature_id}:{action}"
+
+    from personal_agent_dal.storage.engine import session_factory
+
+    def _body(session: Any) -> str:
+        if session.get(Feature, owner_feature_id) is None:
+            raise ExecutorRefusal(
+                "NOT_FOUND", f"no feature {owner_feature_id} for GitHub intent"
+            )
+        from sqlalchemy import select
+
+        existing = session.scalars(
+            select(ExternalEffect).where(
+                ExternalEffect.effect_scope_key == scope,
+                ExternalEffect.remote_idempotency_key == remote_idempotency_key,
+            )
+        ).one_or_none()
+        if existing is not None:
+            if (
+                existing.owner_aggregate_type != "feature"
+                or existing.owner_aggregate_id != owner_feature_id
+                or existing.target_fingerprint != fingerprint
+            ):
+                raise ExecutorRefusal(
+                    "IDEMPOTENCY_CONFLICT",
+                    "GitHub intent key was already used for different content",
+                )
+            target = session.get(EffectDispatchTarget, existing.effect_id)
+            if (
+                target is None
+                or target.action != action
+                or target.payload_json != _canonical_json(payload)
+            ):
+                raise ExecutorRefusal(
+                    "IDEMPOTENCY_CONFLICT",
+                    "GitHub intent replay does not match its target record",
+                )
+            return existing.effect_id
+
+        effect_id = new_id()
+        session.add(
+            ExternalEffect(
+                effect_id=effect_id,
+                version=1,
+                origin="dal_dispatched",
+                owner_aggregate_type="feature",
+                owner_aggregate_id=owner_feature_id,
+                effect_scope_key=scope,
+                remote_idempotency_key=remote_idempotency_key,
+                target_fingerprint=fingerprint,
+                state=INTENT_STATE,
+                attempt=1,
+                executor_id="workflow-service",
+                executor_epoch=1,
+                claim_expires_at=None,
+                capability_id=capability_id,
+                capability_epoch=None,
+                receipt_refs_sha256=None,
+                post_read_refs_sha256=None,
+                impact_sha256=None,
+                created_at=recorded_at,
+                updated_at=recorded_at,
+            )
+        )
+        session.flush()
+        record_effect_target(
+            session,
+            effect_id=effect_id,
+            action=action,
+            payload=payload,
+            now=recorded_at,
+        )
+        from personal_agent_dal.storage.audit import append_audit_event
+
+        append_audit_event(
+            session,
+            event_id=new_id(),
+            trace_id=effect_id,
+            event_type="github.effect_intent",
+            redacted_summary=f"GitHub {action} intent and target recorded atomically",
+            now=recorded_at,
+        )
+        return effect_id
+
+    with session_factory(engine)() as session:
+        return run_write_transaction(session, lambda: _body(session))
+
+
+def _canonical_json(payload: dict[str, Any]) -> str:
+    from personal_agent_core.manifest import canonical_json
+
+    return canonical_json(payload)
+
+
+def _validate_target_payload(
+    action: str, payload: Any, *, effect_id: str
+) -> None:
+    from personal_agent_dal.github.adapter import _valid_branch_name, _valid_sha
+
+    if not isinstance(payload, dict):
+        raise ExecutorRefusal(
+            "TARGET_INVALID", f"{effect_id} target payload is not an object"
+        )
+    allowed_keys = {
+        "push_branch": frozenset({"branch", "head_sha"}),
+        "create_pull_request": frozenset(
+            {"branch", "base_branch", "title", "body"}
+        ),
+        "write_check_run": frozenset(
+            {
+                "branch_head_sha",
+                "check_name",
+                "external_id",
+                "conclusion",
+                "details_url",
+            }
+        ),
+    }[action]
+    required = allowed_keys - {"details_url"}
+    if set(payload) - allowed_keys or required - set(payload):
+        raise ExecutorRefusal(
+            "TARGET_INVALID", f"{effect_id} target payload shape is not closed"
+        )
+    for key in required:
+        if not isinstance(payload[key], str) or not payload[key]:
+            raise ExecutorRefusal(
+                "TARGET_INVALID",
+                f"{effect_id} target field {key} must be a non-empty string",
+            )
+    if (
+        "details_url" in payload
+        and payload["details_url"] is not None
+        and not isinstance(payload["details_url"], str)
+    ):
+        raise ExecutorRefusal(
+            "TARGET_INVALID",
+            f"{effect_id} target field details_url must be a string or null",
+        )
+    branch_fields = (
+        ("branch",) if action == "push_branch" else
+        ("branch", "base_branch") if action == "create_pull_request" else ()
+    )
+    if any(not _valid_branch_name(payload[field]) for field in branch_fields):
+        raise ExecutorRefusal(
+            "TARGET_INVALID", f"{effect_id} target carries an invalid branch name"
+        )
+    sha_field = (
+        "head_sha" if action == "push_branch" else
+        "branch_head_sha" if action == "write_check_run" else None
+    )
+    if sha_field is not None and not _valid_sha(payload[sha_field]):
+        raise ExecutorRefusal(
+            "TARGET_INVALID", f"{effect_id} target carries an invalid commit SHA"
+        )
+    if action == "write_check_run" and payload["conclusion"] not in {
+        "action_required",
+        "cancelled",
+        "failure",
+        "neutral",
+        "skipped",
+        "stale",
+        "success",
+        "timed_out",
+    }:
+        raise ExecutorRefusal(
+            "TARGET_INVALID", f"{effect_id} target carries an invalid conclusion"
+        )
 
 
 def _load_target(engine: Engine, effect_id: str) -> EffectDispatchTarget:
@@ -145,25 +382,66 @@ def _load_target(engine: Engine, effect_id: str) -> EffectDispatchTarget:
     return target
 
 
+def _validated_target(
+    engine: Engine, effect_id: str, facts: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    """Load and validate the complete persisted target before any adapter call.
+
+    Dispatch and reconciliation share this exact boundary.  A target row that
+    is malformed, carries a fourth action, or no longer hashes to both stored
+    fingerprints is refused before a write *or* a read-back.  In particular,
+    reconciliation may not trust a row merely because it has a foreign key.
+    """
+    target = _load_target(engine, effect_id)
+    if target.action not in ACTIONS:
+        raise ExecutorRefusal(
+            "TARGET_INVALID", f"effect {effect_id} carries unknown action"
+        )
+    try:
+        payload = json.loads(target.payload_json)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ExecutorRefusal(
+            "TARGET_INVALID", f"effect {effect_id} target payload is not valid JSON"
+        ) from error
+    _validate_target_payload(target.action, payload, effect_id=f"effect {effect_id}")
+    fingerprint = fingerprint_for(target.action, payload)
+    if (
+        target.target_fingerprint != fingerprint
+        or facts["target_fingerprint"] != fingerprint
+    ):
+        raise ExecutorRefusal(
+            "FINGERPRINT_MISMATCH",
+            f"effect {effect_id} target payload does not match its persisted binding",
+        )
+    return target.action, payload
+
+
 def _effect_facts(engine: Engine, effect_id: str) -> dict[str, Any]:
     """The effect row's binding facts, read fresh (§5.2: no identity map)."""
     with engine.connect() as connection:
         row = connection.execute(
             text(
-                "SELECT state, version, owner_aggregate_id, "
+                "SELECT state, version, owner_aggregate_type, owner_aggregate_id, "
                 "remote_idempotency_key, target_fingerprint FROM external_effects "
                 "WHERE effect_id = :eid"
             ).bindparams(eid=effect_id)
         ).first()
     if row is None:
         raise ExecutorRefusal("NOT_FOUND", f"no external effect {effect_id}")
-    return {
+    facts = {
         "state": row[0],
         "version": row[1],
-        "owner_aggregate_id": row[2],
-        "remote_idempotency_key": row[3],
-        "target_fingerprint": row[4],
+        "owner_aggregate_type": row[2],
+        "owner_aggregate_id": row[3],
+        "remote_idempotency_key": row[4],
+        "target_fingerprint": row[5],
     }
+    if facts["owner_aggregate_type"] != "feature":
+        raise ExecutorRefusal(
+            "TARGET_INVALID",
+            f"effect {effect_id} is not owned by a feature",
+        )
+    return facts
 
 
 def wake_effect(
@@ -210,18 +488,17 @@ def wake_effect(
         )
 
     if facts["state"] in (UNKNOWN_STATE, RECONCILING_STATE):
-        target = _load_target(engine, effect_id)
-        payload = json.loads(target.payload_json)
+        action, payload = _validated_target(engine, effect_id, facts)
         try:
             reconciled = reconcile_github_write(
                 engine,
                 adapter,
                 effect_id=effect_id,
-                action=target.action,
+                action=action,
                 idempotency_key=_reconciliation_key(
-                    facts["remote_idempotency_key"], facts["version"]
+                    effect_id, facts["remote_idempotency_key"], facts["version"]
                 ),
-                payload=_read_payload_for(target.action, payload),
+                payload=_read_payload_for(action, payload),
                 feature_id=facts["owner_aggregate_id"],
             )
         except ReconciliationRefusal as error:
@@ -244,24 +521,13 @@ def wake_effect(
             "owner root or reconciliation; terminal states are closed",
         )
 
-    target = _load_target(engine, effect_id)
-    payload = json.loads(target.payload_json)
-    # The target record and the intent row must agree on the fingerprint:
-    # a disagreement means someone moved one without the other, and
-    # dispatching either version would write an intent that was never
-    # recorded as a pair.
-    if target.target_fingerprint != facts["target_fingerprint"]:
-        raise ExecutorRefusal(
-            "FINGERPRINT_MISMATCH",
-            f"effect {effect_id} intent fingerprint {facts['target_fingerprint']} "
-            f"!= target record {target.target_fingerprint}",
-        )
+    action, payload = _validated_target(engine, effect_id, facts)
     try:
         dispatch = dispatch_github_write(
             engine,
             adapter,
             effect_id=effect_id,
-            action=target.action,
+            action=action,
             idempotency_key=facts["remote_idempotency_key"],
             payload=payload,
             feature_id=facts["owner_aggregate_id"],
@@ -281,7 +547,9 @@ def wake_effect(
     )
 
 
-def _reconciliation_key(remote_idempotency_key: str, effect_version: int) -> str:
+def _reconciliation_key(
+    effect_id: str, remote_idempotency_key: str, effect_version: int
+) -> str:
     """The reconciliation episode's idempotency key, derived from persistence.
 
     Each STILL-UNKNOWN round-trip bumps the effect's version, so keying the
@@ -291,7 +559,51 @@ def _reconciliation_key(remote_idempotency_key: str, effect_version: int) -> str
     never collides with the last one. The remote key anchors it to this
     effect's intent — the key is derived, never caller-supplied.
     """
-    return f"reconcile:{remote_idempotency_key}:v{effect_version}"
+    return f"reconcile:{effect_id}:{remote_idempotency_key}:v{effect_version}"
+
+
+def _recover_expired_dispatches(
+    engine: Engine, *, limit: int, now_epoch: int
+) -> None:
+    """Move expired ``dispatch_started`` crash windows to ``unknown``.
+
+    The marker was committed before the network call, so expiry never licenses
+    a resend.  It only licenses the frozen EE-DISPATCH-UNKNOWN edge, after
+    which the normal read-only reconciliation sweep owns the effect.
+    """
+    now = datetime.fromtimestamp(now_epoch, tz=timezone.utc)
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT e.effect_id, e.version, e.owner_aggregate_id "
+                "FROM external_effects e JOIN effect_dispatch_targets t "
+                "ON t.effect_id = e.effect_id "
+                "WHERE e.state = 'dispatch_started' "
+                "AND e.owner_aggregate_type = 'feature' "
+                "AND e.claim_expires_at IS NOT NULL AND e.claim_expires_at <= :now "
+                "ORDER BY e.updated_at ASC LIMIT :lim"
+            ).bindparams(now=now, lim=limit)
+        ).all()
+    for effect_id, version, owner_id in rows:
+        try:
+            _apply_step(
+                engine,
+                command_type="record_effect_unknown",
+                evidence_source=CONTROLLER_SOURCE,
+                effect_id=effect_id,
+                expected_version=version,
+                idempotency_key=f"recover-dispatch:{effect_id}:v{version}:unknown",
+                facts={"executor.failure_shape": "response_lost"},
+            )
+        except ControllerRefusal:
+            # Another process won the CAS. Its fresh state will either enter
+            # this sweep below or be owned by that process.
+            continue
+        try:
+            _stop_feature_for_unknown(engine, feature_id=owner_id, now_epoch=now_epoch)
+        except ControllerRefusal as error:
+            if error.code != "ILLEGAL_TRANSITION":
+                raise
 
 
 def _read_payload_for(action: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -350,6 +662,7 @@ def run_unknown_sweep(
     *,
     limit: int = 20,
     max_effective: int | None = None,
+    now_epoch: int | None = None,
 ) -> list[WakeOutcome]:
     """One persistent-task pass over unknown effects: reconcile, never re-fire.
 
@@ -363,13 +676,20 @@ def run_unknown_sweep(
     """
     if max_effective is not None and max_effective < 0:
         raise ExecutorRefusal("INVALID_ARGUMENT", "max_effective must be non-negative")
+    clock = (
+        int(datetime.now(tz=timezone.utc).timestamp())
+        if now_epoch is None
+        else now_epoch
+    )
+    _recover_expired_dispatches(engine, limit=limit, now_epoch=clock)
     outcomes: list[WakeOutcome] = []
     effective = 0
     for facts in unknown_effects(engine, limit=limit):
         if max_effective is not None and effective >= max_effective:
             break
         try:
-            target = _load_target(engine, facts["effect_id"])
+            current = _effect_facts(engine, facts["effect_id"])
+            action, payload = _validated_target(engine, facts["effect_id"], current)
         except ExecutorRefusal as error:
             outcomes.append(
                 WakeOutcome(
@@ -385,11 +705,13 @@ def run_unknown_sweep(
                 engine,
                 adapter,
                 effect_id=facts["effect_id"],
-                action=target.action,
+                action=action,
                 idempotency_key=_reconciliation_key(
-                    facts["remote_idempotency_key"], facts["version"]
+                    facts["effect_id"],
+                    facts["remote_idempotency_key"],
+                    facts["version"],
                 ),
-                payload=_read_payload_for(target.action, json.loads(target.payload_json)),
+                payload=_read_payload_for(action, payload),
                 feature_id=facts["owner_aggregate_id"],
             )
             outcomes.append(

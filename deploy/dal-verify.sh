@@ -48,6 +48,8 @@ BASE=http://127.0.0.1:8820
 
 # --- unit / identity ----------------------------------------------------------
 check "dal unit is active" systemctl is-active --quiet personal-agent-dal-api
+check "dal reconciliation timer is enabled" systemctl is-enabled --quiet personal-agent-dal-reconcile.timer
+check "dal reconciliation timer is active" systemctl is-active --quiet personal-agent-dal-reconcile.timer
 DAL_PROC="$(systemctl show -p MainPID --value personal-agent-dal-api)"
 if [ -n "$DAL_PROC" ] && [ "$DAL_PROC" != 0 ]; then
   check "dal main pid belongs to $DAL_USER" ps -o user= -p "$DAL_PROC" | grep -qx "$DAL_USER"

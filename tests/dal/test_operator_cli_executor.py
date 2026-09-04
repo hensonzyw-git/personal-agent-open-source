@@ -274,6 +274,55 @@ def test_reconcile_sweep_read_only_on_empty_backlog(live_server, token_file) -> 
     assert adapter.calls == [], adapter.calls
 
 
+def test_systemd_mode_mints_in_memory_token_for_sweep_only(
+    live_server, tmp_path: Path, monkeypatch
+) -> None:
+    base_url, engine, adapter = live_server
+    monkeypatch.setattr(operator_cli, "SERVER_LOCAL_SWEEP_BASE_URL", base_url)
+    effect_id = _seed(engine)
+    key_file = tmp_path / "service-key"
+    key_file.write_bytes(SERVICE_KEY)
+    key_file.chmod(0o600)
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        code = operator_cli.main(
+            [
+                "--base-url",
+                base_url,
+                "--service-key-file",
+                str(key_file),
+                "reconcile-sweep",
+            ]
+        )
+    assert code == 0
+    assert effect_id in stdout.getvalue()
+    assert "push" not in adapter.calls
+
+    with pytest.raises(SystemExit) as excinfo:
+        operator_cli.main(
+            [
+                "--base-url",
+                base_url,
+                "--service-key-file",
+                str(key_file),
+                "effects",
+            ]
+        )
+    assert excinfo.value.code == 2
+
+    with pytest.raises(SystemExit) as remote_exc:
+        operator_cli.main(
+            [
+                "--base-url",
+                "https://example.invalid/dal",
+                "--service-key-file",
+                str(key_file),
+                "reconcile-sweep",
+            ]
+        )
+    assert remote_exc.value.code == 2
+
+
 def test_executor_error_envelope_surfaces(live_server, token_file, tmp_path: Path) -> None:
     """A 501 from a non-composed service surfaces as a clean envelope."""
     # Point the CLI at the same server but ask for an effect the composed

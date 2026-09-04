@@ -517,6 +517,7 @@ on the Finance MCP. Order matters in three places, as below.
 | `/etc/personal-agent/dal-kill-switch.json` | root:root | 0644 | PRESENT at install → claims/mutations answer 503 |
 | `/var/backups/personal-agent/dal` | dal:backup | 2770 setgid | staging for `dal.latest.sqlite`, read by the backup user |
 | `/opt/personal-agent-dal/libexec/dal_snapshot.py` | root:root | 0755 | staged snapshot via the shared online_backup primitive |
+| `personal-agent-dal-reconcile.timer` | dal:dal process | 5 min | server-local operator console `reconcile-sweep`; short token minted in memory |
 | listener `127.0.0.1:8820` | — | loopback | Nginx proxies `/dal/` to it |
 
 The kill switch is the opposite polarity from the Finance write switch, on
@@ -547,6 +548,9 @@ sudo -u personal-agent-dal /opt/personal-agent/.venv/bin/personal-agent-dal-db \
 # 3. Enable (order: gate passes first; the DAL db-backup timer only once the
 #    service and its database exist, since the snapshot unit needs both):
 sudo systemctl enable --now personal-agent-dal-api
+#    Persistent GitHub response-loss reconciliation. It calls the operator
+#    console over loopback and never stores a bearer token on disk:
+sudo systemctl enable --now personal-agent-dal-reconcile.timer
 #    Backup set (R09-B): enable the DAL snapshot timer so dal.sqlite joins the
 #    daily offsite snapshot before the 16:07 backup window:
 sudo systemctl enable --now personal-agent-dal-db-backup.timer
@@ -607,8 +611,11 @@ the token value never appears in a command line or log.
 exactly like every other rollback does):
 
 ```sh
-sudo systemctl disable --now personal-agent-dal-api
-sudo rm /etc/systemd/system/personal-agent-dal-api.service && sudo systemctl daemon-reload
+sudo systemctl disable --now personal-agent-dal-reconcile.timer personal-agent-dal-api
+sudo rm /etc/systemd/system/personal-agent-dal-api.service \
+  /etc/systemd/system/personal-agent-dal-reconcile.service \
+  /etc/systemd/system/personal-agent-dal-reconcile.timer
+sudo systemctl daemon-reload
 # then remove the /dal/ locations from the Nginx vhost; personal site re-check applies
 ```
 
