@@ -293,14 +293,24 @@ def _judge_read_back(
         if read_back.matches == 1:
             return "confirmed_completed"
         if read_back.matches == 0:
-            return "absent"
+            # An open-only listing with zero hits cannot prove a PR never
+            # existed: the PR may have been created and closed (or merged)
+            # since the lost dispatch response. Absence here would hand the
+            # human root a not-executed proof the server does not have.
+            return "unknown"
         # Two or more open PRs for one head/base is a drifted world the
         # composition must not paper over.
         return "unknown"
     if isinstance(read_back, CheckRunReadBack):
         if read_back.unknown or read_back.found is None:
             return "unknown"
-        return "confirmed_completed" if read_back.found else "absent"
+        if read_back.found:
+            return "confirmed_completed"
+        # found=False splits: only the 404-on-SHA shape proves absence (the
+        # commit itself is gone, so no run against it can exist). A live SHA
+        # whose latest-filtered listing names no match is unprovable — the
+        # original run may have been superseded by a later one.
+        return "absent" if read_back.sha_absent else "unknown"
     return "unknown"
 
 
@@ -650,8 +660,21 @@ def derive_resume_facts(
 def _read_back_result(
     read_back: BranchReadBack | OpenPullRequestsReadBack | CheckRunReadBack,
 ) -> str:
+    """The read-back's result as the semantic tuple encodes it.
+
+    Mirrors the judge's fail-closed semantics (F4, 2026-09-04): a check
+    ``found=False`` is absence evidence only in the 404-on-SHA shape; a
+    zero-match open-PR listing proves nothing. The digest must never
+    overstate what the read proved.
+    """
     if isinstance(read_back, OpenPullRequestsReadBack):
         return "confirmed_completed" if read_back.matches == 1 else "unknown"
+    if isinstance(read_back, CheckRunReadBack):
+        if read_back.found is True:
+            return "confirmed_completed"
+        if read_back.found is False and read_back.sha_absent:
+            return "absent"
+        return "unknown"
     if read_back.found is True:
         return "confirmed_completed"
     if read_back.found is False:

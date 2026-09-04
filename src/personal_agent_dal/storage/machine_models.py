@@ -412,6 +412,46 @@ class ExternalEffect(Base):
     )
 
 
+#: The closed action set of the dispatch executor's target record. Exactly the
+#: frozen adapter actions; a fourth action would be an unfrozen write surface.
+EFFECT_TARGET_ACTIONS: Final[tuple[str, ...]] = (
+    "push_branch",
+    "create_pull_request",
+    "write_check_run",
+)
+
+
+class EffectDispatchTarget(Base):
+    """The persisted target body of one external effect (R09-B F5).
+
+    The `external_effects` row freezes the *binding* — owner, scope key,
+    remote idempotency key, target fingerprint — but not the payload body
+    itself. The durable dispatch executor must derive owner, action, payload
+    and remote key from persistence, never from an operator's request, so the
+    action and its closed payload are recorded here in the same transaction
+    that records the intent. One row per effect (rearm replaces it); the
+    executor reads, never trusts anything else.
+    """
+
+    __tablename__ = "effect_dispatch_targets"
+
+    effect_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("external_effects.effect_id"), primary_key=True
+    )
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    target_fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(_in_set("action", EFFECT_TARGET_ACTIONS), name="action"),
+        CheckConstraint(
+            _hex_of_length("target_fingerprint", 64, nullable=False),
+            name="target_fingerprint_hex",
+        ),
+    )
+
+
 class RecoveryCase(Base):
     """A compensation investigation. Compensation is not rollback (§3.6)."""
 

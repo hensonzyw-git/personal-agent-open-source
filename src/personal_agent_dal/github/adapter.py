@@ -158,12 +158,21 @@ class OpenPullRequestsReadBack:
 
 @dataclass(frozen=True)
 class CheckRunReadBack:
-    """One authoritative check-run read for an exact SHA/name/external_id."""
+    """One authoritative check-run read for an exact SHA/name/external_id.
+
+    ``found=False`` splits into two shapes and only one is absence
+    evidence: ``sha_absent=True`` means the commit itself returned 404, so
+    no run against it can exist (provable absence); ``sha_absent=False``
+    means the SHA resolved but the latest-filtered listing named no match —
+    a later run of the same check supersedes the original in that listing,
+    so this proves nothing about the original write.
+    """
 
     found: bool | None
     check_run_id: int | None = None
     head_sha: str | None = None
     unknown: bool = False
+    sha_absent: bool = False
 
 
 @dataclass(frozen=True)
@@ -840,7 +849,7 @@ class GithubAdapter:
             return CheckRunReadBack(found=None, unknown=True)
         if listing.status_code == 404:
             # The SHA itself is absent: the run cannot exist either.
-            return CheckRunReadBack(found=False)
+            return CheckRunReadBack(found=False, sha_absent=True)
         if listing.status_code != 200:
             return CheckRunReadBack(found=None, unknown=True)
         try:

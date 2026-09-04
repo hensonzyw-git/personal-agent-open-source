@@ -24,6 +24,8 @@ from personal_agent.backup.deletion_manifest import (
 from personal_agent.backup.restore_verify import (
     check_aead_sample,
     check_audit_chain_intact,
+    check_dal_reference_integrity,
+    check_dal_schema_version,
     check_finance_reference_integrity,
     check_finance_schema_version,
     check_integrity,
@@ -227,6 +229,143 @@ def test_finance_reference_integrity_catches_success_without_receipt(
     assert "invalid_succeeded_receipts=1" in result["detail"]
 
 
+def dal_write_connection(path: Path):
+    """A raw sqlite3 connection with FKs off, for seeding broken shapes.
+
+    The schema enforces its constraints on normal connections; these tests
+    model a DB file that was partially restored or repaired by a tool that
+    did not enforce them (the same technique the agent-side orphan test
+    uses).
+    """
+    import sqlite3
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _conn():
+        raw = sqlite3.connect(str(path))
+        try:
+            raw.execute("PRAGMA foreign_keys=OFF")
+            yield raw
+            raw.commit()
+        finally:
+            raw.close()
+
+    return _conn()
+
+
+def _seed_dal(path: Path) -> None:
+    """A minimal but real DAL database: one feature, one effect, one receipt.
+
+    Uses the DAL package's own engine/migrations so the check under test runs
+    against the schema the deployed DAL service actually writes, and the
+    ORM factories so the rows match what the machine writes (not a hand-
+    guessed column list).
+    """
+    from personal_agent_core.timeutil import utc_now
+    from personal_agent_dal.machine.engine import RECEIPT_SCHEMAS
+    from personal_agent_dal.storage import db as dal_db
+    from personal_agent_dal.storage.engine import (
+        create_database_engine as dal_create_database_engine,
+    )
+    from personal_agent_dal.storage.engine import session_factory as dal_session_factory
+    from personal_agent_dal.storage.machine_models import TransitionReceipt
+    from tests.dal.factories import EMPTY_SHA256, external_effect_row, feature_row
+
+    engine = dal_create_database_engine(path)
+    dal_db.upgrade(engine, "head")
+    with dal_session_factory(engine)() as session, session.begin():
+        session.add(feature_row(feature_id="feature-dal-1", version=1))
+        session.add(
+            external_effect_row(
+                effect_id="effect-dal-1", owner_id="feature-dal-1",
+                version=1, state="confirmed_completed",
+            )
+        )
+        session.add(
+            TransitionReceipt(
+                receipt_id="receipt-dal-1",
+                idempotency_key="idem-dal-1",
+                aggregate_type="external_effect",
+                aggregate_id="effect-dal-1",
+                aggregate_version=1,
+                spec_id="EE-CONFIRM-COMPLETED",
+                command_type="record_effect_confirmed_completed",
+                from_state="dispatch_started",
+                to_state="confirmed_completed",
+                receipt_code="APPLIED",
+                receipt_schema_version=RECEIPT_SCHEMAS["external_effect"],
+                request_payload_sha256=EMPTY_SHA256,
+                event_id=None,
+                recorded_at=utc_now(),
+            )
+        )
+    engine.dispose()
+
+
+def test_dal_schema_and_reference_integrity_pass(tmp_path: Path) -> None:
+    path = tmp_path / "dal.sqlite"
+    _seed_dal(path)
+    assert check_dal_schema_version(path)["ok"]
+    assert check_dal_reference_integrity(path)["ok"]
+
+
+def test_dal_reference_integrity_catches_a_receipt_without_its_effect(
+    tmp_path: Path,
+) -> None:
+    """A receipt naming a missing external effect must fail the gate.
+
+    ``transition_receipts.aggregate_id`` is a polymorphic reference with no
+    DB-level foreign key, so a restore that lost effect rows while keeping
+    receipts is otherwise invisible: ``integrity_check`` and the FK graph
+    both pass. The receipt graph is the audit spine — this is the DAL
+    analogue of the agent-side orphan-operation check.
+    """
+    path = tmp_path / "dal.sqlite"
+    _seed_dal(path)
+    with dal_write_connection(path) as conn:
+        conn.execute(
+            "INSERT INTO transition_receipts (receipt_id, idempotency_key, "
+            "aggregate_type, aggregate_id, aggregate_version, spec_id, "
+            "command_type, from_state, to_state, receipt_code, "
+            "receipt_schema_version, request_payload_sha256, recorded_at) "
+            "VALUES ('receipt-dal-2', 'idem-dal-2', 'external_effect', "
+            "'effect-missing', 1, 'EE-CONFIRM-COMPLETED', "
+            "'record_effect_confirmed_completed', 'dispatch_started', "
+            "'confirmed_completed', 'APPLIED', "
+            "(SELECT receipt_schema_version FROM transition_receipts "
+            " WHERE receipt_id = 'receipt-dal-1'), "
+            "(SELECT request_payload_sha256 FROM transition_receipts "
+            " WHERE receipt_id = 'receipt-dal-1'), ?)",
+            (to_rfc3339(NOW),),
+        )
+
+    result = check_dal_reference_integrity(path)
+
+    assert not result["ok"]
+    assert "orphan_effect_receipts=1" in result["detail"]
+
+
+def test_dal_reference_integrity_catches_an_effect_without_its_owner(
+    tmp_path: Path,
+) -> None:
+    """An effect row whose owner feature is gone must fail the gate.
+
+    ``external_effects.owner_aggregate_id`` is likewise polymorphic: the
+    reconciliation and resume compositions read the owner row to derive
+    every guard fact, so a restore that keeps effects but loses features
+    cannot be trusted to resume from.
+    """
+    path = tmp_path / "dal.sqlite"
+    _seed_dal(path)
+    with dal_write_connection(path) as conn:
+        conn.execute("DELETE FROM features WHERE feature_id = 'feature-dal-1'")
+
+    result = check_dal_reference_integrity(path)
+
+    assert not result["ok"]
+    assert "orphan_effect_owners=1" in result["detail"]
+
+
 def test_aead_sample_opens_under_the_right_key(tmp_path: Path, keyring: KeyRing) -> None:
     path = tmp_path / "agent.sqlite"
     engine = _seed(path, keyring, conversations=["c1"])
@@ -284,4 +423,37 @@ def test_run_all_orders_aead_before_replay(tmp_path: Path, keyring: KeyRing) -> 
     names = [r["name"] for r in results]
     assert "finance_reference_integrity" in names
     assert names.index("aead_sample") < names.index("deletion_manifest_replay")
+    assert all(r["ok"] for r in results), [r for r in results if not r["ok"]]
+
+
+def test_run_all_verifies_the_dal_database(tmp_path: Path, keyring: KeyRing) -> None:
+    """run_all gains a dal_database gate; without it a DAL restore is unverified.
+
+    R09-B added ``dal.latest.sqlite`` to the backup set; a drill that verifies
+    the two original databases and silently ignores the third closes "可备份"
+    without closing "可恢复". Passing the restored DAL path must produce the
+    schema + reference checks in the results.
+    """
+    path = tmp_path / "agent.sqlite"
+    finance_path = tmp_path / "finance.sqlite"
+    dal_path = tmp_path / "dal.sqlite"
+    engine = _seed(path, keyring, conversations=["c1"])
+    _seed_finance(finance_path)
+    _seed_dal(dal_path)
+    _add_manifest(engine, keyring, entry_id="drill-sample", object_id="c1")
+    with session_factory(engine)() as session:
+        manifest = export_manifest(session)
+    engine.dispose()
+
+    results = run_all(
+        path,
+        keyring,
+        finance_database=finance_path,
+        dal_database=dal_path,
+        manifest_entries=manifest,
+        aead_sample_entry_id="drill-sample",
+    )
+    names = [r["name"] for r in results]
+    assert "dal_schema_version" in names
+    assert "dal_reference_integrity" in names
     assert all(r["ok"] for r in results), [r for r in results if not r["ok"]]

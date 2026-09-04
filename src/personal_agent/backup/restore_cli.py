@@ -28,6 +28,16 @@ def main() -> None:
     parser.add_argument("--agent-database", type=Path, required=True)
     parser.add_argument("--finance-database", type=Path, required=True)
     parser.add_argument(
+        "--dal-database",
+        type=Path,
+        default=None,
+        help=(
+            "the restored DAL workflow database (dal.latest.sqlite); omitting "
+            "it skips the DAL gates entirely, so the drill must pass it once "
+            "the snapshot is part of the backup set"
+        ),
+    )
+    parser.add_argument(
         "--manifest",
         type=Path,
         required=True,
@@ -51,6 +61,7 @@ def main() -> None:
         args.agent_database,
         keyring,
         finance_database=args.finance_database,
+        dal_database=args.dal_database,
         manifest_entries=manifest_entries,
         aead_sample_entry_id=args.aead_sample_entry_id,
     )

@@ -37,6 +37,7 @@ from personal_agent_core.ids import new_id
 from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import utc_now
 
+from personal_agent_dal.github import executor
 from personal_agent_dal.service.operator_tokens import (
     OperatorTokenError,
     verify_operator_token,
@@ -453,6 +454,27 @@ class OperatorActionRequest(_Closed):
     expected_state: Literal["pending", "leased", "running"]
 
 
+class EffectWakeRequest(_Closed):
+    """The F5 wake body: the request IS the binding, nothing more.
+
+    The closed schema is the structural guarantee behind the frozen scope:
+    an operator cannot submit a branch, SHA, body, action or idempotency key
+    because no field exists to carry them — extra keys are a 400 (the
+    ``extra="forbid"`` base), not fields to ignore.
+    """
+
+    schema_version: Literal["dal.operator-transport/1.0"]
+    request_id: _Id
+    effect_id: _Id
+    # The caller asserts the lifecycle state its view showed and the version
+    # it was shown at; a mismatch is a refusal, never a write on a stale
+    # projection.
+    expected_state: Literal[
+        "intent_recorded", "claimed", "unknown", "reconciling"
+    ]
+    expected_version: int = Field(ge=1)
+
+
 class OperatorTokenIssueRequest(_Closed):
     schema_version: Literal["dal.operator-transport/1.0"]
     request_id: _Id
@@ -543,6 +565,7 @@ def create_app(
     rate_limiter: RateLimiter | None = None,
     lease_ttl_seconds: int = LEASE_TTL_SECONDS,
     max_attempts: int = MAX_ATTEMPTS,
+    github_adapter: Any | None = None,
 ) -> FastAPI:
     service = Service(
         engine,
@@ -890,7 +913,133 @@ def create_app(
             "state": "cancelled",
         }
 
+    # --- effect wake + reconciliation sweep (R09-B F5) ------------------------
+    #
+    # The durable GitHub dispatch executor lives inside this service: the
+    # operator's wake request IS the state/version binding (the closed
+    # ``EffectWakeRequest`` has no field that could carry a target), and
+    # everything the write needs is derived from persistence inside
+    # ``executor.wake_effect``. When no GitHub adapter is composed, the
+    # endpoints are declared 501, never silently absent — mirroring the
+    # deferred-actions contract.
+
+    @app.get("/operator/effects")
+    def operator_unknown_effects(
+        limit: int = 20,
+        _: str = Depends(operator_read),
+    ) -> dict[str, Any]:
+        if github_adapter is None:
+            raise _http(501, "executor_not_composed")
+        if limit < 1 or limit > OPERATOR_JOBS_PAGE_MAX:
+            raise _http(400, "invalid")
+        return {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "effects": executor.unknown_effects(engine, limit=limit),
+        }
+
+    @app.post("/operator/effects/{effect_id}/wake")
+    def operator_wake_effect(
+        effect_id: str,
+        body: EffectWakeRequest,
+        operator_id: str = Depends(operator_control),
+        _: None = Depends(transport_body_guard),
+    ) -> dict[str, Any]:
+        if github_adapter is None:
+            raise _http(501, "executor_not_composed")
+        if body.effect_id != effect_id:
+            raise _http(400, "effect_mismatch")
+        if service.kill_switch:
+            raise _http(503, "kill_switch_active")
+        try:
+            outcome = executor.wake_effect(
+                engine,
+                github_adapter,
+                effect_id=effect_id,
+                expected_state=body.expected_state,
+                expected_version=body.expected_version,
+            )
+        except executor.ExecutorRefusal as error:
+            status, code = _executor_refusal_status(error.code)
+            raise _http(status, code) from error
+        _append_redacted_audit(
+            engine,
+            event_type="operator.effect_wake",
+            outcome=f"{operator_id}:{body.expected_state}->{outcome.effect_state}",
+        )
+        response: dict[str, Any] = {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "effect_id": effect_id,
+            "effect_state": outcome.effect_state,
+            "refusal": (
+                {"code": outcome.refusal.code, "detail": outcome.refusal.detail}
+                if outcome.refusal is not None
+                else None
+            ),
+        }
+        if outcome.reconciled is not None:
+            response["authoritative_result"] = outcome.reconciled.authoritative_result
+        return response
+
+    @app.post("/operator/effects/reconcile-sweep")
+    def operator_reconcile_sweep(
+        operator_id: str = Depends(operator_control),
+        _: None = Depends(transport_body_guard),
+    ) -> dict[str, Any]:
+        """One persistence-driven reconciliation pass over unknown effects.
+
+        Read-only over the wire (authoritative GET read-backs only); the
+        persistent-task driver (systemd timer calling the operator CLI)
+        invokes this on its schedule — the sweep itself never re-fires a
+        parked write.
+        """
+        if github_adapter is None:
+            raise _http(501, "executor_not_composed")
+        if service.kill_switch:
+            raise _http(503, "kill_switch_active")
+        outcomes = executor.run_unknown_sweep(engine, github_adapter)
+        _append_redacted_audit(
+            engine,
+            event_type="operator.reconcile_sweep",
+            outcome=f"{operator_id}:{len(outcomes)}",
+        )
+        return {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "swept": [
+                {
+                    "effect_id": o.effect_id,
+                    "effect_state": o.effect_state,
+                    "authoritative_result": (
+                        o.reconciled.authoritative_result
+                        if o.reconciled is not None
+                        else None
+                    ),
+                    "refusal_code": o.refusal.code if o.refusal is not None else None,
+                }
+                for o in outcomes
+            ],
+        }
+
     return app
+
+
+def _executor_refusal_status(code: str) -> tuple[int, str]:
+    """An executor refusal's HTTP face, closed by code.
+
+    Binding mismatches are the caller's stale projection (409); a missing
+    effect or target record is 404; an illegal wake state is 409; the rest
+    are the executor's own closed vocabulary and surface as 409 — never 500,
+    which would claim a service fault the rows deny.
+    """
+    mapping: dict[str, tuple[int, str]] = {
+        "STATE_MISMATCH": (409, "state_mismatch"),
+        "VERSION_MISMATCH": (409, "version_mismatch"),
+        "NOT_FOUND": (404, "effect_not_found"),
+        "TARGET_MISSING": (404, "target_missing"),
+        "ILLEGAL_STATE": (409, "illegal_state"),
+        "FINGERPRINT_MISMATCH": (409, "fingerprint_mismatch"),
+        "INVALID_ARGUMENT": (400, "invalid"),
+    }
+    return mapping.get(code, (409, "executor_refused"))
 
 
 def _receipt_id(engine: Engine, job_id: str) -> str:

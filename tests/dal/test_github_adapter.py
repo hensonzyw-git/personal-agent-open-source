@@ -1231,6 +1231,78 @@ def test_composition_refuses_an_action_that_drifts_from_the_intent(
     assert effect_state(engine, effect_id) == "intent_recorded"
 
 
+def test_replay_fence_with_only_a_claim_receipt_completes_the_dispatch(
+    engine,
+) -> None:
+    """Crash after the claim edge, before dispatch: re-entry must continue.
+
+    The fence answers "already composed" only when a *closing* receipt
+    (dispatch/not-executed/unknown) carries the key. A bare ``:claim``
+    receipt means the composition died between the claim and the dispatch
+    CAS: the re-entering composition with the same key must run the
+    remaining edges (and the one outward write), not answer a fabricated
+    successful replay that leaves the effect stuck in ``claimed`` forever.
+    (Whole-track remediation review, F3 residual, 2026-09-04.)
+    """
+    from personal_agent_dal.github.adapter_controller import (
+        _apply_step,
+        _claim_guard_facts,
+        CONTROLLER_SOURCE,
+    )
+
+    feature_id, effect_id = seed_effect_and_feature(engine)
+    # The crash shape: the claim edge committed, nothing else exists yet.
+    _apply_step(
+        engine, command_type="claim_external_effect", evidence_source=CONTROLLER_SOURCE,
+        effect_id=effect_id, expected_version=1,
+        idempotency_key="idem-1:claim",
+        facts=_claim_guard_facts(engine, effect_id, 1),
+    )
+    assert effect_state(engine, effect_id) == "claimed"
+
+    adapter = StubAdapter(CONFIRMED_PUSH)
+    outcome = dispatch_github_write(
+        engine, adapter,  # type: ignore[arg-type]
+        effect_id=effect_id, action="push_branch", idempotency_key="idem-1",
+        payload=push_payload(), feature_id=feature_id,
+    )
+    assert adapter.calls == 1, "re-entry after a bare claim continues to the write"
+    assert outcome.effect_state == "dispatch_started"
+    assert outcome.refusal is None
+
+
+def test_replay_fence_with_only_a_claim_receipt_refuses_a_drifted_key(
+    engine,
+) -> None:
+    """The continuation binds to the same key as the interrupted composition.
+
+    A different key's re-entry is a second composition, not the resumed
+    one: the claim receipt under the original key stays, and the new key's
+    claim step hits the already-claimed row and refuses — zero-write.
+    """
+    feature_id, effect_id = seed_effect_and_feature(engine)
+    from personal_agent_dal.github.adapter_controller import (
+        _apply_step,
+        _claim_guard_facts,
+        CONTROLLER_SOURCE,
+    )
+    _apply_step(
+        engine, command_type="claim_external_effect", evidence_source=CONTROLLER_SOURCE,
+        effect_id=effect_id, expected_version=1,
+        idempotency_key="idem-1:claim",
+        facts=_claim_guard_facts(engine, effect_id, 1),
+    )
+    adapter = StubAdapter(CONFIRMED_PUSH)
+    with pytest.raises(ControllerRefusal):
+        dispatch_github_write(
+            engine, adapter,  # type: ignore[arg-type]
+            effect_id=effect_id, action="push_branch", idempotency_key="idem-2",
+            payload=push_payload(), feature_id=feature_id,
+        )
+    assert adapter.calls == 0
+    assert effect_state(engine, effect_id) == "claimed"
+
+
 def test_composition_refuses_a_key_that_drifts_from_the_remote_binding(
     engine,
 ) -> None:
@@ -1319,8 +1391,11 @@ def test_replay_fence_survives_like_wildcards_and_cross_effect_keys(
     """
     from personal_agent_dal.github.adapter_controller import (
         _apply_step,
+        _claim_guard_facts,
         _composition_was_applied,
+        _dispatch_guard_facts,
         CONTROLLER_SOURCE,
+        EXECUTOR_SOURCE,
     )
 
     feature_id, effect_id = seed_effect_and_feature(engine)
@@ -1344,7 +1419,20 @@ def test_replay_fence_survives_like_wildcards_and_cross_effect_keys(
     assert _composition_was_applied(engine, effect_id, "shared-prefix") is False, (
         "another effect's receipt must not answer this composition's fence"
     )
-    assert _composition_was_applied(engine, "effect-other", "shared-prefix") is True
+    # effect-other's receipt is a bare :claim — that is an *interrupted*
+    # composition, not a finished one, so it must not fence anything.
+    assert _composition_was_applied(engine, "effect-other", "shared-prefix") is False, (
+        "a bare claim receipt is not a closed composition"
+    )
+    _apply_step(
+        engine, command_type="record_effect_dispatch", evidence_source=EXECUTOR_SOURCE,
+        effect_id="effect-other", expected_version=2,
+        idempotency_key="shared-prefix:dispatch",
+        facts=_dispatch_guard_facts(engine, "effect-other", 1),
+    )
+    assert _composition_was_applied(engine, "effect-other", "shared-prefix") is True, (
+        "a dispatch receipt closes the composition for the fence"
+    )
 
     # This effect's own claim receipt makes the fence true...
     dispatch_github_write(

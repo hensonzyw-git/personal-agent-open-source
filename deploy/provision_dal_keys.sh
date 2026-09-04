@@ -14,6 +14,14 @@
 #   /etc/personal-agent/dal.env.d/enrollment-secret 0640 root:personal-agent-dal
 #       gates /enroll; travels only to the operator issuing channel, never
 #       to a worker
+#   /etc/personal-agent/dal.env.d/github-app.env   0640 root:personal-agent-dal
+#       R09-B: GitHub App identifiers + private-key path (no secret material
+#       itself — the key file is provisioned separately per 密钥清单). The
+#       unit file loads this unconditionally, so it is created here EMPTY;
+#       the operator fills in the four values, and
+#       verify_dal_github_app.sh refuses to let the service start with any
+#       missing. The GitHub App private key never passes through this
+#       script: it travels by scp per docs/密钥清单_v0.1.md.
 #   /etc/personal-agent/dal-kill-switch.json  0644 root:root, PRESENT
 #       the service starts fail-closed: claims and operator mutations answer
 #       503 until the file is removed as an explicit go-live action
@@ -53,6 +61,31 @@ python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).de
   > "$DAL_ENV_D/enrollment-secret"
 chown root:"$DAL_USER" "$DAL_ENV_D/service-key" "$DAL_ENV_D/enrollment-secret"
 chmod 0640 "$DAL_ENV_D/service-key" "$DAL_ENV_D/enrollment-secret"
+
+# R09-B: github-app.env. The unit loads it unconditionally, so a fresh
+# install without it fails to boot (the deployment gap Henson flagged
+# 2026-09-04). It carries identifiers and the private-key PATH only — never
+# the key material itself. Created as a template the operator fills in; the
+# start-gate script verifies every value before the service is enabled.
+GITHUB_APP_ENV="$DAL_ENV_D/github-app.env"
+if [ ! -e "$GITHUB_APP_ENV" ]; then
+  cat > "$GITHUB_APP_ENV" <<'GHENV'
+# DAL-032 GitHub App adapter configuration. Secrets stay in files; this file
+# carries only identifiers and paths. root:personal-agent-dal 0640.
+# Fill in all four values before enabling personal-agent-dal-api; the
+# start gate (verify_dal_github_app.sh) refuses to enable the unit while any
+# is missing. The App private key itself is scp'd to the path below per
+# docs/密钥清单_v0.1.md (root-owned, group personal-agent-dal, 0640).
+PERSONAL_AGENT_DAL_GITHUB_APP_ID=
+PERSONAL_AGENT_DAL_GITHUB_INSTALLATION_ID=
+PERSONAL_AGENT_DAL_GITHUB_REPOSITORY=
+PERSONAL_AGENT_DAL_GITHUB_PRIVATE_KEY_PATH=/etc/personal-agent/dal.env.d/github-app.pem
+GHENV
+  chown root:"$DAL_USER" "$GITHUB_APP_ENV"
+  chmod 0640 "$GITHUB_APP_ENV"
+  echo "github-app.env created as a TEMPLATE at $GITHUB_APP_ENV -- fill in the"
+  echo "four values and scp the App private key before enabling the unit"
+fi
 
 # Env skeleton: paths only, no secrets. Values the operator adds later must
 # follow the same rule (no secret belongs in a file the service parses as env).

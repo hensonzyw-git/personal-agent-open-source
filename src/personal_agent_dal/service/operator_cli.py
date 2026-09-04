@@ -1,12 +1,26 @@
 """Operator Console CLI (`personal-agent-dal-console`) — DAL-R08 first slice.
 
 A minimal console over the operator plane of the Dev Workflow Service: the
-read commands `list`/`show`/`checkpoints`/`whoami` plus exactly one mutation,
-`cancel`. The MacBook is the Operator Console (frozen Roadmap decision 4):
+read commands `list`/`show`/`checkpoints`/`whoami`, the `cancel` mutation,
+and (R09-B F5) the two GitHub dispatch-executor commands. The MacBook is the
+Operator Console (frozen Roadmap decision 4):
 this CLI observes jobs from a distance and cancels through the operator
 identity (a separate token from any worker token), carrying the job's
 `expected_state` as a stale-projection fence — the CLI reads the state, shows
 it, and binds the action to it.
+
+F5 executor commands, both carrying the same state/version fence:
+
+- `effects` — list the effects currently in `unknown` (the reconciliation
+  sweep's backlog).
+- `wake` — approve/wake one persisted effect. The operator names only the
+  effect and the state/version they believe it holds; every field the
+  outward write needs (owner, action, payload, remote idempotency key) is
+  derived server-side from persistence. A second confirmation is required,
+  like `cancel`.
+- `reconcile-sweep` — one read-only reconciliation pass over the unknown
+  effects. This is also the persistent-task driver's entry point (the
+  systemd timer calls exactly this); it issues no writes.
 
 Token handling: the operator token arrives via `--token-file` (owner-only
 0600 regular file, read through `O_NOFOLLOW` and verified on the same file
@@ -37,7 +51,7 @@ from pathlib import Path
 OPERATOR_SCHEMA_VERSION = "dal.operator-transport/1.0"
 DEFAULT_LIMIT = 20
 DEFAULT_TIMEOUT_SECONDS = 10.0
-READ_COMMANDS = ("list", "show", "checkpoints", "whoami")
+READ_COMMANDS = ("list", "show", "checkpoints", "whoami", "effects")
 
 
 def _read_token_file(path: Path) -> str:
@@ -213,6 +227,28 @@ def main(argv: list[str] | None = None) -> int:
     cancel_parser = sub.add_parser("cancel", help="cancel a job (the one mutation; requires --yes)")
     cancel_parser.add_argument("job_id")
     cancel_parser.add_argument("--yes", action="store_true", help="skip the interactive confirmation")
+    # F5: the durable GitHub dispatch executor's operator surface.
+    effects_parser = sub.add_parser(
+        "effects", help="list the effects in unknown (the reconciliation backlog)"
+    )
+    effects_parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
+    wake_parser = sub.add_parser(
+        "wake", help="approve/wake one persisted effect (requires --yes)"
+    )
+    wake_parser.add_argument("effect_id")
+    wake_parser.add_argument(
+        "--expected-state", required=True,
+        help="the state the operator believes the effect holds",
+    )
+    wake_parser.add_argument(
+        "--expected-version", type=int, required=True,
+        help="the version the operator believes the effect holds",
+    )
+    wake_parser.add_argument("--yes", action="store_true", help="skip the interactive confirmation")
+    sub.add_parser(
+        "reconcile-sweep",
+        help="run one read-only reconciliation pass over unknown effects",
+    )
     args = parser.parse_args(argv)
 
     global _CA_BUNDLE
@@ -296,6 +332,83 @@ def main(argv: list[str] | None = None) -> int:
             _fail_with_envelope(status, body)
         cancelled = _require_dict(body)
         print(f"cancelled: {cancelled.get('job_id', '?')}")
+        return 0
+
+    if args.command == "effects":
+        status, body = _request(
+            "GET", f"{args.base_url}/operator/effects?limit={args.limit}", token,
+            timeout=args.timeout,
+        )
+        if status != 200:
+            _fail_with_envelope(status, body)
+        page = _require_dict(body)
+        effects = page.get("effects")
+        if not isinstance(effects, list):
+            raise SystemExit("malformed success response: missing 'effects'")
+        print(f"unknown effects: {len(effects)}")
+        for effect in effects:
+            print(
+                f"  {effect['effect_id']}  v{effect['version']} "
+                f"feature={effect['owner_aggregate_id']} "
+                f"key={effect['remote_idempotency_key']}"
+            )
+        return 0
+
+    if args.command == "wake":
+        if not args.yes:
+            answer = input(
+                f"wake effect {args.effect_id} "
+                f"(bound {args.expected_state}@v{args.expected_version})? [y/N] "
+            )
+            if answer.strip().lower() != "y":
+                print("aborted")
+                return 1
+        payload = {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "request_id": f"op-wake-{args.effect_id}-{int(time.time())}",
+            "effect_id": args.effect_id,
+            "expected_state": args.expected_state,
+            "expected_version": args.expected_version,
+        }
+        status, body = _request(
+            "POST", f"{args.base_url}/operator/effects/{args.effect_id}/wake",
+            token, payload=payload, timeout=args.timeout,
+        )
+        if status != 200:
+            _fail_with_envelope(status, body)
+        woken = _require_dict(body)
+        refusal = woken.get("refusal")
+        if refusal is not None:
+            print(f"refused: {refusal.get('code')} — {refusal.get('detail')}")
+            return 1
+        line = f"woken: {woken.get('effect_id')} -> {woken.get('effect_state')}"
+        if woken.get("authoritative_result") is not None:
+            line += f" authoritative={woken['authoritative_result']}"
+        print(line)
+        return 0
+
+    if args.command == "reconcile-sweep":
+        payload = {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "request_id": f"op-sweep-{int(time.time())}",
+        }
+        status, body = _request(
+            "POST", f"{args.base_url}/operator/effects/reconcile-sweep",
+            token, payload=payload, timeout=args.timeout,
+        )
+        if status != 200:
+            _fail_with_envelope(status, body)
+        swept = _require_dict(body).get("swept")
+        if not isinstance(swept, list):
+            raise SystemExit("malformed success response: missing 'swept'")
+        print(f"swept: {len(swept)}")
+        for item in swept:
+            line = f"  {item['effect_id']} -> {item['effect_state']}"
+            if item.get("authoritative_result") is not None:
+                line += f" authoritative={item['authoritative_result']}"
+            if item.get("refusal_code") is not None:
+                line += f" refusal={item['refusal_code']}"
+            print(line)
         return 0
 
     parser.error(f"unknown command: {args.command}")

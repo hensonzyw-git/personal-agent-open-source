@@ -41,7 +41,11 @@ authoritative read-back
   - a drifted identity (wrong PR, wrong external id) reads as not-found for
     the exact target — never as a confirmation; a mutable ref found at a
     different head SHA is *unknown*, not absent (the push may have landed
-    and the ref advanced afterwards);
+    and the ref advanced afterwards); an open-only PR listing with zero
+    matches is *unknown*, not absent (the PR may exist closed or merged);
+    a check listing with zero latest matches is *unknown*, not absent
+    (``filter=latest`` hides older runs) — only the 404 shapes are
+    absence evidence;
   - the read-back issues no POST/PUT/PATCH (the duplicate-write guard is
     structural, verified on the scripted transport).
 
@@ -381,7 +385,10 @@ BRANCH_UNKNOWN = BranchReadBack(found=None, unknown=True)
 PR_FOUND = OpenPullRequestsReadBack(matches=1, pull_request_number=7, head_sha=HEAD)
 PR_ABSENT = OpenPullRequestsReadBack(matches=0)
 CHECK_FOUND = CheckRunReadBack(found=True, check_run_id=99, head_sha=HEAD)
-CHECK_ABSENT = CheckRunReadBack(found=False)
+# Only the 404-on-SHA shape proves a check run absent; a live SHA whose
+# latest-filtered listing names no match is unprovable (review F4, 2026-09-04).
+CHECK_ABSENT = CheckRunReadBack(found=False, sha_absent=True)
+CHECK_SUPERSEDED = CheckRunReadBack(found=False)
 
 
 def seed_unknown_effect(
@@ -565,7 +572,9 @@ def test_reconcile_absent_read_backs_stays_reconciling(engine) -> None:
     """Absence provable from one read is still reported to the human layer.
 
     The service never closes; absence is the human root's not-executed proof
-    only after the frozen resume guard accepts it.
+    only after the frozen resume guard accepts it. The only check-run shape
+    that proves absence is the 404-on-SHA one: the commit itself does not
+    exist, so no run against it can exist either.
     """
     feature_id, effect_id = seed_unknown_effect(engine)
     outcome = reconcile_github_write(
@@ -583,6 +592,56 @@ def test_reconcile_absent_read_backs_stays_reconciling(engine) -> None:
     assert outcome.authoritative_result == "absent"
     state, _version, _executor = effect_row_state(engine, effect_id)
     assert state == "reconciling"
+
+
+def test_reconcile_pr_zero_open_matches_is_unknown_not_absent(engine) -> None:
+    """``state=open`` with zero hits cannot prove a PR never existed.
+
+    The whole-track review's F4 probe: the PR may have been created and
+    then closed (or merged) between the lost dispatch response and the
+    reconciliation read, and an open-only listing is blind to both. Judging
+    "absent" from it hands the human root a not-executed proof the server
+    does not actually have.
+    """
+    feature_id, effect_id = seed_unknown_effect(engine)
+    outcome = reconcile_github_write(
+        engine,
+        _ReadBackStub(PR_ABSENT),  # type: ignore[arg-type]
+        effect_id=effect_id,
+        action="create_pull_request",
+        idempotency_key="recon-1",
+        payload={"branch": BRANCH, "base_branch": BASE},
+        feature_id=feature_id,
+    )
+    assert outcome.authoritative_result == "unknown"
+    state, _version, _executor = effect_row_state(engine, effect_id)
+    assert state == "unknown", "an unprovable PR absence returns to unknown"
+
+
+def test_reconcile_check_zero_latest_matches_is_unknown_not_absent(engine) -> None:
+    """A live SHA whose latest-filtered listing names no match is unprovable.
+
+    ``filter=latest`` returns only each (name, external_id) pair's newest
+    run; a subsequent run of the same check supersedes the original in that
+    listing, so zero hits on a live SHA proves nothing about the original
+    write. Only the 404-on-SHA shape (CHECK_ABSENT) is absence evidence.
+    """
+    feature_id, effect_id = seed_unknown_effect(engine)
+    outcome = reconcile_github_write(
+        engine,
+        _ReadBackStub(CHECK_SUPERSEDED),  # type: ignore[arg-type]
+        effect_id=effect_id,
+        action="write_check_run",
+        idempotency_key="recon-1",
+        payload={
+            "branch_head_sha": HEAD, "check_name": CHECK_NAME,
+            "external_id": EXTERNAL_ID,
+        },
+        feature_id=feature_id,
+    )
+    assert outcome.authoritative_result == "unknown"
+    state, _version, _executor = effect_row_state(engine, effect_id)
+    assert state == "unknown", "an unprovable check absence returns to unknown"
 
 
 def test_reconcile_inconclusive_read_backs_to_still_unknown(engine) -> None:

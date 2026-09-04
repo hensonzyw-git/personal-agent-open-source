@@ -85,3 +85,83 @@ def test_error_goes_to_stderr_not_traceback(secret_dir: Path, capsys: pytest.Cap
     err = capsys.readouterr().err
     assert "service key file" in err
     assert "Traceback" not in err
+
+
+# ---------------------------------------------------------------------------
+# R09-B F5: the GitHub App env file parser (executor composition input).
+# ---------------------------------------------------------------------------
+
+from personal_agent_dal.service.cli import _read_github_app_env
+
+REQUIRED_KEYS = (
+    "PERSONAL_AGENT_DAL_GITHUB_APP_ID",
+    "PERSONAL_AGENT_DAL_GITHUB_INSTALLATION_ID",
+    "PERSONAL_AGENT_DAL_GITHUB_REPOSITORY",
+    "PERSONAL_AGENT_DAL_GITHUB_PRIVATE_KEY_PATH",
+)
+
+
+def _env_text(**overrides: str) -> str:
+    values = {
+        "PERSONAL_AGENT_DAL_GITHUB_APP_ID": "123456",
+        "PERSONAL_AGENT_DAL_GITHUB_INSTALLATION_ID": "7891011",
+        "PERSONAL_AGENT_DAL_GITHUB_REPOSITORY": "example-owner/dal-sandbox",
+        "PERSONAL_AGENT_DAL_GITHUB_PRIVATE_KEY_PATH": "/etc/dal/github-app.pem",
+    }
+    values.update(overrides)
+    return "".join(f"{k}={v}\n" for k, v in values.items())
+
+
+def test_env_parses_all_four_values(tmp_path: Path) -> None:
+    f = tmp_path / "github-app.env"
+    f.write_text(_env_text(), encoding="utf-8")
+    values = _read_github_app_env(f)
+    assert values is not None
+    assert values == dict(REQUIRED_KEYS and {
+        "PERSONAL_AGENT_DAL_GITHUB_APP_ID": "123456",
+        "PERSONAL_AGENT_DAL_GITHUB_INSTALLATION_ID": "7891011",
+        "PERSONAL_AGENT_DAL_GITHUB_REPOSITORY": "example-owner/dal-sandbox",
+        "PERSONAL_AGENT_DAL_GITHUB_PRIVATE_KEY_PATH": "/etc/dal/github-app.pem",
+    })
+
+
+def test_env_ignores_comments_blank_lines_and_extras(tmp_path: Path) -> None:
+    f = tmp_path / "github-app.env"
+    f.write_text(
+        "# deployed by provision_dal_keys.sh\n"
+        "\n"
+        + _env_text()
+        + "PERSONAL_AGENT_DAL_GITHUB_API_BASE=https://api.github.com\n",
+        encoding="utf-8",
+    )
+    values = _read_github_app_env(f)
+    assert values is not None
+    assert set(REQUIRED_KEYS) <= set(values)
+    # Extras pass through the dict but are not part of the composition
+    # contract: cli.main consumes exactly the four pinned identifiers.
+    assert values["PERSONAL_AGENT_DAL_GITHUB_API_BASE"] == "https://api.github.com"
+
+
+def test_env_missing_file_refuses(tmp_path: Path) -> None:
+    assert _read_github_app_env(tmp_path / "absent.env") is None
+
+
+@pytest.mark.parametrize("missing_key", REQUIRED_KEYS)
+def test_env_each_missing_value_refuses(tmp_path: Path, missing_key: str) -> None:
+    """Half-composed executors are refused: every pinned value is required."""
+    f = tmp_path / "github-app.env"
+    f.write_text(_env_text(**{missing_key: ""}), encoding="utf-8")
+    assert _read_github_app_env(f) is None
+
+
+def test_env_refusal_names_the_missing_values(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    f = tmp_path / "github-app.env"
+    f.write_text(
+        "PERSONAL_AGENT_DAL_GITHUB_APP_ID=123456\n", encoding="utf-8"
+    )
+    assert _read_github_app_env(f) is None
+    err = capsys.readouterr().err
+    assert "PERSONAL_AGENT_DAL_GITHUB_INSTALLATION_ID" in err
+    assert "Traceback" not in err

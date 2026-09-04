@@ -512,6 +512,8 @@ on the Finance MCP. Order matters in three places, as below.
 | `/etc/personal-agent/dal.env` | root:dal | 0640 | non-secret env lines |
 | `/etc/personal-agent/dal.env.d/service-key` | root:dal | 0640 | HMAC key (worker + operator tokens) |
 | `/etc/personal-agent/dal.env.d/enrollment-secret` | root:dal | 0640 | gates `/enroll` |
+| `/etc/personal-agent/dal.env.d/github-app.env` | root:dal | 0640 | R09-B GitHub App identifiers + key path; template created by provision, loaded by the unit unconditionally |
+| `/etc/personal-agent/dal.env.d/github-app.pem` | root:dal | 0640 | R09-B GitHub App private key, scp'd per 密钥清单; never in github-app.env |
 | `/etc/personal-agent/dal-kill-switch.json` | root:root | 0644 | PRESENT at install → claims/mutations answer 503 |
 | `/var/backups/personal-agent/dal` | dal:backup | 2770 setgid | staging for `dal.latest.sqlite`, read by the backup user |
 | `/opt/personal-agent-dal/libexec/dal_snapshot.py` | root:root | 0755 | staged snapshot via the shared online_backup primitive |
@@ -530,13 +532,20 @@ operator mutation answers `503 kill_switch_active` while the file exists.
 # 1. Ship the deploy directory (same as step 1 above), then:
 sudo bash ~/personal-agent-deploy/install.sh          # adds the dal user/dir/unit
 sudo bash ~/personal-agent-deploy/provision_dal_keys.sh  # mint secrets + kill switch
+#    provision also lays down /etc/personal-agent/dal.env.d/github-app.env as a
+#    TEMPLATE (the unit loads it unconditionally — without it the unit cannot
+#    boot). Fill in the four values, scp the App private key to
+#    /etc/personal-agent/dal.env.d/github-app.pem (root:personal-agent-dal
+#    0640, per 密钥清单), then run the start gate:
+sudo vim /etc/personal-agent/dal.env.d/github-app.env
+sudo bash ~/personal-agent-deploy/verify_dal_github_app.sh
 
 # 2. Application code + migration (after deploy_code.sh has run on the Mac):
 sudo -u personal-agent-dal /opt/personal-agent/.venv/bin/personal-agent-dal-db \
   --database /var/lib/personal-agent-dal/dal.sqlite upgrade
 
-# 3. Enable (order: unit first; the DAL db-backup timer only once the service
-#    and its database exist, since the snapshot unit needs both):
+# 3. Enable (order: gate passes first; the DAL db-backup timer only once the
+#    service and its database exist, since the snapshot unit needs both):
 sudo systemctl enable --now personal-agent-dal-api
 #    Backup set (R09-B): enable the DAL snapshot timer so dal.sqlite joins the
 #    daily offsite snapshot before the 16:07 backup window:

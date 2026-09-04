@@ -132,15 +132,25 @@ def _epoch_of(value: Any) -> float | None:
 def _composition_was_applied(
     engine: Engine, effect_id: str, idempotency_key: str
 ) -> bool:
-    """Whether *this effect's* lifecycle receipts already carry this key.
+    """Whether *this effect's* composition already decided under this key.
 
-    The engine's replay fence matches ``transition_receipts.idempotency_key``
-    globally, so the same key re-submitting any of this composition's steps
-    returns the original receipt instead of a refusal. The controller checks
-    the fence *before* the parked-state guard, because a key whose dispatch
-    already applied will find the effect in ``dispatch_started`` (parked) —
-    refusing there would make a delivered-but-acked-late composition
-    un-answerable and invite a second write.
+    Only a **closing** receipt counts: ``:dispatch`` (the write went out),
+    ``:not-executed`` or ``:unknown`` (the composition closed on a provable
+    or unprovable outcome). The composition checks the fence *before* the
+    parked-state guard, because a key whose dispatch already applied will
+    find the effect in ``dispatch_started`` (parked) — refusing there would
+    make a delivered-but-acked-late composition un-answerable and invite a
+    second write.
+
+    A bare ``:claim`` receipt is NOT a closed composition (remediation
+    review, F3 residual, 2026-09-04): a crash between the claim CAS and the
+    dispatch CAS leaves exactly that row behind, and treating it as a
+    finished replay would fabricate a successful no-op answer while the
+    effect sat in ``claimed`` forever — the re-entering composition with
+    the same key must instead run the remaining edges. A key can only be
+    bound once (the intent row's remote key), so a *different* key cannot
+    resume another key's interrupted composition: its claim step hits the
+    already-claimed row and refuses, zero-write.
 
     The query binds the effect's aggregate id and escapes the two LIKE
     wildcards (whole-track review finding 3, 2026-09-04): an unescaped
@@ -154,8 +164,17 @@ def _composition_was_applied(
             text(
                 "SELECT receipt_id FROM transition_receipts "
                 "WHERE idempotency_key LIKE :prefix ESCAPE '\\' "
-                "AND aggregate_id = :eid LIMIT 1"
-            ).bindparams(prefix=f"{escaped}:%", eid=effect_id)
+                "AND aggregate_id = :eid "
+                "AND idempotency_key NOT LIKE :claim_suffix ESCAPE '\\' "
+                "LIMIT 1"
+            ).bindparams(
+                prefix=f"{escaped}:%",
+                eid=effect_id,
+                # The engine stores receipts under ``<command key>:effect``
+                # (machine/engine._w_external_effect_transition_receipt), so
+                # the bare-claim row this must exclude is ``<key>:claim:effect``.
+                claim_suffix=f"{escaped}\\:claim:%",
+            )
         ).first()
     return row is not None
 
