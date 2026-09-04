@@ -38,8 +38,10 @@ from personal_agent_dal.github.adapter import (
     OpenPullRequestsReadBack,
     PushOutcome,
 )
+from personal_agent_dal.github import executor as executor_module
 from personal_agent_dal.github.executor import (
     ExecutorRefusal,
+    record_composition_confirm_receipt,
     record_effect_target,
     record_github_write_intent,
     run_unknown_sweep,
@@ -730,7 +732,9 @@ def test_sweep_never_takes_a_confirmed_expired_park(engine) -> None:
     outcomes = run_unknown_sweep(engine, read_only, now_epoch=1_700_000_000)
     assert outcomes == [], "a confirmed park is nobody's recovery work"
     assert read_only.calls == [], "no read-back may issue for a confirmed park"
-    assert effect_row_full(engine, effect_id) == ("dispatch_started", 3)
+    # Version 4: the receipt took the concurrency token (R4-1) on top of
+    # claim → dispatch (1 → 3).
+    assert effect_row_full(engine, effect_id) == ("dispatch_started", 4)
     with engine.connect() as connection:
         feature = connection.execute(
             sa.text("SELECT state FROM features WHERE feature_id = :f")
@@ -811,9 +815,6 @@ def test_stale_confirm_receipt_suppresses_nothing(engine) -> None:
 def test_confirm_receipt_refuses_for_a_non_parked_effect(engine) -> None:
     """The receipt may only describe a park that still exists."""
     _feature_id, effect_id = seed_intent(engine)
-    from personal_agent_dal.github.executor import (
-        record_composition_confirm_receipt,
-    )
 
     with pytest.raises(ExecutorRefusal) as excinfo:
         record_composition_confirm_receipt(
@@ -821,6 +822,202 @@ def test_confirm_receipt_refuses_for_a_non_parked_effect(engine) -> None:
             composition_key="x:confirmed",
         )
     assert excinfo.value.code == "ILLEGAL_STATE"
+    with engine.connect() as connection:
+        rows = connection.execute(
+            sa.text("SELECT COUNT(*) FROM effect_confirm_receipts")
+        ).scalar_one()
+    assert rows == 0
+
+
+def test_expired_recovery_case_owned_park_enters_recovery(engine) -> None:
+    """A ``recovery_case``-owned expired park is swept too (R4-2).
+
+    The registry lets recovery-case flows own external effects, so the
+    old ``owner_aggregate_type = 'feature'`` filter let such a park rot in
+    ``dispatch_started`` forever. The effect-level edge does not depend on
+    the owner — the park enters ``unknown`` here without a feature stop
+    (no feature id is named; the case's own flow owns what follows), and a
+    healthy feature-owned effect in the same pass proves the pass
+    continues.
+    """
+    now = utc_now()
+    case_id = "case-f5-7"
+    with session_factory(engine)() as session, session.begin():
+        from personal_agent_dal.storage.machine_models import RecoveryCase
+
+        # The feature behind the case must exist: the recovery edge's
+        # decision_create resolves the effect's owning feature through the
+        # case (engine `_owner_feature_id`, R4-2) and parks a decision on it.
+        session.add(feature_row(
+            feature_id="feature-f5-8", version=1, state="verifying", now=now
+        ))
+        session.add(RecoveryCase(
+            recovery_case_id=case_id, feature_id="feature-f5-8",
+            version=1, state="verifying", reason_code="RECOVERY_EFFECT_UNKNOWN",
+            execution_epoch=1, created_at=now, updated_at=now,
+        ))
+    with session_factory(engine)() as session, session.begin():
+        from personal_agent_dal.storage.machine_models import ExternalEffect
+
+        effect = external_effect_row(
+            effect_id="effect-f5-7", owner_id=case_id, version=3,
+            state="dispatch_started", owner_type="recovery_case", now=now,
+        )
+        effect.remote_idempotency_key = "idem-f5-7"
+        session.add(effect)
+        session.add(EffectDispatchTarget(
+            effect_id="effect-f5-7", action="push_branch",
+            payload_json=json.dumps(push_payload()),
+            target_fingerprint=fingerprint_for("push_branch", push_payload()),
+            recorded_at=now,
+        ))
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "UPDATE external_effects SET claim_expires_at = :expired "
+                "WHERE effect_id = 'effect-f5-7'"
+            ).bindparams(expired="2020-01-01T00:00:00.000000Z")
+        )
+    # A healthy feature-owned crash window in the same pass.
+    _feature_id, healthy_id = seed_intent(
+        engine, effect_id="effect-f5-9", feature_id="feature-f5-9",
+        remote_key="idem-f5-9",
+    )
+    _dispatch_past_expiry(engine, healthy_id, key="healthy-rc")
+    read_only = ReadBackAdapter(BranchReadBack(found=True, head_sha=HEAD))
+    outcomes = run_unknown_sweep(engine, read_only, now_epoch=1_700_000_000)
+    by_effect = {o.effect_id: o for o in outcomes}
+    assert "effect-f5-7" in by_effect, "the case-owned park must be swept"
+    # The recovery sweep's read-back composes feature reconciliation only
+    # (``_effect_facts`` refuses a non-feature owner), so the case-owned
+    # park is reported as a visible TARGET_INVALID refusal instead of
+    # silently rotting — the case's own flow owns what follows.
+    assert by_effect["effect-f5-7"].refusal is not None
+    assert by_effect["effect-f5-7"].refusal.code == "TARGET_INVALID"
+    assert effect_row_full(engine, "effect-f5-7")[0] == "unknown"
+    assert by_effect[healthy_id].reconciled is not None, (
+        "one case-owned park must not abort the pass"
+    )
+
+
+def test_receipt_committing_mid_sweep_blocks_the_recovery_cas(engine) -> None:
+    """Forward interleave (R4-1): a receipt committing after the sweep's
+    discriminator read must leave the in-flight recovery CAS refused.
+
+    The sweep's batch query reads ``version`` together with the receipt
+    ``NOT EXISTS`` — one snapshot. If the confirm receipt commits between
+    that read and the ``record_effect_unknown`` compare-and-swap, the version
+    it read is stale: the receipt writer moved it as the concurrency token.
+    The CAS must refuse, the park must stay parked with its receipt, and no
+    read-back may fire — the deterministic re-run of the exact interleave
+    the reviewer's forward race names.
+    """
+    feature_id, effect_id = seed_intent(engine, remote_key="idem-f5-1")
+    # Crash-window shape: parked, expired, *no* receipt yet — the state the
+    # sweep's discriminator read sees before the interleave commits one.
+    _dispatch_past_expiry(engine, effect_id, key="forward-race")
+
+    real_recover = executor_module._recover_expired_dispatches
+    interleaved: list[str] = []
+
+    def recover_then_commit_receipt(engine_, *, limit: int, now_epoch: int) -> None:
+        """Run the real sweep decision up to its CAS, commit a receipt, resume.
+
+        The sweep read its rows (parked, no receipt, version 3) before this
+        hook fires; committing a *matching* receipt here reproduces the
+        forward interleave with the production writer — never a hand-made
+        UPDATE — before the sweep's CAS is allowed to proceed.
+        """
+        blocked = {"armed": True}
+
+        def intercept_cas(engine__, **kwargs: Any) -> Any:
+            if blocked.pop("armed", False):
+                record_composition_confirm_receipt(
+                    engine_, effect_id=effect_id, action="push_branch",
+                    composition_key=f"{effect_id}:confirmed",
+                )
+                interleaved.append("receipt")
+            return real_cas(engine__, **kwargs)
+
+        real_cas = executor_module._apply_step
+        executor_module._apply_step = intercept_cas  # type: ignore[assignment]
+        try:
+            real_recover(engine_, limit=limit, now_epoch=now_epoch)
+        finally:
+            executor_module._apply_step = real_cas  # type: ignore[assignment]
+
+    executor_module._recover_expired_dispatches = (  # type: ignore[assignment]
+        recover_then_commit_receipt
+    )
+    try:
+        read_only = ReadBackAdapter(BranchReadBack(found=True, head_sha=HEAD))
+        outcomes = run_unknown_sweep(engine, read_only, now_epoch=1_700_000_000)
+    finally:
+        executor_module._recover_expired_dispatches = real_recover  # type: ignore[assignment]
+
+    assert interleaved == ["receipt"], "the forward interleave must have run"
+    assert outcomes == [], "a confirmed park must not be swept mid-race"
+    assert read_only.calls == [], "no read-back may issue for a confirmed park"
+    # Parked with the receipt's version token (3 → 4); the refused CAS —
+    # armed with the pre-receipt version 3 — consumed nothing.
+    assert effect_row_full(engine, effect_id) == ("dispatch_started", 4)
+    with engine.connect() as connection:
+        feature = connection.execute(
+            sa.text("SELECT state FROM features WHERE feature_id = :f")
+            .bindparams(f=feature_id)
+        ).scalar_one()
+    assert feature == "awaiting_merge"
+
+
+def test_sweep_winning_before_receipt_keeps_the_receipt_out(engine) -> None:
+    """Reverse interleave (R4-1): the sweep moves the park to ``unknown``
+    before the receipt's parked-state check — the receipt must refuse.
+
+    The parked-state check lives inside the receipt's write transaction on a
+    fresh read, so a park that has already left ``dispatch_started`` cannot
+    gain a confirm receipt, and no ``unknown``-state row ever carries one.
+    The interleaved ``record_effect_unknown`` runs through the real frozen
+    edge, not a hand-made UPDATE.
+    """
+    feature_id, effect_id = seed_intent(engine, remote_key="idem-f5-1")
+    _dispatch_past_expiry(engine, effect_id, key="reverse-race")
+
+    real_receipt = record_composition_confirm_receipt
+    swept: list[str] = []
+
+    def receipt_after_sweep(engine_, *, effect_id: str, **kwargs: Any) -> None:
+        """Commit the sweep's unknown edge, then run the real receipt boundary.
+
+        The receipt's outer fingerprint read happens before this hook fires —
+        the row was parked then — but the parked-state check it relies on
+        sits inside its write transaction, so the sweep's committed
+        ``unknown`` must surface as a refusal there.
+        """
+        from personal_agent_dal.github.adapter_controller import (
+            _apply_step,
+            _claim_guard_facts,
+            _dispatch_guard_facts,
+        )
+
+        _apply_step(
+            engine_, command_type="record_effect_unknown",
+            evidence_source="external-effect-controller", effect_id=effect_id,
+            expected_version=3,
+            idempotency_key=f"recover-dispatch:{effect_id}:v3:unknown",
+            facts={"executor.failure_shape": "response_lost"},
+        )
+        swept.append(effect_id)
+        real_receipt(engine_, effect_id=effect_id, **kwargs)
+
+    with pytest.raises(ExecutorRefusal) as excinfo:
+        receipt_after_sweep(
+            engine, effect_id=effect_id, action="push_branch",
+            composition_key=f"{effect_id}:confirmed",
+        )
+    assert excinfo.value.code == "ILLEGAL_STATE"
+    assert swept == [effect_id]
+    # The recovery edge committed; the receipt did not.
+    assert effect_row_full(engine, effect_id) == ("unknown", 4)
     with engine.connect() as connection:
         rows = connection.execute(
             sa.text("SELECT COUNT(*) FROM effect_confirm_receipts")

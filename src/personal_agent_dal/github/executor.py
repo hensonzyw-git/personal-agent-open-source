@@ -557,7 +557,7 @@ def record_effect_confirm_receipt(
     target_fingerprint: str,
     composition_key: str,
     now: Any = None,
-) -> None:
+) -> int:
     """Persist the executor's confirm receipt for one confirmed park (R3-1).
 
     The dispatch composition calls this after a closed success read-back, in
@@ -566,10 +566,45 @@ def record_effect_confirm_receipt(
     confirmed park from a crash window whose fate is unproven. Idempotent by
     primary key — a replayed composition rewrites the identical row — and a
     different receipt for the same effect is a conflict, not a repair.
+
+    Concurrency (R09-B round-4 finding R4-1): the state read here is the
+    caller's *transaction's* fresh read, not a stale snapshot, so a park the
+    expiry sweep already moved to ``unknown`` is refused and no receipt is
+    written; the unit runs under ``run_write_transaction``, so a snapshot
+    that interleaves with a committing sweep re-runs from a fresh read and
+    reaches the same refusal. The write also takes the effect's concurrency
+    token — ``version`` moves to ``version + 1`` — so a sweep whose
+    discriminator read is being interleaved *forward* by this commit finds
+    its ``record_effect_unknown`` compare-and-swap refused on the stale
+    version. Receipt discrimination and recovery CAS therefore form one
+    mutually-exclusive outcome per effect: a committed matching receipt is
+    never swept; a state that has left ``dispatch_started`` never gains a
+    receipt. Returns the row's new version.
     """
     if action not in ACTIONS:
         raise ExecutorRefusal(
             "INVALID_ARGUMENT", f"action must be one of {ACTIONS}"
+        )
+    effect = session.execute(
+        text(
+            "SELECT state, version, target_fingerprint FROM external_effects "
+            "WHERE effect_id = :eid"
+        ).bindparams(eid=effect_id)
+    ).first()
+    if effect is None:
+        raise ExecutorRefusal("NOT_FOUND", f"no external effect {effect_id}")
+    state, version, binding = effect
+    if state != PARKED_COMPLETED:
+        raise ExecutorRefusal(
+            "ILLEGAL_STATE",
+            f"effect {effect_id} is {state}; a confirm receipt may only be "
+            f"recorded for a parked ({PARKED_COMPLETED}) effect",
+        )
+    if binding != target_fingerprint:
+        raise ExecutorRefusal(
+            "FINGERPRINT_MISMATCH",
+            f"effect {effect_id} binding {binding} != receipt "
+            f"{target_fingerprint}",
         )
     existing = session.get(EffectConfirmReceipt, effect_id)
     if existing is not None:
@@ -582,17 +617,31 @@ def record_effect_confirm_receipt(
                 "IDEMPOTENCY_CONFLICT",
                 f"effect {effect_id} already has a different confirm receipt",
             )
-        return
+        return version
+    stamp = now or utc_now()
     session.merge(
         EffectConfirmReceipt(
             effect_id=effect_id,
             action=action,
             target_fingerprint=target_fingerprint,
             composition_key=composition_key,
-            confirmed_at=now or utc_now(),
+            confirmed_at=stamp,
         )
     )
+    # The concurrency token (R4-1): one transaction writes the receipt and
+    # moves the version, so any in-flight recovery compare-and-swap keyed on
+    # the pre-receipt version is refused. Inside this transaction the state
+    # cannot have changed since the read above (SQLite serialises writers),
+    # so no state predicate belongs in this UPDATE — a missed update must
+    # never be silent.
+    session.execute(
+        text(
+            "UPDATE external_effects SET version = version + 1, "
+            "updated_at = :stamp WHERE effect_id = :eid"
+        ).bindparams(stamp=stamp, eid=effect_id)
+    )
     session.flush()
+    return version + 1
 
 
 def record_composition_confirm_receipt(
@@ -608,27 +657,26 @@ def record_composition_confirm_receipt(
     effect row's own binding — the composition verified that exact
     fingerprint against the dispatched payload before the outward write, so
     the receipt is backed by the same derivation chain the dispatch was,
-    never by the caller's word. A missing row, or one that has left its
-    parked state (another process closed or moved it between the write and
-    this receipt), refuses: the receipt may only describe a park that still
-    exists.
+    never by the caller's word. A missing row refuses up front.
+
+    The parked-state check lives *inside* the write transaction (round-4
+    finding R4-1), not on a plain connection: a park the expiry sweep has
+    already moved to ``unknown`` refuses without writing, and an interleave
+    mid-transaction surfaces as a snapshot conflict that
+    ``run_write_transaction`` re-runs from a fresh read — reaching the same
+    refusal. The receipt and its concurrency-token version bump commit
+    atomically, so discrimination and recovery CAS cannot both win.
     """
     with engine.connect() as connection:
         row = connection.execute(
             text(
-                "SELECT target_fingerprint, state FROM external_effects "
+                "SELECT target_fingerprint FROM external_effects "
                 "WHERE effect_id = :eid"
             ).bindparams(eid=effect_id)
         ).first()
     if row is None:
         raise ExecutorRefusal("NOT_FOUND", f"no external effect {effect_id}")
-    target_fingerprint, state = row
-    if state != PARKED_COMPLETED:
-        raise ExecutorRefusal(
-            "ILLEGAL_STATE",
-            f"effect {effect_id} is {state}; a confirm receipt may only be "
-            f"recorded for a parked ({PARKED_COMPLETED}) effect",
-        )
+    target_fingerprint = row[0]
     from personal_agent_dal.storage.engine import session_factory
 
     with session_factory(engine)() as session:
@@ -678,6 +726,21 @@ def _recover_expired_dispatches(
     R3-2): an expired park without a target record must enter ``unknown``
     and surface as a visible ``TARGET_MISSING`` refusal in the sweep, not
     silently rot in ``dispatch_started`` forever.
+
+    The discriminator read and the recovery CAS are one atomic decision
+    (round-4 finding R4-1): the receipt writer commits its row and moves the
+    effect's ``version`` in a single transaction, so the version this query
+    read is only current while no matching receipt exists — a receipt
+    committing after this read poisons the in-flight ``record_effect_unknown``
+    compare-and-swap, which arrives with a stale version and is refused. A
+    committed matching receipt therefore can never be swept, and the sweep
+    never holds a transaction across the model-free lifecycle step.
+
+    Every expired park enters this sweep regardless of owner (round-4
+    finding R4-2 — the old ``owner_aggregate_type = 'feature'`` filter made
+    the non-feature skip below unreachable and let a
+    ``recovery_case``-owned effect rot): the effect-level edge does not
+    depend on the owner; only the feature stop does.
     """
     now = datetime.fromtimestamp(now_epoch, tz=timezone.utc)
     with engine.connect() as connection:
@@ -687,7 +750,6 @@ def _recover_expired_dispatches(
                 "       e.owner_aggregate_type "
                 "FROM external_effects e "
                 "WHERE e.state = 'dispatch_started' "
-                "AND e.owner_aggregate_type = 'feature' "
                 "AND e.claim_expires_at IS NOT NULL AND e.claim_expires_at <= :now "
                 "AND NOT EXISTS ("
                 "    SELECT 1 FROM effect_confirm_receipts r "
@@ -708,8 +770,10 @@ def _recover_expired_dispatches(
                 facts={"executor.failure_shape": "response_lost"},
             )
         except ControllerRefusal:
-            # Another process won the CAS. Its fresh state will either enter
-            # this sweep below or be owned by that process.
+            # Another process won the CAS: either it moved the effect first
+            # (its fresh state will enter a later pass or is owned by that
+            # process) or the confirm receipt committed mid-flight and took
+            # the version token (R4-1) — this park is confirmed, not ours.
             continue
         if owner_type != "feature":
             # No feature root to park; the effect's unknown state is its own

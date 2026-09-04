@@ -447,7 +447,7 @@ class EffectDispatchTarget(Base):
         CheckConstraint(_in_set("action", EFFECT_TARGET_ACTIONS), name="action"),
         CheckConstraint(
             _hex_of_length("target_fingerprint", 64, nullable=False),
-            name="target_fingerprint_hex",
+            name="fingerprint",
         ),
     )
 
@@ -482,8 +482,9 @@ class EffectConfirmReceipt(Base):
         CheckConstraint(_in_set("action", EFFECT_TARGET_ACTIONS), name="action"),
         CheckConstraint(
             _hex_of_length("target_fingerprint", 64, nullable=False),
-            name="target_fingerprint_hex",
+            name="fingerprint",
         ),
+        CheckConstraint("length(composition_key) > 0", name="composition_key"),
     )
 
 

@@ -49,9 +49,11 @@ def upgrade() -> None:
         sa.CheckConstraint(
             # The frozen helper's shape, inline: an explicit GLOB, not a bare
             # length test — a 64-character non-hex string would satisfy the
-            # column the intent fingerprint binds to.
-            "length(target_fingerprint) = 64 "
-            "AND target_fingerprint NOT GLOB '*[^0-9a-f]*'",
+            # column the intent fingerprint binds to. The outer parentheses
+            # are the helper's exact rendering, so the migrated and
+            # metadata-built schemas agree byte for byte (R4-3).
+            "(length(target_fingerprint) = 64 "
+            "AND target_fingerprint NOT GLOB '*[^0-9a-f]*')",
             name=op.f('ck_effect_dispatch_targets_fingerprint'),
         ),
         sa.ForeignKeyConstraint(

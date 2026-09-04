@@ -57,9 +57,11 @@ def upgrade() -> None:
             name=op.f('ck_effect_confirm_receipts_action'),
         ),
         sa.CheckConstraint(
-            # The frozen helper's shape, inline, as in 0008.
-            "length(target_fingerprint) = 64 "
-            "AND target_fingerprint NOT GLOB '*[^0-9a-f]*'",
+            # The frozen helper's shape, inline, as in 0008 — outer
+            # parentheses included, so the migrated and metadata-built
+            # schemas agree byte for byte (R4-3).
+            "(length(target_fingerprint) = 64 "
+            "AND target_fingerprint NOT GLOB '*[^0-9a-f]*')",
             name=op.f('ck_effect_confirm_receipts_fingerprint'),
         ),
         sa.CheckConstraint(

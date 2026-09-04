@@ -271,33 +271,50 @@ def _owner_feature_id(ctx: ApplyContext) -> str:
     decision that authorises it, the approval it consumes and the capabilities
     it revokes all belong to the feature the case was opened for. Looking them
     up by the recovery case's id would find nothing and refuse a legitimate
-    command.
+    command. The same holds for an external effect owned through a recovery
+    case (round-4 finding R4-2): its `owner_aggregate_id` names the case, so
+    the feature behind the case is the owner — otherwise any EE-* edge with
+    a `decision_create` member crashes the engine on a missing feature row
+    instead of resolving it.
     """
     if ctx.command.aggregate_type == "feature":
         return ctx.aggregate_id
     cached = ctx.scratch.get("owner_feature_id")
     if cached is not None:
         return cached
+    feature_id: str | None
     if ctx.command.aggregate_type == "recovery_case":
         table = RecoveryCase.__table__
-        owner = ctx.session.execute(
+        feature_id = ctx.session.execute(
             select(table.c.feature_id).where(
                 table.c.recovery_case_id == ctx.aggregate_id
             )
         ).scalar_one_or_none()
     else:
         table = ExternalEffect.__table__
-        owner = ctx.session.execute(
-            select(table.c.owner_aggregate_id).where(
-                table.c.effect_id == ctx.aggregate_id
-            )
-        ).scalar_one_or_none()
-    if owner is None:
+        row = ctx.session.execute(
+            select(
+                table.c.owner_aggregate_id,
+                table.c.owner_aggregate_type,
+            ).where(table.c.effect_id == ctx.aggregate_id)
+        ).first()
+        if row is None:
+            feature_id = None
+        elif row[1] == "recovery_case":
+            case_table = RecoveryCase.__table__
+            feature_id = ctx.session.execute(
+                select(case_table.c.feature_id).where(
+                    case_table.c.recovery_case_id == row[0]
+                )
+            ).scalar_one_or_none()
+        else:
+            feature_id = row[0]
+    if feature_id is None:
         raise TransitionRefused(
             ReceiptCodes.ILLEGAL_TRANSITION, "aggregate has no owning feature"
         )
-    ctx.scratch["owner_feature_id"] = owner
-    return owner
+    ctx.scratch["owner_feature_id"] = feature_id
+    return feature_id
 
 
 def _companion_for(ctx: ApplyContext, aggregate_type: str) -> dict[str, Any] | None:
