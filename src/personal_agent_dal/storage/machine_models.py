@@ -452,6 +452,41 @@ class EffectDispatchTarget(Base):
     )
 
 
+class EffectConfirmReceipt(Base):
+    """The executor's proof that a parked effect was confirmed (R09-B R3-1).
+
+    A confirmed write parks in `dispatch_started` — §3.6 freezes no standalone
+    completed edge — and the dispatch marker's `claim_expires_at` makes it
+    indistinguishable, by state alone, from a crash window whose fate is
+    unproven. This one-row-per-effect record is the discriminator: the
+    dispatch composition persists it after a closed success read-back, and the
+    recovery sweep honours it instead of sweeping the park to `unknown`.
+
+    Fail-closed: no receipt means crash-window recovery, and a receipt whose
+    fingerprint no longer matches the effect's binding suppresses nothing.
+    The registry is untouched — this is operator-owned persistence (the
+    precedent of `effect_dispatch_targets`), not a lifecycle edge.
+    """
+
+    __tablename__ = "effect_confirm_receipts"
+
+    effect_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("external_effects.effect_id"), primary_key=True
+    )
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    target_fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+    composition_key: Mapped[str] = mapped_column(Text, nullable=False)
+    confirmed_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(_in_set("action", EFFECT_TARGET_ACTIONS), name="action"),
+        CheckConstraint(
+            _hex_of_length("target_fingerprint", 64, nullable=False),
+            name="target_fingerprint_hex",
+        ),
+    )
+
+
 class RecoveryCase(Base):
     """A compensation investigation. Compensation is not rollback (§3.6)."""
 

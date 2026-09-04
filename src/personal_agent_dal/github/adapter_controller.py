@@ -646,12 +646,42 @@ def dispatch_github_write(
         state, _ = _effect_row(engine, effect_id)
         if stop_feature_on_unknown and state == UNKNOWN_STATE:
             _stop_feature_for_unknown(engine, feature_id=feature_id, now_epoch=clock)
+    elif judged == "confirmed":
+        # The write is confirmed, but the registry freezes no standalone
+        # completed edge: the effect parks here awaiting its owner root
+        # (§3.6). What persists is the executor's confirm receipt — the
+        # discriminator the recovery sweep reads (R09-B R3-1) so this park
+        # is never mistaken for a crash window and swept to ``unknown``.
+        # Its own committed transaction: a crash before it lands fails
+        # closed to crash-window recovery, whose read-back proves the
+        # outcome again.
+        _record_confirm_receipt(engine, effect_id=effect_id, action=action)
 
     state, _ = _effect_row(engine, effect_id)
     return GithubWriteOutcome(
         effect_id=effect_id,
         effect_state=state,
         adapter_outcome=outcome,
+    )
+
+
+def _record_confirm_receipt(engine: Engine, *, effect_id: str, action: str) -> None:
+    """Persist the executor's confirm receipt in its own transaction (R3-1).
+
+    Function-level import: ``executor`` imports this module, so the module
+    graph must not gain a top-level cycle for a helper. The executor derives
+    the fingerprint from the persisted target record and re-validates it
+    against the effect's binding; a refusal here propagates — a park that
+    cannot prove its target must surface, not silently skip its receipt.
+    On any other failure the receipt is simply absent: the sweep then treats
+    the park as a crash window, which is the fail-closed direction, never a
+    fabricated confirm.
+    """
+    from personal_agent_dal.github.executor import record_composition_confirm_receipt
+
+    record_composition_confirm_receipt(
+        engine, effect_id=effect_id, action=action,
+        composition_key=f"{effect_id}:confirmed",
     )
 
 

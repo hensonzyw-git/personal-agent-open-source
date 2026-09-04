@@ -46,7 +46,10 @@ from personal_agent_dal.github.executor import (
     unknown_effects,
     wake_effect,
 )
-from personal_agent_dal.github.adapter_controller import fingerprint_for
+from personal_agent_dal.github.adapter_controller import (
+    dispatch_github_write,
+    fingerprint_for,
+)
 from personal_agent_dal.github.reconciliation import (
     ReconciliationRefusal,
     start_effect_reconciliation,
@@ -646,6 +649,212 @@ def test_expired_dispatch_marker_enters_read_only_reconciliation(engine) -> None
             .bindparams(feature_id=feature_id)
         ).scalar_one()
     assert feature == "reconciliation_required"
+
+
+# ---------------------------------------------------------------------------
+# The confirm discriminator (round-3 finding R3-1): a confirmed park must
+# never be swept, a crash window with no confirm evidence still must be.
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_past_expiry(engine, effect_id: str, *, key: str) -> None:
+    """Drive claim → dispatch, then stamp the marker's expiry far in the past.
+
+    Exactly the crash-window shape the recovery sweep owns — the same
+    seeding ``test_expired_dispatch_marker_enters_read_only_reconciliation``
+    pins, factored out so each discriminator test starts from it.
+    """
+    from personal_agent_dal.github.adapter_controller import (
+        _apply_step,
+        _claim_guard_facts,
+        _dispatch_guard_facts,
+    )
+
+    _apply_step(
+        engine,
+        command_type="claim_external_effect",
+        evidence_source="external-effect-controller",
+        effect_id=effect_id,
+        expected_version=1,
+        idempotency_key=f"{key}:claim",
+        facts=_claim_guard_facts(engine, effect_id, 0),
+    )
+    _apply_step(
+        engine,
+        command_type="record_effect_dispatch",
+        evidence_source="effect-executor",
+        effect_id=effect_id,
+        expected_version=2,
+        idempotency_key=f"{key}:dispatch",
+        facts=_dispatch_guard_facts(engine, effect_id, 0),
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "UPDATE external_effects SET claim_expires_at = :expired "
+                "WHERE effect_id = :effect_id"
+            ).bindparams(
+                expired="2020-01-01T00:00:00.000000Z",
+                effect_id=effect_id,
+            )
+        )
+
+
+def test_sweep_never_takes_a_confirmed_expired_park(engine) -> None:
+    """A confirmed write parked past its marker expiry stays parked (R3-1).
+
+    The composition confirmed the push, so the executor wrote its confirm
+    receipt; fifteen minutes later the expiry sweep runs and must leave the
+    effect and its owner exactly where confirmation parked them.
+    """
+    feature_id, effect_id = seed_intent(engine, remote_key="idem-f5-1")
+    adapter = StubAdapter(CONFIRMED_PUSH)
+    outcome = dispatch_github_write(
+        engine, adapter,  # type: ignore[arg-type]
+        effect_id=effect_id, action="push_branch",
+        idempotency_key="idem-f5-1", payload=push_payload(),
+        feature_id=feature_id,
+    )
+    assert outcome.effect_state == "dispatch_started"
+    assert adapter.calls == ["push"]
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "UPDATE external_effects SET claim_expires_at = :expired "
+                "WHERE effect_id = :effect_id"
+            ).bindparams(
+                expired="2020-01-01T00:00:00.000000Z", effect_id=effect_id
+            )
+        )
+    read_only = ReadBackAdapter(BranchReadBack(found=True, head_sha=HEAD))
+    outcomes = run_unknown_sweep(engine, read_only, now_epoch=1_700_000_000)
+    assert outcomes == [], "a confirmed park is nobody's recovery work"
+    assert read_only.calls == [], "no read-back may issue for a confirmed park"
+    assert effect_row_full(engine, effect_id) == ("dispatch_started", 3)
+    with engine.connect() as connection:
+        feature = connection.execute(
+            sa.text("SELECT state FROM features WHERE feature_id = :f")
+            .bindparams(f=feature_id)
+        ).scalar_one()
+    assert feature == "awaiting_merge"
+
+
+def test_sweep_takes_a_crash_window_even_when_the_write_really_landed(
+    engine,
+) -> None:
+    """Crash between the confirmed read-back and the receipt: swept, not kept.
+
+    No receipt means the sweep cannot distinguish this park from any other
+    crash window — and must not. Fail-closed direction: the effect enters
+    ``unknown`` and the read-only reconciliation proves what landed, so the
+    outcome converges without ever re-firing the write.
+    """
+    feature_id, effect_id = seed_intent(engine)
+    _dispatch_past_expiry(engine, effect_id, key="crash-no-receipt")
+    read_only = ReadBackAdapter(BranchReadBack(found=True, head_sha=HEAD))
+    outcomes = run_unknown_sweep(engine, read_only, now_epoch=1_700_000_000)
+    assert [o.effect_id for o in outcomes] == [effect_id]
+    assert read_only.calls == ["read_branch"]
+    assert effect_row_full(engine, effect_id)[0] == "reconciling"
+    with engine.connect() as connection:
+        feature = connection.execute(
+            sa.text("SELECT state FROM features WHERE feature_id = :f")
+            .bindparams(f=feature_id)
+        ).scalar_one()
+    assert feature == "reconciliation_required"
+
+
+def test_stale_confirm_receipt_suppresses_nothing(engine) -> None:
+    """A receipt whose fingerprint no longer matches its effect is dead.
+
+    The sweep's trust boundary is the effect row's own binding: a rearm that
+    rewrote the target leaves the old receipt naming a target that no longer
+    exists, so the park is recovered as a crash window instead of being
+    protected by a stale receipt.
+    """
+    feature_id, effect_id = seed_intent(engine, remote_key="idem-f5-1")
+    adapter = StubAdapter(CONFIRMED_PUSH)
+    outcome = dispatch_github_write(
+        engine, adapter,  # type: ignore[arg-type]
+        effect_id=effect_id, action="push_branch",
+        idempotency_key="idem-f5-1", payload=push_payload(),
+        feature_id=feature_id,
+    )
+    assert outcome.effect_state == "dispatch_started"
+    # A drift-tamper on the binding after confirmation: the receipt's
+    # fingerprint now disagrees with the row it was written against.
+    # The park keeps its composition-stamped marker; only the expiry needs
+    # backdating to reach the sweep's window.
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "UPDATE external_effects SET target_fingerprint = :drifted, "
+                "claim_expires_at = :expired WHERE effect_id = :effect_id"
+            ).bindparams(
+                drifted="f" * 64,
+                expired="2020-01-01T00:00:00.000000Z",
+                effect_id=effect_id,
+            )
+        )
+    read_only = ReadBackAdapter(BranchReadBack(found=True, head_sha=HEAD))
+    outcomes = run_unknown_sweep(engine, read_only, now_epoch=1_700_000_000)
+    # The stale receipt suppressed nothing: the park entered the recovery
+    # edge like any crash window. The drifted binding then fails the
+    # sweep's own target re-validation, so reconciliation never starts and
+    # the effect waits in ``unknown`` — visibly, for the operator.
+    assert [o.effect_id for o in outcomes] == [effect_id]
+    assert outcomes[0].refusal is not None
+    assert outcomes[0].refusal.code == "FINGERPRINT_MISMATCH"
+    assert effect_row_full(engine, effect_id)[0] == "unknown"
+
+
+def test_confirm_receipt_refuses_for_a_non_parked_effect(engine) -> None:
+    """The receipt may only describe a park that still exists."""
+    _feature_id, effect_id = seed_intent(engine)
+    from personal_agent_dal.github.executor import (
+        record_composition_confirm_receipt,
+    )
+
+    with pytest.raises(ExecutorRefusal) as excinfo:
+        record_composition_confirm_receipt(
+            engine, effect_id=effect_id, action="push_branch",
+            composition_key="x:confirmed",
+        )
+    assert excinfo.value.code == "ILLEGAL_STATE"
+    with engine.connect() as connection:
+        rows = connection.execute(
+            sa.text("SELECT COUNT(*) FROM effect_confirm_receipts")
+        ).scalar_one()
+    assert rows == 0
+
+
+def test_expired_park_without_a_target_still_enters_recovery(engine) -> None:
+    """No target record: the park must visibly surface, not silently rot.
+
+    The old query joined on ``effect_dispatch_targets`` and dropped exactly
+    these rows (round-3 finding R3-2); now they enter ``unknown`` and the
+    sweep reports the ``TARGET_MISSING`` refusal — and the pass continues
+    for the other effects.
+    """
+    feature_id, effect_id = seed_intent(engine)
+    healthy_id = "effect-f5-9"
+    seed_intent(
+        engine, effect_id=healthy_id, feature_id="feature-f5-9",
+        remote_key="idem-f5-9",
+    )
+    _dispatch_past_expiry(engine, effect_id, key="orphan-target")
+    _dispatch_past_expiry(engine, healthy_id, key="healthy-target")
+    with session_factory(engine)() as session, session.begin():
+        session.delete(session.get(EffectDispatchTarget, effect_id))
+    read_only = ReadBackAdapter(BranchReadBack(found=True, head_sha=HEAD))
+    outcomes = run_unknown_sweep(engine, read_only, now_epoch=1_700_000_000)
+    by_effect = {o.effect_id: o for o in outcomes}
+    assert by_effect[effect_id].refusal is not None
+    assert by_effect[effect_id].refusal.code == "TARGET_MISSING"
+    assert by_effect[healthy_id].reconciled is not None, (
+        "one broken effect must not abort the pass"
+    )
+    assert effect_row_full(engine, effect_id)[0] == "unknown"
 
 
 def test_reconciliation_keys_do_not_collide_across_effects(engine) -> None:

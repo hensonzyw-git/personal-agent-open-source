@@ -62,6 +62,7 @@ from personal_agent_dal.github.adapter_controller import (
     fingerprint_for,
     INTENT_STATE,
     CLAIMED_STATE,
+    PARKED_COMPLETED,
 )
 from personal_agent_dal.github.reconciliation import (
     RECONCILING_STATE,
@@ -71,6 +72,7 @@ from personal_agent_dal.github.reconciliation import (
     reconcile_github_write,
 )
 from personal_agent_dal.storage.machine_models import (
+    EffectConfirmReceipt,
     EffectDispatchTarget,
     ExternalEffect,
 )
@@ -547,6 +549,101 @@ def wake_effect(
     )
 
 
+def record_effect_confirm_receipt(
+    session: Any,
+    *,
+    effect_id: str,
+    action: str,
+    target_fingerprint: str,
+    composition_key: str,
+    now: Any = None,
+) -> None:
+    """Persist the executor's confirm receipt for one confirmed park (R3-1).
+
+    The dispatch composition calls this after a closed success read-back, in
+    its own transaction: the effect stays parked in ``dispatch_started``
+    awaiting its owner root, and this row is what later distinguishes that
+    confirmed park from a crash window whose fate is unproven. Idempotent by
+    primary key — a replayed composition rewrites the identical row — and a
+    different receipt for the same effect is a conflict, not a repair.
+    """
+    if action not in ACTIONS:
+        raise ExecutorRefusal(
+            "INVALID_ARGUMENT", f"action must be one of {ACTIONS}"
+        )
+    existing = session.get(EffectConfirmReceipt, effect_id)
+    if existing is not None:
+        if (
+            existing.action != action
+            or existing.target_fingerprint != target_fingerprint
+            or existing.composition_key != composition_key
+        ):
+            raise ExecutorRefusal(
+                "IDEMPOTENCY_CONFLICT",
+                f"effect {effect_id} already has a different confirm receipt",
+            )
+        return
+    session.merge(
+        EffectConfirmReceipt(
+            effect_id=effect_id,
+            action=action,
+            target_fingerprint=target_fingerprint,
+            composition_key=composition_key,
+            confirmed_at=now or utc_now(),
+        )
+    )
+    session.flush()
+
+
+def record_composition_confirm_receipt(
+    engine: Engine,
+    *,
+    effect_id: str,
+    action: str,
+    composition_key: str,
+) -> None:
+    """The dispatch composition's confirm-receipt boundary (R09-B R3-1).
+
+    Called after a confirmed read-back, the receipt's fingerprint is the
+    effect row's own binding — the composition verified that exact
+    fingerprint against the dispatched payload before the outward write, so
+    the receipt is backed by the same derivation chain the dispatch was,
+    never by the caller's word. A missing row, or one that has left its
+    parked state (another process closed or moved it between the write and
+    this receipt), refuses: the receipt may only describe a park that still
+    exists.
+    """
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT target_fingerprint, state FROM external_effects "
+                "WHERE effect_id = :eid"
+            ).bindparams(eid=effect_id)
+        ).first()
+    if row is None:
+        raise ExecutorRefusal("NOT_FOUND", f"no external effect {effect_id}")
+    target_fingerprint, state = row
+    if state != PARKED_COMPLETED:
+        raise ExecutorRefusal(
+            "ILLEGAL_STATE",
+            f"effect {effect_id} is {state}; a confirm receipt may only be "
+            f"recorded for a parked ({PARKED_COMPLETED}) effect",
+        )
+    from personal_agent_dal.storage.engine import session_factory
+
+    with session_factory(engine)() as session:
+        run_write_transaction(
+            session,
+            lambda: record_effect_confirm_receipt(
+                session,
+                effect_id=effect_id,
+                action=action,
+                target_fingerprint=target_fingerprint,
+                composition_key=composition_key,
+            ),
+        )
+
+
 def _reconciliation_key(
     effect_id: str, remote_idempotency_key: str, effect_version: int
 ) -> str:
@@ -570,21 +667,36 @@ def _recover_expired_dispatches(
     The marker was committed before the network call, so expiry never licenses
     a resend.  It only licenses the frozen EE-DISPATCH-UNKNOWN edge, after
     which the normal read-only reconciliation sweep owns the effect.
+
+    Expiry alone cannot distinguish a crash window from a *confirmed* park:
+    both sit in ``dispatch_started`` with a stamped ``claim_expires_at``
+    (round-3 finding R3-1). The discriminator is the executor's confirm
+    receipt — a park whose effect row still carries a receipt matching its
+    own target fingerprint was confirmed by the adapter and is never swept;
+    no receipt, or a stale one, fails closed to the recovery edge. The join
+    on ``effect_dispatch_targets`` is deliberately gone (round-3 finding
+    R3-2): an expired park without a target record must enter ``unknown``
+    and surface as a visible ``TARGET_MISSING`` refusal in the sweep, not
+    silently rot in ``dispatch_started`` forever.
     """
     now = datetime.fromtimestamp(now_epoch, tz=timezone.utc)
     with engine.connect() as connection:
         rows = connection.execute(
             text(
-                "SELECT e.effect_id, e.version, e.owner_aggregate_id "
-                "FROM external_effects e JOIN effect_dispatch_targets t "
-                "ON t.effect_id = e.effect_id "
+                "SELECT e.effect_id, e.version, e.owner_aggregate_id, "
+                "       e.owner_aggregate_type "
+                "FROM external_effects e "
                 "WHERE e.state = 'dispatch_started' "
                 "AND e.owner_aggregate_type = 'feature' "
                 "AND e.claim_expires_at IS NOT NULL AND e.claim_expires_at <= :now "
+                "AND NOT EXISTS ("
+                "    SELECT 1 FROM effect_confirm_receipts r "
+                "    WHERE r.effect_id = e.effect_id "
+                "    AND r.target_fingerprint = e.target_fingerprint) "
                 "ORDER BY e.updated_at ASC LIMIT :lim"
             ).bindparams(now=now, lim=limit)
         ).all()
-    for effect_id, version, owner_id in rows:
+    for effect_id, version, owner_id, owner_type in rows:
         try:
             _apply_step(
                 engine,
@@ -598,6 +710,12 @@ def _recover_expired_dispatches(
         except ControllerRefusal:
             # Another process won the CAS. Its fresh state will either enter
             # this sweep below or be owned by that process.
+            continue
+        if owner_type != "feature":
+            # No feature root to park; the effect's unknown state is its own
+            # escalation. Stopping by `owner_id` here would read a *feature
+            # id* from a non-feature aggregate and abort the whole sweep on
+            # the missing row (round-3 note R3-3's crash shape).
             continue
         try:
             _stop_feature_for_unknown(engine, feature_id=owner_id, now_epoch=now_epoch)
