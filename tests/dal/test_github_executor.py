@@ -1025,6 +1025,131 @@ def test_sweep_winning_before_receipt_keeps_the_receipt_out(engine) -> None:
     assert rows == 0
 
 
+def test_receipt_mid_transaction_sees_the_sweep_via_snapshot_retry(
+    engine, monkeypatch
+) -> None:
+    """Mid-transaction reverse interleave (R4-1, round-5 finding R4-N1).
+
+    The previous reverse test committed the sweep's ``unknown`` *before*
+    the receipt boundary started, so the receipt's write transaction never
+    held a stale snapshot: the snapshot-conflict retry inside
+    ``run_write_transaction`` was docstring-claimed but pinned by no test.
+    Here the real receipt boundary opens its write transaction and
+    completes its first state read while the row is still parked; only
+    then does the real frozen sweep edge commit ``unknown`` on its own
+    session. SQLite refuses the stale snapshot's write, the unit re-runs
+    from a fresh read (two state reads), and reaches the same
+    ``ILLEGAL_STATE`` refusal — no state that left ``dispatch_started``
+    ever gains a receipt.
+    """
+    feature_id, effect_id = seed_intent(engine, remote_key="idem-f5-1")
+    _dispatch_past_expiry(engine, effect_id, key="mid-tx-race")
+
+    from personal_agent_dal.github.adapter_controller import _apply_step
+    from personal_agent_dal.storage import engine as storage_engine_module
+
+    real_factory = storage_engine_module.session_factory
+    observed: dict[str, Any] = {"state_reads": 0, "sweep_committed": False}
+
+    def hooked_factory(factory_engine: Any) -> Any:
+        """Session maker whose execute commits the real sweep edge between
+        the receipt's first in-tx state read and its write attempt — the
+        exact production interleave, through production code only."""
+        maker = real_factory(factory_engine)
+
+        def make_session() -> Any:
+            session = maker()
+            original_execute = session.execute
+
+            def hooked_execute(statement: Any, *args: Any, **kwargs: Any) -> Any:
+                result = original_execute(statement, *args, **kwargs)
+                if "state, version, target_fingerprint" in str(statement):
+                    observed["state_reads"] += 1
+                    if observed["state_reads"] == 1:
+                        # The receipt's transaction has now read the
+                        # still-parked row; commit the real frozen sweep
+                        # edge from its own session — the interleave.
+                        _apply_step(
+                            engine,
+                            command_type="record_effect_unknown",
+                            evidence_source="external-effect-controller",
+                            effect_id=effect_id,
+                            expected_version=3,
+                            idempotency_key=(
+                                f"recover-dispatch:{effect_id}:v3:unknown"
+                            ),
+                            facts={
+                                "executor.failure_shape": "response_lost"
+                            },
+                        )
+                        observed["sweep_committed"] = True
+                return result
+
+            session.execute = hooked_execute  # type: ignore[method-assign]
+            return session
+
+        return make_session
+
+    # The receipt boundary imports session_factory inside the function, so
+    # patching the storage.engine module attribute reaches exactly its write
+    # transaction; the machine engine's module-level binding stays real.
+    monkeypatch.setattr(
+        "personal_agent_dal.storage.engine.session_factory", hooked_factory
+    )
+
+    with pytest.raises(ExecutorRefusal) as excinfo:
+        record_composition_confirm_receipt(
+            engine, effect_id=effect_id, action="push_branch",
+            composition_key=f"{effect_id}:confirmed",
+        )
+    assert excinfo.value.code == "ILLEGAL_STATE"
+    assert observed["sweep_committed"] is True
+    assert observed["state_reads"] == 2, (
+        "the refused stale snapshot must re-run the unit from a fresh read"
+    )
+    # The recovery edge committed; the receipt did not.
+    assert effect_row_full(engine, effect_id) == ("unknown", 4)
+    with engine.connect() as connection:
+        rows = connection.execute(
+            sa.text("SELECT COUNT(*) FROM effect_confirm_receipts")
+        ).scalar_one()
+    assert rows == 0
+
+
+def test_same_receipt_replay_does_not_move_the_concurrency_token(engine) -> None:
+    """Replaying an identical confirm receipt must not bump the version.
+
+    The version bump is the receipt's concurrency token (R4-1); a replay
+    that bumped again would let a duplicate confirm pre-move the token
+    without any new confirmation evidence. The identical replay must leave
+    the row exactly where the first confirm parked it (round-5 finding
+    R4-N1: this property had a live probe but no in-repo regression).
+    """
+    feature_id, effect_id = seed_intent(engine, remote_key="idem-f5-1")
+    _dispatch_past_expiry(engine, effect_id, key="replay-token")
+
+    record_composition_confirm_receipt(
+        engine, effect_id=effect_id, action="push_branch",
+        composition_key=f"{effect_id}:confirmed",
+    )
+    assert effect_row_full(engine, effect_id) == ("dispatch_started", 4), (
+        "the first confirm takes the token (claim+dispatch 1->3, receipt 3->4)"
+    )
+
+    record_composition_confirm_receipt(
+        engine, effect_id=effect_id, action="push_branch",
+        composition_key=f"{effect_id}:confirmed",
+    )
+    assert effect_row_full(engine, effect_id) == ("dispatch_started", 4), (
+        "an identical replay must not move the concurrency token again"
+    )
+    with engine.connect() as connection:
+        rows = connection.execute(
+            sa.text("SELECT COUNT(*) FROM effect_confirm_receipts")
+        ).scalar_one()
+    assert rows == 1, "the replay must not write a second receipt row"
+
+
 def test_expired_park_without_a_target_still_enters_recovery(engine) -> None:
     """No target record: the park must visibly surface, not silently rot.
 
