@@ -17,6 +17,7 @@ code review, not a config edit.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -45,6 +46,11 @@ class ModelProvider:
     credential_env: str
     #: The model used when the deployment does not name one.
     default_model: str
+    #: Characters this provider rejects inside a tool name, as a regex
+    #: character class (None = the provider accepts any name verbatim).
+    #: DeepSeek's OpenAI-compatible API enforces ``^[a-zA-Z0-9_-]+$`` (live
+    #: 2026-09-05); Zhipu accepts the dotted business names verbatim.
+    illegal_tool_name_chars: str | None = None
 
 
 #: The declared set. Adding an entry is the code-review gate for sending a
@@ -65,6 +71,7 @@ PROVIDERS: dict[str, ModelProvider] = {
             path=_DEEPSEEK_PATH,
             credential_env="DEEPSEEK_API_KEY",
             default_model="deepseek-v4-flash",
+            illegal_tool_name_chars=r"[^A-Za-z0-9_-]",
         ),
     )
 }
@@ -110,6 +117,67 @@ def credential_from_env(
             f"{provider.name!r}"
         )
     return value
+
+
+class ToolNameMapper:
+    """A bidirectional business-name <-> provider-legal-name mapping for one request.
+
+    Providers disagree on what a tool name may contain: Zhipu accepts the
+    dotted business aliases verbatim, DeepSeek's OpenAI-compatible API
+    enforces ``^[a-zA-Z0-9_-]+$`` (live 2026-09-05). Declarations and the
+    forced-choice subset are renamed on the way out; the name in a model
+    response is mapped back on the way in. The mapping is built from exactly
+    the names being sent in that request, so a response can never name a
+    tool that was not declared to it.
+
+    A sanitized name that collides with a different declared name fails
+    closed at build time: an ambiguous mapping could silently dispatch one
+    business tool while the model asked for another. A response name the
+    mapper has no entry for is returned unchanged -- the existing
+    downstream validation (policy allowlists, expected-name comparison)
+    already rejects unknown names, and inventing a repair here would widen
+    what the model can make us dispatch.
+    """
+
+    def __init__(self, illegal_chars: str | None) -> None:
+        self._illegal = re.compile(illegal_chars) if illegal_chars else None
+        self._to_provider: dict[str, str] = {}
+        self._to_business: dict[str, str] = {}
+
+    @classmethod
+    def for_provider(cls, provider: ModelProvider) -> "ToolNameMapper":
+        return cls(provider.illegal_tool_name_chars)
+
+    def build(self, names: list[str]) -> "ToolNameMapper":
+        """Register the exact set of names this request will declare."""
+        if self._illegal is None:
+            self._to_provider = {}
+            self._to_business = {}
+            return self
+        provider_names: dict[str, str] = {}
+        for name in names:
+            sanitized = self._illegal.sub("_", name)
+            existing = provider_names.get(sanitized)
+            if existing is not None and existing != name:
+                raise ModelGatewayError(
+                    "tool names "
+                    f"{existing!r} and {name!r} both sanitize to "
+                    f"{sanitized!r} for this provider; refusing an "
+                    "ambiguous mapping"
+                )
+            provider_names[sanitized] = name
+        self._to_provider = {v: k for k, v in provider_names.items()}
+        self._to_business = provider_names
+        return self
+
+    def to_provider(self, name: str) -> str:
+        return self._to_provider.get(name, name)
+
+    def to_business(self, name: str) -> str:
+        return self._to_business.get(name, name)
+
+    def has_mapping(self) -> bool:
+        return bool(self._to_business)
 
 
 def provider_for_api_base(api_base: str) -> str | None:

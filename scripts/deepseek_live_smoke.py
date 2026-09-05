@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, "src")
@@ -41,28 +42,85 @@ def _load_credential() -> None:
                 os.environ["DEEPSEEK_API_KEY"] = value
 
 
-from personal_agent.runtime.glm_gateway import (  # noqa: E402
-    ModelGatewayError,
-    generate_with_adk,
-)
+from personal_agent.api import events  # noqa: E402
+from personal_agent.context.builder import ContextBuilder  # noqa: E402
+from personal_agent.context.compactor import Compactor  # noqa: E402
+from personal_agent.context.config import default_context_config  # noqa: E402
+from personal_agent.policy.bridge import VisibleTool  # noqa: E402
 from personal_agent.runtime.model_providers import (  # noqa: E402
     canonical_api_base,
     credential_from_env,
     provider_from_env,
 )
+from personal_agent.storage.engine import (  # noqa: E402
+    create_all,
+    create_database_engine,
+    session_factory,
+)
+from personal_agent.storage.models import Conversation, ContextSession  # noqa: E402
+from personal_agent.keys import HmacKey  # noqa: E402
+from personal_agent_core.crypto import KeyRing, generate_key  # noqa: E402
 
-_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "finance-log-expense",
-        "description": "记一笔支出",
-        "parameters": {
-            "type": "object",
-            "properties": {"amount": {"type": "number"}},
-            "required": ["amount"],
-        },
-    },
-}
+_NOW = datetime(2026, 9, 5, 1, 0, tzinfo=timezone.utc)
+
+
+def _envelope(tmp: Path, *, user_text: str, tools: list) -> object:
+    """A real builder-produced envelope over a throwaway SQLite database.
+
+    The gateway refuses hand-made envelopes (the Budgeter's witness), so the
+    live check composes the production builder exactly as the fixture in
+    tests/context_envelopes.py does.
+    """
+    engine = create_database_engine(tmp / "smoke-envelope.sqlite")
+    create_all(engine)
+    keyring = KeyRing(
+        [generate_key("smoke-fixture", state="active")],
+        service="personal-agent-api",
+    )
+    conversation_id = "tl_smoke"
+    session_id = "ses_smoke"
+    with session_factory(engine)() as session:
+        session.add(Conversation(
+            conversation_id=conversation_id,
+            created_at=_NOW,
+            next_sequence=1,
+            is_canonical=True,
+        ))
+        session.add(ContextSession(
+            session_id=session_id,
+            conversation_id=conversation_id,
+            opened_at=_NOW,
+            status="open",
+        ))
+        # The sequence allocator is a raw UPDATE; the pending rows must be in
+        # the database before the first append or it matches nothing.
+        session.commit()
+        current = events.append_event(
+            session,
+            keyring,
+            conversation_id=conversation_id,
+            session_id=session_id,
+            turn_id="trn-current",
+            event_type=events.USER_MESSAGE,
+            content={"text": user_text},
+            operation_id=None,
+            now=_NOW,
+        )
+        session.commit()
+        config = default_context_config()
+        builder = ContextBuilder(config, compactor=Compactor(config))
+        return builder.build(
+            session,
+            keyring,
+            HmacKey(kid="identifier:smoke", secret=os.urandom(32)),
+            conversation_id=conversation_id,
+            session_id=session_id,
+            current_event_id=current,
+            system_instruction="你是个人财务助理。金额一律用数字。",
+            user_text=user_text,
+            effective_tools=list(tools),
+        )
+
 
 _MAIN = {"MODEL_PROVIDER": "deepseek", "GLM_MODEL": "deepseek-v4-flash-vision-exp"}
 
@@ -74,58 +132,75 @@ def record(name: str, ok: bool, detail: str) -> None:
     print(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}")
 
 
-def _one_turn(model: str, api_base: str, declarations: list) -> object:
-    """One synchronous turn; `generate_with_adk` runs its own event loop."""
-    return generate_with_adk(
-        model=model,
-        api_key=credential_from_env(provider_from_env(_MAIN)),
-        api_base=api_base,
-        system="你是个人财务助理。金额一律用数字。",
-        messages=[{"role": "user", "content": "帮我记一笔 42.5 元的支出"}],
-        declarations=declarations,
-        temperature=0.1,
-        max_tokens=512,
-        timeout=25.0,
-    )
+def _gateway() -> object:
+    from personal_agent.runtime.glm_gateway import glm_gateway_from_env
+
+    return glm_gateway_from_env()
 
 
 def main() -> int:
     _load_credential()
-    provider = provider_from_env(_MAIN)
+    os.environ["MODEL_PROVIDER"] = _MAIN["MODEL_PROVIDER"]
+    os.environ["GLM_MODEL"] = _MAIN["GLM_MODEL"]
+    os.environ.pop("GLM_OPENAI_BASE_URL", None)
+    provider = provider_from_env(os.environ)
     if credential_from_env(provider, os.environ) is None:
         print("no DEEPSEEK_API_KEY in environment")
         return 2
-    base = canonical_api_base(provider)
-    model = _MAIN["GLM_MODEL"]
 
-    # Shape 1: clean path — a real tool-call round trip.
+    import tempfile
+    from pathlib import Path
+
+    from personal_agent.runtime.glm_gateway import ModelGatewayError
+    from personal_agent.runtime.model_providers import validated_api_base
+
+    # Shape 1: the production composition — GlmGateway.propose over a real
+    # envelope with the dotted business tool name, through the mapper, to the
+    # real DeepSeek API and back.
     try:
-        response = _one_turn(f"openai/{model}", base, [_TOOL])
-        parts = getattr(getattr(response, "content", None), "parts", []) or []
-        calls = [getattr(p, "function_call", None) for p in parts]
-        calls = [c for c in calls if c is not None]
-        if calls:
-            name = calls[0].name
-            record(
-                "clean-tool-call",
-                name == "finance-log-expense",
-                f"model responded with tool call {name!r}",
+        with tempfile.TemporaryDirectory() as tmp:
+            envelope = _envelope(
+                Path(tmp),
+                user_text="帮我记一笔 42.5 元的支出",
+                tools=[
+                    VisibleTool(
+                        alias="finance.log_expense",
+                        description="记一笔支出",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"amount": {"type": "number"}},
+                            "required": ["amount"],
+                        },
+                        risk_level="R2",
+                        required_scopes=("finance.write",),
+                    )
+                ],
             )
+            proposal = _gateway().propose(envelope=envelope)
+        tool = getattr(proposal, "tool", None)
+        if tool == "finance.log_expense":
+            record(
+                "dotted-tool-round-trip",
+                True,
+                "propose() returned the business alias from a live call",
+            )
+        elif tool is not None:
+            record("dotted-tool-round-trip", False, f"wrong tool {tool!r}")
         else:
-            texts = [getattr(p, "text", "") for p in parts if getattr(p, "text", "")]
-            record(
-                "clean-tool-call",
-                False,
-                f"no tool call in response; text head: {texts[:1]!r}",
-            )
+            kind = type(proposal).__name__
+            record("dotted-tool-round-trip", False, f"no tool call: {kind}")
     except ModelGatewayError as exc:
-        record("clean-tool-call", False, f"gateway error: {str(exc)[:200]}")
+        record("dotted-tool-round-trip", False, f"gateway error: {str(exc)[:200]}")
     except Exception as exc:  # noqa: BLE001
-        record("clean-tool-call", False, f"{type(exc).__name__}: {str(exc)[:200]}")
+        record("dotted-tool-round-trip", False, f"{type(exc).__name__}: {str(exc)[:200]}")
 
     # Shape 2: a wrong model name must fail with a provider error.
     try:
-        _one_turn("openai/deepseek-nonexistent-model-xyz", base, [_TOOL])
+        os.environ["GLM_MODEL"] = "deepseek-nonexistent-model-xyz"
+        gateway = _gateway()
+        with tempfile.TemporaryDirectory() as tmp:
+            envelope = _envelope(Path(tmp), user_text="一句话即可", tools=[])
+        gateway.propose(envelope=envelope)
         record("wrong-model-fails", False, "provider accepted a nonexistent model")
     except ModelGatewayError as exc:
         record("wrong-model-fails", True, f"failed closed: {str(exc)[:120]}")
@@ -135,8 +210,6 @@ def main() -> int:
     # Shape 3: a tampered host must be refused before any network call.
     tampered = "https://api.deepseek.com.evil.example/"
     try:
-        from personal_agent.runtime.model_providers import validated_api_base
-
         validated_api_base(tampered, provider)
         record("tampered-host-refused", False, "evil host passed validation")
     except ModelGatewayError:

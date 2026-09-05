@@ -29,6 +29,11 @@ from personal_agent.context.builder import ContextEnvelope
 from personal_agent.context.continuation import MAX_CLARIFICATION_QUESTION_CHARS
 from personal_agent.diagnostics import transcript
 from personal_agent.diagnostics.transcript import NullRecorder, Recorder
+from personal_agent.runtime.model_providers import (
+    PROVIDERS,
+    ToolNameMapper,
+    provider_for_api_base,
+)
 from personal_agent.runtime.model_gateway import (
     ModelGatewayError,
     ModelProposal,
@@ -97,6 +102,23 @@ class GlmGateway:
         messages = _messages(envelope)
         declarations = _declarations(envelope) + _internal_declarations()
         allowed_function_names = _required_function_names(envelope, declarations)
+        # Providers disagree on which characters a tool name may carry: the
+        # dotted business aliases are verbatim for Zhipu but refused by
+        # DeepSeek (live 2026-09-05). Renaming is per-request and built from
+        # exactly the declared set, so the response-side reverse mapping can
+        # never admit a tool that was not offered.
+        mapper = ToolNameMapper.for_provider(
+            PROVIDERS[provider_for_api_base(self._api_base) or "zhipu"]
+        ).build([item["function"]["name"] for item in declarations])
+        if mapper.has_mapping():
+            declarations = [
+                {**item, "function": {**item["function"], "name": mapper.to_provider(item["function"]["name"])}}
+                for item in declarations
+            ]
+            if allowed_function_names is not None:
+                allowed_function_names = [
+                    mapper.to_provider(name) for name in allowed_function_names
+                ]
         # Exactly what the provider is about to be sent, recorded before it is
         # sent: a request that never returns is the case that most needs its
         # input on disk. The credential is not part of the request record and
@@ -161,7 +183,7 @@ class GlmGateway:
             },
         )
         try:
-            return _parse_adk_proposal(response)
+            return _parse_adk_proposal(response, mapper=mapper)
         except ModelGatewayError as exc:
             self._record_failure("response_validation", exc, started)
             _log_model_failure(
@@ -539,7 +561,9 @@ def _log_model_failure(
     )
 
 
-def _parse_adk_proposal(response: Any) -> ModelProposal:
+def _parse_adk_proposal(
+    response: Any, *, mapper: "ToolNameMapper | None" = None
+) -> ModelProposal:
     error_code = getattr(response, "error_code", None)
     if error_code:
         raise _invalid_model_response(
@@ -612,6 +636,10 @@ def _parse_adk_proposal(response: Any) -> ModelProposal:
                 response_shape="missing_tool_name",
             )
         arguments = _parse_arguments(getattr(call, "args", None))
+        # The provider saw a sanitized name; dispatch downstream happens on
+        # the business alias. An unmapped name passes through unchanged, and
+        # the branches below (or the policy allowlist) reject it as unknown.
+        name = mapper.to_business(name) if mapper is not None else name
         if name == _ASK_CLARIFICATION:
             if set(arguments) != {"question", "reason"}:
                 raise _invalid_model_response(
@@ -777,12 +805,6 @@ _ALWAYS_THINKING_GLM_FAMILY = re.compile(r"glm-5\.3[A-Za-z0-9._-]*")
 _PROVIDERS_ACCEPTING_THINKING_PARAM: Final[frozenset[str]] = frozenset({"zhipu"})
 
 
-def _provider_name_for_base(api_base: str) -> str | None:
-    from personal_agent.runtime.model_providers import provider_for_api_base
-
-    return provider_for_api_base(api_base)
-
-
 def _thinking_request_params(
     model: str, provider_name: str = "zhipu"
 ) -> dict[str, Any]:
@@ -854,7 +876,7 @@ def generate_with_adk(
         timeout=timeout,
         num_retries=0,
         extra_body=_thinking_request_params(
-            model, _provider_name_for_base(api_base)
+            model, provider_for_api_base(api_base)
         ),
     )
     request = LlmRequest(

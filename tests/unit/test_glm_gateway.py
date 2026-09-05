@@ -1459,3 +1459,119 @@ def test_generate_with_adk_sends_no_thinking_param_on_deepseek_base(
         timeout=25.0,
     )
     assert captured["init"]["extra_body"] == {}
+
+
+# --- Tool-name sanitization for providers that reject dotted names ---
+
+
+def test_mapper_is_identity_for_zhipu() -> None:
+    from personal_agent.runtime.model_providers import ToolNameMapper
+
+    mapper = ToolNameMapper(None).build(["finance.log_expense", "agent.ask_clarification"])
+    assert mapper.to_provider("finance.log_expense") == "finance.log_expense"
+    assert mapper.to_business("finance.log_expense") == "finance.log_expense"
+    assert mapper.has_mapping() is False
+
+
+def test_mapper_sanitizes_dots_for_deepseek_and_maps_back() -> None:
+    from personal_agent.runtime.model_providers import ToolNameMapper
+
+    mapper = ToolNameMapper(r"[^A-Za-z0-9_-]").build(
+        ["finance.log_expense", "agent.ask_clarification"]
+    )
+    assert mapper.to_provider("finance.log_expense") == "finance_log_expense"
+    assert mapper.to_business("finance_log_expense") == "finance.log_expense"
+    assert mapper.to_provider("agent.ask_clarification") == "agent_ask_clarification"
+    assert mapper.to_business("agent_ask_clarification") == "agent.ask_clarification"
+
+
+def test_mapper_fails_closed_on_a_sanitize_collision() -> None:
+    from personal_agent.runtime.model_providers import ToolNameMapper
+
+    with pytest.raises(ModelGatewayError, match="both sanitize"):
+        ToolNameMapper(r"[^A-Za-z0-9_-]").build(["a.b", "a_b"])
+
+
+def test_mapper_unmapped_response_name_passes_through() -> None:
+    from personal_agent.runtime.model_providers import ToolNameMapper
+
+    mapper = ToolNameMapper(r"[^A-Za-z0-9_-]").build(["finance.log_expense"])
+    assert mapper.to_business("never_declared") == "never_declared"
+
+
+def test_chat_gateway_round_trips_dotted_names_through_deepseek(
+    envelope, monkeypatch
+) -> None:
+    """Declarations go out sanitized; the proposal comes back a business alias."""
+    from personal_agent.runtime.model_providers import PROVIDERS
+
+    monkeypatch.setattr(GlmGateway, "__init__", GlmGateway.__init__)
+    gateway, generate = _gateway(
+        _response(_call("finance_log_expense", {"name": "午饭"}))
+    )
+    # Point the gateway at the DeepSeek endpoint so the mapper sanitizes.
+    gateway._api_base = "https://api.deepseek.com/"
+    gateway._model = "openai/deepseek-v4-flash"
+    mapper_chars = PROVIDERS["deepseek"].illegal_tool_name_chars
+    assert mapper_chars is not None
+
+    proposal = gateway.propose(envelope=envelope)
+
+    sent = generate.kwargs
+    sent_names = [d["function"]["name"] for d in sent["declarations"]]
+    assert sent_names == [d["function"]["name"] for d in sent["declarations"]]
+    assert "finance_log_expense" in sent_names
+    assert "finance.log_expense" not in sent_names
+    if sent["allowed_function_names"] is not None:
+        assert all(
+            "." not in name for name in sent["allowed_function_names"]
+        )
+    assert isinstance(proposal, ProposedToolCall)
+    assert proposal.tool == "finance.log_expense"
+
+
+def test_chat_gateway_keeps_verbatim_names_for_zhipu(envelope) -> None:
+    gateway, generate = _gateway(
+        _response(_call("finance.log_expense", {"name": "午饭"}))
+    )
+    gateway.propose(envelope=envelope)
+    sent_names = [d["function"]["name"] for d in generate.kwargs["declarations"]]
+    assert "finance.log_expense" in sent_names
+
+
+def test_structured_client_maps_expected_name_on_deepseek(monkeypatch) -> None:
+    """The forced-choice subset and the expected name both use the sanitized
+    form; the recorded request equals the sent request."""
+    from personal_agent.runtime.structured import (
+        StructuredModelClient,
+        StructuredRequest,
+    )
+
+    captured = {}
+
+    def fake_generate(**kwargs):
+        captured.update(kwargs)
+        return _response(_call("context_checkpoint", {"decisions": []}))
+
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.delenv("GLM_OPENAI_BASE_URL", raising=False)
+    client = StructuredModelClient(
+        model="openai/deepseek-v4-flash",
+        api_key="sk-test",
+        input_budget_tokens=32_768,
+        api_base="https://api.deepseek.com/",
+        generate=fake_generate,
+    )
+    request = StructuredRequest(
+        system="SYS",
+        user_content="内容",
+        function_name="context.checkpoint",
+        parameters_schema={"type": "object", "properties": {}},
+        temperature=0.1,
+        max_tokens=256,
+    )
+    client.call(request)
+    sent_names = [d["function"]["name"] for d in captured["declarations"]]
+    assert sent_names == ["context_checkpoint"]
+    assert captured["allowed_function_names"] == ["context_checkpoint"]
