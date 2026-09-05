@@ -313,15 +313,26 @@ def structured_client_from_env(
 
     `model_env` lets one deployment run the two auxiliary calls on different
     models. It falls back to `GLM_MODEL`, so an unset override changes nothing.
+    The provider comes from ``MODEL_PROVIDER`` (default: Zhipu) and decides
+    which pinned endpoint and which credential variable apply.
     """
     import os
 
-    model = os.environ.get(model_env) or os.environ.get("GLM_MODEL", "glm-5.3-flash")
+    from personal_agent.runtime.model_providers import (
+        canonical_api_base,
+        credential_from_env,
+        provider_from_env,
+    )
+
+    provider = provider_from_env()
+    model = (
+        os.environ.get(model_env) or os.environ.get("GLM_MODEL") or ""
+    ).strip() or provider.default_model
     return StructuredModelClient(
         model=f"openai/{model}",
-        api_key=require_env("ZAI_API_KEY"),
+        api_key=credential_from_env(provider),
         input_budget_tokens=input_budget_tokens,
-        api_base=os.environ.get("GLM_OPENAI_BASE_URL", ZHIPU_API_BASE),
+        api_base=os.environ.get("GLM_OPENAI_BASE_URL", canonical_api_base(provider)),
         generate=generate,
         timeout=timeout,
         recorder=recorder,

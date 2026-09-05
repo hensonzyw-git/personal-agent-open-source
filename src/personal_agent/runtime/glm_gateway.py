@@ -227,14 +227,25 @@ def glm_gateway_from_env(
 ) -> GlmGateway:
     """Build the production gateway from an already-loaded environment.
 
-    A model credential may only be sent to Zhipu's pinned HTTPS API path. The
-    environment variable is retained for deploy-time visibility, but changing it
-    to another host or path is rejected before any network call.
+    A model credential may only be sent to its provider's pinned HTTPS API
+    path. The provider comes from ``MODEL_PROVIDER`` (default: Zhipu) and
+    decides which host and which credential variable apply. The base-URL
+    environment variable is retained for deploy-time visibility, but changing
+    it to another host or path is rejected before any network call.
     """
 
-    api_key = require_env("ZAI_API_KEY")
-    api_base = os.environ.get("GLM_OPENAI_BASE_URL", ZHIPU_API_BASE)
-    model = os.environ.get("GLM_MODEL", "glm-5.3-flash")
+    from personal_agent.runtime.model_providers import (
+        canonical_api_base,
+        credential_from_env,
+        provider_from_env,
+    )
+
+    provider = provider_from_env()
+    api_key = credential_from_env(provider)
+    model = (
+        os.environ.get("GLM_MODEL", "").strip() or provider.default_model
+    )
+    api_base = os.environ.get("GLM_OPENAI_BASE_URL", canonical_api_base(provider))
     return GlmGateway(
         model=f"openai/{model}",
         api_key=api_key,
@@ -731,26 +742,18 @@ def _parse_arguments(raw: Any) -> dict[str, Any]:
 
 
 def validated_api_base(value: str) -> str:
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port
-    except ValueError as exc:
-        raise ModelGatewayError("GLM_OPENAI_BASE_URL is invalid") from exc
-    valid_path = parsed.path.rstrip("/") == "/api/paas/v4"
-    if (
-        parsed.scheme != "https"
-        or parsed.hostname != "open.bigmodel.cn"
-        or port is not None
-        or parsed.username is not None
-        or parsed.password is not None
-        or not valid_path
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ModelGatewayError(
-            "GLM_OPENAI_BASE_URL must be Zhipu's pinned HTTPS API endpoint"
-        )
-    return ZHIPU_API_BASE
+    """Backward-compatible wrapper validating against the active provider.
+
+    The provider is resolved from ``MODEL_PROVIDER`` (default: Zhipu), so
+    existing deployments that never set the variable keep today's behaviour
+    exactly.
+    """
+    from personal_agent.runtime.model_providers import (
+        provider_from_env,
+        validated_api_base as _validated_against,
+    )
+
+    return _validated_against(value, provider_from_env())
 
 
 def require_env(name: str) -> str:
@@ -767,8 +770,24 @@ def require_env(name: str) -> str:
 #: (error 1210) the request fails closed instead of guessing a parameter.
 _ALWAYS_THINKING_GLM_FAMILY = re.compile(r"glm-5\.3[A-Za-z0-9._-]*")
 
+#: The providers verified to accept Zhipu's ``thinking`` extra-body parameter.
+#: A provider not listed here is sent no thinking parameter at all: whether an
+#: unverified provider tolerates a Zhipu-specific extension is a fact to look
+#: up or measure, not to guess (§5.1).
+_PROVIDERS_ACCEPTING_THINKING_PARAM: Final[frozenset[str]] = frozenset({"zhipu"})
 
-def _thinking_request_params(model: str) -> dict[str, Any]:
+
+def _provider_name_for_base(api_base: str) -> str | None:
+    from personal_agent.runtime.model_providers import provider_for_api_base
+
+    return provider_for_api_base(api_base)
+
+
+def _thinking_request_params(
+    model: str, provider_name: str = "zhipu"
+) -> dict[str, Any]:
+    if provider_name not in _PROVIDERS_ACCEPTING_THINKING_PARAM:
+        return {}
     base = model.rsplit("/", 1)[-1]
     if _ALWAYS_THINKING_GLM_FAMILY.fullmatch(base):
         return {"reasoning_effort": "low"}
@@ -834,7 +853,9 @@ def generate_with_adk(
         api_base=api_base,
         timeout=timeout,
         num_retries=0,
-        extra_body=_thinking_request_params(model),
+        extra_body=_thinking_request_params(
+            model, _provider_name_for_base(api_base)
+        ),
     )
     request = LlmRequest(
         contents=[

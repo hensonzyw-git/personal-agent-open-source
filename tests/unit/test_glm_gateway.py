@@ -1331,3 +1331,131 @@ def test_production_generator_rejects_an_invalid_required_subset(allowed) -> Non
             timeout=25.0,
             allowed_function_names=allowed,
         )
+
+
+# --- Provider registry (feat/deepseek-provider) ---
+
+
+def test_registry_resolves_the_deepseek_provider() -> None:
+    from personal_agent.runtime.model_providers import (
+        canonical_api_base,
+        provider_from_env,
+    )
+
+    provider = provider_from_env({"MODEL_PROVIDER": "deepseek"})
+    assert provider.name == "deepseek"
+    assert provider.host == "api.deepseek.com"
+    assert provider.credential_env == "DEEPSEEK_API_KEY"
+    assert canonical_api_base(provider) == "https://api.deepseek.com/"
+
+
+def test_registry_unset_provider_keeps_zhipu() -> None:
+    from personal_agent.runtime.model_providers import provider_from_env
+
+    assert provider_from_env({}).name == "zhipu"
+
+
+@pytest.mark.parametrize("value", ["unknown", "openai", "Zhipu-Enterprise"])
+def test_registry_fails_closed_on_an_unknown_provider(value) -> None:
+    from personal_agent.runtime.model_providers import provider_from_env
+
+    with pytest.raises(ModelGatewayError):
+        provider_from_env({"MODEL_PROVIDER": value})
+
+
+def test_registry_strips_and_lowercases_a_known_name() -> None:
+    from personal_agent.runtime.model_providers import provider_from_env
+
+    assert provider_from_env({"MODEL_PROVIDER": " DeepSeek "}).name == "deepseek"
+
+
+def test_deepseek_gateway_from_env_uses_its_own_credential_and_pin(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("GLM_MODEL", "DeepSeek-V4-Flash-Vision-Exp")
+    monkeypatch.delenv("GLM_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    gateway = glm_gateway_from_env()
+    assert gateway._model == "openai/DeepSeek-V4-Flash-Vision-Exp"
+    assert gateway._api_base == "https://api.deepseek.com/"
+    assert gateway._api_key == "sk-test"
+
+
+def test_deepseek_gateway_requires_its_own_credential(monkeypatch) -> None:
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    with pytest.raises(ModelGatewayError, match="DEEPSEEK_API_KEY"):
+        glm_gateway_from_env()
+
+
+def test_a_deepseek_credential_is_never_sent_to_zhipu(monkeypatch) -> None:
+    """Cross-provider base-URL wiring must fail closed before any call."""
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv(
+        "GLM_OPENAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"
+    )
+    with pytest.raises(ModelGatewayError):
+        glm_gateway_from_env()
+
+
+def test_deepseek_pin_rejects_host_and_path_variants(monkeypatch) -> None:
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    for hostile in (
+        "https://api.deepseek.com.evil.example/",
+        "https://api.deepseek.com:8443/",
+        "http://api.deepseek.com/",
+        "https://api.deepseek.com/v1",
+    ):
+        monkeypatch.setenv("GLM_OPENAI_BASE_URL", hostile)
+        with pytest.raises(ModelGatewayError):
+            glm_gateway_from_env()
+
+
+def test_thinking_params_are_empty_for_deepseek() -> None:
+    """A provider not verified for Zhipu's thinking extension receives none."""
+    from personal_agent.runtime.glm_gateway import _thinking_request_params
+
+    assert (
+        _thinking_request_params(
+            "openai/DeepSeek-V4-Flash-Vision-Exp", "deepseek"
+        )
+        == {}
+    )
+    # The verified provider keeps today's behaviour.
+    assert _thinking_request_params("openai/glm-5.3-flash", "zhipu") == {
+        "reasoning_effort": "low"
+    }
+
+
+def test_generate_with_adk_sends_no_thinking_param_on_deepseek_base(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    class FakeLiteLlm:
+        def __init__(self, **kwargs):
+            captured["init"] = kwargs
+
+        async def generate_content_async(self, request, stream=False):
+            yield _response(_text("ok"))
+
+    monkeypatch.setattr(
+        "google.adk.models.lite_llm.LiteLlm",
+        FakeLiteLlm,
+    )
+    generate_with_adk(
+        model="openai/DeepSeek-V4-Flash-Vision-Exp",
+        api_key="secret",
+        api_base="https://api.deepseek.com/",
+        system="SYS",
+        messages=[{"role": "user", "content": "hi"}],
+        declarations=[],
+        temperature=0.1,
+        max_tokens=512,
+        timeout=25.0,
+    )
+    assert captured["init"]["extra_body"] == {}

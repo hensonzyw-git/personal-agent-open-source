@@ -639,3 +639,29 @@ def test_a_provider_failure_reaches_the_compactor_as_a_failure() -> None:
     client, _ = _client(_response(_text("我总结不了")))
     with pytest.raises(StructuredCallError):
         GlmCompactorProvider(client).compact(_compactor_request())
+
+
+def test_the_structured_client_follows_the_provider_registry(monkeypatch) -> None:
+    """MODEL_PROVIDER=deepseek swaps endpoint and credential for aux calls."""
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("GLM_MODEL", "DeepSeek-V4-Flash-Vision-Exp")
+    monkeypatch.delenv("GLM_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+
+    client = structured_client_from_env(input_budget_tokens=32_768)
+    assert client._model == "openai/DeepSeek-V4-Flash-Vision-Exp"
+    assert client._api_base == "https://api.deepseek.com/"
+    assert client._api_key == "sk-test"
+
+
+def test_the_structured_client_refuses_a_cross_provider_base(monkeypatch) -> None:
+    from personal_agent.runtime.model_gateway import ModelGatewayError
+
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv(
+        "GLM_OPENAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"
+    )
+    with pytest.raises(ModelGatewayError):
+        structured_client_from_env(input_budget_tokens=32_768)
