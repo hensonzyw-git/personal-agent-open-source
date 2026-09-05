@@ -33,6 +33,11 @@ from typing import Any, Final
 from personal_agent.context.budget import HeuristicTokenEstimator
 from personal_agent.diagnostics import transcript
 from personal_agent.diagnostics.transcript import NullRecorder, Recorder
+from personal_agent.runtime.model_providers import (
+    PROVIDERS,
+    ToolNameMapper,
+    provider_for_api_base,
+)
 from personal_agent.runtime.glm_gateway import (
     ZHIPU_API_BASE,
     Generate,
@@ -136,6 +141,23 @@ class StructuredModelClient:
                 "parameters": request.parameters_schema,
             },
         }
+        # A provider that rejects characters in the business function name
+        # gets a sanitized declaration and the forced-choice subset under the
+        # sanitized name; the response name is mapped back before the
+        # expected-name comparison below. One name per call, so no collision
+        # is possible here.
+        mapper = ToolNameMapper.for_provider(
+            PROVIDERS[provider_for_api_base(self._api_base) or "zhipu"]
+        ).build([request.function_name])
+        sent_name = (
+            mapper.to_provider(request.function_name)
+            if mapper.has_mapping()
+            else request.function_name
+        )
+        declaration = {
+            "type": "function",
+            "function": {**declaration["function"], "name": sent_name},
+        }
         estimated_input_tokens = HeuristicTokenEstimator().estimate(
             canonical_json(
                 {
@@ -146,7 +168,7 @@ class StructuredModelClient:
                     "declarations": [declaration],
                     "tool_config": {
                         "mode": "ANY",
-                        "allowed_function_names": [request.function_name],
+                        "allowed_function_names": [sent_name],
                     },
                 }
             )
@@ -167,7 +189,7 @@ class StructuredModelClient:
                 "system_instruction": request.system,
                 "messages": [{"role": "user", "content": request.user_content}],
                 "declarations": [declaration],
-                "allowed_function_names": [request.function_name],
+                "allowed_function_names": [sent_name],
                 "estimated_input_tokens": estimated_input_tokens,
             },
         )
@@ -187,7 +209,7 @@ class StructuredModelClient:
             },
         )
         try:
-            return _parse(response, expected=request.function_name)
+            return _parse(response, expected=sent_name)
         except StructuredCallError as exc:
             self._record_failure("response_validation", exc, started)
             raise
@@ -215,7 +237,9 @@ class StructuredModelClient:
 
         def invoke() -> None:
             try:
-                outcome.put((True, self._call_generator(request, declaration)))
+                outcome.put(
+                    (True, self._call_generator(request, declaration))
+                )
             except BaseException as exc:  # noqa: BLE001 - reported to the caller
                 outcome.put((False, exc))
 
@@ -267,7 +291,7 @@ class StructuredModelClient:
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
                 timeout=self._timeout,
-                allowed_function_names=[request.function_name],
+                allowed_function_names=[declaration["function"]["name"]],
             )
         except StructuredCallError:
             raise
@@ -313,15 +337,26 @@ def structured_client_from_env(
 
     `model_env` lets one deployment run the two auxiliary calls on different
     models. It falls back to `GLM_MODEL`, so an unset override changes nothing.
+    The provider comes from ``MODEL_PROVIDER`` (default: Zhipu) and decides
+    which pinned endpoint and which credential variable apply.
     """
     import os
 
-    model = os.environ.get(model_env) or os.environ.get("GLM_MODEL", "glm-5.3-flash")
+    from personal_agent.runtime.model_providers import (
+        canonical_api_base,
+        credential_from_env,
+        provider_from_env,
+    )
+
+    provider = provider_from_env()
+    model = (
+        os.environ.get(model_env) or os.environ.get("GLM_MODEL") or ""
+    ).strip() or provider.default_model
     return StructuredModelClient(
         model=f"openai/{model}",
-        api_key=require_env("ZAI_API_KEY"),
+        api_key=credential_from_env(provider),
         input_budget_tokens=input_budget_tokens,
-        api_base=os.environ.get("GLM_OPENAI_BASE_URL", ZHIPU_API_BASE),
+        api_base=os.environ.get("GLM_OPENAI_BASE_URL", canonical_api_base(provider)),
         generate=generate,
         timeout=timeout,
         recorder=recorder,
