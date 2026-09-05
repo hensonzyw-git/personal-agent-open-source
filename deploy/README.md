@@ -541,8 +541,13 @@ sudo bash ~/personal-agent-deploy/provision_dal_keys.sh  # mint secrets + kill s
 sudo vim /etc/personal-agent/dal.env.d/github-app.env
 sudo bash ~/personal-agent-deploy/verify_dal_github_app.sh
 
-# 2. Application code + migration (after deploy_code.sh has run on the Mac):
-sudo -u personal-agent-dal /opt/personal-agent/.venv/bin/personal-agent-dal-db \
+# 2. Application code + migration. deploy_code.sh only updates the Finance
+#    venv (/opt/personal-agent); the DAL is its own trust domain whose venv
+#    lives under /opt/personal-agent-dal, so install the wheel there
+#    explicitly, then upgrade:
+#      sudo /opt/personal-agent-dal/.venv/bin/pip install --no-deps \
+#        --force-reinstall <shipped wheel>
+sudo -u personal-agent-dal /opt/personal-agent-dal/.venv/bin/personal-agent-dal-db \
   --database /var/lib/personal-agent-dal/dal.sqlite upgrade
 
 # 3. Enable (order: gate passes first; the DAL db-backup timer only once the
