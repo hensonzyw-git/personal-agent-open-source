@@ -141,9 +141,31 @@ def test_prompt_distinguishes_travel_from_local_transport_and_preserves_names() 
     prompt = build_system_prompt(today="2026-08-12")
     for rule in (
         "不得写成“出行”",
-        "打车、地铁、停车等本地交通",
+        "打车、地铁、停车",
         "把目的地（如东京、美国、瑞士）放入 trip_tag",
         "“买水”“买衣服”“买洗水果篮”“买网球”不能删成",
         "“东京机票”“瑞士酒店”则分别以“机票”“酒店”为 name",
     ):
         assert rule in prompt
+
+
+def test_prompt_sends_destination_transport_in_trip_context_to_trip_tag() -> None:
+    """fictional trip-context case: `示例城打车 27.3 家庭支出` was extracted as
+    `category=出行` with no trip_tag after the provider switch. The prompt
+    placed "旅行目的地不是本地交通" and "出行只用于打车地铁停车" side by side,
+    so the trip-context taxi fell into the gap between the two sentences:
+    GLM read the ambiguity the intended way, DeepSeek read it literally and
+    reasoned that the trip_tag rule "is specifically for travel items". The
+    server already forces tag⇒旅行 and reuses the ledger's trip root, so the
+    fix is a prompt rule pinning this exact case, not an MCP change."""
+    prompt = build_system_prompt(today="2025-03-12")
+    for rule in (
+        "行程中",
+        "示例城打车",
+        "trip_tag",
+        "仍是旅行消费",
+    ):
+        assert rule in prompt
+    # The new rule must sit inside the travel/transport paragraph it repairs,
+    # so "出行" remains pinned to no-trip-context transport only.
+    assert "不属行程、没有目的地" in prompt
