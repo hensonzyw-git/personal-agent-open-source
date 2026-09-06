@@ -253,6 +253,27 @@ def main(argv: list[str] | None = None) -> int:
         help="the version the operator believes the effect holds",
     )
     wake_parser.add_argument("--yes", action="store_true", help="skip the interactive confirmation")
+    intake_parser = sub.add_parser(
+        "intake", help="create a Feature at intake and enqueue its pending Job (requires --yes)"
+    )
+    intake_parser.add_argument("--repository-id", required=True, help="the repo to work in (allowlisted)")
+    intake_parser.add_argument(
+        "--base-sha", required=True,
+        help="the exact base commit (40-hex SHA) the job is built from",
+    )
+    intake_parser.add_argument(
+        "--toolchain-ref", required=True,
+        help="repo-relative manifest the worker's toolchain is pinned to (DAL-019)",
+    )
+    intake_parser.add_argument(
+        "--description", required=False,
+        help="the task description (passed verbatim as the task request)",
+    )
+    intake_parser.add_argument(
+        "--description-file", type=Path, default=None,
+        help="read the task description from a file instead of --description",
+    )
+    intake_parser.add_argument("--yes", action="store_true", help="skip the interactive confirmation")
     sub.add_parser(
         "reconcile-sweep",
         help="run one read-only reconciliation pass over unknown effects",
@@ -414,6 +435,48 @@ def main(argv: list[str] | None = None) -> int:
         if woken.get("authoritative_result") is not None:
             line += f" authoritative={woken['authoritative_result']}"
         print(line)
+        return 0
+
+    if args.command == "intake":
+        description = args.description
+        if args.description_file is not None:
+            try:
+                description = args.description_file.read_text("utf-8")
+            except OSError as error:
+                raise SystemExit(
+                    f"description file unreadable: {type(error).__name__}"
+                ) from None
+        if not description or not description.strip():
+            raise SystemExit("a task description is required (--description or --description-file)")
+        if not args.yes:
+            answer = input(
+                f"intake task into {args.repository_id} @ {args.base_sha} "
+                f"(toolchain {args.toolchain_ref})? [y/N] "
+            )
+            if answer.strip().lower() != "y":
+                print("aborted")
+                return 1
+        payload = {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "request_id": f"op-intake-{int(time.time())}",
+            "repository_id": args.repository_id,
+            "base_sha": args.base_sha,
+            "toolchain_ref": args.toolchain_ref,
+            "task_description": description,
+        }
+        status, body = _request(
+            "POST", f"{args.base_url}/operator/intake",
+            token, payload=payload, timeout=args.timeout,
+        )
+        if status != 200:
+            _fail_with_envelope(status, body)
+        ingested = _require_dict(body)
+        dup = " (replay)" if ingested.get("duplicate") else ""
+        print(
+            f"intaked: feature={ingested.get('feature_id')} "
+            f"job={ingested.get('job_id')} "
+            f"state={ingested.get('feature_state')}{dup}"
+        )
         return 0
 
     if args.command == "reconcile-sweep":

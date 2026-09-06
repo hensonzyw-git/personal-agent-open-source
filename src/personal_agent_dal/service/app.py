@@ -38,6 +38,7 @@ from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import utc_now
 
 from personal_agent_dal.github import executor
+from personal_agent_dal.service.intake import IntakeRefusal, intake_task
 from personal_agent_dal.service.operator_tokens import (
     OperatorTokenError,
     verify_operator_token,
@@ -79,6 +80,7 @@ CHANGED_FILES_MAX = 10_000
 CHANGED_FILE_MAX_LENGTH = 512
 ID_MAX_LENGTH = 256
 LAST_ERROR_MAX_LENGTH = 4096
+DESCRIPTION_MAX_LENGTH = 8192
 TOKEN_TTL_SECONDS = 3600
 RATE_LIMIT_MAX_REQUESTS = 120
 RATE_LIMIT_WINDOW_SECONDS = 60.0
@@ -473,6 +475,27 @@ class EffectWakeRequest(_Closed):
         "intent_recorded", "claimed", "unknown", "reconciling"
     ]
     expected_version: int = Field(ge=1)
+
+
+class IntakeRequest(_Closed):
+    """The intake body: a task request, nothing more.
+
+    Behind ``extra="forbid"`` so an operator cannot smuggle a branch, SHA,
+    action or idempotency key in — the closed schema is the structural
+    guarantee that ``intake_task`` derives every such field server-side. The
+    ``task_description`` is bounded to a real (non-empty) payload; the server
+    content-addresses the feature id and derives the branch and idempotency
+    key, so the request carries only what the operator knows about the task.
+    """
+
+    schema_version: Literal["dal.operator-transport/1.0"]
+    request_id: _Id
+    repository_id: _Id
+    # The exact base commit the job is built from; must be a 40-hex SHA.
+    base_sha: str = Field(min_length=40, max_length=40)
+    # The repo-relative manifest the worker's toolchain is pinned to (DAL-019).
+    toolchain_ref: _Id
+    task_description: str = Field(min_length=1, max_length=DESCRIPTION_MAX_LENGTH)
 
 
 class OperatorTokenIssueRequest(_Closed):
@@ -980,6 +1003,45 @@ def create_app(
             response["authoritative_result"] = outcome.reconciled.authoritative_result
         return response
 
+    @app.post("/operator/intake")
+    def operator_intake(
+        body: IntakeRequest,
+        operator_id: str = Depends(operator_control),
+        _: None = Depends(transport_body_guard),
+    ) -> dict[str, Any]:
+        """Create a Feature at intake and enqueue its pending Job.
+
+        The source-agnostic producer (Phase A entry: a human via the operator
+        console). The operator names the repo, the base SHA and the toolchain
+        manifest; the server content-addresses the feature id and derives the
+        branch and idempotency key, so nothing the operator must not control is
+        accepted. Idempotent on the task identity — a re-run is a replay.
+        """
+        if service.kill_switch:
+            raise _http(503, "kill_switch_active")
+        try:
+            outcome = intake_task(
+                engine,
+                task_description=body.task_description,
+                repository_id=body.repository_id,
+                base_sha=body.base_sha,
+                toolchain_ref=body.toolchain_ref,
+            )
+        except IntakeRefusal as error:
+            raise _http(_intake_refusal_status(error.code), error.code) from error
+        _append_redacted_audit(
+            engine,
+            event_type="operator.intake",
+            outcome=f"{operator_id}:{outcome.feature_state}:{outcome.job_id}",
+        )
+        return {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "feature_id": outcome.feature_id,
+            "job_id": outcome.job_id,
+            "feature_state": outcome.feature_state,
+            "duplicate": outcome.duplicate,
+        }
+
     @app.post("/operator/effects/reconcile-sweep")
     def operator_reconcile_sweep(
         operator_id: str = Depends(operator_control),
@@ -1020,6 +1082,23 @@ def create_app(
         }
 
     return app
+
+
+def _intake_refusal_status(code: str) -> tuple[int, str]:
+    """An intake refusal's HTTP face, closed by code.
+
+    A malformed request is the caller's error (400); a state the intake reached
+    that the spec forbids (unexpected_state / no_job) is a server-invariant
+    violation surfaced as 409 so it is never mistaken for a valid refusal; the
+    engine's own closed receipt codes (POLICY_DENIED, VERSION_CONFLICT,
+    ILLEGAL_TRANSITION, IDEMPOTENCY_CONFLICT) pass through as 409.
+    """
+    mapping: dict[str, tuple[int, str]] = {
+        "invalid": (400, "invalid"),
+        "no_job": (409, "no_job"),
+        "unexpected_state": (409, "unexpected_intake_state"),
+    }
+    return mapping.get(code, (409, code))
 
 
 def _executor_refusal_status(code: str) -> tuple[int, str]:
