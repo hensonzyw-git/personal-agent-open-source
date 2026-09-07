@@ -1,6 +1,6 @@
 {
-  "contract": "chat_receipt_projection_v5",
-  "note": "DEV-030. Generated from the server's own _operation_projection; the iOS client reads this file rather than a copy. Both sides must agree case by case, because the client's only reason to say 已写入 is a record_id in one of these bodies, and an indeterminate/manual-review result must not release the durable idempotency slot. v3 adds query_result: a succeeded finance.query_expenses receipt carries the whitelisted projection plus a deterministic answer fallback, and the client renders it as a structured card rather than prose. v4 pins query_evidence_tools: the server derives it from the IR (governed read whose output contract is the expense query projection), and the client holds its hard-coded `tool == \"finance.query_expenses\"` check against it, so a rename or a second governed query fails both suites before it reaches a user. v5 adds `record` (G1): a governed write's receipt now carries the written ledger row -- 名称/原始金额/日期/是否家庭支出/分类, plus 个人支出 when the Base formula had been evaluated at read-back. It is strictly subordinate to record_id and is emitted only alongside one, so a card can never show an amount for a write the same body did not state as recorded; an idempotent_replay and an envelope that will not open both resolve to an absent record, and the client falls back to the status row rather than inventing fields. expense_categories pins the single-select option set a client may offer when editing 分类, so the picker cannot drift from the ledger's own options -- the connector never creates one.",
+  "contract": "chat_receipt_projection_v6",
+  "note": "DEV-030. Generated from the server's own _operation_projection; the iOS client reads this file rather than a copy. Both sides must agree case by case, because the client's only reason to say 已写入 is a record_id in one of these bodies, and an indeterminate/manual-review result must not release the durable idempotency slot. v3 adds query_result: a succeeded finance.query_expenses receipt carries the whitelisted projection plus a deterministic answer fallback, and the client renders it as a structured card rather than prose. v4 pins query_evidence_tools: the server derives it from the IR (governed read whose output contract is the expense query projection), and the client holds its hard-coded `tool == \"finance.query_expenses\"` check against it, so a rename or a second governed query fails both suites before it reaches a user. v5 adds `record` (G1): a governed write's receipt now carries the written ledger row -- 名称/原始金额/日期/是否家庭支出/分类, plus 个人支出 when the Base formula had been evaluated at read-back. It is strictly subordinate to record_id and is emitted only alongside one, so a card can never show an amount for a write the same body did not state as recorded; an idempotent_replay and an envelope that will not open both resolve to an absent record, and the client falls back to the status row rather than inventing fields. expense_categories pins the single-select option set a client may offer when editing 分类, so the picker cannot drift from the ledger's own options -- the connector never creates one. v6 adds calendar.create_event to record_evidence_tools: the device-executed calendar write is R2, so its succeeded receipt carries record_id = the device-reported event_id and renders as 已写入 through the same recorded path as a Finance write; the event carries no `record` fields, and the client must fall back to the status row when event_id is absent. operation_states is unchanged.",
   "operation_states": [
     "accepted",
     "interpreting",
@@ -15,6 +15,7 @@
     "cancelled_pre_submit"
   ],
   "record_evidence_tools": [
+    "calendar.create_event",
     "finance.log_expense",
     "finance.log_expense_batch",
     "finance.log_income",
@@ -34,6 +35,24 @@
         "client_detached": false,
         "tool": "finance.log_expense",
         "record_id": "recXXXXXXXXXXXX",
+        "failure_reason": null,
+        "duplicate_check_id": null
+      },
+      "expected_outcome": "recorded",
+      "expected_proves_write": true,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none"
+    },
+    {
+      "name": "calendar_event_recorded",
+      "receipt": {
+        "operation_id": "op_calendar_event_recorded",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "calendar.create_event",
+        "record_id": "EK-XXXXXXXX-XXXX",
         "failure_reason": null,
         "duplicate_check_id": null
       },

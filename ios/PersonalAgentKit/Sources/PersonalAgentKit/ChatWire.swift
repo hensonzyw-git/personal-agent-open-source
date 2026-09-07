@@ -515,6 +515,11 @@ public struct OperationReceipt: Sendable, Equatable {
         // changed already existed, so "succeeded" with no evidence would read as
         // a correction that landed on a row nobody can point at.
         "finance.update_expense_category",
+        // The device-executed calendar write is R2 like the server writes: its
+        // succeeded receipt carries `record_id` = the device-reported event_id
+        // and renders as 已写入 through the same recorded path. No `record`
+        // fields travel for it, so the card has only the status row.
+        "calendar.create_event",
     ]
 
     /// The governed read tools whose success is a structured query card, never a

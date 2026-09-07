@@ -128,7 +128,7 @@ def _operation_for(case: dict) -> Operation:
 
 
 def test_contract_version_is_pinned() -> None:
-    assert V["contract"] == "chat_receipt_projection_v5"
+    assert V["contract"] == "chat_receipt_projection_v6"
     assert V["cases"], "an empty vector file would pass every check vacuously"
 
 
