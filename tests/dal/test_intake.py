@@ -95,6 +95,36 @@ def _row_count(engine, table: str) -> int:
         ).scalar_one()
 
 
+def _feature_id_of(description: str, repo: str, base_sha: str) -> str:
+    """The content-addressed feature id the intake core derives."""
+    from personal_agent_dal.service.intake import _feature_id
+
+    return _feature_id(repo, description, base_sha)
+
+
+def _create_feature_at_intake(engine, feature_id: str) -> None:
+    """Drive the real SM-CREATE transition for one feature (no job)."""
+    from personal_agent_dal.machine.engine import TransitionCommand, apply_transition
+    from personal_agent_dal.machine.transition_types import ReceiptCodes
+
+    command = TransitionCommand(
+        aggregate_type="feature",
+        aggregate_id=feature_id,
+        command_type="create_feature",
+        command_parameters={"effect_outcome": None, "target_state": "intake"},
+        actor_type="service",
+        evidence_source_types=("workflow-service",),
+        evidence_schema_versions=("dal.evidence.feature/1.0",),
+        decision_action=None,
+        reason_code=None,
+        expected_version=None,
+        idempotency_key=f"intake:{feature_id}",
+        evidence_documents=(),
+    )
+    outcome = apply_transition(engine, command)
+    assert outcome.receipt_code == ReceiptCodes.APPLIED, outcome.receipt_code
+
+
 def test_intake_creates_feature_at_intake_and_a_pending_job(engine) -> None:
     outcome = intake_task(
         engine,
@@ -275,6 +305,92 @@ def test_intake_refuses_a_conflicting_toolchain(engine) -> None:
     assert _row_count(engine, "worker_jobs") == 1
     job = queue.get_job(engine, job_id=first.job_id)
     assert job is not None and job.toolchain_ref == TOOLCHAIN
+
+
+def test_intake_replay_dedupes_across_the_0010_migration(tmp_path) -> None:
+    """R2-3 (round-2 review): a pre-0010 job must deduplicate a post-migration
+    replay of the same intake.
+
+    The old producer enqueued without an intake_key; a migration that left
+    those rows unstamped made the new key-based find-or-create see "no job"
+    and enqueue a second one for the same feature. The migration backfills
+    each feature's oldest job with f"intake:{feature_id}", so the replay
+    converges on the original job.
+    """
+    from personal_agent_dal.storage import db
+    from personal_agent_dal.storage.engine import create_database_engine
+    from personal_agent_dal.worker.queue import enqueue_job as old_enqueue
+
+    old_engine = create_database_engine(tmp_path / "old-world.db")
+    db.upgrade(old_engine, "0009")
+    # The pre-0010 producer's shape: create the feature via the real
+    # transition, then enqueue without any intake identity.
+    feature_id = _feature_id_of(DESC, REPO, BASE_SHA)
+    _create_feature_at_intake(old_engine, feature_id)
+    old_job = old_enqueue(
+        old_engine,
+        feature_id=feature_id, repository_id=REPO, base_sha=BASE_SHA,
+        branch_name=f"codex/feature-{feature_id}", toolchain_ref=TOOLCHAIN,
+    )
+    with old_engine.connect() as connection:
+        assert connection.execute(
+            sa.text("SELECT count(*) FROM worker_jobs")
+        ).scalar_one() == 1
+        # Prove the old-world row has no intake_key (the column does not
+        # exist yet at 0009 — that is the point).
+        columns = {
+            row[1] for row in connection.execute(
+                sa.text("PRAGMA table_info(worker_jobs)")
+            )
+        }
+    assert "intake_key" not in columns
+    old_engine.dispose()
+
+    # The migration to 0010 backfills the oldest job's identity.
+    migrated_engine = create_database_engine(tmp_path / "old-world.db")
+    db.upgrade(migrated_engine)
+    replay = intake_task(
+        migrated_engine, task_description=DESC, repository_id=REPO,
+        base_sha=BASE_SHA, toolchain_ref=TOOLCHAIN,
+    )
+    assert replay.duplicate
+    assert replay.job_id == old_job, "the replay must converge on the old job"
+    assert _row_count(migrated_engine, "worker_jobs") == 1
+    assert _row_count(migrated_engine, "features") == 1
+    migrated_engine.dispose()
+
+
+def test_migration_backfill_stamps_only_the_oldest_job(tmp_path) -> None:
+    """R2-3: a feature with several pre-0010 jobs keeps the extras outside the
+    intake idempotency set — only the oldest carries the intake identity, so
+    the multi-phase semantics (a second job is a rerun, not a replay) hold."""
+    from personal_agent_dal.storage import db
+    from personal_agent_dal.storage.engine import create_database_engine
+    from personal_agent_dal.worker.queue import enqueue_job as old_enqueue
+
+    engine = create_database_engine(tmp_path / "multi.db")
+    db.upgrade(engine, "0009")
+    feature_id = _feature_id_of(DESC, REPO, BASE_SHA)
+    _create_feature_at_intake(engine, feature_id)
+    first = old_enqueue(
+        engine, feature_id=feature_id, repository_id=REPO, base_sha=BASE_SHA,
+        branch_name=f"codex/feature-{feature_id}", toolchain_ref=TOOLCHAIN,
+    )
+    second = old_enqueue(
+        engine, feature_id=feature_id, repository_id=REPO, base_sha=BASE_SHA,
+        branch_name=f"codex/feature-{feature_id}", toolchain_ref=TOOLCHAIN,
+    )
+    db.upgrade(engine)
+
+    with engine.connect() as connection:
+        keys = dict(
+            connection.execute(
+                sa.text("SELECT job_id, intake_key FROM worker_jobs")
+            ).all()
+        )
+    assert keys[first] == f"intake:{feature_id}", "the oldest job is stamped"
+    assert keys[second] is None, "the later job stays outside the intake set"
+    engine.dispose()
 
 
 def test_intake_fails_closed_on_bad_base_sha(engine) -> None:

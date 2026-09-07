@@ -352,7 +352,12 @@ def test_listing_endpoint_shows_unknown_effects(engine) -> None:
 
 
 def test_listing_endpoint_includes_reconciling_claims(engine) -> None:
-    """A reconciler claim in flight appears under the `reconciling` key."""
+    """A reconciler claim in flight appears under the `reconciling` key.
+
+    The claim carries a real (non-NULL) expiry: round 2's review found the
+    listing crashed on the first live claim — the raw-SQL read returns the
+    stored RFC 3339 text and the code called .isoformat() on it.
+    """
     from tests.dal.factories import external_effect_row, feature_row
     from personal_agent_dal.storage.engine import session_factory
     from personal_agent_core.timeutil import utc_now
@@ -376,6 +381,7 @@ def test_listing_endpoint_includes_reconciling_claims(engine) -> None:
         row = session.get(ExternalEffect, "effect-rec-1")
         assert row is not None
         row.executor_id = "reconciler"
+        row.claim_expires_at = utc_now()
 
     client = _client(engine, StubAdapter(CONFIRMED_PUSH))
     response = client.get(
@@ -387,3 +393,6 @@ def test_listing_endpoint_includes_reconciling_claims(engine) -> None:
     assert body["effects"] == []
     assert [e["effect_id"] for e in body["reconciling"]] == ["effect-rec-1"]
     assert body["reconciling"][0]["version"] == 6
+    # The stored RFC 3339 text passes through unmodified — the exact wire form.
+    assert body["reconciling"][0]["claim_expires_at"].endswith("Z")
+    assert "T" in body["reconciling"][0]["claim_expires_at"]

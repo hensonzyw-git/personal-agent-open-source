@@ -69,6 +69,24 @@ def upgrade() -> None:
         unique=True,
         sqlite_where=sa.text('intake_key IS NOT NULL'),
     )
+    # Backfill (round-2 review finding 3): jobs enqueued by the pre-0010
+    # intake producer carry no intake_key, so a post-migration replay of the
+    # same intake found "no job by key" and enqueued a second one for the
+    # same feature. The identity of a pre-0010 intake job is derivable — the
+    # producer derived it from the feature — so each feature's OLDEST job is
+    # stamped with f"intake:{feature_id}"; later jobs for the same feature
+    # (a multi-phase rerun, not an intake replay) keep NULL and remain
+    # outside the intake idempotency set, preserving the one-intake-episode
+    # semantics. No task body can be recovered for these rows (the old world
+    # never persisted one); the body table stays empty for them, and a
+    # replay returns the backfilled job without rewriting history.
+    op.execute(
+        "UPDATE worker_jobs SET intake_key = 'intake:' || feature_id "
+        "WHERE intake_key IS NULL AND job_id = ("
+        "    SELECT j2.job_id FROM worker_jobs j2"
+        "    WHERE j2.feature_id = worker_jobs.feature_id"
+        "    ORDER BY j2.created_at ASC, j2.job_id ASC LIMIT 1)"
+    )
 
     op.create_table(
         'feature_intake_requests',

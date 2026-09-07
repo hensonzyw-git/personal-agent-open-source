@@ -870,9 +870,12 @@ def reconciling_effects(engine: Engine, *, limit: int = 20) -> list[dict[str, An
             "version": r[1],
             "owner_aggregate_id": r[2],
             "remote_idempotency_key": r[3],
-            "claim_expires_at": (
-                r[4].isoformat() if r[4] is not None else None
-            ),
+            # The raw-SQL read returns the stored RFC 3339 text (this column
+            # has no ORM result processor on a text() query); it is already
+            # the canonical wire form. Calling .isoformat() on it raised
+            # AttributeError the moment a real claim existed (round-2 review
+            # finding 5) — round 1's test only exercised a NULL expiry.
+            "claim_expires_at": r[4],
         }
         for r in rows
     ]
