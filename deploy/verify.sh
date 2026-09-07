@@ -224,6 +224,26 @@ async def check():
 
 asyncio.run(check())
 '
+# The calendar domain's tools must be advertised too. `calendar.create_event`
+# is a device-executed write: the server advertises it and its handler is a
+# fail-closed guard — real execution happens on the phone — so advertising it
+# here proves the IR-derived fork deployed, not that any event was written.
+expect_success "mcp catalog advertises calendar.create_event and calendar.ingest_events" \
+  sudo -u "$MCP_USER" /opt/personal-agent/.venv/bin/python -c '
+import asyncio
+from personal_agent.mcp_client.core import McpClientCore, StreamableHttpTransport
+
+async def check():
+    async with McpClientCore(
+        "finance", StreamableHttpTransport(url="http://127.0.0.1:8811/mcp")
+    ) as client:
+        names = {tool.name for tool in await client.list_tools()}
+        missing = {"calendar.create_event", "calendar.ingest_events"} - names
+        if missing:
+            raise SystemExit(f"missing calendar tools: {sorted(missing)}")
+
+asyncio.run(check())
+'
 # The API requires a device token; an unauthenticated request must be a 401,
 # which proves the app answered through the Unix socket.
 API_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
