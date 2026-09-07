@@ -71,6 +71,13 @@ class JobLease:
 
     `feature_id` is authoritative from the claim, not parsed out of
     `branch_name`; the caller still checks the two agree.
+
+    `task_description`/`task_description_sha256` carry the persisted intake
+    body (F7, 2026-09-07 review) when the job was enqueued through an intake;
+    both are `None` on the operator/test seeding path and — stated honestly —
+    on the remote transport until the Dev Workflow Service's claim response
+    carries them. The worker treats `None` as "no body to substitute", never
+    as an empty task.
     """
 
     job_id: str
@@ -82,6 +89,8 @@ class JobLease:
     lease_epoch: int
     attempt: int
     deadline: datetime | None
+    task_description: str | None = None
+    task_description_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -237,6 +246,8 @@ class LocalSQLiteAdapter(WorkerTransport):
             lease_epoch=record.lease_epoch,
             attempt=record.attempt_count,
             deadline=record.lease_expires_at,
+            task_description=record.task_description,
+            task_description_sha256=record.task_description_sha256,
         )
 
     def mark_running(self, lease: JobLease) -> HeartbeatOutcome:

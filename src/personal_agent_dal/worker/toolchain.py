@@ -166,7 +166,12 @@ class CoderSpec:
     """The manifest's real-coder declaration (DAL-R07B).
 
     These values feed both `CoderRunSpec` (the launch) and `consume_coder_stream`
-    (the authoritative facts). `prompt` supports a `{feature_id}` placeholder.
+    (the authoritative facts). `prompt` supports two placeholders: `{feature_id}`
+    (substituted with the claimed job's feature id) and, since the 2026-09-07
+    review's F7, `{task_description}` (substituted with the persisted intake
+    body when the job was enqueued through an intake). A manifest without
+    `{task_description}` keeps its exact previous behaviour — the placeholder
+    is opt-in per manifest, so existing pinned manifests do not drift.
     """
 
     model_alias: str

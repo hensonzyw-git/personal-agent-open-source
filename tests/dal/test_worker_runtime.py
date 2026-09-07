@@ -1451,6 +1451,153 @@ def test_poll_once_provider_coder_refuses_unparseable_output(
     assert outcome.error == "coder_output_unparseable"
 
 
+def _make_prompt_capturing_fake(base_sha: str, captured: dict):
+    """A claude fake that records the exact prompt it was launched with."""
+
+    def fake(spec, **kw):
+        captured["prompt"] = spec.prompt
+        return _make_claude_fake(base_sha)(spec, **kw)
+
+    return fake
+
+
+def test_coder_prompt_receives_the_task_description(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    """F7 (2026-09-07 review): the persisted intake body reaches the coder.
+
+    The old code substituted only {feature_id}; the task text existed solely
+    inside the feature-id hash, so the coder never saw the task. A manifest
+    carrying {task_description} must now receive the body the intake bound,
+    with {feature_id} still substituted.
+    """
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, coder=True)
+    # Rewrite the manifest's coder prompt to use both placeholders.
+    manifest_path = repo / ".personal-agent" / "toolchain.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["coder"]["prompt"] = (
+        "Feature {feature_id}: {task_description}"
+    )
+    manifest_path.write_text(json.dumps(manifest))
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "."], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", "task-description manifest"],
+        check=True,
+    )
+    base_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    body = "Add a boundary test for the pure-string helper."
+    job_id = queue.enqueue_job(
+        engine,
+        feature_id="feat-demo",
+        repository_id="synthetic",
+        base_sha=base_sha,
+        branch_name="codex/feature-feat-demo",
+        toolchain_ref=".personal-agent/toolchain.json",
+        intake_key="intake:feat-demo",
+        task_description=body,
+    )
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        "personal_agent_dal.worker.poll_once.run_coder",
+        _make_prompt_capturing_fake(base_sha, captured),
+    )
+
+    outcome = _poll(engine, _coder_config(tmp_path, config))
+
+    assert outcome.state == "succeeded"
+    assert captured["prompt"] == f"Feature feat-demo: {body}"
+
+
+def test_coder_prompt_without_the_placeholder_is_unchanged(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    """A manifest without {task_description} keeps its exact old behaviour.
+
+    Backward compatibility: existing pinned manifests must not drift — the
+    placeholder is opt-in, and a body being present on the lease changes
+    nothing for a manifest that does not reference it.
+    """
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, coder=True)
+    body = "Add a boundary test for the pure-string helper."
+    queue.enqueue_job(
+        engine,
+        feature_id="feat-demo",
+        repository_id="synthetic",
+        base_sha=base_sha,
+        branch_name="codex/feature-feat-demo",
+        toolchain_ref=".personal-agent/toolchain.json",
+        intake_key="intake:feat-demo",
+        task_description=body,
+    )
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        "personal_agent_dal.worker.poll_once.run_coder",
+        _make_prompt_capturing_fake(base_sha, captured),
+    )
+
+    outcome = _poll(engine, _coder_config(tmp_path, config))
+
+    assert outcome.state == "succeeded"
+    assert captured["prompt"] == "In feat-demo, add one tracked change."
+
+
+def test_task_body_digest_mismatch_refuses(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    """F7's binding fence: a tampered body refuses before any coder runs.
+
+    The persisted body and the digest the lease carries must agree; a row
+    edited between persistence and claim must not feed the coder altered
+    text behind an intact-looking binding.
+    """
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, coder=True)
+    job_id = queue.enqueue_job(
+        engine,
+        feature_id="feat-demo",
+        repository_id="synthetic",
+        base_sha=base_sha,
+        branch_name="codex/feature-feat-demo",
+        toolchain_ref=".personal-agent/toolchain.json",
+        intake_key="intake:feat-demo",
+        task_description="original task body",
+    )
+
+    # Tamper the persisted body after the fact; the digest stays original.
+    with engine.connect() as connection:
+        connection.execute(
+            text(
+                "UPDATE feature_intake_requests SET task_description = :t "
+                "WHERE intake_key = :k"
+            ).bindparams(t="tampered task body", k="intake:feat-demo")
+        )
+        connection.commit()
+
+    ran: list[str] = []
+    monkeypatch.setattr(
+        "personal_agent_dal.worker.poll_once.run_coder",
+        lambda *a, **k: ran.append("ran") or _make_claude_fake(base_sha)(*a, **k),
+    )
+
+    outcome = _poll(engine, _coder_config(tmp_path, config))
+
+    assert outcome.state == "failed"
+    assert outcome.error == "task_body_digest_mismatch"
+    assert ran == [], "the coder must not run on a tampered body"
+    record = queue.get_job(engine, job_id=job_id)
+    assert record is not None and record.state == "failed"
+
+
 def test_launchd_template_runs_as_login_user() -> None:
     path = (
         Path(__file__).parents[2]

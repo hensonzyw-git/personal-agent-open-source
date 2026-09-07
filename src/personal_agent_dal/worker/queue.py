@@ -70,7 +70,14 @@ def _receipts_table():
 
 @dataclass(frozen=True)
 class JobRecord:
-    """A read-only view of one `worker_jobs` row."""
+    """A read-only view of one `worker_jobs` row.
+
+    ``task_description``/``task_description_sha256`` are the persisted intake
+    body and its digest (F7, 2026-09-07 review), resolved through the job's
+    ``intake_key``. Both are ``None`` for jobs enqueued without an intake —
+    the operator/test seeding path — and that is exactly the boundary the
+    worker's prompt substitution and digest fence check for.
+    """
 
     job_id: str
     feature_id: str
@@ -88,6 +95,8 @@ class JobRecord:
     last_error: str | None
     created_at: datetime
     updated_at: datetime
+    task_description: str | None = None
+    task_description_sha256: str | None = None
 
 
 def enqueue_job(
@@ -242,6 +251,17 @@ def get_job(engine: Engine, *, job_id: str) -> JobRecord | None:
         ).scalar_one_or_none()
         if row is None:
             return None
+        body = None
+        body_sha = None
+        if row.intake_key is not None:
+            intake = session.execute(
+                select(
+                    FeatureIntakeRequest.task_description,
+                    FeatureIntakeRequest.task_description_sha256,
+                ).where(FeatureIntakeRequest.intake_key == row.intake_key)
+            ).first()
+            if intake is not None:
+                body, body_sha = intake
         return JobRecord(
             job_id=row.job_id,
             feature_id=row.feature_id,
@@ -259,6 +279,8 @@ def get_job(engine: Engine, *, job_id: str) -> JobRecord | None:
             last_error=row.last_error,
             created_at=row.created_at,
             updated_at=row.updated_at,
+            task_description=body,
+            task_description_sha256=body_sha,
         )
 
 

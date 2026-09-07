@@ -480,6 +480,15 @@ def _execute_job(
         return _refuse("toolchain_manifest_invalid")
     if record.toolchain_ref != manifest.toolchain_ref:
         return _refuse("toolchain_ref_mismatch")
+    if record.task_description is not None:
+        # F7 (2026-09-07 review): the persisted body must still be the body
+        # this lease's digest binds. A tampered or replaced row must refuse
+        # before the prompt is built, not feed the coder altered text.
+        body_sha = hashlib.sha256(
+            record.task_description.encode("utf-8")
+        ).hexdigest()
+        if body_sha != record.task_description_sha256:
+            return _refuse("task_body_digest_mismatch")
 
     checkpoint, checkpoint_error = _restore_checkpoint(
         config.checkpoint_root,
@@ -509,12 +518,22 @@ def _execute_job(
         coder_spec = manifest.coder
         run_root = config.checkpoint_root / "coder-runs" / record.job_id
         run_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        prompt = coder_spec.prompt.replace("{feature_id}", record.feature_id)
+        if record.task_description is not None:
+            # F7 (2026-09-07 review): the manifest's {task_description}
+            # placeholder is the channel the persisted intake body reaches
+            # the coder through. A manifest without the placeholder keeps
+            # its exact old behaviour (additive, backward-compatible);
+            # manifests that opt in receive the body the intake bound.
+            prompt = prompt.replace(
+                "{task_description}", record.task_description
+            )
         spec = CoderRunSpec(
             model_alias=coder_spec.model_alias,
             max_turns=coder_spec.max_turns,
             max_wall_seconds=float(coder_spec.max_wall_seconds),
             allowed_tools=coder_spec.allowed_tools,
-            prompt=coder_spec.prompt.replace("{feature_id}", record.feature_id),
+            prompt=prompt,
             cwd=worktree_path,
             run_root=run_root,
         )
