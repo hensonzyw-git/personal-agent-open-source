@@ -988,8 +988,12 @@ def test_stale_claim_before_read_back_cannot_adopt_the_replacement(engine) -> No
     state, _version, _executor = effect_row_state(engine, effect_id)
     assert state == "reconciling", "the fresh claim must survive"
 
-    # A conclusive verdict from a superseded pass is equally void: the read
-    # must not be attributed to the replacement claim either.
+    # A conclusive verdict from a superseded pass is equally void. Note the
+    # replay of "recon-fresh-r3" here is an idempotent no-op (segment 1
+    # already committed that key), so the row sits in unknown and the
+    # refusal fires on the check's STATE arm. The VERSION arm — a live
+    # replacement claim in reconciling — is pinned separately by
+    # test_superseded_claim_cannot_report_a_conclusive_verdict.
     with pytest.raises(ReconciliationRefusal) as excinfo2:
         reconcile_github_write(
             engine,
@@ -1001,6 +1005,70 @@ def test_stale_claim_before_read_back_cannot_adopt_the_replacement(engine) -> No
             feature_id=feature_id,
         )
     assert excinfo2.value.code == "VERSION_CONFLICT", excinfo2.value.code
+
+
+def test_superseded_claim_cannot_report_a_conclusive_verdict(engine) -> None:
+    """R3-1 second half, standalone: a conclusive read-back is equally void
+    when a LIVE replacement claim holds the row.
+
+    Segment 2 of the predecessor test cannot exercise the VERSION arm of the
+    post-read-back check: its in-adapter re-claim replays an already-committed
+    idempotency key, so the row falls to unknown and the refusal fires on the
+    STATE arm. Here the replacement claim is real (a distinct key through the
+    production entry point) and stays in reconciling at a version past the
+    superseded pass's: only `current_version != claimed_version` can refuse
+    this, and the replacement claim must survive the conclusive verdict's
+    refusal untouched.
+    """
+    feature_id, effect_id = seed_unknown_effect(engine)
+
+    class ConclusiveSupersedingAdapter:
+        """Supersedes the claim inside the read, then reports BRANCH_FOUND."""
+
+        def read_feature_branch(self, **_: Any):
+            from personal_agent_dal.github.executor import (
+                _recover_expired_reconciling,
+            )
+
+            # The old pass has committed its claim and is between the claim
+            # and the read: expire it, let the sweep reclaim it to unknown,
+            # then a fresh reconciler takes a real new claim.
+            with engine.begin() as connection:
+                connection.execute(
+                    sa.text(
+                        "UPDATE external_effects SET claim_expires_at = :past "
+                        "WHERE effect_id = :e"
+                    ).bindparams(past="2020-01-01T00:00:00Z", e=effect_id)
+                )
+            _recover_expired_reconciling(engine, limit=5, now_epoch=int(time.time()))
+            self.fresh_version = start_effect_reconciliation(
+                engine,
+                effect_id=effect_id,
+                idempotency_key="recon-replacement",
+                feature_id=feature_id,
+            )
+            return BRANCH_FOUND
+
+    adapter = ConclusiveSupersedingAdapter()
+    with pytest.raises(ReconciliationRefusal) as excinfo:
+        reconcile_github_write(
+            engine,
+            adapter,
+            effect_id=effect_id,
+            action="push_branch",
+            idempotency_key="recon-superseded-conclusive",
+            payload={"branch": BRANCH, "head_sha": HEAD},
+            feature_id=feature_id,
+        )
+    assert excinfo.value.code == "VERSION_CONFLICT", excinfo.value.code
+    # The replacement claim survived the void conclusive verdict: still in
+    # reconciling at exactly the version the fresh claim committed.
+    state, version, executor = effect_row_state(engine, effect_id)
+    assert state == "reconciling", "the replacement claim must survive"
+    assert version == adapter.fresh_version, (
+        "the replacement claim's version must be untouched"
+    )
+    assert executor == "reconciler"
 
 
 def test_reconcile_inconclusive_read_backs_to_still_unknown(engine) -> None:
