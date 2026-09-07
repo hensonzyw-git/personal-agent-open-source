@@ -594,7 +594,6 @@ def test_calendar_handlers_registered_with_composition_registry() -> None:
             CalendarIngestDependencies(
                 sessions=object(),
                 keyring=_keyring(),
-                device_id="dev-1",
             )
         ),
     )
@@ -603,3 +602,53 @@ def test_calendar_handlers_registered_with_composition_registry() -> None:
     assert registry.handler("calendar.create_event") is not None
     names = {entry["name"] for entry in registry.catalog()}
     assert {"calendar.create_event", "calendar.query_events"} <= names
+
+
+def test_ingest_handler_stamps_the_verified_caller_onto_rows(sessions) -> None:
+    """The mirror row's `device_id` is the signed Host Context claim, never a
+    payload field or a composition constant: a device cannot claim to be
+    another device by re-serialising its payload, and a server-side caller is
+    recorded as exactly what it is."""
+    from personal_data_mcp.server.authz import VerifiedCall
+    from personal_data_mcp.calendar.ingest import TABLE
+    from personal_data_mcp.server.calendar_ingest import (
+        CalendarIngestDependencies,
+        build_handler,
+    )
+    from personal_data_mcp.server.handlers import ToolInvocation
+
+    keyring = _keyring()
+    handler = build_handler(
+        CalendarIngestDependencies(sessions=sessions, keyring=keyring)
+    )
+    invocation = ToolInvocation(
+        tool="calendar.ingest_events",
+        arguments={
+            "window_start": WINDOW_START,
+            "window_end": WINDOW_END,
+            "events": [_event("ek-verified", title="牙医复诊")],
+            "window_complete": True,
+        },
+        verified_call=VerifiedCall(
+            tool="calendar.ingest_events",
+            idempotency_key="ik",
+            request_fingerprint="fp",
+            request_id="req",
+            trace_id="tr",
+            user_id="henson",
+            device_id="device-9",
+            timezone="Asia/Shanghai",
+            scopes=("calendar.event.read",),
+            allowed_tools_version="0.1.0",
+        ),
+    )
+    asyncio.run(handler(invocation))
+    with sessions() as session:
+        row = session.execute(select(CalendarEvent)).scalar_one()
+        assert row.device_id == "device-9"
+        assert (
+            keyring.decrypt(
+                row.title, table=TABLE, column="title", row_id=row.row_key
+            ).decode("utf-8")
+            == "牙医复诊"
+        )

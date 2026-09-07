@@ -1881,3 +1881,156 @@ def test_the_review_list_is_served_by_the_composed_app(
     assert [r["review_id"] for r in listed.json()["reviews"]] == [review_id]
     assert listed.json()["reviews"][0]["item_count"] == 2
     assert acked.json()["status"] == "reviewed"
+
+
+def test_calendar_sync_crosses_both_composition_roots_offline(
+    keys, agent_db, tmp_path: Path
+) -> None:
+    """The device-side data channel is composed, not just seam-tested.
+
+    The sync route must execute `calendar.ingest_events` through the real
+    governed bridge against a real MCP process over a loopback socket, under a
+    Host Context naming the authenticated caller. The mirror row is then
+    stamped with that signed device identity and the text is sealed with the
+    server's keyring -- the assertions read the Finance database through a
+    raw connection exactly as an operator would.
+    """
+    from personal_agent_core.tool_ir import SCOPE_CALENDAR_READ
+    from personal_data_mcp.storage.engine import (
+        create_database_engine as finance_engine,
+        session_factory as finance_sessions,
+    )
+    from personal_data_mcp.storage.models import CalendarEvent
+
+    finance_db = tmp_path / "finance-calendar.sqlite"
+    service = LoopbackFinanceService(
+        {
+            MCP_KID_ENV: "svc-test",
+            MCP_PEM_ENV: str(keys.service_public_pem),
+        },
+        database=finance_db,
+        calendar=True,
+    )
+    update_device(
+        agent_db,
+        scopes=json.dumps([CAPABILITY_SCOPE, SCOPE_CALENDAR_READ]),
+    )
+    body = {
+        "window_start": "2026-09-07T00:00:00+08:00",
+        "window_end": "2026-09-08T00:00:00+08:00",
+        "events": [
+            {
+                "event_identifier": "ek-loopback-1",
+                "calendar_identifier": "cal-1",
+                "title": "网球",
+                "start": "2026-09-07T15:00:00+08:00",
+                "end": "2026-09-07T16:30:00+08:00",
+                "all_day": False,
+                "location": None,
+                "notes": None,
+                "last_modified": "2026-09-06T20:00:00+08:00",
+            }
+        ],
+        "window_complete": True,
+    }
+    try:
+
+        async def scenario():
+            async with agent_service(
+                config_for(agent_db, service),
+                build_gateway=lambda: FakeGateway(ProposedAnswer(text="hi")),
+                write_switch=shared_enabled_write_switch(),
+            ) as composed:
+                # The production composition must actually wire the route, or
+                # the endpoint below would answer INTERNAL_ERROR, not succeed.
+                assert composed.deps.sync_ingest is not None
+                async with http_for(composed.deps) as client:
+                    token = access_token(
+                        scopes=(CAPABILITY_SCOPE, SCOPE_CALENDAR_READ)
+                    )
+                    return await client.post(
+                        "/v1/calendar/sync",
+                        json=body,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+
+        response = asyncio.run(scenario())
+    finally:
+        service.stop()
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "status": "ok",
+        "upserted": 1,
+        "skipped": 0,
+        "marked_deleted": 0,
+    }
+
+    engine = finance_engine(finance_db)
+    with finance_sessions(engine)() as session:
+        row = session.query(CalendarEvent).one()
+        assert row.event_identifier == "ek-loopback-1"
+        # The device identity is the signed Host Context claim -- the caller's
+        # device id -- never a composition constant and never a payload field.
+        assert row.device_id == DEVICE_ID
+        assert row.is_deleted is False
+    engine.dispose()
+
+
+def test_calendar_sync_refuses_a_device_without_the_current_manifest(
+    keys, agent_db, tmp_path: Path
+) -> None:
+    """The stale-manifest gate lives in the bridge's `execute`, and the sync
+    route passes through it: a device enrolled against an old version is
+    refused by the real policy root even though its token is valid and its
+    scope present."""
+    from personal_agent_core.tool_ir import SCOPE_CALENDAR_READ
+
+    finance_db = tmp_path / "finance-calendar-stale.sqlite"
+    service = LoopbackFinanceService(
+        {
+            MCP_KID_ENV: "svc-test",
+            MCP_PEM_ENV: str(keys.service_public_pem),
+        },
+        database=finance_db,
+        calendar=True,
+    )
+    update_device(
+        agent_db,
+        scopes=json.dumps([CAPABILITY_SCOPE, SCOPE_CALENDAR_READ]),
+        allowed_tools_version="0.0.1-stale",
+    )
+    body = {
+        "window_start": "2026-09-07T00:00:00+08:00",
+        "window_end": "2026-09-08T00:00:00+08:00",
+        "events": [],
+        "window_complete": True,
+    }
+    try:
+
+        async def scenario():
+            async with agent_service(
+                config_for(agent_db, service),
+                build_gateway=lambda: FakeGateway(ProposedAnswer(text="hi")),
+                write_switch=shared_enabled_write_switch(),
+            ) as composed:
+                async with http_for(composed.deps) as client:
+                    token = access_token(
+                        scopes=(CAPABILITY_SCOPE, SCOPE_CALENDAR_READ),
+                        version="0.0.1-stale",
+                    )
+                    return await client.post(
+                        "/v1/calendar/sync",
+                        json=body,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+
+        response = asyncio.run(scenario())
+    finally:
+        service.stop()
+
+    assert response.status_code == 403, response.text
+    # One opaque code for "not an effective tool" (not allowlisted, not
+    # discovered, drifted, or granted) by design: distinguishing them would map
+    # out the tool surface. The version gate denies through the same door.
+    assert response.json()["error"]["code"] == "TOOL_NOT_ALLOWLISTED"

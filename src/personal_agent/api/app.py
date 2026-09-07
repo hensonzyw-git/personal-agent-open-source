@@ -32,10 +32,12 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import ValidationError
 from sqlalchemy import text as text_clause
 from sqlalchemy.exc import IntegrityError
 
@@ -135,10 +137,21 @@ from personal_agent_core.errors import (
 )
 from personal_agent_core.manifest import canonical_json
 from personal_agent_core.sqlite import run_write_transaction
-from personal_agent_core.tool_ir import TOOL_CONTRACTS
+from personal_agent_core.tool_ir import TOOL_CONTRACTS, SCOPE_CALENDAR_READ
 
 
 logger = logging.getLogger(__name__)
+
+#: The closed sync body, taken from the IR's `calendar.ingest_events` input
+#: schema. Validated at the route edge with the same validator the bridge
+#: applies inside — deliberately twice-gated, because the route must refuse a
+#: whole malformed batch before it reaches any governed machinery, and because
+#: the bridge is not composed in offline API tests.
+_SYNC_INGEST_CONTRACT: Final[dict[str, Any]] = next(
+    contract.model_input_schema
+    for contract in TOOL_CONTRACTS
+    if contract.name == "calendar.ingest_events"
+)
 
 
 @dataclass(frozen=True)
@@ -231,6 +244,12 @@ class AgentApiDeps:
     #: composition that does not configure a transcript directory -- and every
     #: offline test -- behaves exactly as before.
     recorder: Recorder = field(default_factory=NullRecorder)
+    #: The governed calendar mirror ingest, composed once over the real bridge
+    #: in production. It receives the authenticated device's `AuthContext` and
+    #: the closed sync body, signs a Host Context naming *that* device, and
+    #: merges the batch into the mirror. `None` means calendar sync is not
+    #: composed and the route refuses rather than serving an unbound mirror.
+    sync_ingest: Callable[[AuthContext, dict[str, Any]], dict[str, Any]] | None = None
 
     def __post_init__(self) -> None:
         if self.sync_wait_seconds <= 0 or self.sync_wait_seconds > 30.0:
@@ -1061,6 +1080,69 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             decision,
             key,
         )
+
+    @app.post("/v1/device-actions/{action_id}/result")
+    async def post_device_action_result(action_id: str, request: Request):
+        """Settle one device-executed write with the phone's own report.
+
+        The iPhone is the executor of `calendar.create_event` and the fact
+        source for what it did, so its report is the evidence the operation
+        settles on -- not a claim to be re-verified against anything. The
+        report vocabulary is closed:
+
+        - `created` / `duplicate` -- the event exists on the phone. The
+          EventKit identifier is the receipt's record id (`safe_result`), and
+          both are success: the device's local dedup finding the event already
+          there is a created calendar from the user's point of view.
+        - `denied` / `failed` -- EventKit refused the save. The device refused
+          before any write could exist, which is the strongest zero-write
+          evidence this domain can hold, so the operation settles `failed_safe`
+          -- the one place a device report may claim it.
+
+        A report naming a success without an `event_id` proves nothing and is
+        refused before it can settle anything. The operation is located by its
+        own idempotency key (which *is* the action id) under the same ownership
+        rule every operation endpoint applies, so a valid token for another
+        device cannot settle this one's action. The CAS transition makes the
+        settlement exactly-once: a replay answers the settled projection and
+        never re-migrates.
+        """
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        body = await _json_body(request)
+        return await asyncio.to_thread(
+            _process_device_action_result, deps, auth, action_id, body
+        )
+
+    @app.post("/v1/calendar/sync")
+    async def post_calendar_sync(request: Request):
+        """Merge one device calendar snapshot into the server's mirror.
+
+        The mirror is what `calendar.query_events` reads, so a device that
+        could write it through any other path could fabricate the calendar the
+        model would then be asked to summarise. The upload is therefore
+        governed like any tool call: device auth, the `calendar.event.read`
+        scope (an upload exists to be read back), and the real bridge inside
+        `deps.sync_ingest`, which signs a Host Context naming the calling
+        device -- the payload never carries an identity the server trusts.
+
+        One malformed batch refuses whole (§5.1: no silent triage), and the
+        bridge call runs without an API-side transaction under it (§5.2).
+        """
+        if deps.sync_ingest is None:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="calendar sync is not composed",
+            )
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        if SCOPE_CALENDAR_READ not in auth.scopes:
+            raise AppError(
+                ErrorCode.SCOPE_DENIED,
+                internal_detail="calendar sync requires calendar.event.read",
+            )
+        body = await _json_body(request)
+        _validate_sync_body(body)
+        result = await asyncio.to_thread(deps.sync_ingest, auth, body)
+        return JSONResponse(result)
 
     @app.exception_handler(_Unauthenticated)
     async def _on_unauth(request: Request, exc: _Unauthenticated):
@@ -2245,6 +2327,154 @@ def _process_manual_resolution(
             )
 
         return _commit(session, work)
+
+
+def _process_device_action_result(
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    action_id: str,
+    body: dict[str, Any],
+) -> JSONResponse:
+    """Settle the operation a device report names, exactly once.
+
+    Reads and writes only the Agent database -- the phone's report *is* the
+    external evidence, so no fact source is contacted and the retrying commit
+    is safe. The CAS in `transition_operation` is the one-shot guarantee: a
+    retry that arrives after settlement re-projects the winner's state rather
+    than moving anything.
+    """
+    _closed_device_result_body(body)
+    result = body["result"]
+    event_id = body.get("event_id")
+    detail = body.get("detail")
+    if result in _DEVICE_REPORT_WRITES and (
+        not isinstance(event_id, str) or not event_id.strip()
+    ):
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail="a created or duplicate report must carry an event_id",
+        )
+    if detail is not None and not isinstance(detail, str):
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail="detail must be a string or null",
+        )
+    with deps.session_factory() as session:
+        def work():
+            operation = (
+                session.query(Operation)
+                .filter(Operation.idempotency_key == action_id)
+                .filter(Operation.api_request.has(device_id=auth.device_id))
+                .one_or_none()
+            )
+            if operation is None:
+                # Not "no such action" and not "another device's action": one
+                # opaque refusal that maps out no surface.
+                raise AppError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    internal_detail=(
+                        f"no operation anchored for action {action_id} on this device"
+                    ),
+                )
+            session.refresh(operation)
+            if not is_terminal(operation.state):
+                now = deps.now()
+                if result in _DEVICE_REPORT_WRITES:
+                    # Success evidence: the phone holds the event. Two hops,
+                    # both audited, so the receipt carries the EventKit id.
+                    transition_operation(
+                        session,
+                        operation_id=operation.operation_id,
+                        current_state=operation.state,
+                        current_version=operation.state_version,
+                        target_state="verifying",
+                        now=now,
+                    )
+                    session.refresh(operation)
+                    transition_operation(
+                        session,
+                        operation_id=operation.operation_id,
+                        current_state=operation.state,
+                        current_version=operation.state_version,
+                        target_state="succeeded",
+                        now=now,
+                        safe_result=event_id,
+                    )
+                else:
+                    # The device refused before any write could exist: the
+                    # fact source's own zero-write testimony.
+                    reason = (
+                        _DEVICE_REPORT_REASONS[result]
+                        if detail is None
+                        else f"{_DEVICE_REPORT_REASONS[result]}: {detail}"
+                    )
+                    transition_operation(
+                        session,
+                        operation_id=operation.operation_id,
+                        current_state=operation.state,
+                        current_version=operation.state_version,
+                        target_state="failed_safe",
+                        now=now,
+                        failure_reason=reason,
+                    )
+                session.refresh(operation)
+            # A settled operation (including one this request did not move --
+            # the loser of a CAS race, or a replay) answers its current state.
+            return _operation_response(deps.keyring, operation)
+
+        return _commit(session, work)
+
+
+_DEVICE_REPORT_WRITES: Final[frozenset[str]] = frozenset({"created", "duplicate"})
+#: The stable failure reasons a refused report records. The device's report is
+#: the evidence; the reason only names which closed value carried it.
+_DEVICE_REPORT_REASONS: Final[dict[str, str]] = {
+    "denied": "DEVICE_ACTION_DENIED",
+    "failed": "DEVICE_EXECUTION_FAILED",
+}
+_DEVICE_RESULT_FIELDS: Final[frozenset[str]] = frozenset(
+    {"result", "event_id", "detail"}
+)
+
+
+def _closed_device_result_body(body: dict[str, Any]) -> None:
+    """Validate the closed report body before anything can settle."""
+    unexpected = sorted(set(body) - _DEVICE_RESULT_FIELDS)
+    if unexpected:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=f"unexpected fields in request body: {unexpected}",
+        )
+    result = body.get("result")
+    if result not in _DEVICE_REPORT_REASONS and result not in _DEVICE_REPORT_WRITES:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=(
+                "result must be one of created, duplicate, denied, failed"
+            ),
+        )
+
+
+def _validate_sync_body(body: dict[str, Any]) -> None:
+    """Refuse a whole sync batch that does not match the ingest contract.
+
+    One malformed event refuses the batch entire (§5.1: no silent triage) --
+    the device is told to resend a coherent snapshot, never to have the server
+    guess which half it meant. The schema is the IR's own, so a contract
+    change moves both gates together.
+    """
+    try:
+        Draft202012Validator(
+            _SYNC_INGEST_CONTRACT, format_checker=FormatChecker()
+        ).validate(body)
+    except ValidationError as exc:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=(
+                "calendar sync body failed schema validation at "
+                f"{list(exc.absolute_path)}"
+            ),
+        ) from exc
 
 
 def _category_correction_fingerprint(

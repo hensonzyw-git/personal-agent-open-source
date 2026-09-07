@@ -24,25 +24,25 @@ class CalendarIngestDependencies:
         *,
         sessions: Callable,
         keyring: KeyRing,
-        device_id: str,
     ) -> None:
         self.sessions = sessions
         self.keyring = keyring
-        #: The uploading device, bound by composition from the verified caller
-        #: identity rather than taken from arguments — a device cannot claim
-        #: to be another device by re-serialising its payload.
-        self.device_id = device_id
 
 
 def build_handler(dependencies: CalendarIngestDependencies) -> ToolHandler:
     """Return the only handler allowed to expose ``calendar.ingest_events``."""
 
     async def handler(invocation) -> dict:
+        # The uploading device is the verified caller, not a payload field: it
+        # is stamped from the signed Host Context claims the authorizer
+        # checked, so a device cannot claim to be another device by
+        # re-serialising its payload, and a compromised server-side caller is
+        # recorded as exactly what it is.
         return ingest_events(
             invocation.arguments,
             sessions=dependencies.sessions,
             keyring=dependencies.keyring,
-            device_id=dependencies.device_id,
+            device_id=invocation.verified_call.device_id,
             now=utc_now(),
         )
 

@@ -286,11 +286,9 @@ async def finance_tools(
             CalendarIngestDependencies(
                 sessions=sessions,
                 keyring=dependencies.keyring,
-                # The verified device identity is a property of the caller, so
-                # it cannot be baked in at composition: the sync route carries
-                # it per call, and this registry-side handler stamps the row
-                # with the bridge caller that signed the Host Context.
-                device_id="server",
+                # The uploading device is a property of the verified caller, so
+                # it cannot be baked in at composition: the handler stamps each
+                # row from the signed Host Context claims of the bridge call.
             )
         )
         registry = build_registry(
