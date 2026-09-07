@@ -82,6 +82,7 @@ _MAX_REAUTH: Final[int] = 1
 #: argv, a URL path or a filesystem path. The 40-hex base SHA is the frozen
 #: contract's own pattern; the id charset covers the service's UUIDs.
 _SHA40_RE: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{40}")
+_SHA64_RE: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{64}")
 _SAFE_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 #: The exact field set of every response this client accepts.
@@ -97,6 +98,13 @@ _CLAIM_FIELDS: Final[frozenset[str]] = frozenset(
         "lease_epoch",
         "attempt",
         "deadline",
+        # F7 round-2 finding 6: the intake body and its digest ride the claim
+        # response so a remote worker's coder prompt can substitute
+        # {task_description} exactly as the local transport does. Optional —
+        # a job enqueued without an intake (operator/test seeding) omits
+        # them, and an older server omits them for every job.
+        "task_description",
+        "task_description_sha256",
     }
 )
 _HEARTBEAT_FIELDS: Final[frozenset[str]] = frozenset(
@@ -236,10 +244,20 @@ def _store_token(path: Path, cached: CachedToken) -> None:
 
 
 def _closed(payload: Any, fields: frozenset[str], what: str) -> dict[str, Any]:
-    """Validate a response against its exact field set, or refuse."""
+    """Validate a response against its exact field set, or refuse.
+
+    Unknown keys are always refused (the closed-set guarantee). The claim's
+    two intake-body keys may be *absent* — a job without an intake, or an
+    older server, omits them — so the claim path validates against the base
+    set plus any subset of the optional keys.
+    """
     if not isinstance(payload, dict):
         raise TransportError(f"{what}_not_an_object")
-    if set(payload) != fields:
+    if what == "claim":
+        optional = {"task_description", "task_description_sha256"}
+        if not set(payload) <= fields or not (fields - optional) <= set(payload):
+            raise TransportError(f"{what}_shape")
+    elif set(payload) != fields:
         raise TransportError(f"{what}_shape")
     if payload.get("schema_version") != SCHEMA_VERSION:
         raise TransportError(f"{what}_schema_version")
@@ -651,6 +669,22 @@ def _lease_from(payload: dict[str, Any]) -> JobLease:
         # UTC (the `isoformat()` of a tz-aware `utc_now()`), so anything else is
         # off-shape, not a value to repair.
         raise TransportError("claim_field:deadline")
+    # The intake body pair is optional: absent for a job enqueued without an
+    # intake (or from an older server). When present, both must arrive
+    # together, be strings, and the digest must be 64-hex — the worker's
+    # digest fence refuses a tampered pair downstream.
+    body = payload.get("task_description")
+    body_sha = payload.get("task_description_sha256")
+    if (body is None) != (body_sha is None):
+        raise TransportError("claim_field:task_description")
+    if body is not None:
+        if not isinstance(body, str) or not body:
+            raise TransportError("claim_field:task_description")
+        if (
+            not isinstance(body_sha, str)
+            or _SHA64_RE.fullmatch(body_sha) is None
+        ):
+            raise TransportError("claim_field:task_description_sha256")
     return JobLease(
         job_id=payload["job_id"],
         feature_id=payload["feature_id"],
@@ -661,4 +695,6 @@ def _lease_from(payload: dict[str, Any]) -> JobLease:
         lease_epoch=payload["lease_epoch"],
         attempt=payload["attempt"],
         deadline=deadline,
+        task_description=body,
+        task_description_sha256=body_sha,
     )

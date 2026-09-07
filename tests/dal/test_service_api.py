@@ -167,6 +167,46 @@ def _claim(client: TestClient, token: str) -> str:
     return resp.json()["job_id"]
 
 
+def test_claim_response_carries_the_intake_body(engine) -> None:
+    """R2-6 (round-2 review): the body must reach the remote worker's lease.
+
+    The claim response carries the persisted task description and its digest
+    when the job was enqueued through an intake, and omits both keys (rather
+    than nulling them) for a seeded job — the closed-shape contract stays
+    honest about what exists.
+    """
+    client = _client(engine)
+    token = _enroll(client)
+
+    # A job WITH an intake body.
+    body = "Add a boundary test for the pure-string helper."
+    queue.enqueue_job(
+        engine,
+        feature_id="feat-body",
+        repository_id="repo-1",
+        base_sha=BASE_SHA,
+        branch_name="codex/feature-feat-body",
+        toolchain_ref="toolchain-v1",
+        intake_key="intake:feat-body",
+        task_description=body,
+    )
+    resp = _post(client, "/jobs/claim", _claim_body(), _auth(token))
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["job_id"] is not None
+    assert payload["task_description"] == body
+    assert payload["task_description_sha256"] == hashlib.sha256(
+        body.encode("utf-8")
+    ).hexdigest()
+
+    # A seeded job WITHOUT an intake: both keys absent, not null.
+    _enqueue(engine)
+    resp2 = _post(client, "/jobs/claim", _claim_body(), _auth(token))
+    assert resp2.status_code == 200, resp2.text
+    assert "task_description" not in resp2.json()
+    assert "task_description_sha256" not in resp2.json()
+
+
 def test_happy_path(engine) -> None:
     client = _client(engine)
     token = _enroll(client)

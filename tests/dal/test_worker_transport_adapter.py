@@ -553,6 +553,42 @@ def test_claim_carries_feature_id_and_the_branch_agrees(engine, tmp_path: Path) 
     assert lease.branch_name == "codex/feature-demo"
 
 
+def test_remote_claim_carries_the_intake_body(engine, tmp_path: Path) -> None:
+    """R2-6 (round-2 review): the remote lease carries the intake body.
+
+    The claim response now includes the task description and its digest for
+    intake-enqueued jobs, and the remote transport's lease carries both —
+    previously both were None on every remote lease, so a remote worker's
+    coder could never substitute {task_description}. Seeded jobs claim with
+    both absent (None on the lease, the documented boundary).
+    """
+    client, _ = _service_client(engine)
+    body = "Add a boundary test for the pure-string helper."
+    queue.enqueue_job(
+        engine,
+        feature_id="feat-body",
+        repository_id="demo-repo",
+        base_sha=BASE_SHA,
+        branch_name="codex/feature-feat-body",
+        toolchain_ref="toolchain-v1",
+        intake_key="intake:feat-body",
+        task_description=body,
+    )
+    lease = _adapter(tmp_path, client).claim()
+    assert lease is not None
+    assert lease.task_description == body
+    assert lease.task_description_sha256 == hashlib.sha256(
+        body.encode("utf-8")
+    ).hexdigest()
+
+    # A seeded job (no intake): the lease's fields are the documented None.
+    _enqueue(engine, feature_id="feat-seeded")
+    lease2 = _adapter(tmp_path, client).claim()
+    assert lease2 is not None
+    assert lease2.task_description is None
+    assert lease2.task_description_sha256 is None
+
+
 def test_no_pending_job_is_a_quiet_none(engine, tmp_path: Path) -> None:
     client, _ = _service_client(engine)
     assert _adapter(tmp_path, client).claim() is None

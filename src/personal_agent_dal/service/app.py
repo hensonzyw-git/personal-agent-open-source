@@ -678,7 +678,7 @@ def create_app(
         record = queue.get_job(engine, job_id=job_id)
         if record is None or record.lease_expires_at is None:
             raise _http(500, "lease_missing")
-        return {
+        response: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "job_id": record.job_id,
             "feature_id": record.feature_id,
@@ -690,6 +690,15 @@ def create_app(
             "attempt": record.attempt_count,
             "deadline": record.lease_expires_at.isoformat(),
         }
+        # F7 round-2 finding 6: the intake body and its digest ride the claim
+        # response so a remote worker's coder prompt can substitute
+        # {task_description} exactly as the local transport does. The keys are
+        # omitted (not null) for a job enqueued without an intake — the
+        # operator/test seeding path — keeping the closed shape honest.
+        if record.task_description is not None:
+            response["task_description"] = record.task_description
+            response["task_description_sha256"] = record.task_description_sha256
+        return response
 
     @app.post("/jobs/{job_id}/heartbeat")
     def heartbeat(

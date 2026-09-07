@@ -73,11 +73,13 @@ class JobLease:
     `branch_name`; the caller still checks the two agree.
 
     `task_description`/`task_description_sha256` carry the persisted intake
-    body (F7, 2026-09-07 review) when the job was enqueued through an intake;
-    both are `None` on the operator/test seeding path and — stated honestly —
-    on the remote transport until the Dev Workflow Service's claim response
-    carries them. The worker treats `None` as "no body to substitute", never
-    as an empty task.
+    body (F7, 2026-09-07 review; round-2 finding 6 extended the wire) when
+    the job was enqueued through an intake — on both transports: the local
+    adapter reads the row, the remote transport's claim response carries
+    both fields (omitted, not nulled, for a job without an intake). Both
+    stay `None` on the operator/test seeding path. The worker treats `None`
+    as "no body to substitute", never as an empty task; the digest fence in
+    `poll_once` applies on both transports identically.
     """
 
     job_id: str
