@@ -50,7 +50,7 @@ from sqlalchemy import Engine
 
 from personal_agent_core.ids import new_id
 from personal_agent_core.sqlite import run_write_transaction
-from personal_agent_core.timeutil import utc_now
+from personal_agent_core.timeutil import to_rfc3339, utc_now
 from personal_agent_dal.github.adapter_controller import (
     ACTIONS,
     CONTROLLER_SOURCE,
@@ -758,7 +758,7 @@ def _recover_expired_dispatches(
                 "    WHERE r.effect_id = e.effect_id "
                 "    AND r.target_fingerprint = e.target_fingerprint) "
                 "ORDER BY e.updated_at ASC LIMIT :lim"
-            ).bindparams(now=now, lim=limit)
+            ).bindparams(now=to_rfc3339(now), lim=limit)
         ).all()
     for effect_id, version, owner_id, owner_type in rows:
         try:
@@ -919,7 +919,15 @@ def _recover_expired_reconciling(
                 "AND claim_expires_at IS NOT NULL AND claim_expires_at <= :now "
                 "ORDER BY updated_at ASC LIMIT :lim"
             ).bindparams(
-                state=RECONCILING_STATE, executor=RECONCILER_ID, now=now, lim=limit
+                state=RECONCILING_STATE,
+                executor=RECONCILER_ID,
+                # The column stores RFC 3339 text; binding a raw datetime lets
+                # sqlite3's default adapter render a space-separated form that
+                # never compares less than the stored 'T'-separated form on the
+                # same calendar day (round-2 review finding 1). Bind the same
+                # encoding the writer used.
+                now=to_rfc3339(now),
+                lim=limit,
             )
         ).all()
     for effect_id, version in rows:

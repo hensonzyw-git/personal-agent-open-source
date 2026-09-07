@@ -559,6 +559,107 @@ def test_sweep_drifted_branch_is_unknown_not_absent(engine) -> None:
 # --- F2 (2026-09-07 review): expired reconciler claims must auto-recover ----
 
 
+def _seed_stale_reconciling_claim(engine, *, same_day: bool) -> str:
+    """A reconciling claim whose expiry has passed — by seconds, or by days.
+
+    The sweep's expiry comparison binds against the RFC 3339 text column;
+    round-2 review finding 1 proved a naive datetime bind (space separator,
+    no Z) never matches a same-day expiry, so only cross-day staleness was
+    ever reclaimed. `same_day=True` seeds the expiry at a genuinely past
+    instant on the sweep's own calendar day (the sweep reads the real clock)
+    — the shape the first round's tests missed by using a 2020 timestamp.
+    """
+    from personal_agent_dal.github.reconciliation import start_effect_reconciliation
+    from personal_agent_core.timeutil import to_rfc3339, utc_now
+
+    feature_id, effect_id = park_unknown(engine)
+    start_effect_reconciliation(
+        engine, effect_id=effect_id, idempotency_key="recon-stale",
+        feature_id=feature_id,
+    )
+    if same_day:
+        # A real past instant on today's calendar day: the claim was stamped
+        # 15 minutes into the future, so "now minus 60s" is past the expiry
+        # wall-clock AND on the same day — the exact shape a naive bind misses.
+        expired_text = to_rfc3339(utc_now() - timedelta(seconds=60))
+    else:
+        expired_text = "2020-01-01T00:00:00Z"
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "UPDATE external_effects SET claim_expires_at = :past "
+                "WHERE effect_id = :e"
+            ).bindparams(past=expired_text, e=effect_id)
+        )
+    return effect_id
+
+
+def test_same_day_expired_reconciling_claim_is_reclaimed(engine) -> None:
+    """R2-1: an expiry seconds past, on the claim's own day, must reclaim.
+
+    The naive datetime bind rendered '2026-09-07 14:00:00-00:00' while the
+    column stores '2026-09-07T14:00:00Z'; as text 'T' > ' ', so the same-day
+    comparison never matched and the claim only looked expired the next
+    calendar day. Round-1's tests used a 2020 timestamp and missed it.
+    """
+    effect_id = _seed_stale_reconciling_claim(engine, same_day=True)
+
+    adapter = ReadBackAdapter(BranchReadBack(found=True, head_sha=HEAD))
+    run_unknown_sweep(engine, adapter)
+
+    # The reclaim ran (the sweep's normal pass then re-reconciled read-only):
+    # a read was issued, which only happens for a row that entered `unknown`.
+    assert adapter.calls == ["read_branch"]
+    assert effect_row_full(engine, effect_id)[0] == "reconciling"
+
+
+def test_same_day_expired_dispatch_park_is_recovered(engine) -> None:
+    """R2-1 (dispatch side): the pre-existing `_recover_expired_dispatches`
+    binds the same naive datetime against the same RFC 3339 column — the same
+    same-day blindness, older than the reconciler half. An expired
+    `dispatch_started` crash window must move to `unknown` the same day."""
+    feature_id, effect_id = seed_intent(engine)
+    from personal_agent_dal.github.adapter_controller import (
+        _apply_step,
+        _claim_guard_facts,
+        _dispatch_guard_facts,
+    )
+    _apply_step(
+        engine, command_type="claim_external_effect",
+        evidence_source="external-effect-controller", effect_id=effect_id,
+        expected_version=1, idempotency_key="r2-1:claim",
+        facts=_claim_guard_facts(engine, effect_id, 0),
+    )
+    _apply_step(
+        engine, command_type="record_effect_dispatch",
+        evidence_source="effect-executor", effect_id=effect_id,
+        expected_version=2, idempotency_key="r2-1:dispatch",
+        facts=_dispatch_guard_facts(engine, effect_id, 0),
+    )
+    # The dispatch marker stamps claim_expires_at 15 minutes ahead; set it to
+    # a real past instant on the sweep's own calendar day (now minus 60s).
+    from personal_agent_core.timeutil import to_rfc3339, utc_now
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "UPDATE external_effects SET claim_expires_at = :past "
+                "WHERE effect_id = :e"
+            ).bindparams(
+                past=to_rfc3339(utc_now() - timedelta(seconds=60)), e=effect_id
+            )
+        )
+
+    adapter = ReadBackAdapter(BranchReadBack(found=True, head_sha=HEAD))
+    run_unknown_sweep(engine, adapter)
+
+    state = effect_row_full(engine, effect_id)[0]
+    assert state in ("unknown", "reconciling"), (
+        f"the same-day expired park left dispatch_started: {state}"
+    )
+    assert adapter.calls == ["read_branch"], "the recovery ran the read-back"
+
+
 def test_reconciler_claim_stamps_expiry(engine) -> None:
     """The claim carries an expiry timestamp the sweep can reclaim on.
 

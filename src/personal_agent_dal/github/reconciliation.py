@@ -366,18 +366,23 @@ def reconcile_github_write(
     if missing:
         raise _invalid(f"action {action} payload is missing {sorted(missing)}")
 
-    state, _version = _effect_row(engine, effect_id)
+    state, claimed_version = _effect_row(engine, effect_id)
     if state == UNKNOWN_STATE:
         start_effect_reconciliation(
             engine, effect_id=effect_id, idempotency_key=idempotency_key
         )
-        state, _version = _effect_row(engine, effect_id)
+        state, claimed_version = _effect_row(engine, effect_id)
     if state != RECONCILING_STATE:
         raise ReconciliationRefusal(
             "ILLEGAL_TRANSITION",
             f"effect {effect_id} is {state}; reconciliation composes from "
             f"{UNKNOWN_STATE} or {RECONCILING_STATE}",
         )
+    # The version this pass holds its claim at. Every write this pass makes
+    # after the read-back CASes on it: a slow pass whose claim expired and
+    # was reclaimed (then re-claimed by a fresh reconciler) must lose the
+    # CAS and refuse, never stamp its stale verdict onto the new claim
+    # (round-2 review finding 2).
 
     try:
         if action == "push_branch":
@@ -408,7 +413,10 @@ def reconcile_github_write(
                 command_type="record_reconciliation_unknown",
                 evidence_source=COUNTERPARTY_SOURCE,
                 effect_id=effect_id,
-                expected_version=_effect_row(engine, effect_id)[1],
+                # Bind the claim-time version: the old code re-read the row
+                # here, so a superseded pass adopted the replacement claim's
+                # version and rolled the fresh claim back to unknown.
+                expected_version=claimed_version,
                 idempotency_key=f"{idempotency_key}:still-unknown",
                 facts={"evidence.authoritative_result": "unknown"},
             )

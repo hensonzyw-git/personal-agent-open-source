@@ -68,6 +68,7 @@ human resume (the frozen RECONCILE-* root)
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -729,6 +730,64 @@ def test_reconcile_check_zero_latest_matches_is_unknown_not_absent(engine) -> No
     assert outcome.authoritative_result == "unknown"
     state, _version, _executor = effect_row_state(engine, effect_id)
     assert state == "unknown", "an unprovable check absence returns to unknown"
+
+
+def test_stale_reconciler_cannot_release_a_newer_claim(engine) -> None:
+    """R2-2 (round-2 review): a STILL-UNKNOWN from a superseded reconciler
+    must not release the claim that replaced it.
+
+    The old code re-read the row version *after* the read-back returned, so a
+    slow reconciler whose claim had expired (reclaimed to unknown, re-claimed
+    by a fresh pass to reconciling) would stamp its inconclusive result onto
+    the NEW claim's version and roll the fresh claim back to unknown. The
+    STILL-UNKNOWN CAS must bind the version this pass held when it entered
+    reconciling: superseded → VERSION_CONFLICT refusal, fresh claim untouched.
+    """
+    feature_id, effect_id = seed_unknown_effect(engine)
+
+    class PausingAdapter:
+        """Reads run the reclaim+re-claim interleave, then report unknown."""
+
+        def read_feature_branch(self, **_: Any):
+            # While this (old) reconciler's read is in flight: its claim
+            # expires, the sweep reclaims it to unknown, and a NEW reconciler
+            # claims it — the version moves past what the old pass held.
+            from personal_agent_dal.github.executor import (
+                _recover_expired_reconciling,
+            )
+
+            with engine.begin() as connection:
+                connection.execute(
+                    sa.text(
+                        "UPDATE external_effects SET claim_expires_at = :past "
+                        "WHERE effect_id = :e"
+                    ).bindparams(past="2020-01-01T00:00:00Z", e=effect_id)
+                )
+            _recover_expired_reconciling(engine, limit=5, now_epoch=int(time.time()))
+            # The fresh claim, through the real production entry point.
+            start_effect_reconciliation(
+                engine,
+                effect_id=effect_id,
+                idempotency_key="recon-fresh",
+                feature_id=feature_id,
+            )
+            return BranchReadBack(found=None, unknown=True)
+
+    with pytest.raises(ReconciliationRefusal) as excinfo:
+        reconcile_github_write(
+            engine,
+            PausingAdapter(),
+            effect_id=effect_id,
+            action="push_branch",
+            idempotency_key="recon-old",
+            payload={"branch": BRANCH, "head_sha": HEAD},
+            feature_id=feature_id,
+        )
+    assert excinfo.value.code == "VERSION_CONFLICT", excinfo.value.code
+    # The fresh claim survives untouched.
+    state, _version, executor = effect_row_state(engine, effect_id)
+    assert state == "reconciling", "the newer claim must not be rolled back"
+    assert executor == "reconciler"
 
 
 def test_reconcile_inconclusive_read_backs_to_still_unknown(engine) -> None:
