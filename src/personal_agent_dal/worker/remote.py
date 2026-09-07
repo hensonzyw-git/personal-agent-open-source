@@ -669,15 +669,20 @@ def _lease_from(payload: dict[str, Any]) -> JobLease:
         # UTC (the `isoformat()` of a tz-aware `utc_now()`), so anything else is
         # off-shape, not a value to repair.
         raise TransportError("claim_field:deadline")
-    # The intake body pair is optional: absent for a job enqueued without an
-    # intake (or from an older server). When present, both must arrive
-    # together, be strings, and the digest must be 64-hex — the worker's
-    # digest fence refuses a tampered pair downstream.
-    body = payload.get("task_description")
-    body_sha = payload.get("task_description_sha256")
-    if (body is None) != (body_sha is None):
-        raise TransportError("claim_field:task_description")
-    if body is not None:
+    # The intake body pair is optional: ABSENT for a job enqueued without an
+    # intake (or from an older server). Presence is decided by key
+    # membership, never by value: an explicit null is a malformed shape, not
+    # an omission (round-3 review finding 2 — .get() could not tell them
+    # apart, and null-shaped pairs sailed through as bodyless leases,
+    # skipping the digest fence). If either key is present, BOTH must be
+    # present, non-null, correctly typed, and the digest 64-hex.
+    body_present = "task_description" in payload
+    body_sha_present = "task_description_sha256" in payload
+    if body_present or body_sha_present:
+        if not (body_present and body_sha_present):
+            raise TransportError("claim_field:task_description")
+        body = payload["task_description"]
+        body_sha = payload["task_description_sha256"]
         if not isinstance(body, str) or not body:
             raise TransportError("claim_field:task_description")
         if (
@@ -685,6 +690,9 @@ def _lease_from(payload: dict[str, Any]) -> JobLease:
             or _SHA64_RE.fullmatch(body_sha) is None
         ):
             raise TransportError("claim_field:task_description_sha256")
+    else:
+        body = None
+        body_sha = None
     return JobLease(
         job_id=payload["job_id"],
         feature_id=payload["feature_id"],

@@ -921,6 +921,37 @@ def test_a_kill_switch_503_is_not_retried_as_an_outage(tmp_path: Path) -> None:
             lambda body: {**body, "deadline": "2026-08-26T12:00:00"},
             id="naive_deadline",
         ),
+        # R3-2 (round-3 review): an explicit null is a malformed shape, not
+        # an omitted key — .get() used to treat all three as bodyless leases,
+        # skipping the pair validation and the digest fence.
+        pytest.param(
+            lambda body: {**body, "task_description": None},
+            id="body_null",
+        ),
+        pytest.param(
+            lambda body: {**body, "task_description_sha256": None},
+            id="body_sha_null",
+        ),
+        pytest.param(
+            lambda body: {
+                **body,
+                "task_description": None,
+                "task_description_sha256": None,
+            },
+            id="both_null",
+        ),
+        pytest.param(
+            lambda body: {**body, "task_description": "task text"},
+            id="body_without_digest",
+        ),
+        pytest.param(
+            lambda body: {
+                **body,
+                "task_description": "task text",
+                "task_description_sha256": "not-hex",
+            },
+            id="body_with_bad_digest",
+        ),
     ],
 )
 def test_a_claim_response_off_contract_is_refused(tmp_path: Path, mutate) -> None:
