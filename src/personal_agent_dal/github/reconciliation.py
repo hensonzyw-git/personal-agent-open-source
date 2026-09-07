@@ -58,6 +58,7 @@ from typing import Any, Final
 
 from sqlalchemy import text
 from sqlalchemy import Engine
+from sqlalchemy.exc import IntegrityError
 
 from personal_agent_dal.errors import DalError, DalErrorCode
 from personal_agent_dal.github.adapter import (
@@ -230,6 +231,15 @@ def start_effect_reconciliation(
     all refuse before anything moves. ``feature_id`` is accepted for
     call-site symmetry with the dispatch composition and re-derived here
     from the row — the effect's owner is a fact, not a parameter.
+
+    The facts guard is the first line; the arbiter is the partial unique
+    index from migration 0010 (F3, 2026-09-07 review). The count fact is
+    computed outside the retriable transition, so two concurrent starts for
+    two different effects of one owner can both pass `equals 1` — the index
+    refuses the loser's UPDATE inside the transaction with an IntegrityError,
+    which `run_write_transaction` provably never retries (it only matches
+    OperationalError snapshot conflicts). The loser maps to the typed
+    SINGLE_RECONCILER_CLAIM refusal below.
     """
     if type(idempotency_key) is not str or not idempotency_key:
         raise _invalid("idempotency_key must be a non-empty native string")
@@ -256,6 +266,16 @@ def start_effect_reconciliation(
             idempotency_key=idempotency_key,
             facts={k: v for k, v in facts.items() if not k.startswith("__")},
         )
+    except IntegrityError as error:
+        # Lost the owner-level arbitration to a concurrent claim (the partial
+        # unique index). The index slot frees itself when that claim's effect
+        # leaves `reconciling` (STILL-UNKNOWN or a terminal edge), or its
+        # expiry is reclaimed by the sweep — no release path to forget here.
+        raise ReconciliationRefusal(
+            "SINGLE_RECONCILER_CLAIM",
+            f"another reconciler holds this owner's claim "
+            f"(effect {effect_id})",
+        ) from error
     except ControllerRefusal as error:
         raise ReconciliationRefusal(error.code, error.detail) from error
 

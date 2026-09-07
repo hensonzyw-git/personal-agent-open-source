@@ -512,6 +512,93 @@ def test_second_concurrent_reconciler_refuses(engine) -> None:
         )
 
 
+def test_concurrent_reconciler_claims_two_effects_one_owner(
+    engine, monkeypatch
+) -> None:
+    """F3 (2026-09-07 review): the owner singleton must survive a real race.
+
+    The SINGLE_RECONCILER_CLAIM guard's `active_claim_count` fact was computed
+    outside the retriable transaction: two concurrent starts for two different
+    unknown effects of one owner both read zero live claims, both passed the
+    `equals 1` guard, and both committed. Here both threads pass the facts
+    computation before either commits (a barrier at the facts boundary); the
+    partial unique index from migration 0010 must arbitrate — exactly one
+    claim survives, the other refuses with the mapped code.
+    """
+    import threading
+
+    from personal_agent_dal.github import reconciliation as reconciliation_module
+
+    feature_id, effect_id = seed_unknown_effect(engine)
+    now = utc_now()
+    with session_factory(engine)() as session, session.begin():
+        session.add(
+            external_effect_row(
+                effect_id="effect-race-2", owner_id=feature_id, version=1,
+                state="unknown", now=now,
+            )
+        )
+
+    barrier = threading.Barrier(2)
+    real_facts = reconciliation_module._reconciler_claim_facts
+
+    def synchronized_facts(engine_arg, effect_id_arg):
+        # Both threads compute their facts (both see zero live claims) before
+        # either proceeds into the transition — the exact production interleave.
+        result = real_facts(engine_arg, effect_id_arg)
+        barrier.wait(timeout=10)
+        return result
+
+    monkeypatch.setattr(
+        reconciliation_module, "_reconciler_claim_facts", synchronized_facts
+    )
+
+    outcomes: list[str] = []
+    refusals: list[str] = []
+    lock = threading.Lock()
+
+    def worker(eid: str, key: str) -> None:
+        try:
+            start_effect_reconciliation(
+                engine, effect_id=eid, idempotency_key=key,
+                feature_id=feature_id,
+            )
+            with lock:
+                outcomes.append(eid)
+        except ReconciliationRefusal as refusal:
+            with lock:
+                refusals.append(refusal.code)
+        except Exception as exc:  # noqa: BLE001
+            with lock:
+                refusals.append(f"EXC:{type(exc).__name__}:{exc}")
+
+    threads = [
+        threading.Thread(target=worker, args=("effect-rec-1", "race-a")),
+        threading.Thread(target=worker, args=("effect-race-2", "race-b")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+    assert not any(thread.is_alive() for thread in threads), "race threads hung"
+
+    assert len(outcomes) == 1, f"exactly one claim must survive: {outcomes}"
+    assert refusals == ["SINGLE_RECONCILER_CLAIM"], (
+        f"the loser must refuse with the mapped code: {refusals}"
+    )
+    # One row in reconciling under this owner, the other still unknown.
+    with engine.connect() as connection:
+        states = dict(
+            connection.execute(
+                sa.text(
+                    "SELECT effect_id, state FROM external_effects "
+                    "WHERE effect_id IN ('effect-rec-1', 'effect-race-2')"
+                )
+            ).all()
+        )
+    assert sorted(states.values()) == ["reconciling", "unknown"], states
+
+
 def test_stale_version_start_refuses(engine) -> None:
     feature_id, effect_id = seed_unknown_effect(engine)
     _state, version, _executor = effect_row_state(engine, effect_id)
