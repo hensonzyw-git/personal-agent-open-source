@@ -26,8 +26,8 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timedelta
+from typing import Any, Final
 
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
@@ -41,6 +41,7 @@ from personal_agent.api.operation_state import (
 from personal_agent.storage.models import ApiRequest, Operation
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.manifest import canonical_json
+from personal_agent_core.tool_ir import TOOL_CONTRACTS
 
 
 def chat_request_fingerprint(
@@ -346,3 +347,63 @@ def mark_detached(session, *, operation_id: str, now: datetime) -> None:
 
 def get_operation(session, operation_id: str) -> Operation | None:
     return session.get(Operation, operation_id)
+
+
+#: How long a device-executed action may sit at `source_in_progress` without
+#: the device's report before the sweep parks it. Chosen against the phone's
+#: own report budget (it PATCHes as soon as EventKit answers, and the app
+#: retries on next foreground) with a wide margin; not derived from any
+#: connector timeout, because no connector is involved.
+DEVICE_REPORT_TIMEOUT: Final[timedelta] = timedelta(minutes=15)
+
+#: Device-executed tools, derived from the IR — never hand-listed.
+_DEVICE_EXECUTED_TOOLS: Final[frozenset[str]] = frozenset(
+    contract.name for contract in TOOL_CONTRACTS if contract.executor == "device"
+)
+
+
+def sweep_timed_out_device_actions(
+    session, *, now: datetime
+) -> list[tuple[str, str]]:
+    """Park device actions whose report never arrived at `needs_manual_review`.
+
+    The timeout is fail-closed about what it can *know*: no report means the
+    phone may or may not have written, and `needs_manual_review` is the one
+    state whose meaning matches that uncertainty. `failed_safe` is exactly the
+    claim "nothing was written" — a claim silence cannot support — so this
+    sweep can never produce one.
+
+    Only device-executed tools are touched: a Finance write parked at
+    `source_in_progress` belongs to the Finance reconciler, which projects the
+    execution store's truth and must not be raced by a wall-clock guess. The
+    CAS transition makes concurrent sweeps one-shot: two workers scanning the
+    same row produce exactly one move; the loser raises `Stale` and skips.
+    """
+    cutoff = now - DEVICE_REPORT_TIMEOUT
+    parked = (
+        session.query(Operation)
+        .filter(
+            Operation.state == "source_in_progress",
+            Operation.tool.in_(sorted(_DEVICE_EXECUTED_TOOLS)),
+            Operation.updated_at <= cutoff,
+        )
+        .all()
+    )
+    settled: list[tuple[str, str]] = []
+    for operation in parked:
+        try:
+            transition_operation(
+                session,
+                operation_id=operation.operation_id,
+                current_state=operation.state,
+                current_version=operation.state_version,
+                target_state="needs_manual_review",
+                now=now,
+                failure_reason="device report timed out; the write may exist",
+            )
+        except StaleOperationVersionError:
+            # The device reported (or another worker swept) between the read
+            # and the CAS. The winner's state is the truth; nothing to do.
+            continue
+        settled.append((operation.operation_id, "needs_manual_review"))
+    return settled

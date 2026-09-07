@@ -179,6 +179,35 @@ class Resolved:
 
 
 @dataclass(frozen=True)
+class DeviceActionIssued:
+    """A device-executed write was authorised and issued to the phone.
+
+    `calendar.create_event` never crosses the MCP bridge: the iPhone's
+    EventKit is the executor. `resolve` authorises exactly like any governed
+    write and then stops — nothing has been *sent* anywhere, because the
+    "send" is the chat response itself carrying the action to the device that
+    asked for it.
+
+    `action_id` is the operation's own idempotency key, so one message can
+    produce at most one device side effect and the device's report PATCHes the
+    same operation the response came from. `event_fields` is the
+    schema-validated model input, echoed verbatim: the phone builds the
+    EKEvent from exactly what was authorised, not from anything re-derived.
+    """
+
+    action_id: str
+    tool: str
+    event_fields: dict[str, Any]
+
+    def response_payload(self) -> dict[str, Any]:
+        return {
+            "action_id": self.action_id,
+            "tool": self.tool,
+            "event": self.event_fields,
+        }
+
+
+@dataclass(frozen=True)
 class ReadCompleted:
     """A read tool finished with a safe, already-projected result.
 
@@ -212,7 +241,7 @@ class ResolveFailedSafe:
 
 ResolveOutcome = (
     Resolved | ReadCompleted | PossibleDuplicate | NeedsClarification
-    | ResolveFailedSafe
+    | ResolveFailedSafe | DeviceActionIssued
 )
 
 
@@ -269,7 +298,11 @@ CommitOutcome = (
 
 class Dispatcher(Protocol):
     def resolve(
-        self, *, tool: str, model_args: dict[str, Any]
+        self,
+        *,
+        tool: str,
+        model_args: dict[str, Any],
+        idempotency_key: str | None = None,
     ) -> ResolveOutcome: ...
 
     def commit(
@@ -304,6 +337,11 @@ class RunResult:
     #: The validated, whitelisted ``finance.query_expenses`` projection, present
     #: only when the read was a query that decoded successfully.
     query_result: dict[str, Any] | None = None
+    #: A device-executed action (`calendar.create_event`): the signed payload
+    #: the chat response carries to the iPhone. The operation is parked at
+    #: `source_in_progress` when this is present; settlement arrives later via
+    #: the device-action result endpoint.
+    device_action: dict[str, Any] | None = None
 
 
 Clock = datetime | Callable[[], datetime]
@@ -602,7 +640,11 @@ def _run_operation(
         return RunResult(state="failed_safe", failure_reason=reason)
 
     _step(session, operation, "dispatching", now, tool=interpretation.tool)
-    outcome = dispatcher.resolve(tool=interpretation.tool, model_args=cleaned)
+    outcome = dispatcher.resolve(
+        tool=interpretation.tool,
+        model_args=cleaned,
+        idempotency_key=operation.idempotency_key,
+    )
     return _apply_resolve(
         session,
         operation,
@@ -756,6 +798,19 @@ def _apply_resolve(
             keyring=keyring,
             now=now,
             prior_clarification_question=prior_clarification_question,
+        )
+
+    if isinstance(outcome, DeviceActionIssued):
+        # Post-submit semantics: `source_in_progress` commits before the
+        # response leaves, so the phone may write the event while the message
+        # is in flight, and a crash here cannot be read as a cancellation.
+        # The device's report settles the operation later through its own
+        # endpoint; a report that never arrives is handled by the timeout
+        # sweep, not by this turn.
+        _step(session, operation, "source_in_progress", now, tool=outcome.tool)
+        return RunResult(
+            state="source_in_progress",
+            device_action=outcome.response_payload(),
         )
 
     raise AppError(  # pragma: no cover - the union is exhaustive above

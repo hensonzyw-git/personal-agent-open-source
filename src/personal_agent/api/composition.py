@@ -295,11 +295,19 @@ class DeviceBoundDispatcher:
             run=self._run,
         )
 
-    def resolve(self, *, tool: str, model_args: dict[str, Any]) -> ResolveOutcome:
+    def resolve(
+        self,
+        *,
+        tool: str,
+        model_args: dict[str, Any],
+        idempotency_key: str | None = None,
+    ) -> ResolveOutcome:
         dispatcher = self._dispatcher()
         if dispatcher is None:
             return ResolveFailedSafe(reason="policy_denied")
-        return dispatcher.resolve(tool=tool, model_args=model_args)
+        return dispatcher.resolve(
+            tool=tool, model_args=model_args, idempotency_key=idempotency_key
+        )
 
     def commit(
         self,

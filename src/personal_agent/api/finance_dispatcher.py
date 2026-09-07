@@ -72,6 +72,7 @@ from personal_agent.api.orchestrator import (
     CommitFailedSafe,
     CommitOutcome,
     CommitUnknown,
+    DeviceActionIssued,
     ReadCompleted,
     Resolved,
     ResolveFailedSafe,
@@ -118,6 +119,19 @@ _QUERY_RESULT_TOOLS: frozenset[str] = frozenset(
     and contract.output_schema.get("properties", {}).get("metric", {}).get("const")
     == "personal_spend_total_cny"
 )
+
+
+#: Whether a tool's executor is the user's device, derived from the IR. A
+#: device-executed write never crosses the MCP bridge; the dispatcher
+#: authorises it and issues a device action instead. Derived, never
+#: hand-listed: a second device tool ships into the fork automatically, and
+#: flipping `calendar.create_event` back to `mcp` leaves the fork empty —
+#: which the orchestrator's exhaustiveness assertion then surfaces.
+def _is_device_executed(remote_name: str) -> bool:
+    return any(
+        contract.name == remote_name and contract.executor == "device"
+        for contract in TOOL_CONTRACTS
+    )
 
 
 
@@ -199,12 +213,38 @@ class McpFinanceDispatcher:
             ) from exc
 
     def resolve(
-        self, *, tool: str, model_args: dict[str, Any]
+        self,
+        *,
+        tool: str,
+        model_args: dict[str, Any],
+        idempotency_key: str | None = None,
     ) -> ResolveOutcome:
         try:
             remote = self._remote_name(tool)
         except AppError as error:
             return ResolveFailedSafe(reason=_reason(error))
+        if _is_device_executed(remote):
+            # Device-executed write: authorise exactly like any governed
+            # write (scope, allowlist, write switch, schema — the bridge
+            # refuses before anything can be issued), then stop. No MCP call
+            # exists for this tool; the executor is the phone, reached by the
+            # chat response itself. The action id *is* the operation's
+            # idempotency key, so one message can produce at most one device
+            # side effect.
+            try:
+                self._bridge.authorize(tool, model_args, self._context.device)
+            except AppError as error:
+                # Nothing was issued, so this is provably zero-write.
+                return ResolveFailedSafe(reason=_reason(error))
+            if idempotency_key is None:
+                return ResolveFailedSafe(
+                    reason="device action requires the operation idempotency key"
+                )
+            return DeviceActionIssued(
+                action_id=idempotency_key,
+                tool=tool,
+                event_fields=model_args,
+            )
         if remote not in READ_TOOLS:
             # A write tool has exactly one MCP call and it belongs to `commit`.
             # Returning here means nothing has been sent yet, which is what lets
@@ -246,6 +286,18 @@ class McpFinanceDispatcher:
         idempotency_key: str,
         duplicate_override: str | None,
     ) -> CommitOutcome:
+        if _is_device_executed(intent.tool):
+            # The two-phase protocol has no phase 2 for a device tool: the
+            # write was issued in `resolve` and the phone reports back through
+            # its own endpoint. Reaching `commit` means the dispatch fork
+            # failed to intercept, and failing open here would fabricate an
+            # MCP call the contract says does not exist.
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail=(
+                    f"{intent.tool} is device-executed; commit must never run"
+                ),
+            )
         dispatched: list[bool] = []
         try:
             result = self._call(
