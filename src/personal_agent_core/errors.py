@@ -62,6 +62,14 @@ class ErrorCode(StrEnum):
     BATCH_ATOMICITY_UNAVAILABLE = "BATCH_ATOMICITY_UNAVAILABLE"
     BATCH_COMMIT_UNKNOWN = "BATCH_COMMIT_UNKNOWN"
 
+    # Calendar device-executed actions. The iPhone EventKit is the fact source:
+    # a denial or an execution failure it *reports* is zero-write evidence, at
+    # the same trust level as Finance reporting its own refusal. The timeout is
+    # deliberately not here as a zero-write claim — a report that never arrived
+    # means the write may exist, which is `needs_manual_review`, not a code.
+    DEVICE_ACTION_DENIED = "DEVICE_ACTION_DENIED"
+    DEVICE_EXECUTION_FAILED = "DEVICE_EXECUTION_FAILED"
+
     # Timeline and context (`CAP-001`). The later cross-cutting codes
     # (`MEMORY_POLICY_REJECTED`, `MEDIA_NOT_READY`, `UNSUPPORTED_MODALITY`,
     # `INVALID_EVENT_CURSOR`) arrive with the CAP that serves their route; a
@@ -168,6 +176,8 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.SOURCE_COMMITTED_MISMATCH: "写入后回读的字段与预期不一致",
     ErrorCode.BATCH_ATOMICITY_UNAVAILABLE: "多笔写入尚未启用，一笔也没有记录",
     ErrorCode.BATCH_COMMIT_UNKNOWN: "多笔写入结果未知，正在按批次键核验",
+    ErrorCode.DEVICE_ACTION_DENIED: "设备上的日历没有授权这次写入",
+    ErrorCode.DEVICE_EXECUTION_FAILED: "设备写入日历失败，没有产生日程",
     ErrorCode.TIMELINE_MISMATCH: "该会话标识不属于当前对话记录",
     ErrorCode.OPERATION_NOT_ANCHORED: "该请求键还没有对应的操作记录，请继续等待",
     ErrorCode.INVALID_CURSOR: "翻页游标无效或已过期",

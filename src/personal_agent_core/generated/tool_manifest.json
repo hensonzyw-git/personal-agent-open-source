@@ -1,6 +1,6 @@
 {
   "manifest_version": "1.0.0",
-  "ir_version": "0.1.0",
+  "ir_version": "0.2.0",
   "generated_from": [
     "docs/MCP工具IR_v0.1.md",
     "docs/Finance MCP工具设计草案_v0.1.md",
@@ -70,7 +70,10 @@
     "finance.log_income",
     "finance.update_family_fund",
     "finance.query_expenses",
-    "meta.capabilities"
+    "meta.capabilities",
+    "calendar.create_event",
+    "calendar.query_events",
+    "calendar.ingest_events"
   ],
   "disabled_tools": [
     "finance.log_expense_batch"
@@ -80,9 +83,11 @@
     "finance.log_income",
     "finance.update_family_fund",
     "finance.query_expenses",
-    "meta.capabilities"
+    "meta.capabilities",
+    "calendar.create_event",
+    "calendar.query_events"
   ],
-  "allowed_tools_version": "a8f0d559da1d5139e6cfd18da265f60fc8b67dc1ba382be853d288b1860a7bee",
+  "allowed_tools_version": "906fabd6f8aa6f75ba8af7a0de28bce320120862ea13614804107e61bc6eb43e",
   "tools": [
     {
       "name": "finance.log_expense",
@@ -93,6 +98,7 @@
       "enabled": true,
       "model_callable": true,
       "disabled_reason": null,
+      "executor": "mcp",
       "summary": "新增单笔支出、退款或 AA 收款到年度支出记录表。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -346,7 +352,7 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "f300a6f42f89d8db35ff566e5288d369287ea8f9cb4828438023921c53591a0c",
-      "contract_hash": "356f4c6f409dae0f37095f735d4489be0c93d455dc378ca97a8ea43b97a75d40"
+      "contract_hash": "f63323788dbee7da654bbbf612988834ff12c8e3d4701768d57533ef61bdca09"
     },
     {
       "name": "finance.log_expense_batch",
@@ -357,6 +363,7 @@
       "enabled": false,
       "model_callable": true,
       "disabled_reason": "飞书批量新增接口有 client_token，但官方文档未声明事务级全成全败语义。在非生产测试表证明原子性之前保持关闭，且不得退化为逐笔顺序写入。",
+      "executor": "mcp",
       "summary": "一条消息中两笔及以上完全解析的支出，全成功或一笔也不写。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -647,7 +654,7 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "7dcd88bfc3436d877016cdd50904fe2de778f8c73c65b412fdca770603dfec63",
-      "contract_hash": "830fb3f6e481eb930e25278ff7ee2de4b77b4468611ef534ae078340768a451c"
+      "contract_hash": "19100e4502385a62c39af27e4c56b7a6aadde67461e6f3af8db50633bfcdcf53"
     },
     {
       "name": "finance.update_expense_category",
@@ -658,6 +665,7 @@
       "enabled": true,
       "model_callable": false,
       "disabled_reason": null,
+      "executor": "mcp",
       "summary": "把一条已入账支出的分类改成账本已有的另一个选项，不改动其他任何字段。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -828,7 +836,7 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "2bd43204a58afad8976940ae2d910acc42f035d2bb25bc1b1f023e9647266382",
-      "contract_hash": "5e7030c83814a5d89005652aef5650591ce88180adb97fbb5be7ebbde63177d6"
+      "contract_hash": "9e7cfa2721d7345c90266d40f197cb4110c45d4c92bf2c0efcc5ea89ebf9830c"
     },
     {
       "name": "finance.log_income",
@@ -839,6 +847,7 @@
       "enabled": true,
       "model_callable": true,
       "disabled_reason": null,
+      "executor": "mcp",
       "summary": "新增单笔收入到年度收入记录表；分类由封闭 Income Policy 决定。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1012,7 +1021,7 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "eeb791038e6547dde489cab4bcecfe7454b3fbff4dfd717fb44133b95bd76f0a",
-      "contract_hash": "bd745a7e92fb90a76b25ca9f13c9e6095d2f6e0b815f67ea9815a2c449fc1c6a"
+      "contract_hash": "eaffb418dd9cac6f92e7e9fffb2e10d70b788790760f791b542d20be267a8f34"
     },
     {
       "name": "finance.update_family_fund",
@@ -1023,6 +1032,7 @@
       "enabled": true,
       "model_callable": true,
       "disabled_reason": null,
+      "executor": "mcp",
       "summary": "家庭基金充值，或按目标余额补齐利息；只记账本变动，不执行资金划转。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1264,7 +1274,7 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "d2067ac7ebc9cc96cdc64a52e4b079079405a249603dc8ce02e2710697e3e7df",
-      "contract_hash": "da01ae19a4865f1b8d307f333fbebd6607228839298e7917650f06825cae0200"
+      "contract_hash": "6cb711060c3fbae2aa0e2e4004166441026ea955f0d6e179f12f0eb9be9ee1ea"
     },
     {
       "name": "finance.query_expenses",
@@ -1275,6 +1285,7 @@
       "enabled": true,
       "model_callable": true,
       "disabled_reason": null,
+      "executor": "mcp",
       "summary": "支出明细、总额和分类统计；金额口径固定为飞书“个人支出”公式的有符号值。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1546,7 +1557,7 @@
         "SOURCE_TIMEOUT_UNKNOWN"
       ],
       "input_schema_hash": "24e4b58fa1180ed23cbce2c3c6ba06ce733aec235aacf351db9abb61cb4c753b",
-      "contract_hash": "f9ef3f78b8a83203bd29b5397d12b99e46a3c16a8bf54b758f928c0c3d93afa4"
+      "contract_hash": "d366168e93e0b536567e89e6928cbe57207017e3107d81a6ab6c520fbd1272ce"
     },
     {
       "name": "meta.capabilities",
@@ -1557,6 +1568,7 @@
       "enabled": true,
       "model_callable": true,
       "disabled_reason": null,
+      "executor": "mcp",
       "summary": "返回当前设备实际可用的工具，用于渐进披露能力。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1625,7 +1637,527 @@
         "SCOPE_DENIED"
       ],
       "input_schema_hash": "3389f18f3a0992d9511246cd730ff47998266119f91c5c685dab194aeb55a4bf",
-      "contract_hash": "8c2d7ac2532781abb92f921f0602c7d6a68fe2af5478ed681eb82574901b6b6c"
+      "contract_hash": "f2b2335c0a7fbf20f374557892bb9ae2bdbb0193d3ffe3f55205074f95d3ae9b"
+    },
+    {
+      "name": "calendar.create_event",
+      "version": "1.0.0",
+      "domain": "calendar",
+      "effect": "create",
+      "risk_level": "R2",
+      "enabled": true,
+      "model_callable": true,
+      "disabled_reason": null,
+      "executor": "device",
+      "summary": "在用户 iPhone 的 Apple 日历中创建一条单次日程。全天日程传 all_day；不支持重复日程——用户要每周重复时如实说明暂不支持，不要建多条冒充。",
+      "model_input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "CalendarCreateEventInput",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "start",
+          "end",
+          "all_day"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "日程标题，使用用户口述的措辞。"
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "开始时刻，Asia/Shanghai 绝对时间（如 2026-09-12T15:00:00+08:00）；all_day 时为当日语义，服务端落为当日零点。用户只说了相对表达（明天下午）时必须先换算或追问，绝不把没说清的时刻猜成整点写入。"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time",
+            "description": "结束时刻，Asia/Shanghai 绝对时间；all_day 时为结束日次日凌晨（EventKit 全天事件结束时刻排他）。用户没说结束时刻时按 一小时默认并如实告知。"
+          },
+          "all_day": {
+            "type": "boolean",
+            "description": "是否为全天日程。全天事件只需日期，不需要具体时刻。"
+          },
+          "location": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "可选地点。"
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "可选备注。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "action_id",
+          "event"
+        ],
+        "properties": {
+          "status": {
+            "const": "issued"
+          },
+          "action_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "本次设备动作的幂等键，与宿主操作的幂等键相同。"
+          },
+          "event": {
+            "type": "object",
+            "required": [
+              "title",
+              "start",
+              "end",
+              "all_day"
+            ],
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "start": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "end": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "all_day": {
+                "type": "boolean"
+              },
+              "location": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "notes": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "required_scopes": [
+        "calendar.event.write"
+      ],
+      "confirmation": "never",
+      "idempotency": {
+        "key_source": "host_injected_uuid4",
+        "replay_result": "同一动作键只产生一个设备动作；设备端另有本地查重（同日历、同标题、开始时刻 ±5 分钟）兜底重复创建。"
+      },
+      "retry": {
+        "retryable_errors": [],
+        "reuse_idempotency_key": true
+      },
+      "audit": {
+        "recorded": [
+          "trace_id",
+          "device_id",
+          "tool",
+          "contract_version",
+          "risk_level",
+          "policy_outcome",
+          "argument_field_names",
+          "request_fingerprint",
+          "device_report_status",
+          "latency_ms"
+        ],
+        "never_recorded": [
+          "raw_user_text",
+          "model_reasoning",
+          "event_title",
+          "event_location",
+          "event_notes",
+          "device_event_identifier",
+          "access_token",
+          "provider_response_body"
+        ]
+      },
+      "errors": [
+        "INVALID_ARGUMENT",
+        "SCOPE_DENIED",
+        "TOOL_NOT_ALLOWLISTED",
+        "HOST_CONTEXT_MISMATCH",
+        "IDEMPOTENCY_CONFLICT",
+        "CLARIFICATION_REQUIRED",
+        "DEVICE_ACTION_DENIED",
+        "DEVICE_EXECUTION_FAILED"
+      ],
+      "input_schema_hash": "e793330bc95b0209721521a1bcb130dc40421130a85658e72c6253c764d8d3d3",
+      "contract_hash": "834a40faf1ae20a6cba7cfc7f20dff4c794cd58b750f039d7c6fcd634f50e991"
+    },
+    {
+      "name": "calendar.query_events",
+      "version": "1.0.0",
+      "domain": "calendar",
+      "effect": "read",
+      "risk_level": "R1",
+      "enabled": true,
+      "model_callable": true,
+      "disabled_reason": null,
+      "executor": "mcp",
+      "summary": "查询日历镜像中的日程（日期窗口必填）。镜像由设备同步上载，回答必须携带数据截至时间，镜像陈旧时如实说明。",
+      "model_input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "CalendarQueryEventsInput",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "start",
+          "end"
+        ],
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "窗口开始（含），Asia/Shanghai 绝对时间。"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time",
+            "description": "窗口结束（不含），Asia/Shanghai 绝对时间。"
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null,
+            "description": "服务端不透明游标。不要构造或猜测它的内容。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "events",
+          "record_count",
+          "data_as_of",
+          "mirror_stale",
+          "source_system"
+        ],
+        "properties": {
+          "status": {
+            "const": "ok"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "event_identifier",
+                "calendar_identifier",
+                "title",
+                "start",
+                "end",
+                "all_day"
+              ],
+              "properties": {
+                "event_identifier": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "设备端 EventKit 的事件标识（EKEvent.eventIdentifier）。"
+                },
+                "calendar_identifier": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "该事件所在日历的标识。"
+                },
+                "title": {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                "start": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "开始时刻（UTC 瞬间）；all_day 事件为当日（Asia/Shanghai）零点。"
+                },
+                "end": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "结束时刻（UTC 瞬间）；all_day 事件为次日凌晨零点（排他）。"
+                },
+                "all_day": {
+                  "type": "boolean"
+                },
+                "location": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 200
+                },
+                "notes": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 500
+                },
+                "created_by_agent": {
+                  "type": "boolean",
+                  "description": "该事件是否由本 Agent 的设备动作创建。"
+                }
+              }
+            }
+          },
+          "record_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "data_as_of": {
+            "type": "string",
+            "format": "date-time",
+            "description": "日历镜像最近一次同步的时间。"
+          },
+          "mirror_stale": {
+            "type": "boolean"
+          },
+          "source_system": {
+            "const": "apple_calendar_mirror"
+          }
+        }
+      },
+      "required_scopes": [
+        "calendar.event.read"
+      ],
+      "confirmation": "never",
+      "idempotency": {
+        "key_source": "not_applicable",
+        "replay_result": "只读查询没有外部副作用。"
+      },
+      "retry": {
+        "retryable_errors": [
+          "SOURCE_UNAVAILABLE"
+        ],
+        "reuse_idempotency_key": false
+      },
+      "audit": {
+        "recorded": [
+          "trace_id",
+          "device_id",
+          "tool",
+          "contract_version",
+          "risk_level",
+          "policy_outcome",
+          "filters_applied",
+          "record_count",
+          "latency_ms",
+          "query_id"
+        ],
+        "never_recorded": [
+          "raw_user_text",
+          "model_reasoning",
+          "exact_amount",
+          "feishu_base_table_field_ids",
+          "access_token",
+          "provider_response_body"
+        ]
+      },
+      "errors": [
+        "INVALID_ARGUMENT",
+        "SCOPE_DENIED",
+        "TOOL_NOT_ALLOWLISTED",
+        "HOST_CONTEXT_MISMATCH",
+        "IDEMPOTENCY_CONFLICT",
+        "CLARIFICATION_REQUIRED",
+        "INVALID_CURSOR",
+        "SOURCE_UNAVAILABLE"
+      ],
+      "input_schema_hash": "c2312dca5342a0b9cb5995055531ff310c42fe2fc9f9fdc999963ecd708d8817",
+      "contract_hash": "ce8453a5d7a88347f36a4f128b856608900aa30a510d6ea03ce6d3833a03a57d"
+    },
+    {
+      "name": "calendar.ingest_events",
+      "version": "1.0.0",
+      "domain": "calendar",
+      "effect": "update",
+      "risk_level": "R1",
+      "enabled": true,
+      "model_callable": false,
+      "disabled_reason": "镜像上载是设备同步路由的确定性动作，不是模型推理的选择；模型可写镜像等于模型可伪造日历。",
+      "executor": "mcp",
+      "summary": "把设备上报的日历事件快照按 last_modified 仲裁合并进镜像。",
+      "model_input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "CalendarIngestEventsInput",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "window_start",
+          "window_end",
+          "events",
+          "window_complete"
+        ],
+        "properties": {
+          "window_start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "本次快照窗口开始。"
+          },
+          "window_end": {
+            "type": "string",
+            "format": "date-time",
+            "description": "本次快照窗口结束。"
+          },
+          "events": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "event_identifier",
+                "calendar_identifier",
+                "start",
+                "end",
+                "all_day",
+                "last_modified"
+              ],
+              "properties": {
+                "event_identifier": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "calendar_identifier": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 80
+                },
+                "start": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "end": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "all_day": {
+                  "type": "boolean"
+                },
+                "location": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 200
+                },
+                "notes": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 500
+                },
+                "last_modified": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "设备端该事件最后修改时间，乱序上载的仲裁依据。"
+                }
+              }
+            }
+          },
+          "window_complete": {
+            "type": "boolean",
+            "description": "本批是否已把窗口内全部事件送完。为 true 时，窗口内未在本批出现的既有镜像行会被标记删除——设备是日历的事实源。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "upserted",
+          "skipped",
+          "marked_deleted"
+        ],
+        "properties": {
+          "status": {
+            "const": "ok"
+          },
+          "upserted": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "skipped": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "marked_deleted": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "required_scopes": [
+        "calendar.event.read"
+      ],
+      "confirmation": "never",
+      "idempotency": {
+        "key_source": "not_applicable",
+        "replay_result": "按 (calendar_identifier, event_identifier) upsert，同一批重放结果不变；last_modified 相同的行跳过。"
+      },
+      "retry": {
+        "retryable_errors": [],
+        "reuse_idempotency_key": false
+      },
+      "audit": {
+        "recorded": [
+          "trace_id",
+          "device_id",
+          "tool",
+          "contract_version",
+          "risk_level",
+          "policy_outcome",
+          "filters_applied",
+          "record_count",
+          "latency_ms",
+          "query_id"
+        ],
+        "never_recorded": [
+          "raw_user_text",
+          "model_reasoning",
+          "exact_amount",
+          "feishu_base_table_field_ids",
+          "access_token",
+          "provider_response_body"
+        ]
+      },
+      "errors": [
+        "INVALID_ARGUMENT",
+        "SCOPE_DENIED"
+      ],
+      "input_schema_hash": "1be726209917740d753dc2cbb11398f1a7f4c78f468f5d92e2076a48ee347e52",
+      "contract_hash": "dca128510ba6a9326ab8389bc675716904498a422b8382fe67a22e341c19359f"
     }
   ]
 }

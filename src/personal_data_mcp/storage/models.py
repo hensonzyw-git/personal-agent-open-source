@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Any, Final
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     ForeignKey,
     Index,
@@ -358,4 +359,58 @@ class AuditChainAnchor(Base):
     __table_args__ = (
         CheckConstraint("anchor_id = 1", name="singleton"),
         CheckConstraint("event_count >= 1", name="event_count_positive"),
+    )
+
+
+class CalendarEvent(Base):
+    """One event of the Apple-calendar mirror, per the calendar domain PRD.
+
+    The iPhone owns the calendar; this row is what the phone last reported, so
+    the table is named after that relationship: a mirror, not a second fact
+    source. `(calendar_identifier, event_identifier)` is the composite
+    identity because EventKit scopes `eventIdentifier` per calendar store
+    source, and the pair is what an upsert arbitrates on.
+
+    Sensitivity split: timestamps and identifiers are plaintext because the
+    window filter needs a real index over them; title/notes/location are
+    personal text and travel through restic backups, so they are sealed
+    envelopes like every other business content in this database.
+    """
+
+    __tablename__ = "calendar_events"
+
+    #: The AAD row identity for the three sealed columns. The composite
+    #: business key is fine for lookups but two columns cannot name one AAD
+    #: string, so the row carries a surrogate for sealing.
+    row_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    calendar_identifier: Mapped[str] = mapped_column(Text, primary_key=True)
+    event_identifier: Mapped[str] = mapped_column(Text, primary_key=True)
+    #: Epoch seconds, UTC. Plaintext and indexed: the window filter and the
+    #: sort order are the query's whole shape.
+    start_ts: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_ts: Mapped[int] = mapped_column(Integer, nullable=False)
+    all_day: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    title: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
+    notes: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
+    location: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
+    #: Tombstone. The row is kept so a late stale chunk cannot be mistaken for
+    #: a new event, and queries exclude it by default.
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    last_modified_ts: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: When this row last heard from the device. `data_as_of` is the max of it.
+    synced_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    created_by_agent: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    #: Which enrolled device last uploaded this row.
+    device_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("start_ts <= end_ts", name="start_before_or_equal_end"),
+        Index("ix_calendar_events_start_ts", "start_ts"),
+        Index("ix_calendar_events_end_ts", "end_ts"),
     )

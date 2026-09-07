@@ -136,6 +136,9 @@ def test_six_finance_tools_with_only_batch_disabled() -> None:
         "finance.update_expense_category",
         "finance.query_expenses",
         "meta.capabilities",
+        "calendar.create_event",
+        "calendar.query_events",
+        "calendar.ingest_events",
     }
 
 
@@ -159,6 +162,8 @@ def test_the_model_is_never_offered_the_category_update() -> None:
         "finance.update_family_fund",
         "finance.query_expenses",
         "meta.capabilities",
+        "calendar.create_event",
+        "calendar.query_events",
     }
     assert "finance.update_expense_category" not in document["model_callable_tools"]
     # And it really is live -- this is a narrowing of who may call it, not a
@@ -392,11 +397,79 @@ def test_every_model_input_schema_is_closed() -> None:
 
 
 def test_write_tools_declare_host_injected_idempotency() -> None:
+    """Every model-reachable write is a keyed, R2, unconfirmed write.
+
+    `calendar.ingest_events` is an update-effect tool that legitimately holds
+    `not_applicable`: its replay safety is structural (last_modified-arbitrated
+    upsert, identical batch replays identically), not a host-injected key. That
+    is acceptable *only* because it never reaches the model channel — the test
+    below pins that premise, and the loop here deliberately covers only tools a
+    model could actually choose.
+    """
     for entry in tools():
-        if entry["effect"] in {"create", "update"}:
+        if entry["effect"] in {"create", "update"} and entry["model_callable"]:
             assert entry["idempotency"]["key_source"] == "host_injected_uuid4"
             assert entry["risk_level"] == "R2"
             assert entry["confirmation"] == "never"
+
+
+def test_calendar_create_event_is_a_device_executed_write() -> None:
+    """The Apple-calendar write happens on the phone, not through the bridge.
+
+    The contract must say so (`executor="device"`) so the dispatch fork is
+    derived from the IR, and the MCP-side handler is a fail-closed guard that
+    must never be reachable in production composition.
+    """
+    document = load_manifest()
+    entry = next(t for t in document["tools"] if t["name"] == "calendar.create_event")
+    assert entry["executor"] == "device"
+    assert entry["domain"] == "calendar"
+    assert entry["effect"] == "create"
+    assert entry["risk_level"] == "R2"
+    assert entry["enabled"] is True
+    assert entry["model_callable"] is True
+    assert entry["required_scopes"] == ["calendar.event.write"]
+    # The output schema must not claim external evidence the tool does not
+    # produce at dispatch: the event identifier arrives with the device's
+    # report, not with the issued action.
+    assert "record_id" not in entry["output_schema"].get("properties", {})
+
+
+def test_calendar_query_events_is_a_read_against_the_mirror() -> None:
+    document = load_manifest()
+    entry = next(t for t in document["tools"] if t["name"] == "calendar.query_events")
+    assert entry["executor"] == "mcp"
+    assert entry["effect"] == "read"
+    assert entry["required_scopes"] == ["calendar.event.read"]
+    # The freshness contract is part of the tool, not a courtesy of the model.
+    assert {"data_as_of", "mirror_stale"} <= set(entry["output_schema"]["required"])
+    # The Finance strict decoder keys on this const; a calendar read must not
+    # carry it, or a valid calendar result would fail closed inside the wrong
+    # projection.
+    assert "metric" not in entry["output_schema"]["properties"]
+
+
+def test_calendar_ingest_events_is_not_model_callable() -> None:
+    """A model able to write the mirror could fabricate the calendar it is
+    later asked to summarise. The ingest is a deterministic device-sync action,
+    so it is enabled for the sync route and absent from the model channel."""
+    document = load_manifest()
+    entry = next(
+        t for t in document["tools"] if t["name"] == "calendar.ingest_events"
+    )
+    assert entry["model_callable"] is False
+    assert entry["enabled"] is True
+    assert entry["idempotency"]["key_source"] == "not_applicable"
+
+
+def test_device_executor_forks_the_dispatch_path() -> None:
+    """Every contract declares an executor, and exactly one calendar write is
+    device-executed while everything else stays connector-backed."""
+    executors = {entry["name"]: entry["executor"] for entry in tools()}
+    assert set(executors.values()) == {"mcp", "device"}
+    assert {n for n, e in executors.items() if e == "device"} == {
+        "calendar.create_event"
+    }
 
 
 def test_scopes_are_split_per_capability() -> None:

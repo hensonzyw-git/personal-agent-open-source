@@ -226,6 +226,8 @@ def build_registry(
     income_write_handler=None,
     family_fund_handler=None,
     category_update_handler=None,
+    calendar_query_handler=None,
+    calendar_ingest_handler=None,
 ) -> ToolRegistry:
     """The production tool set for this build.
 
@@ -235,6 +237,14 @@ def build_registry(
     contract is simply not advertised as executable. `finance.log_expense_batch`
     has no parameter here at all, because it is disabled in the manifest and
     registering it would be refused.
+
+    The calendar query and ingest handlers are credential-free too: the mirror
+    is this process's own database. `calendar.create_event` is
+    device-executed, so it takes no dependency parameter — it is registered
+    with the fail-closed guard whenever the server stands up with its domain,
+    because the registry advertises only what has a handler and the model must
+    see the tool it is supposed to choose (the real execution is intercepted
+    by the dispatcher's device branch, never by this handler).
     """
     registry = ToolRegistry()
     registry.register(meta.TOOL_NAME, meta.build_handler(registry))
@@ -247,9 +257,22 @@ def build_registry(
         # route: `model_callable=False` keeps it out of the Agent's allowlist,
         # so registering it here does not put it in front of the model.
         ("finance.update_expense_category", category_update_handler),
+        ("calendar.query_events", calendar_query_handler),
+        # Same idea as the category route: enabled for the device-sync bridge,
+        # absent from the model channel.
+        ("calendar.ingest_events", calendar_ingest_handler),
     ):
         if handler is not None:
             registry.register(name, handler)
+    calendar_query_ready = calendar_query_handler is not None
+    calendar_ingest_ready = calendar_ingest_handler is not None
+    if calendar_query_ready and calendar_ingest_ready:
+        from personal_data_mcp.server.calendar_guard import (
+            CreateGuard,
+            build_handler as build_create_guard,
+        )
+
+        registry.register("calendar.create_event", build_create_guard(CreateGuard()))
     return registry
 
 

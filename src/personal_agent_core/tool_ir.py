@@ -33,7 +33,7 @@ from personal_agent_core.money import (
 )
 
 
-IR_VERSION: Final[str] = "0.1.0"
+IR_VERSION: Final[str] = "0.2.0"
 
 DATE_PATTERN: Final[str] = r"^\d{4}-\d{2}-\d{2}$"
 
@@ -57,6 +57,8 @@ SCOPE_EXPENSE_WRITE: Final[str] = "finance.expense.write"
 SCOPE_INCOME_WRITE: Final[str] = "finance.income.write"
 SCOPE_FAMILY_FUND_WRITE: Final[str] = "finance.family_fund.write"
 SCOPE_META_READ: Final[str] = "meta.capabilities.read"
+SCOPE_CALENDAR_READ: Final[str] = "calendar.event.read"
+SCOPE_CALENDAR_WRITE: Final[str] = "calendar.event.write"
 
 
 Effect = Literal["read", "create", "update", "delete"]
@@ -121,6 +123,15 @@ class ToolContract(BaseModel):
     #: from the same expression twice.
     model_callable: bool = True
     disabled_reason: str | None = None
+    #: Where the tool's external effect actually happens. `"mcp"` (default) is
+    #: every connector-backed tool: the Host calls it through the governed MCP
+    #: bridge. `"device"` names a tool whose fact source lives in the calling
+    #: device's own sandbox — the Apple calendar is the first one — so the Host
+    #: can never execute it: dispatch returns a device action for the phone to
+    #: perform with EventKit, and the phone reports the outcome back. Like
+    #: `model_callable`, this is a contract field rather than a list beside the
+    #: IR, because the dispatch fork must be derived, not hand-maintained.
+    executor: Literal["mcp", "device"] = "mcp"
     summary: str
     model_input_schema: dict[str, Any]
     output_schema: dict[str, Any]
@@ -1053,6 +1064,401 @@ META_CAPABILITIES = ToolContract(
 )
 
 
+#: The Apple calendar is the *authoritative* calendar (Henson's 2026-09-07
+#: decision). Its events live in the iPhone's EventKit sandbox, which no server
+#: can reach, so the domain splits into a device-executed write and two
+#: mirror-backed reads: the phone performs `create_event` locally and reports
+#: back; it also uploads a mirror of its own calendar to the server, and
+#: `query_events` runs against that mirror — never against the model's own
+#: claims about what is on the calendar. Reminders, tasks, recurrence,
+#: edit and delete are non-goals for v1.
+_CALENDAR_EVENT_FIELDS: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "event_identifier",
+        "calendar_identifier",
+        "title",
+        "start",
+        "end",
+        "all_day",
+    ],
+    "properties": {
+        "event_identifier": {
+            "type": "string",
+            "minLength": 1,
+            "description": "设备端 EventKit 的事件标识（EKEvent.eventIdentifier）。",
+        },
+        "calendar_identifier": {
+            "type": "string",
+            "minLength": 1,
+            "description": "该事件所在日历的标识。",
+        },
+        "title": {"type": "string", "maxLength": 80},
+        "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "开始时刻（UTC 瞬间）；all_day 事件为当日（Asia/Shanghai）零点。",
+        },
+        "end": {
+            "type": "string",
+            "format": "date-time",
+            "description": "结束时刻（UTC 瞬间）；all_day 事件为次日凌晨零点（排他）。",
+        },
+        "all_day": {"type": "boolean"},
+        "location": {"type": ["string", "null"], "maxLength": 200},
+        "notes": {"type": ["string", "null"], "maxLength": 500},
+        "created_by_agent": {
+            "type": "boolean",
+            "description": "该事件是否由本 Agent 的设备动作创建。",
+        },
+    },
+}
+
+_CALENDAR_CREATE_INPUT: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["title", "start", "end", "all_day"],
+    "properties": {
+        "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "日程标题，使用用户口述的措辞。",
+        },
+        "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": (
+                "开始时刻，Asia/Shanghai 绝对时间（如 2026-09-12T15:00:00+08:00）；"
+                "all_day 时为当日语义，服务端落为当日零点。"
+                "用户只说了相对表达（明天下午）时必须先换算或追问，"
+                "绝不把没说清的时刻猜成整点写入。"
+            ),
+        },
+        "end": {
+            "type": "string",
+            "format": "date-time",
+            "description": (
+                "结束时刻，Asia/Shanghai 绝对时间；all_day 时为结束日次日凌晨"
+                "（EventKit 全天事件结束时刻排他）。用户没说结束时刻时按 "
+                "一小时默认并如实告知。"
+            ),
+        },
+        "all_day": {
+            "type": "boolean",
+            "description": "是否为全天日程。全天事件只需日期，不需要具体时刻。",
+        },
+        "location": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "可选地点。",
+        },
+        "notes": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "可选备注。",
+        },
+    },
+}
+
+_CALENDAR_CREATE_OUTPUT: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["status", "action_id", "event"],
+    "properties": {
+        # `issued` is the tool's direct output: the Host has prepared a signed
+        # device action and the phone performs it. The *receipt* (record_id =
+        # event identifier) arrives later from the device's own report, so the
+        # output schema must not claim a `record_id` that does not exist yet.
+        "status": {"const": "issued"},
+        "action_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "本次设备动作的幂等键，与宿主操作的幂等键相同。",
+        },
+        "event": {
+            "type": "object",
+            "required": ["title", "start", "end", "all_day"],
+            "properties": {
+                "title": {"type": "string"},
+                "start": {"type": "string", "format": "date-time"},
+                "end": {"type": "string", "format": "date-time"},
+                "all_day": {"type": "boolean"},
+                "location": {"type": ["string", "null"]},
+                "notes": {"type": ["string", "null"]},
+            },
+        },
+    },
+}
+
+_CALENDAR_QUERY_INPUT: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["start", "end"],
+    "properties": {
+        "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "窗口开始（含），Asia/Shanghai 绝对时间。",
+        },
+        "end": {
+            "type": "string",
+            "format": "date-time",
+            "description": "窗口结束（不含），Asia/Shanghai 绝对时间。",
+        },
+        "cursor": {
+            "type": ["string", "null"],
+            "default": None,
+            "description": "服务端不透明游标。不要构造或猜测它的内容。",
+        },
+    },
+}
+
+_CALENDAR_QUERY_OUTPUT: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "status",
+        "events",
+        "record_count",
+        "data_as_of",
+        "mirror_stale",
+        "source_system",
+    ],
+    "properties": {
+        "status": {"const": "ok"},
+        "events": {"type": "array", "items": _CALENDAR_EVENT_FIELDS},
+        "record_count": {"type": "integer", "minimum": 0},
+        "next_cursor": {"type": ["string", "null"]},
+        # "数据截至": the mirror's own freshness, not the model's confidence.
+        # `mirror_stale` is true when the newest sync is older than the query
+        # window by a margin, so the model must state the staleness instead of
+        # presenting the mirror as the live calendar.
+        "data_as_of": {
+            "type": "string",
+            "format": "date-time",
+            "description": "日历镜像最近一次同步的时间。",
+        },
+        "mirror_stale": {"type": "boolean"},
+        "source_system": {"const": "apple_calendar_mirror"},
+    },
+}
+
+_CALENDAR_INGEST_INPUT: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["window_start", "window_end", "events", "window_complete"],
+    "properties": {
+        "window_start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "本次快照窗口开始。",
+        },
+        "window_end": {
+            "type": "string",
+            "format": "date-time",
+            "description": "本次快照窗口结束。",
+        },
+        "events": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "event_identifier",
+                    "calendar_identifier",
+                    "start",
+                    "end",
+                    "all_day",
+                    "last_modified",
+                ],
+                "properties": {
+                    "event_identifier": {"type": "string", "minLength": 1},
+                    "calendar_identifier": {"type": "string", "minLength": 1},
+                    "title": {"type": ["string", "null"], "maxLength": 80},
+                    "start": {"type": "string", "format": "date-time"},
+                    "end": {"type": "string", "format": "date-time"},
+                    "all_day": {"type": "boolean"},
+                    "location": {"type": ["string", "null"], "maxLength": 200},
+                    "notes": {"type": ["string", "null"], "maxLength": 500},
+                    "last_modified": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "设备端该事件最后修改时间，乱序上载的仲裁依据。",
+                    },
+                },
+            },
+        },
+        "window_complete": {
+            "type": "boolean",
+            "description": (
+                "本批是否已把窗口内全部事件送完。为 true 时，窗口内未在本批"
+                "出现的既有镜像行会被标记删除——设备是日历的事实源。"
+            ),
+        },
+    },
+}
+
+_CALENDAR_INGEST_OUTPUT: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["status", "upserted", "skipped", "marked_deleted"],
+    "properties": {
+        "status": {"const": "ok"},
+        "upserted": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0},
+        "marked_deleted": {"type": "integer", "minimum": 0},
+    },
+}
+
+#: Device-executed writes audit the same governance fields as connector writes;
+#: there is no provider latency or source status to record because no external
+#: call happened at dispatch — the phone's own report is the evidence.
+_CALENDAR_WRITE_AUDIT: Final[Audit] = Audit(
+    recorded=(
+        "trace_id",
+        "device_id",
+        "tool",
+        "contract_version",
+        "risk_level",
+        "policy_outcome",
+        "argument_field_names",
+        "request_fingerprint",
+        "device_report_status",
+        "latency_ms",
+    ),
+    never_recorded=(
+        "raw_user_text",
+        "model_reasoning",
+        "event_title",
+        "event_location",
+        "event_notes",
+        "device_event_identifier",
+        "access_token",
+        "provider_response_body",
+    ),
+)
+
+
+CALENDAR_CREATE_EVENT = ToolContract(
+    name="calendar.create_event",
+    version="1.0.0",
+    domain="calendar",
+    effect="create",
+    risk_level="R2",
+    enabled=True,
+    executor="device",
+    summary=(
+        "在用户 iPhone 的 Apple 日历中创建一条单次日程。全天日程传 all_day；"
+        "不支持重复日程——用户要每周重复时如实说明暂不支持，不要建多条冒充。"
+    ),
+    model_input_schema={
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "CalendarCreateEventInput",
+        **_CALENDAR_CREATE_INPUT,
+    },
+    output_schema=_CALENDAR_CREATE_OUTPUT,
+    required_scopes=(SCOPE_CALENDAR_WRITE,),
+    confirmation="never",
+    idempotency=Idempotency(
+        key_source="host_injected_uuid4",
+        replay_result=(
+            "同一动作键只产生一个设备动作；设备端另有本地查重（同日历、"
+            "同标题、开始时刻 ±5 分钟）兜底重复创建。"
+        ),
+    ),
+    # An automatic retry would create a second event: the local dedup window is
+    # a mitigation, not a right. The device action itself is settled exactly
+    # once by its CAS; a lost report surfaces as needs_manual_review instead.
+    retry=Retry(retryable_errors=()),
+    audit=_CALENDAR_WRITE_AUDIT,
+    errors=(
+        *_GOVERNANCE_ERRORS,
+        ErrorCode.CLARIFICATION_REQUIRED,
+        ErrorCode.DEVICE_ACTION_DENIED,
+        ErrorCode.DEVICE_EXECUTION_FAILED,
+    ),
+)
+
+
+CALENDAR_QUERY_EVENTS = ToolContract(
+    name="calendar.query_events",
+    version="1.0.0",
+    domain="calendar",
+    effect="read",
+    risk_level="R1",
+    enabled=True,
+    summary=(
+        "查询日历镜像中的日程（日期窗口必填）。镜像由设备同步上载，"
+        "回答必须携带数据截至时间，镜像陈旧时如实说明。"
+    ),
+    model_input_schema={
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "CalendarQueryEventsInput",
+        **_CALENDAR_QUERY_INPUT,
+    },
+    output_schema=_CALENDAR_QUERY_OUTPUT,
+    required_scopes=(SCOPE_CALENDAR_READ,),
+    confirmation="never",
+    idempotency=Idempotency(
+        key_source="not_applicable",
+        replay_result="只读查询没有外部副作用。",
+    ),
+    retry=Retry(
+        retryable_errors=(ErrorCode.SOURCE_UNAVAILABLE,),
+        reuse_idempotency_key=False,
+    ),
+    audit=_READ_AUDIT,
+    errors=(
+        *_GOVERNANCE_ERRORS,
+        ErrorCode.CLARIFICATION_REQUIRED,
+        ErrorCode.INVALID_CURSOR,
+        ErrorCode.SOURCE_UNAVAILABLE,
+    ),
+)
+
+
+#: Mirror ingest. The phone uploads its own calendar so `calendar.query_events`
+#: has something truthful to read. It is service-facing (the API calls it inside
+#: the sync route with a signed Host Context) and never a model choice: a model
+#: that could write the mirror could fabricate the calendar the model itself
+#: would then be asked to summarise.
+CALENDAR_INGEST_EVENTS = ToolContract(
+    name="calendar.ingest_events",
+    version="1.0.0",
+    domain="calendar",
+    effect="update",
+    risk_level="R1",
+    enabled=True,
+    model_callable=False,
+    disabled_reason=(
+        "镜像上载是设备同步路由的确定性动作，不是模型推理的选择；"
+        "模型可写镜像等于模型可伪造日历。"
+    ),
+    summary="把设备上报的日历事件快照按 last_modified 仲裁合并进镜像。",
+    model_input_schema={
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "CalendarIngestEventsInput",
+        **_CALENDAR_INGEST_INPUT,
+    },
+    output_schema=_CALENDAR_INGEST_OUTPUT,
+    required_scopes=(SCOPE_CALENDAR_READ,),
+    confirmation="never",
+    idempotency=Idempotency(
+        key_source="not_applicable",
+        replay_result=(
+            "按 (calendar_identifier, event_identifier) upsert，同一批重放"
+            "结果不变；last_modified 相同的行跳过。"
+        ),
+    ),
+    retry=Retry(retryable_errors=(), reuse_idempotency_key=False),
+    audit=_READ_AUDIT,
+    errors=(ErrorCode.INVALID_ARGUMENT, ErrorCode.SCOPE_DENIED),
+)
+
+
 #: Declaration order is part of the generated artifact, so it stays fixed.
 TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
     LOG_EXPENSE,
@@ -1062,6 +1468,13 @@ TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
     UPDATE_FAMILY_FUND,
     QUERY_EXPENSES,
     META_CAPABILITIES,
+    CALENDAR_CREATE_EVENT,
+    CALENDAR_QUERY_EVENTS,
+    CALENDAR_INGEST_EVENTS,
+)
+
+CALENDAR_TOOL_NAMES: Final[tuple[str, ...]] = tuple(
+    contract.name for contract in TOOL_CONTRACTS if contract.domain == "calendar"
 )
 
 FINANCE_TOOL_NAMES: Final[tuple[str, ...]] = tuple(
