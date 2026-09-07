@@ -25,7 +25,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Final
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, Text, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from personal_agent_core.sqlite import UtcTimestamp
@@ -74,6 +82,12 @@ class WorkerJob(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    #: The intake episode's business key (`f"intake:{feature_id}"`), nullable
+    #: so the operator/test seeding path (which enqueues without an intake)
+    #: is unaffected. F4 (2026-09-07 review): the partial unique index below
+    #: arbitrates concurrent identical intakes at the database — the
+    #: find-or-create can no longer race past a lookup that read "no job".
+    intake_key: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         CheckConstraint(_in_set("state", WORKER_JOB_STATES), name="state"),
@@ -94,6 +108,12 @@ class WorkerJob(Base):
         ),
         Index("ix_worker_jobs_state", "state"),
         Index("ix_worker_jobs_feature_id", "feature_id"),
+        Index(
+            "uq_worker_jobs_intake_key",
+            "intake_key",
+            unique=True,
+            sqlite_where=text("intake_key IS NOT NULL"),
+        ),
     )
 
 
@@ -123,4 +143,40 @@ class WorkerResultReceipt(Base):
             name="result_sha256_hex",
         ),
         UniqueConstraint("job_id", name="uq_worker_result_receipts_job_id"),
+    )
+
+
+class FeatureIntakeRequest(Base):
+    """The persisted intake body (F7, 2026-09-07 review).
+
+    The task description previously existed only inside the feature-id hash:
+    nothing could recover what the operator submitted, and the worker's coder
+    prompt never saw the task text. This row carries the body itself plus its
+    SHA-256 (the worker-side binding fence) and the toolchain ref the intake
+    bound to. The body is operator-submitted task text bounded at the API —
+    not a credential — and the DAL package has no protected object store, so
+    the text is stored directly rather than behind a digest+locator split.
+
+    Written in the same transaction as the job insert, so F4's uniqueness and
+    F7's persistence land atomically.
+    """
+
+    __tablename__ = "feature_intake_requests"
+
+    intake_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    feature_id: Mapped[str] = mapped_column(
+        ForeignKey("features.feature_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    task_description: Mapped[str] = mapped_column(Text, nullable=False)
+    task_description_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    toolchain_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("length(task_description) > 0", name="task_description"),
+        CheckConstraint(
+            _hex_of_length("task_description_sha256", 64, nullable=False),
+            name="task_description_sha256_hex",
+        ),
     )

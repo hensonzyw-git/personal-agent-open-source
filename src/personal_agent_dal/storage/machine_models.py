@@ -32,6 +32,7 @@ from sqlalchemy import (
     Integer,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -409,6 +410,20 @@ class ExternalEffect(Base):
         ),
         Index("ix_external_effects_owner", "owner_aggregate_type",
               "owner_aggregate_id"),
+        # F3 (2026-09-07 review): the SINGLE_RECONCILER_CLAIM guard's count
+        # fact was computed outside the retriable transaction, so two
+        # concurrent starts for two different effects of one owner both
+        # passed. This partial unique index is the database-level arbiter at
+        # the write site; the STILL-UNKNOWN state change vacates the slot
+        # automatically because the predicate requires state='reconciling'.
+        Index(
+            "uq_external_effects_one_reconciler_per_owner",
+            "owner_aggregate_id",
+            unique=True,
+            sqlite_where=text(
+                "state = 'reconciling' AND executor_id = 'reconciler'"
+            ),
+        ),
     )
 
 
