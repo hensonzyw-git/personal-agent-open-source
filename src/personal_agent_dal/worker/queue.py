@@ -11,11 +11,13 @@ the original receipt.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Final
 
-from sqlalchemy import Engine, insert, select, update
+from sqlalchemy import Engine, insert, select, text, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from personal_agent_core.ids import new_id
@@ -23,7 +25,31 @@ from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import utc_now
 
 from personal_agent_dal.storage.engine import session_factory
-from personal_agent_dal.storage.worker_models import WorkerJob, WorkerResultReceipt
+from personal_agent_dal.storage.worker_models import (
+    FeatureIntakeRequest,
+    WorkerJob,
+    WorkerResultReceipt,
+)
+
+
+class EnqueueConflict(Exception):
+    """The intake key is held by an existing job with a different toolchain.
+
+    F4/F7 (2026-09-07 review): the operator re-submitted the same task under a
+    different `toolchain_ref`. The feature identity deliberately does not
+    include the toolchain (the feature is the task), so silence here would
+    return the old job and express nothing about the change. The caller maps
+    this to a typed refusal; the worker-side `toolchain_ref_mismatch` fence
+    stays as the second line of defence.
+    """
+
+    def __init__(self, *, intake_key: str, existing_toolchain_ref: str) -> None:
+        super().__init__(
+            f"intake key {intake_key} is held by a job with toolchain_ref "
+            f"{existing_toolchain_ref!r}"
+        )
+        self.intake_key = intake_key
+        self.existing_toolchain_ref = existing_toolchain_ref
 
 
 RECEIPT_SCHEMA: Final[str] = "dal.worker-result-receipt/1.0"
@@ -73,19 +99,92 @@ def enqueue_job(
     branch_name: str,
     toolchain_ref: str,
     now: datetime | None = None,
+    intake_key: str | None = None,
+    task_description: str | None = None,
 ) -> str:
     """Insert a new `pending` job; returns its `job_id`.
 
     This is the queue's producer half. The DAL service (or an operator seeding a
     synthetic acceptance run) enqueues; the worker claims and completes.
+
+    With an ``intake_key`` (F4, 2026-09-07 review) the insert becomes a
+    find-or-create arbitrated by the unique partial index on ``intake_key``:
+    a job already holding the key is returned instead of duplicated, so two
+    concurrent identical intakes converge on one job row. The body
+    (``task_description``, F7) must be supplied with the key and is persisted
+    into ``feature_intake_requests`` in the same transaction — uniqueness and
+    body persistence land atomically. Deleting a job row frees its key, so the
+    interrupted-first-run recovery re-enqueue still creates the missing job.
+    A re-submission under a different ``toolchain_ref`` raises
+    ``EnqueueConflict`` rather than silently returning the old job.
     """
+    if (intake_key is None) != (task_description is None):
+        raise ValueError(
+            "intake_key and task_description must be supplied together"
+        )
     now = now or utc_now()
     sessions = session_factory(engine)
 
-    def _body(session: Session) -> str:
-        job_id = new_id()
+    def _record_intake_body(session: Session) -> None:
+        # Idempotent on the primary key: the body digest is derived from the
+        # feature identity, so a legitimate replay writes identical bytes.
         session.execute(
-            insert(_jobs_table()).values(
+            sqlite_insert(FeatureIntakeRequest)
+            .values(
+                intake_key=intake_key,
+                feature_id=feature_id,
+                task_description=task_description,
+                task_description_sha256=hashlib.sha256(
+                    task_description.encode("utf-8")
+                ).hexdigest(),
+                toolchain_ref=toolchain_ref,
+                recorded_at=now,
+            )
+            .on_conflict_do_nothing(index_elements=["intake_key"])
+        )
+
+    def _body(session: Session) -> str:
+        if intake_key is not None:
+            existing = session.execute(
+                select(_jobs_table().c.job_id, _jobs_table().c.toolchain_ref)
+                .where(_jobs_table().c.intake_key == intake_key)
+                .limit(1)
+            ).first()
+            if existing is not None:
+                existing_job_id, existing_toolchain = existing
+                if existing_toolchain != toolchain_ref:
+                    raise EnqueueConflict(
+                        intake_key=intake_key,
+                        existing_toolchain_ref=existing_toolchain,
+                    )
+                _record_intake_body(session)
+                return existing_job_id
+
+        job_id = new_id()
+        result = session.execute(
+            sqlite_insert(_jobs_table())
+            .values(
+                job_id=job_id,
+                feature_id=feature_id,
+                repository_id=repository_id,
+                base_sha=base_sha,
+                branch_name=branch_name,
+                toolchain_ref=toolchain_ref,
+                state="pending",
+                attempt_count=0,
+                lease_epoch=0,
+                intake_key=intake_key,
+                created_at=now,
+                updated_at=now,
+            )
+            # The conflict target is a PARTIAL unique index, so SQLite needs
+            # the index predicate restated in the upsert clause.
+            .on_conflict_do_nothing(
+                index_elements=["intake_key"],
+                index_where=text("intake_key IS NOT NULL"),
+            )
+            if intake_key is not None
+            else insert(_jobs_table()).values(
                 job_id=job_id,
                 feature_id=feature_id,
                 repository_id=repository_id,
@@ -99,6 +198,35 @@ def enqueue_job(
                 updated_at=now,
             )
         )
+        if intake_key is not None and result.rowcount != 1:
+            # The racing insert lost the unique-index arbitration inside this
+            # same transaction; the winner's row is already committed or
+            # pending commit, and the re-select reads it consistently.
+            winner = session.execute(
+                select(
+                    _jobs_table().c.job_id, _jobs_table().c.toolchain_ref
+                )
+                .where(_jobs_table().c.intake_key == intake_key)
+                .limit(1)
+            ).first()
+            if winner is None:
+                # on_conflict_do_nothing with rowcount 0 but no visible row
+                # should not happen on a single-writer SQLite file; fail
+                # closed rather than mint a duplicate.
+                raise EnqueueConflict(
+                    intake_key=intake_key, existing_toolchain_ref="<unseen>"
+                )
+            winner_job_id, winner_toolchain = winner
+            if winner_toolchain != toolchain_ref:
+                raise EnqueueConflict(
+                    intake_key=intake_key,
+                    existing_toolchain_ref=winner_toolchain,
+                )
+            _record_intake_body(session)
+            return winner_job_id
+
+        if intake_key is not None:
+            _record_intake_body(session)
         return job_id
 
     with sessions() as session:

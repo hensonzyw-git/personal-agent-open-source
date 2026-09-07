@@ -174,6 +174,107 @@ def test_intake_recovers_an_interrupted_enqueue(engine) -> None:
     assert second.job_id != first.job_id
     assert _row_count(engine, "features") == 1
     assert _row_count(engine, "worker_jobs") == 1
+    # F7: the persisted intake body is rewritten alongside the re-enqueue.
+    with engine.connect() as connection:
+        row = connection.execute(
+            sa.text(
+                "SELECT task_description, task_description_sha256, toolchain_ref "
+                "FROM feature_intake_requests WHERE intake_key = :k"
+            ).bindparams(k=f"intake:{second.feature_id}")
+        ).one()
+        assert row.task_description == DESC
+        assert row.task_description_sha256 == hashlib.sha256(
+            DESC.encode("utf-8")
+        ).hexdigest()
+        assert row.toolchain_ref == TOOLCHAIN
+
+
+def test_concurrent_identical_intakes_create_exactly_one_job(
+    engine, monkeypatch
+) -> None:
+    """F4 (2026-09-07 review): the find-or-create must survive a real race.
+
+    The old code's lookup (`_existing_job_id`) and insert ran in separate
+    transactions with a fresh `job_id` per insert, so two concurrent identical
+    intakes both read "no job" and both enqueued. Here both threads pass the
+    feature-creation step before either enqueues (a barrier at the enqueue
+    boundary); the unique intake key must arbitrate — exactly one job row,
+    both callers receive the same job_id.
+    """
+    import personal_agent_dal.worker.queue as queue_module
+
+    barrier = threading.Barrier(2)
+    real_enqueue = queue_module.enqueue_job
+
+    def synchronized_enqueue(engine_arg, **kwargs):
+        barrier.wait(timeout=10)
+        return real_enqueue(engine_arg, **kwargs)
+
+    # The intake module imported enqueue_job by name; patch both the module
+    # attribute the core reads and the queue function itself.
+    monkeypatch.setattr(
+        "personal_agent_dal.service.intake.enqueue_job", synchronized_enqueue
+    )
+
+    results: list = []
+    errors: list = []
+    lock = threading.Lock()
+
+    def worker() -> None:
+        try:
+            outcome = intake_task(
+                engine, task_description=DESC, repository_id=REPO,
+                base_sha=BASE_SHA, toolchain_ref=TOOLCHAIN,
+            )
+            with lock:
+                results.append(outcome)
+        except Exception as exc:  # noqa: BLE001
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+    assert not any(thread.is_alive() for thread in threads), "intake race threads hung"
+
+    assert not errors, [type(e).__name__ for e in errors]
+    assert len(results) == 2
+    assert _row_count(engine, "features") == 1
+    assert _row_count(engine, "worker_jobs") == 1
+    job_ids = {outcome.job_id for outcome in results}
+    assert len(job_ids) == 1, [outcome.job_id for outcome in results]
+    # Both callers see the same feature too (the transition's replay path).
+    assert len({outcome.feature_id for outcome in results}) == 1
+
+
+def test_intake_refuses_a_conflicting_toolchain(engine) -> None:
+    """F4/F7: the same task re-submitted under a different toolchain must refuse.
+
+    `toolchain_ref` does not participate in the feature identity (the feature
+    is the task, not the toolchain), so the old code silently returned the old
+    job with the old toolchain — the operator's explicit change expressed
+    nothing. The refusal is typed; the worker-side `toolchain_ref_mismatch`
+    fence stays as the second line of defence.
+    """
+    first = intake_task(
+        engine, task_description=DESC, repository_id=REPO,
+        base_sha=BASE_SHA, toolchain_ref=TOOLCHAIN,
+    )
+    assert first.job_id
+
+    with pytest.raises(IntakeRefusal) as exc:
+        intake_task(
+            engine, task_description=DESC, repository_id=REPO,
+            base_sha=BASE_SHA, toolchain_ref=".personal-agent/other-toolchain.json",
+        )
+    assert exc.value.code == "toolchain_conflict"
+    # The refusal wrote nothing: one feature, one job, unchanged toolchain.
+    assert _row_count(engine, "features") == 1
+    assert _row_count(engine, "worker_jobs") == 1
+    job = queue.get_job(engine, job_id=first.job_id)
+    assert job is not None and job.toolchain_ref == TOOLCHAIN
 
 
 def test_intake_fails_closed_on_bad_base_sha(engine) -> None:

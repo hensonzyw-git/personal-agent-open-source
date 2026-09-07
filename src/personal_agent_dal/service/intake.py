@@ -35,9 +35,17 @@ Partial-failure recovery: ``apply_transition`` commits its own transaction, then
 ``enqueue_job`` commits its own. If a first run created the feature but the
 enqueue failed, the next run's ``apply_transition`` is a replay (``duplicate``)
 and the core must then *enqueue* the missing job rather than refuse — so an
-interrupted intake recovers instead of half-creating. The job's ``feature_id``
-is not unique, so the core looks up an existing job for the feature first and
-only enqueues when none exists; this also makes the whole intake idempotent.
+interrupted intake recovers instead of half-creating.
+
+Idempotency is the intake episode key (F4, 2026-09-07 review):
+``intake:{feature_id}`` — the same identity as the feature transition's
+idempotency key, unique at the database (partial index on ``worker_jobs``).
+The find-or-create runs inside ``enqueue_job``'s single write transaction, so
+two concurrent identical intakes converge on one job instead of racing past a
+separate lookup. A feature may legitimately gain further jobs later (a fix
+cycle is different task text, hence a different ``feature_id`` and key);
+deleting a job row frees its key, so recovery-after-delete re-enqueues. The
+task body (F7) is persisted with the job in the same transaction.
 """
 
 from __future__ import annotations
@@ -46,7 +54,7 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine
 
 from personal_agent_core.manifest import sha256_of
 from personal_agent_dal.machine.engine import (
@@ -54,9 +62,7 @@ from personal_agent_dal.machine.engine import (
     apply_transition,
 )
 from personal_agent_dal.machine.transition_types import ReceiptCodes
-from personal_agent_dal.storage.engine import session_factory
-from personal_agent_dal.storage.worker_models import WorkerJob
-from personal_agent_dal.worker.queue import enqueue_job
+from personal_agent_dal.worker.queue import EnqueueConflict, enqueue_job
 
 #: Frozen spec identity for the creation transition (transition-spec-registry).
 _AGGREGATE_TYPE: Final[str] = "feature"
@@ -117,16 +123,13 @@ def _validate_base_sha(base_sha: str) -> str:
 
 
 def _existing_job_id(engine: Engine, feature_id: str) -> str | None:
-    """The first job already enqueued for this feature, if any."""
-    sessions = session_factory(engine)
-    with sessions() as session:
-        row = session.execute(
-            select(WorkerJob)
-            .where(WorkerJob.feature_id == feature_id)
-            .order_by(WorkerJob.created_at)
-            .limit(1)
-        ).scalar_one_or_none()
-    return row.job_id if row is not None else None
+    """Deprecated lookup; the enqueue transaction now performs the
+    find-or-create atomically under the unique intake key (F4, 2026-09-07
+    review). Retained as a tombstone so an old import fails loudly instead of
+    silently racing again."""
+    raise NotImplementedError(
+        "superseded by enqueue_job's intake-key find-or-create"
+    )
 
 
 def intake_task(
@@ -179,11 +182,12 @@ def intake_task(
             "unexpected_state", f"expected {_INGEST_STATE}, got {outcome.to_state}"
         )
 
-    # Idempotent-enqueue with recovery: enqueue only when this feature has no
-    # job yet. A replay of a completed first run finds the job; a replay after
-    # an interrupted first run (feature created, enqueue failed) enqueues it now.
-    job_id = _existing_job_id(engine, feature_id)
-    if job_id is None:
+    # Idempotent-enqueue with recovery, arbitrated by the unique intake key
+    # inside one transaction (F4): a replay of a completed first run returns
+    # the existing job; a replay after an interrupted first run (feature
+    # created, enqueue failed) enqueues the missing job — deleting the row
+    # freed the key. The task body is persisted in the same transaction (F7).
+    try:
         job_id = enqueue_job(
             engine,
             feature_id=feature_id,
@@ -191,7 +195,17 @@ def intake_task(
             base_sha=base_sha,
             branch_name=derived_branch,
             toolchain_ref=toolchain_ref,
+            intake_key=f"intake:{feature_id}",
+            task_description=task_description,
         )
+    except EnqueueConflict as error:
+        # The same task re-submitted under a different toolchain: the operator
+        # explicitly changed the execution config, and silence would return
+        # the old job as though nothing had. Refuse with a typed code.
+        raise IntakeRefusal(
+            "toolchain_conflict",
+            "this task is already enqueued with a different toolchain_ref",
+        ) from error
 
     return IntakeOutcome(
         feature_id=feature_id,
