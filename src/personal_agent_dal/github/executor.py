@@ -66,11 +66,13 @@ from personal_agent_dal.github.adapter_controller import (
 )
 from personal_agent_dal.github.reconciliation import (
     RECONCILING_STATE,
+    RECONCILER_ID,
     UNKNOWN_STATE,
     ReconciliationOutcome,
     ReconciliationRefusal,
     reconcile_github_write,
 )
+from personal_agent_dal.github.reconciliation import COUNTERPARTY_SOURCE
 from personal_agent_dal.storage.machine_models import (
     EffectConfirmReceipt,
     EffectDispatchTarget,
@@ -814,7 +816,9 @@ def unknown_effects(engine: Engine, *, limit: int = 20) -> list[dict[str, Any]]:
     Only ``unknown`` rows enter the sweep — a ``reconciling`` row is already
     claimed by a live reconciliation pass (EE-RECONCILE-START's
     SINGLE_RECONCILER_CLAIM guard), and re-entering it from a second driver
-    would race the claim rather than respect it.
+    would race the claim rather than respect it. An *expired* claim is not a
+    live pass: ``_recover_expired_reconciling`` returns it to ``unknown``
+    first, after which this listing owns it again.
     """
     if type(limit) is not int or limit < 1:
         raise ExecutorRefusal("INVALID_ARGUMENT", "limit must be a positive int")
@@ -836,6 +840,103 @@ def unknown_effects(engine: Engine, *, limit: int = 20) -> list[dict[str, Any]]:
         }
         for r in rows
     ]
+
+
+def reconciling_effects(engine: Engine, *, limit: int = 20) -> list[dict[str, Any]]:
+    """The effects currently holding a reconciler claim, oldest first.
+
+    F2 (2026-09-07 review): a crashed reconciler used to be invisible — the
+    operator listing only showed ``unknown`` rows. This listing surfaces every
+    ``reconciling`` row with its claim expiry so a stuck claim is visible at a
+    glance, whether it is a live pass or one awaiting the expiry reclaim.
+    """
+    if type(limit) is not int or limit < 1:
+        raise ExecutorRefusal("INVALID_ARGUMENT", "limit must be a positive int")
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT effect_id, version, owner_aggregate_id, "
+                "remote_idempotency_key, claim_expires_at "
+                "FROM external_effects "
+                "WHERE state = :state AND executor_id = :executor "
+                "ORDER BY updated_at ASC LIMIT :lim"
+            ).bindparams(
+                state=RECONCILING_STATE, executor=RECONCILER_ID, lim=limit
+            )
+        ).all()
+    return [
+        {
+            "effect_id": r[0],
+            "version": r[1],
+            "owner_aggregate_id": r[2],
+            "remote_idempotency_key": r[3],
+            "claim_expires_at": (
+                r[4].isoformat() if r[4] is not None else None
+            ),
+        }
+        for r in rows
+    ]
+
+
+def _recover_expired_reconciling(
+    engine: Engine, *, limit: int, now_epoch: int
+) -> None:
+    """Return expired reconciler claims to ``unknown`` (F2, 2026-09-07 review).
+
+    A process that dies after committing ``unknown -> reconciling`` left the
+    effect invisible to every automatic path: the sweep selected only
+    ``unknown``, the expired-dispatch recovery only ``dispatch_started``, and
+    the operator listing only ``unknown``. The claim now stamps
+    ``claim_expires_at`` (``_w_reconciler_claim``); this pass drives the same
+    frozen EE-RECONCILE-STILL-UNKNOWN edge the inconclusive read-back uses,
+    returning the effect to ``unknown`` so the normal sweep re-reconciles it
+    read-only. The idempotency key derives from the pre-read version, so a
+    replay after the state moved is an idempotent replay, and a CAS lost to
+    another process is silently its claim.
+
+    The edge's write set has no ``reconciler_claim`` member, so it does not
+    clear ``executor_id``/``claim_expires_at`` — that is fine: every query
+    that matters filters on ``state``, and the next EE-RECONCILE-START
+    restamps both. The feature is not re-parked: it was already parked by the
+    REC-UNKNOWN that produced the unknown effect.
+
+    Known trade-off, stated rather than hidden: an effect whose read-back was
+    conclusive but still awaits the human RECONCILE-* resume sits in
+    ``reconciling`` too, and this pass will cycle it
+    ``reconciling -> unknown -> reconciling`` at the claim-expiry period (each
+    cycle: one read-only GET plus the frozen edge's own decision/notification
+    writes) until the human acts. Persisting the judgment itself (the never-
+    populated ``ReconciliationOutcome.receipt_id``) is heavier contract work
+    and is deliberately out of scope here; ``reconciling_effects`` makes the
+    state visible in the meantime.
+    """
+    now = datetime.fromtimestamp(now_epoch, tz=timezone.utc)
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT effect_id, version FROM external_effects "
+                "WHERE state = :state AND executor_id = :executor "
+                "AND claim_expires_at IS NOT NULL AND claim_expires_at <= :now "
+                "ORDER BY updated_at ASC LIMIT :lim"
+            ).bindparams(
+                state=RECONCILING_STATE, executor=RECONCILER_ID, now=now, lim=limit
+            )
+        ).all()
+    for effect_id, version in rows:
+        try:
+            _apply_step(
+                engine,
+                command_type="record_reconciliation_unknown",
+                evidence_source=COUNTERPARTY_SOURCE,
+                effect_id=effect_id,
+                expected_version=version,
+                idempotency_key=f"recover-reconcile:{effect_id}:v{version}:unknown",
+                facts={"evidence.authoritative_result": "unknown"},
+            )
+        except ControllerRefusal:
+            # Another process won the CAS (its claim-restamp or its own
+            # STILL-UNKNOWN bumped the version) — the effect is not ours.
+            continue
 
 
 def run_unknown_sweep(
@@ -864,6 +965,10 @@ def run_unknown_sweep(
         else now_epoch
     )
     _recover_expired_dispatches(engine, limit=limit, now_epoch=clock)
+    # F2 (2026-09-07 review): expired reconciler claims re-enter this pass as
+    # `unknown` before the listing below runs, so a crashed reconciler no
+    # longer parks an effect outside every automatic recovery path.
+    _recover_expired_reconciling(engine, limit=limit, now_epoch=clock)
     outcomes: list[WakeOutcome] = []
     effective = 0
     for facts in unknown_effects(engine, limit=limit):

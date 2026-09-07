@@ -346,3 +346,44 @@ def test_listing_endpoint_shows_unknown_effects(engine) -> None:
     )
     assert response.status_code == 200, response.text
     assert response.json()["effects"] == []
+    # F2 (2026-09-07 review): the additive `reconciling` key surfaces claims
+    # in flight; a crashed reconciler is no longer invisible to the listing.
+    assert response.json()["reconciling"] == []
+
+
+def test_listing_endpoint_includes_reconciling_claims(engine) -> None:
+    """A reconciler claim in flight appears under the `reconciling` key."""
+    from tests.dal.factories import external_effect_row, feature_row
+    from personal_agent_dal.storage.engine import session_factory
+    from personal_agent_core.timeutil import utc_now
+
+    with session_factory(engine)() as session, session.begin():
+        session.add(
+            feature_row(
+                feature_id="feature-rec-1", version=4,
+                state="reconciliation_required", now=utc_now(),
+            )
+        )
+        session.add(
+            external_effect_row(
+                effect_id="effect-rec-1", owner_id="feature-rec-1",
+                version=6, state="reconciling", now=utc_now(),
+            )
+        )
+    with session_factory(engine)() as session, session.begin():
+        from personal_agent_dal.storage.machine_models import ExternalEffect
+
+        row = session.get(ExternalEffect, "effect-rec-1")
+        assert row is not None
+        row.executor_id = "reconciler"
+
+    client = _client(engine, StubAdapter(CONFIRMED_PUSH))
+    response = client.get(
+        "/operator/effects?limit=5",
+        headers={"Authorization": f"Bearer {_operator_token()}"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["effects"] == []
+    assert [e["effect_id"] for e in body["reconciling"]] == ["effect-rec-1"]
+    assert body["reconciling"][0]["version"] == 6

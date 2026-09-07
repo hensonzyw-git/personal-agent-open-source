@@ -25,6 +25,7 @@ Henson's frozen scope (2026-09-04), pinned here as tests:
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -553,6 +554,130 @@ def test_sweep_drifted_branch_is_unknown_not_absent(engine) -> None:
     assert outcomes[0].reconciled is not None
     assert outcomes[0].reconciled.authoritative_result == "unknown"
     assert effect_row_full(engine, "effect-f5-1")[0] == "unknown"
+
+
+# --- F2 (2026-09-07 review): expired reconciler claims must auto-recover ----
+
+
+def test_reconciler_claim_stamps_expiry(engine) -> None:
+    """The claim carries an expiry timestamp the sweep can reclaim on.
+
+    The old `_w_reconciler_claim` stamped executor_id and epoch but no
+    `claim_expires_at` — the dispatch-side claims stamp 15 minutes; the
+    reconciler claim had nothing a recovery sweep could even look at.
+    """
+    from personal_agent_dal.github.reconciliation import start_effect_reconciliation
+
+    feature_id, effect_id = park_unknown(engine)
+    start_effect_reconciliation(
+        engine, effect_id=effect_id, idempotency_key="recon-f2-1",
+        feature_id=feature_id,
+    )
+    with engine.connect() as connection:
+        claim_expires_at = connection.execute(
+            sa.text(
+                "SELECT claim_expires_at FROM external_effects "
+                "WHERE effect_id = :e"
+            ).bindparams(e=effect_id)
+        ).scalar_one()
+    assert claim_expires_at is not None, "the claim must stamp an expiry"
+
+
+def test_expired_reconciling_claim_is_reclaimed_to_unknown(engine) -> None:
+    """F2: a process that died after taking the claim is auto-recovered.
+
+    The old sweep selected only `unknown` rows, so a crashed reconciler left
+    the effect in `reconciling` forever — invisible to the sweep, invisible to
+    the operator listing, recoverable only by a manual wake with a known
+    effect id. The reclaim drives the frozen STILL-UNKNOWN edge back to
+    `unknown`, and the same sweep's normal pass then re-reconciles it
+    read-only — so after one sweep the effect is back in a *fresh* claim with
+    a *new* expiry, having issued exactly one authoritative read. That read
+    is the proof the reclaim happened: the old code issued none.
+    """
+    from personal_agent_dal.github.reconciliation import start_effect_reconciliation
+
+    feature_id, effect_id = park_unknown(engine)
+    start_effect_reconciliation(
+        engine, effect_id=effect_id, idempotency_key="recon-f2-2",
+        feature_id=feature_id,
+    )
+    version_before = effect_row_full(engine, effect_id)[1]
+    # Simulate the crash: the claim is committed, the process died before any
+    # read-back or state write; its expiry has long passed.
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "UPDATE external_effects SET claim_expires_at = :past "
+                "WHERE effect_id = :e"
+            ).bindparams(past="2020-01-01T00:00:00Z", e=effect_id)
+        )
+
+    adapter = ReadBackAdapter(BranchReadBack(found=True, head_sha=HEAD))
+    outcomes = run_unknown_sweep(engine, adapter)
+
+    # The reclaim (STILL-UNKNOWN) plus the re-reconcile (START + conclusive
+    # read leaves reconciling) both moved the row: version advanced by 2 and
+    # a read was issued. The old code: no reclaim, no read, version frozen.
+    state, version_after = effect_row_full(engine, effect_id)
+    assert adapter.calls == ["read_branch"], (
+        "the only way a formerly-reconciling row receives a read is through "
+        "the reclaim to unknown and the sweep's normal pass"
+    )
+    assert version_after == version_before + 2, (
+        f"reclaim + re-claim must each bump the version: {version_before} "
+        f"-> {version_after}"
+    )
+    assert state == "reconciling", "a fresh claim, not the stale one"
+
+    # The fresh claim carries a new expiry and is left alone by the next pass
+    # (live claim, no read issued for it), still never a write.
+    run_unknown_sweep(engine, adapter)
+    assert adapter.calls == ["read_branch"]
+    assert effect_row_full(engine, effect_id)[0] == "reconciling"
+
+
+def test_live_reconciling_claim_is_not_reclaimed(engine) -> None:
+    """A claim whose expiry has not passed is a live reconciler, not a crash."""
+    from personal_agent_dal.github.reconciliation import start_effect_reconciliation
+
+    feature_id, effect_id = park_unknown(engine)
+    start_effect_reconciliation(
+        engine, effect_id=effect_id, idempotency_key="recon-f2-3",
+        feature_id=feature_id,
+    )
+
+    adapter = ReadBackAdapter(BranchReadBack(found=True, head_sha=HEAD))
+    run_unknown_sweep(engine, adapter)
+
+    state = effect_row_full(engine, effect_id)[0]
+    assert state == "reconciling", "the live claim is left alone"
+    assert adapter.calls == [], "no read was issued for a live claim"
+
+
+def test_reclaim_tolerates_cas_loss(engine) -> None:
+    """A second reclaim against the same pre-read row refuses silently."""
+    from personal_agent_dal.github.executor import _recover_expired_reconciling
+    from personal_agent_dal.github.reconciliation import start_effect_reconciliation
+
+    feature_id, effect_id = park_unknown(engine)
+    start_effect_reconciliation(
+        engine, effect_id=effect_id, idempotency_key="recon-f2-4",
+        feature_id=feature_id,
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "UPDATE external_effects SET claim_expires_at = :past "
+                "WHERE effect_id = :e"
+            ).bindparams(past="2020-01-01T00:00:00Z", e=effect_id)
+        )
+
+    # First pass reclaims; the second sees the row already moved and the
+    # version-derived idempotency key replays — neither may raise.
+    _recover_expired_reconciling(engine, limit=10, now_epoch=int(time.time()))
+    _recover_expired_reconciling(engine, limit=10, now_epoch=int(time.time()))
+    assert effect_row_full(engine, effect_id)[0] == "unknown"
 
 
 def test_sweep_refuses_malformed_target_before_any_read(engine) -> None:

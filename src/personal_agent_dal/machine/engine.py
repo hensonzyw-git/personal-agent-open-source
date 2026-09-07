@@ -1307,10 +1307,20 @@ def _w_dispatch_marker(ctx: ApplyContext) -> None:
 
 
 def _w_reconciler_claim(ctx: ApplyContext) -> None:
-    """A single reconciler, so two cannot both decide an unknown outcome."""
+    """A single reconciler, so two cannot both decide an unknown outcome.
+
+    The claim stamps ``claim_expires_at`` like the dispatch-side claims
+    (``_w_executor_claim`` / ``_w_dispatch_marker``): a process that dies after
+    committing ``reconciling`` leaves an expiry the recovery sweep can reclaim
+    on — without it the row was invisible to every automatic path (F2,
+    2026-09-07 review). Fifteen minutes matches the dispatch window: long
+    enough for a read-back against a slow GitHub, short enough that a crashed
+    reconciler does not park the effect for a day.
+    """
     effect = _effect_under_command(ctx)
     effect.executor_id = "reconciler"
     effect.executor_epoch = (effect.executor_epoch or 0) + 1
+    effect.claim_expires_at = ctx.now + timedelta(minutes=15)
     ctx.session.flush()
 
 

@@ -958,6 +958,12 @@ def create_app(
         return {
             "schema_version": OPERATOR_SCHEMA_VERSION,
             "effects": executor.unknown_effects(engine, limit=limit),
+            # F2 (2026-09-07 review): claims in flight are operator-visible
+            # too — a crashed reconciler used to be invisible to this
+            # listing, recoverable only by a manual wake with a known id.
+            # Additive key: existing consumers reading `effects` are
+            # unaffected.
+            "reconciling": executor.reconciling_effects(engine, limit=limit),
         }
 
     @app.post("/operator/effects/{effect_id}/wake")
