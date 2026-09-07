@@ -929,6 +929,80 @@ def test_stale_reconciler_cannot_release_a_newer_claim(engine) -> None:
     assert executor == "reconciler"
 
 
+def test_stale_claim_before_read_back_cannot_adopt_the_replacement(engine) -> None:
+    """R3-1 (round-3 review): the version must come from the claim operation
+    itself, never from a post-commit row read.
+
+    The old code read `claimed_version` from the row AFTER
+    start_effect_reconciliation returned — not atomic. The interleave: the
+    old claim commits → it expires → the sweep reclaims → a fresh reconciler
+    claims → the old pass's row read lands NOW and adopts the fresh claim's
+    version, then still-unknowns (or reports a verdict) against it. The
+    claim operation returns its own committed version, and every verdict —
+    unknown and conclusive alike — is void if the row has moved past it.
+    """
+    feature_id, effect_id = seed_unknown_effect(engine)
+
+    class SupersedingAdapter:
+        """Reads first supersede the claim, then report the given shape."""
+
+        def __init__(self, read: Any) -> None:
+            self.read = read
+
+        def read_feature_branch(self, **_: Any):
+            from personal_agent_dal.github.executor import (
+                _recover_expired_reconciling,
+            )
+
+            # The old pass has committed its claim and is between the claim
+            # and the read: expire it, reclaim it, let a fresh pass claim.
+            with engine.begin() as connection:
+                connection.execute(
+                    sa.text(
+                        "UPDATE external_effects SET claim_expires_at = :past "
+                        "WHERE effect_id = :e"
+                    ).bindparams(past="2020-01-01T00:00:00Z", e=effect_id)
+                )
+            _recover_expired_reconciling(engine, limit=5, now_epoch=int(time.time()))
+            start_effect_reconciliation(
+                engine,
+                effect_id=effect_id,
+                idempotency_key="recon-fresh-r3",
+                feature_id=feature_id,
+            )
+            return self.read
+
+    # Unknown verdict from the superseded pass: must refuse, not roll the
+    # fresh claim back.
+    with pytest.raises(ReconciliationRefusal) as excinfo:
+        reconcile_github_write(
+            engine,
+            SupersedingAdapter(BranchReadBack(found=None, unknown=True)),
+            effect_id=effect_id,
+            action="push_branch",
+            idempotency_key="recon-old-r3",
+            payload={"branch": BRANCH, "head_sha": HEAD},
+            feature_id=feature_id,
+        )
+    assert excinfo.value.code == "VERSION_CONFLICT", excinfo.value.code
+    state, _version, _executor = effect_row_state(engine, effect_id)
+    assert state == "reconciling", "the fresh claim must survive"
+
+    # A conclusive verdict from a superseded pass is equally void: the read
+    # must not be attributed to the replacement claim either.
+    with pytest.raises(ReconciliationRefusal) as excinfo2:
+        reconcile_github_write(
+            engine,
+            SupersedingAdapter(BRANCH_FOUND),
+            effect_id=effect_id,
+            action="push_branch",
+            idempotency_key="recon-old-r3b",
+            payload={"branch": BRANCH, "head_sha": HEAD},
+            feature_id=feature_id,
+        )
+    assert excinfo2.value.code == "VERSION_CONFLICT", excinfo2.value.code
+
+
 def test_reconcile_inconclusive_read_backs_to_still_unknown(engine) -> None:
     """A lost read-back cannot confirm anything: EE-RECONCILE-STILL-UNKNOWN."""
     feature_id, effect_id = seed_unknown_effect(engine)

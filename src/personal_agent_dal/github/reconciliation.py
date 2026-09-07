@@ -243,8 +243,14 @@ def start_effect_reconciliation(
     idempotency_key: str,
     feature_id: str | None = None,
     expected_version: int | None = None,
-) -> None:
+) -> int:
     """Take the single reconciler claim: unknown -> reconciling.
+
+    Returns the version THIS claim committed at — ``expected_version + 1``,
+    derived from this command's own CAS, never re-read from the row (a
+    post-commit row read can land after a reclaim and a replacement claim,
+    adopting the new claim's version: round-3 review finding 1). Callers
+    must thread this value through every subsequent write and verdict.
 
     The facts are derived at call time from the rows; a claim that is live
     elsewhere, a stale expected version, or an effect not in ``unknown``
@@ -298,6 +304,9 @@ def start_effect_reconciliation(
         ) from error
     except ControllerRefusal as error:
         raise ReconciliationRefusal(error.code, error.detail) from error
+    # The claim's own committed version: this command's CAS wrote
+    # expected_version + 1. Derived from the command, not from a row read.
+    return version + 1
 
 
 # ---------------------------------------------------------------------------
@@ -386,23 +395,28 @@ def reconcile_github_write(
     if missing:
         raise _invalid(f"action {action} payload is missing {sorted(missing)}")
 
-    state, claimed_version = _effect_row(engine, effect_id)
+    state, row_version = _effect_row(engine, effect_id)
     if state == UNKNOWN_STATE:
-        start_effect_reconciliation(
+        claimed_version = start_effect_reconciliation(
             engine, effect_id=effect_id, idempotency_key=idempotency_key
         )
-        state, claimed_version = _effect_row(engine, effect_id)
-    if state != RECONCILING_STATE:
+        state = RECONCILING_STATE
+    elif state == RECONCILING_STATE:
+        # A pass already holding the claim (wake re-entry): its version is
+        # the row's, read before any read-back can interleave.
+        claimed_version = row_version
+    else:
         raise ReconciliationRefusal(
             "ILLEGAL_TRANSITION",
             f"effect {effect_id} is {state}; reconciliation composes from "
             f"{UNKNOWN_STATE} or {RECONCILING_STATE}",
         )
-    # The version this pass holds its claim at. Every write this pass makes
-    # after the read-back CASes on it: a slow pass whose claim expired and
-    # was reclaimed (then re-claimed by a fresh reconciler) must lose the
-    # CAS and refuse, never stamp its stale verdict onto the new claim
-    # (round-2 review finding 2).
+    # The version THIS pass holds its claim at — from the claim operation's
+    # own return, never from a post-commit row read (round-3 review finding
+    # 1: the read-back window is not the only interleave; the moments after
+    # the claim commits are equally exposed, and a row read there can adopt
+    # a replacement claim's version). Every write and verdict this pass
+    # makes after the read-back binds to it.
 
     try:
         if action == "push_branch":
@@ -425,6 +439,21 @@ def reconcile_github_write(
         # so the outcome is unknown and STILL-UNKNOWN runs.
         read_back = BranchReadBack(found=None, unknown=True)
     judged = _judge_read_back(read_back, payload)
+
+    # The claim this pass holds must still be the live one before ANY result
+    # — conclusive or unknown — is acted on or reported. A conclusive verdict
+    # does not write, but reporting it against a claim that has since been
+    # superseded attributes the read to the wrong pass (round-3 review
+    # finding 1's second half): the row still being at this pass's version
+    # is the proof the claim was never reclaimed.
+    current_state, current_version = _effect_row(engine, effect_id)
+    if current_state != RECONCILING_STATE or current_version != claimed_version:
+        raise ReconciliationRefusal(
+            "VERSION_CONFLICT",
+            f"effect {effect_id} left this pass's claim "
+            f"(row: {current_state} v{current_version}, "
+            f"claim: v{claimed_version}); the read-back verdict is void",
+        )
 
     if judged == "unknown":
         try:
