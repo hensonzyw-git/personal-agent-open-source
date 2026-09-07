@@ -117,10 +117,28 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('intake_key', name='pk_feature_intake_requests'),
     )
 
-    op.create_index(
-        'uq_external_effects_one_reconciler_per_owner',
+    op.add_column(
         'external_effects',
-        ['owner_aggregate_id'],
+        sa.Column('reconciliation_arbitration_id', sa.Text(), nullable=True),
+    )
+    # Backfill the arbitration root: a feature-owned effect arbitrates on
+    # itself; a recovery-case-owned effect arbitrates on its parent feature.
+    # Every live reconciler claim under one root collides on one index slot,
+    # which is exactly the SINGLE_RECONCILER_CLAIM enumeration's meaning —
+    # the direct-owner index (round 1) could not express the cross pair
+    # (feature claim + case claim of the same feature), and round 2 proved
+    # even a serial interleaving took both.
+    op.execute(
+        "UPDATE external_effects SET reconciliation_arbitration_id = "
+        "CASE owner_aggregate_type "
+        "WHEN 'feature' THEN owner_aggregate_id "
+        "ELSE (SELECT feature_id FROM recovery_cases "
+        "      WHERE recovery_case_id = owner_aggregate_id) END"
+    )
+    op.create_index(
+        'uq_external_effects_one_reconciler_per_root',
+        'external_effects',
+        ['reconciliation_arbitration_id'],
         unique=True,
         sqlite_where=sa.text(
             "state = 'reconciling' AND executor_id = 'reconciler'"
@@ -130,9 +148,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index(
-        'uq_external_effects_one_reconciler_per_owner',
+        'uq_external_effects_one_reconciler_per_root',
         table_name='external_effects',
     )
+    op.drop_column('external_effects', 'reconciliation_arbitration_id')
     op.drop_table('feature_intake_requests')
     op.drop_index('uq_worker_jobs_intake_key', table_name='worker_jobs')
     op.drop_column('worker_jobs', 'intake_key')

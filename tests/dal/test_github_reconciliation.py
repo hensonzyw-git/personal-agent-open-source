@@ -600,6 +600,145 @@ def test_concurrent_reconciler_claims_two_effects_one_owner(
     assert sorted(states.values()) == ["reconciling", "unknown"], states
 
 
+def test_feature_and_recovery_case_cannot_both_hold_claims(engine) -> None:
+    """R2-4 (round-2 review): the cross-owner single-reconciler constraint.
+
+    The SINGLE_RECONCILER_CLAIM enumeration only walked feature -> its
+    recovery cases; a recovery-case-owned effect's facts never looked up at
+    the parent feature, so a feature claim followed by a recovery-case claim
+    — even serially — left both live. The DB arbitration must key on the
+    reconciliation ROOT (the feature), not the direct owner: the claim
+    stamps a root id (feature-owned effect: itself; recovery-case-owned:
+    the parent feature), and the partial unique index binds that root.
+    """
+    feature_id, effect_id = seed_unknown_effect(engine)
+    now = utc_now()
+    start_effect_reconciliation(
+        engine, effect_id=effect_id, idempotency_key="cross-a",
+        feature_id=feature_id,
+    )
+
+    from tests.dal.factories import external_effect_row
+    from personal_agent_dal.storage.machine_models import RecoveryCase
+
+    with session_factory(engine)() as session, session.begin():
+        session.add(
+            RecoveryCase(
+                recovery_case_id="recovery-case-1",
+                feature_id=feature_id,
+                version=1,
+                state="investigating",
+                execution_epoch=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.add(
+            external_effect_row(
+                effect_id="effect-case-1", owner_id="recovery-case-1",
+                version=1, state="unknown", now=now, owner_type="recovery_case",
+            )
+        )
+
+    with pytest.raises(ReconciliationRefusal) as excinfo:
+        start_effect_reconciliation(
+            engine, effect_id="effect-case-1", idempotency_key="cross-b",
+        )
+    # Serial interleave: the facts guard's upward enumeration refuses first
+    # (POLICY_DENIED — the count is 2 against `equals 1`). The concurrent
+    # interleave hits the arbitration index instead (SINGLE_RECONCILER_CLAIM,
+    # covered by the race test below).
+    assert excinfo.value.code in (
+        "SINGLE_RECONCILER_CLAIM", "POLICY_DENIED",
+    ), excinfo.value.code
+    # The feature's claim survives; the case effect never left unknown.
+    assert effect_row_state(engine, effect_id)[0] == "reconciling"
+    assert effect_row_state(engine, "effect-case-1")[0] == "unknown"
+
+
+def test_concurrent_cross_owner_claims_arbitrate_on_the_root(engine, monkeypatch) -> None:
+    """R2-4: the DB arbitration covers the cross pair too.
+
+    The partial unique index keys on the reconciliation ROOT, so a feature
+    claim and a case claim of the same feature racing past the facts guard
+    (both computed their counts before either committed) still cannot both
+    land — the loser's claim UPDATE violates the root index."""
+    import threading
+
+    from personal_agent_dal.github import reconciliation as reconciliation_module
+
+    feature_id, effect_id = seed_unknown_effect(engine)
+    now = utc_now()
+    from personal_agent_dal.storage.machine_models import RecoveryCase
+
+    with session_factory(engine)() as session, session.begin():
+        session.add(
+            RecoveryCase(
+                recovery_case_id="recovery-case-r",
+                feature_id=feature_id,
+                version=1,
+                state="investigating",
+                execution_epoch=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.add(
+            external_effect_row(
+                effect_id="effect-case-r", owner_id="recovery-case-r",
+                version=1, state="unknown", now=now, owner_type="recovery_case",
+            )
+        )
+
+    barrier = threading.Barrier(2)
+    real_facts = reconciliation_module._reconciler_claim_facts
+
+    def synchronized_facts(engine_arg, effect_id_arg):
+        result = real_facts(engine_arg, effect_id_arg)
+        barrier.wait(timeout=10)
+        return result
+
+    monkeypatch.setattr(
+        reconciliation_module, "_reconciler_claim_facts", synchronized_facts
+    )
+
+    outcomes: list[str] = []
+    refusals: list[str] = []
+    lock = threading.Lock()
+
+    def worker(eid: str, key: str) -> None:
+        try:
+            start_effect_reconciliation(
+                engine, effect_id=eid, idempotency_key=key,
+            )
+            with lock:
+                outcomes.append(eid)
+        except ReconciliationRefusal as refusal:
+            with lock:
+                refusals.append(refusal.code)
+        except Exception as exc:  # noqa: BLE001
+            with lock:
+                refusals.append(f"EXC:{type(exc).__name__}:{exc}")
+
+    threads = [
+        threading.Thread(target=worker, args=(effect_id, "cross-race-a")),
+        threading.Thread(target=worker, args=("effect-case-r", "cross-race-b")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+    assert not any(thread.is_alive() for thread in threads), "race threads hung"
+
+    assert len(outcomes) == 1, f"exactly one cross-owner claim must survive: {outcomes}"
+    assert refusals == ["SINGLE_RECONCILER_CLAIM"], refusals
+    states = {
+        effect_id: effect_row_state(engine, effect_id)[0],
+        "effect-case-r": effect_row_state(engine, "effect-case-r")[0],
+    }
+    assert sorted(states.values()) == ["reconciling", "unknown"], states
+
+
 def test_stale_version_start_refuses(engine) -> None:
     feature_id, effect_id = seed_unknown_effect(engine)
     _state, version, _executor = effect_row_state(engine, effect_id)

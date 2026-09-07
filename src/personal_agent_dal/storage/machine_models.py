@@ -387,6 +387,14 @@ class ExternalEffect(Base):
     receipt_refs_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
     post_read_refs_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
     impact_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The reconciliation arbitration root: a feature-owned effect's own
+    #: feature id, a recovery-case-owned effect's parent feature id. Stamped
+    #: by `_w_reconciler_claim` at claim time and read by the partial unique
+    #: index below — one live reconciler claim per root, the exact meaning
+    #: of SINGLE_RECONCILER_CLAIM's enumeration (round-2 review finding 4).
+    reconciliation_arbitration_id: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
 
@@ -410,15 +418,18 @@ class ExternalEffect(Base):
         ),
         Index("ix_external_effects_owner", "owner_aggregate_type",
               "owner_aggregate_id"),
-        # F3 (2026-09-07 review): the SINGLE_RECONCILER_CLAIM guard's count
-        # fact was computed outside the retriable transaction, so two
-        # concurrent starts for two different effects of one owner both
-        # passed. This partial unique index is the database-level arbiter at
-        # the write site; the STILL-UNKNOWN state change vacates the slot
-        # automatically because the predicate requires state='reconciling'.
+        # F3 (2026-09-07 review) + round-2 finding 4: the SINGLE_RECONCILER
+        # guard's arbitration key. The claim stamps
+        # `reconciliation_arbitration_id` with the reconciliation ROOT (a
+        # feature-owned effect: itself; a recovery-case-owned effect: the
+        # parent feature), and this partial unique index refuses a second
+        # live claim under the same root — including the cross pair
+        # (feature claim + case claim of the same feature) the direct-owner
+        # index could not express. The STILL-UNKNOWN state change vacates
+        # the slot automatically (the predicate requires state='reconciling').
         Index(
-            "uq_external_effects_one_reconciler_per_owner",
-            "owner_aggregate_id",
+            "uq_external_effects_one_reconciler_per_root",
+            "reconciliation_arbitration_id",
             unique=True,
             sqlite_where=text(
                 "state = 'reconciling' AND executor_id = 'reconciler'"

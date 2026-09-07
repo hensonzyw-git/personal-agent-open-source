@@ -180,8 +180,11 @@ def _reconciler_claim_facts(engine: Engine, effect_id: str) -> dict[str, Any]:
             raise ReconciliationRefusal("NOT_FOUND", f"no effect {effect_id}")
         owner_type, owner_id, version = row
 
-        # The owner enumeration mirrors the engine's own inventory writer:
-        # a feature plus the recovery cases hanging off it.
+        # The owner enumeration mirrors the engine's own inventory writer: a
+        # feature plus the recovery cases hanging off it — and, for a case-
+        # owned effect, the PARENT feature and its siblings (round-2 review
+        # finding 4: the downward-only walk let a feature claim and a case
+        # claim of the same feature coexist, even serially).
         owner_ids: list[str] = [owner_id]
         if owner_type == "feature":
             owner_ids.extend(
@@ -192,6 +195,23 @@ def _reconciler_claim_facts(engine: Engine, effect_id: str) -> dict[str, Any]:
                     ).bindparams(fid=owner_id)
                 ).scalars()
             )
+        else:
+            parent = connection.execute(
+                text(
+                    "SELECT feature_id FROM recovery_cases "
+                    "WHERE recovery_case_id = :rid"
+                ).bindparams(rid=owner_id)
+            ).scalar_one_or_none()
+            if parent is not None:
+                owner_ids.append(parent)
+                owner_ids.extend(
+                    connection.execute(
+                        text(
+                            "SELECT recovery_case_id FROM recovery_cases "
+                            "WHERE feature_id = :fid"
+                        ).bindparams(fid=parent)
+                    ).scalars()
+                )
         binds = {f"o{i}": oid for i, oid in enumerate(owner_ids)}
         placeholders = ", ".join(f":{name}" for name in binds)
         live_claims = connection.execute(

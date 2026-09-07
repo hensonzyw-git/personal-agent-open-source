@@ -1316,12 +1316,44 @@ def _w_reconciler_claim(ctx: ApplyContext) -> None:
     2026-09-07 review). Fifteen minutes matches the dispatch window: long
     enough for a read-back against a slow GitHub, short enough that a crashed
     reconciler does not park the effect for a day.
+
+    It also stamps ``reconciliation_arbitration_id`` with the reconciliation
+    ROOT — the effect's own feature id for a feature-owned effect, the parent
+    feature id for a recovery-case-owned one — which the partial unique index
+    arbitrates on. The direct owner id could not express the cross pair (a
+    feature claim live while a case claim of the same feature starts), and
+    round 2 proved even a serial interleaving took both (finding 4).
     """
     effect = _effect_under_command(ctx)
     effect.executor_id = "reconciler"
     effect.executor_epoch = (effect.executor_epoch or 0) + 1
     effect.claim_expires_at = ctx.now + timedelta(minutes=15)
+    effect.reconciliation_arbitration_id = _reconciliation_root_id(ctx, effect)
     ctx.session.flush()
+
+
+def _reconciliation_root_id(ctx: ApplyContext, effect: ExternalEffect) -> str:
+    """The arbitration root of an effect's owner: its feature id.
+
+    A feature-owned effect arbitrates on itself; a recovery-case-owned effect
+    arbitrates on the case's parent feature — the same closed enumeration
+    SINGLE_RECONCILER_CLAIM walks, expressed as one column value so the
+    partial unique index can enforce it including the cross pair.
+    """
+    if effect.owner_aggregate_type == "feature":
+        return effect.owner_aggregate_id
+    parent = ctx.session.execute(
+        select(RecoveryCase.feature_id).where(
+            RecoveryCase.recovery_case_id == effect.owner_aggregate_id
+        )
+    ).scalar_one_or_none()
+    if parent is None:
+        raise TransitionRefused(
+            ReceiptCodes.POLICY_DENIED,
+            f"recovery case {effect.owner_aggregate_id} does not exist; "
+            "the reconciliation root cannot be derived",
+        )
+    return parent
 
 
 def _w_external_effect_intent(ctx: ApplyContext) -> None:
