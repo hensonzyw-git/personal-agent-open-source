@@ -118,6 +118,11 @@ public actor ChatTimeline {
 
     private let backend: any ChatBackend
     private let store: CredentialStore
+    /// The device-executed action runner. Nil in builds without one — in which
+    /// case a handed action is still *reported* (as `failed`), because the
+    /// server's operation parks at `source_in_progress` until it hears
+    /// something; it never times out just because this build chose not to run.
+    private let deviceActionExecutor: DeviceActionExecuting?
     private let sleep: @Sendable (Duration) async throws -> Void
     /// The poll schedule. Bounded on purpose: a client that polls forever hides a
     /// stuck operation behind a spinner and drains the battery doing it.
@@ -142,6 +147,7 @@ public actor ChatTimeline {
     public init(
         backend: any ChatBackend,
         store: CredentialStore,
+        deviceActionExecutor: DeviceActionExecuting? = nil,
         pollDelays: [Duration] = [
             .milliseconds(400), .seconds(1), .seconds(2), .seconds(3), .seconds(5),
             .seconds(5), .seconds(5), .seconds(5),
@@ -152,6 +158,7 @@ public actor ChatTimeline {
     ) {
         self.backend = backend
         self.store = store
+        self.deviceActionExecutor = deviceActionExecutor
         self.pollDelays = pollDelays
         self.sleep = sleep
     }
@@ -332,7 +339,12 @@ public actor ChatTimeline {
         }
         pending.operationID = receipt.operationID
         try savePending(pending)
-        return try await settle(receipt, pending: pending)
+        // The device-action hand-off runs here, before settling: the reply is
+        // the only time the action exists on the wire, and the parked
+        // operation cannot settle until this device reports what it did.
+        // Executing *is* the settle step for this shape, so the returned
+        // receipt replaces the polling loop's input.
+        return try await runDeviceActionIfAny(receipt, pending: pending)
     }
 
     /// Finish whatever was left unresolved, if anything.
@@ -361,7 +373,11 @@ public actor ChatTimeline {
         var updated = pending
         updated.operationID = receipt.operationID
         try savePending(updated)
-        return try await settle(receipt, pending: updated)
+        // This branch anchored the operation *now*, so the turn really ran and
+        // the reply really can hand this device an action — the only time it
+        // ever travels. The by-id branch above cannot: a projection read-back
+        // never carries one.
+        return try await runDeviceActionIfAny(receipt, pending: updated)
     }
 
     /// Ask the server to cancel. The reply is the operation's real state: past a
@@ -562,6 +578,77 @@ public actor ChatTimeline {
     }
 
     // --- polling --------------------------------------------------------------
+
+    /// Execute a handed device action and settle the operation with the
+    /// report, when the reply carries one.
+    ///
+    /// The three failure shapes all still report, because the server's
+    /// operation parks at `source_in_progress` until it hears *something* and
+    /// its 15-minute timeout sweep ends at `needs_manual_review` — a state a
+    /// person has to clear by hand:
+    ///
+    /// - an action the envelope resolved but no executor is composed: one
+    ///   honest `failed` ("this build cannot execute this");
+    /// - an action the envelope refused *with* its action id (unknown tool,
+    ///   missing fields, unreadable times): the refusal is reportable now —
+    ///   the server learns it was not executed instead of waiting out the
+    ///   sweep;
+    /// - a refusal *without* an action id (the id itself was missing) names
+    ///   nothing reportable, so nothing is sent and the sweep is the
+    ///   remaining witness. That is the honest state: the action is unknown.
+    ///
+    /// A receipt without a device action passes through untouched, and the
+    /// report result carries no new local state — the settled projection from
+    /// the server is the only fact this function returns.
+    private func runDeviceActionIfAny(
+        _ receipt: OperationReceipt, pending: PendingSend
+    ) async throws -> OperationReceipt {
+        guard let envelope = receipt.deviceAction else {
+            return try await settle(receipt, pending: pending)
+        }
+        let reported: OperationReceipt
+        switch envelope.resolve() {
+        case .execute(let action):
+            if let executor = deviceActionExecutor {
+                reported = await executor.executeAndReport(action)
+            } else {
+                reported = try await reportFailure(
+                    actionID: action.actionID,
+                    detail: "no executor is composed on this device"
+                )
+            }
+        case .refuse(let actionID, let error):
+            guard let actionID else {
+                // Cannot name what it refuses: nothing to report, and the
+                // polling loop below re-reads the real state either way.
+                return try await settle(receipt, pending: pending)
+            }
+            reported = try await reportFailure(
+                actionID: actionID,
+                detail: "the device refused the action: \(error)"
+            )
+        }
+        // A settled report needs no polling; an unexpectedly non-terminal
+        // projection still gets the bounded loop, reading the server's state
+        // rather than trusting the report's echo.
+        if reported.outcome.isSettled {
+            if reported.outcome.releasesPendingSlot {
+                try? clearPending()
+            }
+            return reported
+        }
+        return try await settle(reported, pending: pending)
+    }
+
+    /// Report an execution failure against the action's id and return the
+    /// server's settled projection. The report endpoint itself answers with
+    /// the settled operation — its CAS guarantees exactly-once, and the
+    /// projection is what the UI renders, so no separate read-back is needed.
+    private func reportFailure(actionID: String, detail: String) async throws -> OperationReceipt {
+        try await backend.reportDeviceActionResult(
+            actionID: actionID, body: .failed(detail: detail)
+        )
+    }
 
     private func settle(
         _ first: OperationReceipt, pending: PendingSend
@@ -777,4 +864,23 @@ public protocol ChatBackend: Sendable {
         expectedCurrentCategory: String?,
         idempotencyKey: String
     ) async throws -> OperationReceipt
+
+    /// Settle a device-executed action this device was handed. The report is
+    /// the evidence the server settles on; its CAS makes a retry after a lost
+    /// reply safe (a replay answers the settled projection, never re-migrates),
+    /// so the caller may resend without a client idempotency key.
+    func reportDeviceActionResult(
+        actionID: String,
+        body: DeviceActionResultBody
+    ) async throws -> OperationReceipt
+
+    /// Upload one calendar mirror batch. `window_complete` on the last batch
+    /// authorises the server to mark window events absent from the upload as
+    /// deleted — the device is the fact source.
+    func uploadCalendarSync(
+        windowStart: Date,
+        windowEnd: Date,
+        events: [CalendarMirrorEvent],
+        windowComplete: Bool
+    ) async throws -> CalendarSyncResponse
 }

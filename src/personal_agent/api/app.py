@@ -2986,6 +2986,13 @@ def _transient(result) -> dict[str, Any]:
         value = getattr(result, name, None)
         if value is not None:
             fields[name] = value
+    # The device-executed write travels to the phone as a transient field of
+    # the chat response itself: the response IS the hand-off to EventKit, and
+    # nothing about it is persisted on the operation (the operation parks at
+    # `source_in_progress` and is settled by the device's own report).
+    device_action = getattr(result, "device_action", None)
+    if device_action is not None:
+        fields["device_action"] = device_action
     return fields
 
 

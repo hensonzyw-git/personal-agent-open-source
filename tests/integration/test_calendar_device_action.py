@@ -251,6 +251,46 @@ def test_apply_resolve_moves_device_action_to_source_in_progress(op_session) -> 
         }
 
 
+def test_device_action_rides_the_chat_response_as_transient() -> None:
+    """The response IS the hand-off: `_transient` must carry the issued action
+    onto the chat body, or the phone would never see the event it is supposed
+    to create. It is transient because the operation parks at
+    `source_in_progress` and is settled by the device's own report; nothing
+    about the action is persisted into the projection."""
+    from types import SimpleNamespace
+
+    from personal_agent.api.app import _transient
+
+    result = SimpleNamespace(
+        answer=None,
+        clarification=None,
+        duplicate_existing=None,
+        device_action={
+            "action_id": "action-key-1",
+            "tool": "calendar.create_event",
+            "event": dict(CAL_ARGS),
+        },
+    )
+    assert _transient(result) == {
+        "device_action": {
+            "action_id": "action-key-1",
+            "tool": "calendar.create_event",
+            "event": dict(CAL_ARGS),
+        }
+    }
+    # A plain turn (no device action) carries nothing new.
+    plain = SimpleNamespace(
+        answer="好的",
+        clarification=None,
+        duplicate_existing=None,
+        device_action=None,
+    )
+    assert _transient(plain) == {"answer": "好的"}
+    # An object predating the field (getattr default) keeps working.
+    legacy = SimpleNamespace(answer=None, clarification=None, duplicate_existing=None)
+    assert _transient(legacy) == {}
+
+
 def test_device_action_commit_is_a_composition_error(op_session) -> None:
     """The two-phase protocol's phase 2 has no meaning for a device tool: the
     write is issued in phase 1. Reaching `commit` with a device intent means

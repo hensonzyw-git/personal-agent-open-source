@@ -391,6 +391,7 @@ func makeChatSession(
 func makeChat(
     service: Service,
     store: CredentialStore = InMemoryCredentialStore(),
+    deviceActionExecutor: DeviceActionExecuting? = nil,
     bind: Bool = true,
     pollDelays: [Duration] = Array(repeating: .zero, count: 4),
     sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in }
@@ -398,7 +399,8 @@ func makeChat(
     let session = try makeChatSession(service: service, store: store)
     _ = try await session.enroll(code: "code", displayName: "iPhone")
     let chat = ChatTimeline(
-        backend: session, store: store, pollDelays: pollDelays, sleep: sleep
+        backend: session, store: store, deviceActionExecutor: deviceActionExecutor,
+        pollDelays: pollDelays, sleep: sleep
     )
     if bind { await chat.bind(conversationID: chatTimelineID) }
     return (chat, session, store)

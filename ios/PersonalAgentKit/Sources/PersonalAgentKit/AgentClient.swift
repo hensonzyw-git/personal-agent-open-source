@@ -377,12 +377,77 @@ public struct AgentClient: Sendable {
         )
     }
 
+    // --- device actions and the calendar mirror ------------------------------
+
+    /// Report what this device did with a device-executed action.
+    ///
+    /// No `Idempotency-Key`: the action id IS the key. The server locates the
+    /// operation by it, and its CAS makes settlement exactly-once — a replay
+    /// returns the current projection with 200 rather than a second
+    /// transition, so re-sending the same report after a lost reply is safe.
+    public func reportDeviceActionResult(
+        actionID: String,
+        body: DeviceActionResultBody,
+        token: String
+    ) async throws -> OperationReceipt {
+        try await send(
+            method: "POST",
+            path: "/v1/device-actions/\(actionID)/result",
+            jsonBody: [
+                "result": body.result,
+                "event_id": body.eventID as Any?,
+                "detail": body.detail as Any?,
+            ],
+            token: token,
+            accepting: [200],
+            as: OperationReceipt.self
+        )
+    }
+
+    /// Upload one mirror batch. The reply is the server's ingest summary;
+    /// a 400 means the whole batch was refused and the caller should fix its
+    /// window, never split the batch to sneak a bad event through.
+    public func uploadCalendarSync(
+        windowStart: Date,
+        windowEnd: Date,
+        events: [CalendarMirrorEvent],
+        windowComplete: Bool,
+        token: String
+    ) async throws -> CalendarSyncResponse {
+        try await send(
+            method: "POST",
+            path: "/v1/calendar/sync",
+            jsonBody: [
+                "window_start": RFC3339.string(from: windowStart) as Any?,
+                "window_end": RFC3339.string(from: windowEnd) as Any?,
+                "events": events.map { event -> [String: Any?] in
+                    [
+                        "event_identifier": event.eventIdentifier,
+                        "calendar_identifier": event.calendarIdentifier,
+                        "title": event.title as Any?,
+                        "start": RFC3339.string(from: event.start),
+                        "end": RFC3339.string(from: event.end),
+                        "all_day": event.allDay,
+                        "location": event.location as Any?,
+                        "notes": event.notes as Any?,
+                        "last_modified": RFC3339.string(from: event.lastModified),
+                    ]
+                },
+                "window_complete": windowComplete,
+            ],
+            token: token,
+            accepting: [200],
+            as: CalendarSyncResponse.self
+        )
+    }
+
     // --- transport -----------------------------------------------------------
 
     private func send<Response: Decodable>(
         method: String,
         path: String,
         body: [String: String?]? = nil,
+        jsonBody: [String: Any]? = nil,
         booleanBody: [String: Bool] = [:],
         token: String? = nil,
         headers: [String: String] = [:],
@@ -407,7 +472,16 @@ public struct AgentClient: Sendable {
         for (name, value) in headers {
             request.setValue(value, forHTTPHeaderField: name)
         }
-        if let body {
+        // `jsonBody` carries the shapes `body` cannot express: nested arrays
+        // of objects (the calendar mirror batch) and JSON nulls inside them.
+        // At most one of the two is given; both would be an encoding bug here.
+        if jsonBody != nil {
+            precondition(body == nil, "use body or jsonBody, not both")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(
+                withJSONObject: jsonBody!
+            )
+        } else if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             var encoded = body.mapValues { $0 as Any? ?? NSNull() }
             for (field, value) in booleanBody {
@@ -576,6 +650,20 @@ public struct PushTokenState: Decodable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
         case hasPushToken = "has_push_token"
+    }
+}
+
+/// The ingest summary `POST /v1/calendar/sync` answers with — the server's
+/// output schema for `calendar.ingest_events`, projected to the device.
+public struct CalendarSyncResponse: Decodable, Sendable, Equatable {
+    public let status: String
+    public let upserted: Int
+    public let skipped: Int
+    public let markedDeleted: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case status, upserted, skipped
+        case markedDeleted = "marked_deleted"
     }
 }
 

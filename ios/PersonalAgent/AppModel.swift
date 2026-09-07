@@ -234,7 +234,17 @@ final class AppModel {
     /// loaded history and re-run the resume path.
     private func openChat(session: DeviceSession, conversationID: String) async {
         if chatTimeline == nil {
-            chatTimeline = ChatTimeline(backend: session, store: store)
+            // The device-action executor is what turns a handed
+            // `calendar.create_event` into a real EventKit write and the
+            // report that settles its operation. Composed here once, next to
+            // the Timeline it serves; the write scope stays v1 create-only.
+            chatTimeline = ChatTimeline(
+                backend: session,
+                store: store,
+                deviceActionExecutor: DeviceEventActionExecutor(
+                    store: EventKitCalendarStore(), backend: session
+                )
+            )
         }
         guard let chatTimeline else { return }
         if chat == nil {

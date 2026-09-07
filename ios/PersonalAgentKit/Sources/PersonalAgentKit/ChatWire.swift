@@ -462,6 +462,10 @@ public struct OperationReceipt: Sendable, Equatable {
     /// The written ledger row, when this was a governed write the server could
     /// project (`G1`). `nil` for every other tool and for a replay.
     public let record: FinanceExpenseRecord?
+    /// The device-action hand-off (`calendar.create_event`), when the server
+    /// issued one on this turn. Nothing about it is persisted: a Timeline
+    /// replay never re-executes a device write.
+    public let deviceAction: DeviceActionEnvelope?
 
     public init(
         operationID: String,
@@ -476,7 +480,8 @@ public struct OperationReceipt: Sendable, Equatable {
         duplicateExisting: String?,
         answer: String?,
         queryResult: FinanceQueryResult? = nil,
-        record: FinanceExpenseRecord? = nil
+        record: FinanceExpenseRecord? = nil,
+        deviceAction: DeviceActionEnvelope? = nil
     ) {
         self.operationID = operationID
         self.state = state
@@ -491,6 +496,7 @@ public struct OperationReceipt: Sendable, Equatable {
         self.answer = answer
         self.queryResult = queryResult
         self.record = record
+        self.deviceAction = deviceAction
     }
 
     /// The tools whose success is a ledger row. Kept here so `succeeded` for one
@@ -646,6 +652,7 @@ extension OperationReceipt: Decodable {
         case answer
         case queryResult = "query_result"
         case record
+        case deviceAction = "device_action"
     }
 
     public init(from decoder: Decoder) throws {
@@ -684,6 +691,15 @@ extension OperationReceipt: Decodable {
         // card falls back to the status row.
         record = try? container.decodeIfPresent(
             FinanceExpenseRecord.self, forKey: .record
+        )
+        // The device-action hand-off rides the same reply. A shape this build
+        // cannot decode is an action to report failed, not a reason to lose
+        // the receipt — but an un-decodable field also cannot name its action,
+        // so it decodes to `nil` and the server's timeout sweep is the
+        // remaining witness. (The decoded envelope itself resolves refusal
+        // with the id when the id was readable.)
+        deviceAction = try? container.decodeIfPresent(
+            DeviceActionEnvelope.self, forKey: .deviceAction
         )
     }
 }

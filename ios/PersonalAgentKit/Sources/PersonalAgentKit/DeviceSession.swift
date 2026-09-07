@@ -336,6 +336,42 @@ public actor DeviceSession {
         }
     }
 
+    // --- calendar device actions and the mirror --------------------------------
+
+    /// Safe under the one-retry policy without any client key: the action id
+    /// IS the key, and the server's CAS makes a re-sent report answer the
+    /// settled projection rather than re-settling.
+    public func reportDeviceActionResult(
+        actionID: String,
+        body: DeviceActionResultBody
+    ) async throws -> OperationReceipt {
+        try await authorized {
+            try await self.client.reportDeviceActionResult(
+                actionID: actionID, body: body, token: $0
+            )
+        }
+    }
+
+    /// A read-scope upload (`calendar.event.read`): it exists to be read back,
+    /// so a retry that re-presents an identical whole batch is safe — the
+    /// upsert arbitrates by `last_modified` and identical rows are skipped.
+    public func uploadCalendarSync(
+        windowStart: Date,
+        windowEnd: Date,
+        events: [CalendarMirrorEvent],
+        windowComplete: Bool
+    ) async throws -> CalendarSyncResponse {
+        try await authorized {
+            try await self.client.uploadCalendarSync(
+                windowStart: windowStart,
+                windowEnd: windowEnd,
+                events: events,
+                windowComplete: windowComplete,
+                token: $0
+            )
+        }
+    }
+
     // --- `DEV-031` daily review ------------------------------------------------
     //
     // All four are safe under the one-retry policy without any client key: the
