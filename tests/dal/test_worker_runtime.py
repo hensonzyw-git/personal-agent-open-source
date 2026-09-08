@@ -1270,6 +1270,7 @@ def _make_claude_fake(
     write: bool = True,
     result_error: bool = False,
     output: str | None = None,
+    truncated: bool = False,
 ):
     """A fake `run_coder` emitting claude's native stream-json, not the
     coder_contract vocabulary — so the adapter under test is actually exercised."""
@@ -1357,6 +1358,7 @@ def _make_claude_fake(
             timed_out=False,
             cancelled=False,
             duration_s=0.01,
+            truncated=truncated,
         )
 
     return fake
@@ -1449,6 +1451,38 @@ def test_poll_once_provider_coder_refuses_unparseable_output(
 
     assert outcome.state == "failed"
     assert outcome.error == "coder_output_unparseable"
+
+
+def test_poll_once_provider_coder_distinguishes_truncated_from_unparseable(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    """A byte-capped stream refuses as `coder_output_truncated`, not unparseable.
+
+    R10 T1 (2026-09-09): a healthy 65,562-byte coder run was cut at the
+    historical 64 KiB cap mid-event and refused as `coder_output_unparseable`,
+    hiding a budget condition behind a corruption message. The cap now signals
+    structurally, and this refusal reason keeps "raise the budget" observable
+    and distinct from genuine CLI corruption.
+    """
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, coder=True)
+    job_id = _seed_job_for(engine, base_sha)
+
+    # The same unparseable tail, but arriving with truncated=True — exactly
+    # the shape a capped run produces (cut lands mid-event by construction).
+    monkeypatch.setattr(
+        "personal_agent_dal.worker.poll_once.run_coder",
+        _make_claude_fake(
+            base_sha,
+            output='{"type": "system", "subtype": "init"}\n{"type": "assista',
+            truncated=True,
+        ),
+    )
+
+    outcome = _poll(engine, _coder_config(tmp_path, config))
+
+    assert outcome.state == "failed"
+    assert outcome.error == "coder_output_truncated"
 
 
 def _make_prompt_capturing_fake(base_sha: str, captured: dict):

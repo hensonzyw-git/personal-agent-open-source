@@ -569,6 +569,12 @@ def _execute_job(
 
         claude_events = _parse_coder_stream(result.output)
         if claude_events is None:
+            # A byte-capped stream is a budget condition, not CLI corruption:
+            # the cap cuts mid-event, so the tail cannot parse by construction.
+            # Distinguishing the two keeps "raise the budget" observable
+            # instead of indistinguishable from a broken claude (R10 T1).
+            if result.truncated:
+                return _refuse("coder_output_truncated")
             return _refuse("coder_output_unparseable")
         error_detail = _claude_error_detail(claude_events, result.returncode)
         if not result.timed_out and error_detail is not None:

@@ -17,6 +17,8 @@ import subprocess
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from personal_agent_dal.worker import coder_launcher
 from personal_agent_dal.worker.coder_launcher import (
     CCR_BASE_URL,
@@ -181,4 +183,95 @@ def test_clean_exit_captures_the_returncode(
     assert result.cancelled is False
     assert result.returncode == 0
     assert result.output == '{"type":"final"}\n'
+    assert result.truncated is False
     os.killpg.assert_not_called()
+
+
+def test_output_cap_is_256kib_aligned_with_the_patch_budget() -> None:
+    """The cap must exceed the manifest's max_patch_bytes (262144).
+
+    R10 T1 (2026-09-09): the historical 64 KiB cap cut a healthy 65,562-byte
+    NDJSON stream mid-event, and the truncation marker itself was not JSON,
+    so `_parse_coder_stream` refused a run whose coder work was complete and
+    correct (README rewritten, nothing else touched). The cap is raised to
+    256 KiB — aligned with the frozen coder budget — and the failure is
+    pinned here so a future reduction cannot silently bring it back.
+    """
+    assert coder_launcher.MAX_OUTPUT_BYTES == 256 * 1024
+
+
+def _run_with_output(monkeypatch, tmp_path: Path, text: str):
+    """Run `run_coder` against a fake process emitting exactly `text`."""
+    fake_process = mock.Mock()
+    fake_process.pid = 4242
+    fake_process.communicate.return_value = (text, None)
+    fake_process.returncode = 0
+    monkeypatch.setattr(subprocess, "Popen", mock.Mock(return_value=fake_process))
+    monkeypatch.setattr(os, "killpg", mock.Mock())
+    return run_coder(_spec(run_root=tmp_path), monotonic=lambda: 0.0)
+
+
+def test_truncation_keeps_stdout_pure_ndjson_and_reports_the_flag(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """An oversized stream is byte-bounded with NO non-JSON marker appended.
+
+    The stdout contract is that every line of a complete run parses as JSON;
+    the historical `"[coder: output truncated]"` marker broke that invariant
+    (the marker itself is not JSON), turning every over-budget run into
+    `coder_output_unparseable` instead of an identifiable budget condition.
+    The truncation is now signalled structurally (`CoderRunResult.truncated`)
+    and the stdout text carries bytes only — a cut mid-event stays a parse
+    failure the caller can attribute to the cap via the flag.
+    """
+    line = json.dumps({"type": "assistant", "message": {"content": []}}) + "\n"
+    oversized = line * 8000  # ~304 KiB, past the 256 KiB cap
+    result = _run_with_output(monkeypatch, tmp_path, oversized)
+
+    assert result.truncated is True
+    assert len(result.output.encode("utf-8")) <= coder_launcher.MAX_OUTPUT_BYTES
+    assert "[coder: output truncated]" not in result.output
+
+
+def test_truncation_cut_mid_json_line_yields_no_json_marker(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """The cut byte lands mid-event: the tail is a half JSON line, not a marker.
+
+    Pins the exact failure shape of the R10 T1 incident: the last line of a
+    truncated stream may be a partial JSON object. That is accepted — the
+    caller distinguishes it from genuine CLI corruption via `truncated`.
+    """
+    good = json.dumps({"type": "system", "subtype": "init"}) + "\n"
+    tail_fragment = '{"type": "assistant", "message": {"cont'
+    # Pad so the cap falls inside the fragment: 8000 lines (~304 KiB) plus
+    # the fragment pushes the cut point past the fragment's start.
+    oversized = good * 8000 + tail_fragment
+    result = _run_with_output(monkeypatch, tmp_path, oversized)
+
+    assert result.truncated is True
+    last_line = result.output.splitlines()[-1]
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(last_line)
+    assert "truncated" not in last_line
+
+
+def test_output_at_exact_cap_is_not_truncated(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Output of exactly the cap passes through untouched; cap+1 trips the flag."""
+    cap = coder_launcher.MAX_OUTPUT_BYTES
+    # A JSON prefix repeated to (almost) the cap, then padded with spaces
+    # inside no line-structure assumption — spaces keep every line valid.
+    line = json.dumps({"type": "system", "subtype": "init"})
+    prefix = (line + "\n") * (cap // (len(line) + 1))
+    at_cap_text = prefix + " " * (cap - len(prefix.encode()))
+    assert len(at_cap_text.encode()) == cap
+
+    at_cap = _run_with_output(monkeypatch, tmp_path, at_cap_text)
+    assert at_cap.truncated is False
+    assert at_cap.output == at_cap_text
+
+    over = _run_with_output(monkeypatch, tmp_path, at_cap_text + " ")
+    assert over.truncated is True
+    assert len(over.output.encode()) == cap

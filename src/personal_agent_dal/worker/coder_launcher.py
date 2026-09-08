@@ -57,7 +57,16 @@ ANTHROPIC_TOKEN_VAR: Final[str] = "ANTHROPIC_AUTH_TOKEN"
 #: and re-checked at P2/P3 (§7.1).
 DEEPSEEK_MODEL_ID: Final[str] = "DeepSeek/deepseek-v4-pro"
 
-MAX_OUTPUT_BYTES: Final[int] = 64 * 1024
+#: The stdout byte cap. 256 KiB, aligned with the frozen coder budget
+#: (`max_patch_bytes` = 262144): a run whose stream exceeds this is refused
+#: as a budget condition, so the cap only bites runs that would already be
+#: over the patch budget. The historical 64 KiB cut healthy ~65 KiB streams
+#: mid-event (R10 T1, 2026-09-09): the marker appended to the truncated text
+#: was itself not JSON, so a complete, correct coder run was refused as
+#: `coder_output_unparseable`. Truncation is now signalled structurally via
+#: `CoderRunResult.truncated`; no marker is ever appended to stdout, which
+#: keeps the stdout-is-pure-NDJSON invariant for complete runs.
+MAX_OUTPUT_BYTES: Final[int] = 256 * 1024
 TIMEOUT_RETURNCODE: Final[int] = 124
 
 
@@ -93,6 +102,11 @@ class CoderRunResult:
     timed_out: bool
     cancelled: bool
     duration_s: float
+    #: True when the stdout bytes exceeded `MAX_OUTPUT_BYTES` and were cut.
+    #: Signalled structurally, never as a text marker: a marker appended to
+    #: the stream would itself violate the every-line-is-JSON contract the
+    #: parser depends on (R10 T1).
+    truncated: bool = False
 
 
 def settings_json() -> dict[str, Any]:
@@ -255,13 +269,18 @@ def _kill_process_group(process: subprocess.Popen[str]) -> None:
     process.wait()
 
 
-def _bounded(text: str) -> str:
+def _bounded(text: str) -> tuple[str, bool]:
+    """Cut to the byte cap, returning `(bounded_text, truncated)`.
+
+    No marker is appended: the parser downstream requires every line of a
+    complete run to be JSON, and a free-text marker breaks that invariant
+    exactly when the run is already at its budget limit (R10 T1). The
+    `truncated` flag carries the condition structurally instead.
+    """
     encoded = text.encode("utf-8", errors="replace")
     if len(encoded) <= MAX_OUTPUT_BYTES:
-        return text
-    return encoded[:MAX_OUTPUT_BYTES].decode("utf-8", errors="ignore") + (
-        "\n[coder: output truncated]"
-    )
+        return text, False
+    return encoded[:MAX_OUTPUT_BYTES].decode("utf-8", errors="ignore"), True
 
 
 def run_coder(
@@ -326,7 +345,7 @@ def run_coder(
                     break
                 except subprocess.TimeoutExpired:
                     continue
-            output = _bounded(output or "")
+            output, truncated = _bounded(output or "")
         except subprocess.TimeoutExpired:
             _kill_process_group(process)
             return CoderRunResult(
@@ -342,4 +361,5 @@ def run_coder(
         timed_out=False,
         cancelled=False,
         duration_s=monotonic() - started,
+        truncated=truncated,
     )
