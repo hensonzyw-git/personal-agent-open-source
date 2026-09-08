@@ -232,6 +232,13 @@ def test_receipt_fields_are_closed(case: dict) -> None:
         "answer",
         "query_result",
         "record",
+        # The issued device action, delivered by the projection while the
+        # operation is parked (review R6). The vector file carries no such
+        # case -- these vectors are receipt *projections* of settled shapes,
+        # and a parked one that still owes an action is exercised in
+        # test_calendar_device_action.py -- but the field is part of the same
+        # closed contract and the client knows its shape.
+        "device_action",
     }
     assert set(case["receipt"]) <= allowed
 

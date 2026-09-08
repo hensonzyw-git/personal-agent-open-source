@@ -2036,3 +2036,125 @@ def test_calendar_sync_refuses_a_device_without_the_current_manifest(
     # discovered, drifted, or granted) by design: distinguishing them would map
     # out the tool surface. The version gate denies through the same door.
     assert response.json()["error"]["code"] == "TOOL_NOT_ALLOWLISTED"
+def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
+    keys, agent_db, tmp_path: Path
+) -> None:
+    """Review R6, reproduced end to end: the chat response used to be the
+    device action's only delivery channel, so a request that timed out at 202
+    handed the client an operation id and an action nobody would ever deliver
+    — the operation sat parked at `source_in_progress` until the sweep, with
+    the authorised write lost.
+
+    The production wiring runs here (real bridge, real dispatcher fork, real
+    seal), the model proposes `calendar.create_event`, and
+    `sync_wait_seconds=0.05` guarantees the 202. The client then polls the
+    operation by id — the exact thing the iOS client's `resume()` does — and
+    the projection must hand over the same authorised action the response
+    would have carried.
+    """
+    from personal_agent_core.tool_ir import SCOPE_CALENDAR_WRITE
+
+    finance_db = tmp_path / "finance-device-action.sqlite"
+    # Calendar mode is enough: the device fork stops before any MCP call, so
+    # the Finance database is never written on this path.
+    service = LoopbackFinanceService(
+        {
+            MCP_KID_ENV: "svc-test",
+            MCP_PEM_ENV: str(keys.service_public_pem),
+        },
+        database=finance_db,
+        calendar=True,
+    )
+    update_device(
+        agent_db,
+        scopes=json.dumps([CAPABILITY_SCOPE, SCOPE_CALENDAR_WRITE]),
+    )
+    key = str(uuid.uuid4())
+    try:
+
+        async def scenario():
+            async with agent_service(
+                config_for(agent_db, service),
+                build_gateway=lambda: FakeGateway(
+                    ProposedToolCall(
+                        tool="calendar.create_event",
+                        arguments={
+                            "title": "网球",
+                            "start": "2026-09-12T15:00:00+08:00",
+                            "end": "2026-09-12T16:30:00+08:00",
+                            "all_day": False,
+                        },
+                    )
+                ),
+                write_switch=shared_enabled_write_switch(),
+            ) as composed:
+                # The composition under test must wire the action seal, or the
+                # device fork below would raise instead of parking.
+                assert composed.deps.action_keyring is not None
+                composed.deps.sync_wait_seconds = 0.05
+                app = build_app(composed.deps)
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://agent.local",
+                ) as client:
+                    token = access_token(
+                        scopes=(CAPABILITY_SCOPE, SCOPE_CALENDAR_WRITE)
+                    )
+                    headers = {
+                        "Authorization": f"Bearer {token}",
+                        "Idempotency-Key": key,
+                        "Content-Type": "application/json",
+                    }
+                    detached = await client.post(
+                        "/v1/chat/messages",
+                        json={"conversation_id": "c1", "text": "周六下午三点网球"},
+                        headers=headers,
+                    )
+                    # The fake model is fast, so either detached shape is
+                    # legitimate: the worker finished within the 50 ms wait and
+                    # the projection answered (202, parked), or the synthetic
+                    # timeout body answered first. Both carry the operation id;
+                    # the delivery door being fixed to the projection is
+                    # exactly why either shape converges on the same action.
+                    assert detached.status_code == 202, detached.text
+                    operation_id = detached.json()["operation_id"]
+                    # The worker finished its turn by the time the drain
+                    # returns; the poll then reads the parked operation.
+                    await app.state.drain_background_tasks()
+                    polled = await client.get(
+                        f"/v1/operations/{operation_id}",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    return detached, polled
+
+        detached, polled = asyncio.run(scenario())
+    finally:
+        service.stop()
+
+    body = polled.json()
+    # Parked is still 202: the client settles by reaching a terminal state on
+    # a later poll (or the report endpoint's answer), and every one of those
+    # polls carried the action while the operation stayed parked.
+    assert polled.status_code == 202, polled.text
+    # The parked operation hands the action over — the same authorised
+    # arguments the model proposed, nothing re-derived.
+    assert body["state"] == "source_in_progress"
+    assert body["device_action"] == {
+        "action_id": key,
+        "tool": "calendar.create_event",
+        "event": {
+            "title": "网球",
+            "start": "2026-09-12T15:00:00+08:00",
+            "end": "2026-09-12T16:30:00+08:00",
+            "all_day": False,
+        },
+    }
+
+    # The seal is on the row, in the database, sealed with the composition's
+    # keyring — not a test-side reconstruction.
+    engine = create_database_engine(agent_db)
+    with session_factory(engine)() as session:
+        operation = session.query(Operation).filter_by(idempotency_key=key).one()
+        assert operation.state == "source_in_progress"
+        assert operation.encrypted_device_action is not None
+    engine.dispose()

@@ -225,6 +225,7 @@ def transition_operation(
     duplicate_check_id: str | None = None,
     safe_result: str | None = None,
     encrypted_result_record: dict[str, Any] | None = None,
+    encrypted_device_action: dict[str, Any] | None = None,
     zero_write_proven: bool = False,
 ) -> int:
     """Move one operation forward, returning its new `state_version`.
@@ -256,6 +257,17 @@ def transition_operation(
         values["safe_result"] = safe_result
     if encrypted_result_record is not None:
         values["encrypted_result_record"] = encrypted_result_record
+    # The device-action seal is set on entry to `source_in_progress` (with the
+    # explicit argument) and cleared on leaving it (the automatic branch):
+    # delivery and refusal are both expressed by this one column, so a
+    # settlement that forgot to refuse delivery cannot happen at the store
+    # level. The schema CHECK is the backstop, not the mechanism. (R6.)
+    if encrypted_device_action is not None:
+        values["encrypted_device_action"] = encrypted_device_action
+    elif current_state == "source_in_progress" and target_state != (
+        "source_in_progress"
+    ):
+        values["encrypted_device_action"] = None
 
     result = session.execute(
         update(Operation)

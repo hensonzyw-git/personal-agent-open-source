@@ -34,6 +34,7 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from personal_agent.api.duplicate_flow import record_possible_duplicate
+from personal_agent.api.device_action_projection import seal_device_action
 from personal_agent.api.finance_query_projection import FinanceQueryProjection
 from personal_agent.api.finance_record_projection import (
     FinanceExpenseRecord,
@@ -372,12 +373,19 @@ def run_operation(
     pre_resolved: bool = False,
     prior_clarification_question: str | None = None,
     recorder: Recorder | None = None,
+    action_keyring: KeyRing | None = None,
 ) -> RunResult:
     """Drive one freshly-accepted operation to its outcome.
 
     Production passes a clock callable so each durable transition records when
     that transition actually happened. Tests may pass one fixed instant when
     elapsed time is irrelevant.
+
+    `action_keyring` seals an issued device action onto its operation (review
+    R6). It is a separate keyring because the data keyring's callers must not
+    silently gain the ability to write the device-action column, and `None`
+    (tests of non-device paths) makes a device issue fail loudly instead of
+    producing an operation nobody can deliver.
 
     The transcript record is written here, around every exit path at once,
     because this function returns a safe result from a dozen places and raises
@@ -396,6 +404,7 @@ def run_operation(
             now=now,
             pre_resolved=pre_resolved,
             prior_clarification_question=prior_clarification_question,
+            action_keyring=action_keyring,
         )
     except Exception as exc:
         sink.record(
@@ -423,6 +432,7 @@ def _run_operation(
     now: Clock,
     pre_resolved: bool = False,
     prior_clarification_question: str | None = None,
+    action_keyring: KeyRing | None = None,
 ) -> RunResult:
     # An operation that already knows its write skips interpretation entirely:
     # a `write anyway` override, or a deterministic user action such as the
@@ -658,6 +668,7 @@ def _run_operation(
         keyring,
         now,
         prior_clarification_question=prior_clarification_question,
+        action_keyring=action_keyring,
     )
 
 
@@ -749,6 +760,7 @@ def _apply_resolve(
     now: Clock,
     *,
     prior_clarification_question: str | None = None,
+    action_keyring: KeyRing | None = None,
 ) -> RunResult:
     if isinstance(outcome, ReadCompleted):
         _step(session, operation, "succeeded", now, safe_result=outcome.result)
@@ -820,7 +832,31 @@ def _apply_resolve(
         # The device's report settles the operation later through its own
         # endpoint; a report that never arrives is handled by the timeout
         # sweep, not by this turn.
-        _step(session, operation, "source_in_progress", now, tool=outcome.tool)
+        #
+        # The action is sealed onto the operation in this same transition
+        # (review R6, 2026-09-08): the chat response is no longer the action's
+        # only delivery channel, so a request that times out at 202 still
+        # leaves an undelivered action the poll can hand over, and a settled
+        # operation refuses to hand it over again. A missing keyring is a
+        # wiring bug and fails loudly here rather than silently un-delivering
+        # the action.
+        if action_keyring is None:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="device action issued with no action keyring",
+            )
+        _step(
+            session,
+            operation,
+            "source_in_progress",
+            now,
+            tool=outcome.tool,
+            encrypted_device_action=seal_device_action(
+                action_keyring,
+                operation_id=operation.operation_id,
+                action=outcome.response_payload(),
+            ),
+        )
         return RunResult(
             state="source_in_progress",
             device_action=outcome.response_payload(),
@@ -1044,6 +1080,7 @@ def _step(
     tool: str | None = None,
     safe_result: str | None = None,
     encrypted_result_record: dict[str, Any] | None = None,
+    encrypted_device_action: dict[str, Any] | None = None,
     failure_reason: str | None = None,
     zero_write_proven: bool = False,
 ) -> None:
@@ -1058,6 +1095,7 @@ def _step(
         tool=tool,
         safe_result=safe_result,
         encrypted_result_record=encrypted_result_record,
+        encrypted_device_action=encrypted_device_action,
         failure_reason=failure_reason,
         zero_write_proven=zero_write_proven,
     )

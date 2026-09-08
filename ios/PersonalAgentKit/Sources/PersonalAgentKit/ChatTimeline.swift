@@ -68,6 +68,14 @@ public actor ChatTimeline {
         public let startNewSession: Bool?
         /// Known only once the server has answered at least once.
         public var operationID: String?
+        /// The device action this device has already executed for the pending
+        /// operation, persisted *before* the executor runs (review R6). A
+        /// poll, a resume or a replay can hand the same action over again —
+        /// the server's projection carries it while the operation is parked —
+        /// and executing twice is how a duplicate event gets born. The marker
+        /// makes the execution exactly-once across restarts; the timeout
+        /// sweep, not a re-execution, owns what the report's silence means.
+        public var deliveredActionID: String?
 
         public init(
             idempotencyKey: String,
@@ -75,7 +83,8 @@ public actor ChatTimeline {
             text: String,
             clarificationOf: String?,
             startNewSession: Bool? = nil,
-            operationID: String?
+            operationID: String?,
+            deliveredActionID: String? = nil
         ) {
             self.idempotencyKey = idempotencyKey
             self.conversationID = conversationID
@@ -83,6 +92,7 @@ public actor ChatTimeline {
             self.clarificationOf = clarificationOf
             self.startNewSession = startNewSession
             self.operationID = operationID
+            self.deliveredActionID = deliveredActionID
         }
     }
 
@@ -355,7 +365,10 @@ public actor ChatTimeline {
         guard let pending = try loadPending() else { return nil }
         if let operationID = pending.operationID {
             let receipt = try await backend.operation(operationID: operationID)
-            return try await settle(receipt, pending: pending)
+            // The by-id read goes through the same gate as a fresh reply: the
+            // parked projection hands the action over on any read (review
+            // R6), so a restart re-arms the hand-off rather than bypassing it.
+            return try await runDeviceActionIfAny(receipt, pending: pending)
         }
         let receipt: OperationReceipt
         do {
@@ -373,10 +386,11 @@ public actor ChatTimeline {
         var updated = pending
         updated.operationID = receipt.operationID
         try savePending(updated)
-        // This branch anchored the operation *now*, so the turn really ran and
-        // the reply really can hand this device an action — the only time it
-        // ever travels. The by-id branch above cannot: a projection read-back
-        // never carries one.
+        // This branch anchored the operation *now*, so the reply really can
+        // hand this device an action. The by-id branch above does not lose the
+        // shape either: the parked projection hands the action over on any
+        // read (review R6), and `settle` handles a delivered action inside its
+        // poll loop through the same exactly-once gate.
         return try await runDeviceActionIfAny(receipt, pending: updated)
     }
 
@@ -606,35 +620,14 @@ public actor ChatTimeline {
         guard let envelope = receipt.deviceAction else {
             return try await settle(receipt, pending: pending)
         }
-        let reported: OperationReceipt
-        switch envelope.resolve() {
-        case .execute(let action):
-            if let executor = deviceActionExecutor {
-                // The operation's own id travels with the action: if the
-                // report reply is lost, the executor's parked-shape receipt
-                // must poll by the real operation id, never by the action id
-                // (which is the idempotency key the report endpoint answers
-                // on, not an operation id). Review R9, 2026-09-08.
-                reported = await executor.executeAndReport(
-                    action, settlesOperationID: receipt.operationID
-                )
-            } else {
-                reported = try await reportFailure(
-                    actionID: action.actionID,
-                    detail: "no executor is composed on this device"
-                )
-            }
-        case .refuse(let actionID, let error):
-            guard let actionID else {
-                // Cannot name what it refuses: nothing to report, and the
-                // polling loop below re-reads the real state either way.
-                return try await settle(receipt, pending: pending)
-            }
-            reported = try await reportFailure(
-                actionID: actionID,
-                detail: "the device refused the action: \(error)"
-            )
-        }
+        // The direct hand-off routes through the same exactly-once helper the
+        // poll path uses: the server now delivers the action on every reply
+        // that reads the parked projection, so the "same" action legitimately
+        // arrives twice (immediate reply, then a poll), and the second arrival
+        // must be a no-op. (Review R6, 2026-09-08.)
+        let reported = try await handleDeliveredAction(
+            envelope, pending: pending, pollReceipt: receipt
+        )
         // A settled report needs no polling; an unexpectedly non-terminal
         // projection still gets the bounded loop, reading the server's state
         // rather than trusting the report's echo.
@@ -645,6 +638,87 @@ public actor ChatTimeline {
             return reported
         }
         return try await settle(reported, pending: pending)
+    }
+
+    /// Execute (or skip, if already executed) a delivered device action and
+    /// report what happened. This is the exactly-once gate for every shape
+    /// that can carry an action — the direct chat reply and any poll that
+    /// read the parked projection (review R6, 2026-09-08).
+    ///
+    /// The delivery marker is persisted **before** the executor runs: a crash
+    /// between marker and report leaves an executed-but-unreported action,
+    /// which the server's sweep parks for review — the honest outcome. The
+    /// reverse order (report, then marker) would let a crash re-execute, and
+    /// a duplicate event is the one failure a retry may never produce.
+    private func handleDeliveredAction(
+        _ envelope: DeviceActionEnvelope,
+        pending: PendingSend,
+        pollReceipt: OperationReceipt
+    ) async throws -> OperationReceipt {
+        switch envelope.resolve() {
+        case .execute(let action):
+            guard try recordDelivery(actionID: action.actionID, pending: pending) else {
+                // Already executed on a previous delivery of this same
+                // action: report nothing and keep polling the server's
+                // state. The silence is the sweep's to interpret.
+                return pollReceipt
+            }
+            if let executor = deviceActionExecutor {
+                // The operation's own id travels with the action: if the
+                // report reply is lost, the executor's parked-shape receipt
+                // must poll by the real operation id, never by the action id
+                // (which is the idempotency key the report endpoint answers
+                // on, not an operation id). Review R9, 2026-09-08.
+                return await executor.executeAndReport(
+                    action, settlesOperationID: pollReceipt.operationID
+                )
+            } else {
+                return try await reportFailure(
+                    actionID: action.actionID,
+                    detail: "no executor is composed on this device"
+                )
+            }
+        case .refuse(let actionID, let error):
+            guard let actionID else {
+                // Cannot name what it refuses: nothing to report, and the
+                // polling loop re-reads the real state either way.
+                return pollReceipt
+            }
+            guard try recordDelivery(actionID: actionID, pending: pending) else {
+                // The refusal was already reported for this action.
+                return pollReceipt
+            }
+            return try await reportFailure(
+                actionID: actionID,
+                detail: "the device refused the action: \(error)"
+            )
+        }
+    }
+
+    /// Claim an action for execution: record its id as delivered and answer
+    /// whether *this* call won the right to run it.
+    ///
+    /// The marker lives on disk, not in memory — `PendingSend` is a value
+    /// type, and the poll loop must see what the last call actually wrote.
+    /// The check-then-write reads the stored record fresh, so a second
+    /// delivery of the same action (reply, then poll; or after a restart)
+    /// reads back the id and loses the claim — exactly once, by construction.
+    ///
+    /// The claim is persisted **before** the executor runs: a crash between
+    /// marker and report leaves an executed-but-unreported action, which the
+    /// server's sweep parks for review — the honest outcome. The reverse
+    /// order would let a crash re-execute, and a duplicate event is the one
+    /// failure a retry may never produce. A missing stored record (the slot
+    /// was already released) is read as "not mine to run" and also refuses:
+    /// executing into a released slot is how a duplicate is born.
+    private func recordDelivery(actionID: String, pending: PendingSend) throws -> Bool {
+        guard var stored = try loadPending(), stored.operationID == pending.operationID else {
+            return false
+        }
+        guard stored.deliveredActionID != actionID else { return false }
+        stored.deliveredActionID = actionID
+        try savePending(stored)
+        return true
     }
 
     /// Report an execution failure against the action's id and return the
@@ -671,6 +745,21 @@ public actor ChatTimeline {
             receipt = try await backend.operation(operationID: receipt.operationID)
             if let stage = Self.stage(of: receipt) {
                 await report(stage)
+            }
+            // The parked projection can hand the action over on any poll
+            // (review R6): a send that detached at 202, or a lost reply,
+            // reaches its action here. Executing it is what settles the
+            // operation, so the delivered action is handled inside the loop
+            // and the loop continues from the report's answer.
+            if let envelope = receipt.deviceAction, !receipt.outcome.isSettled {
+                let reported = try await handleDeliveredAction(
+                    envelope, pending: pending, pollReceipt: receipt
+                )
+                if reported.outcome.isSettled {
+                    receipt = reported
+                    break
+                }
+                receipt = reported
             }
         }
         if receipt.outcome.releasesPendingSlot {

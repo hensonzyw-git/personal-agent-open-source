@@ -904,6 +904,11 @@ async def agent_service(
                     build_authorizer=build_authorizer,
                     capabilities=capabilities,
                     sync_ingest=sync_ingest,
+                    # The same data keyring seals an issued device action onto
+                    # its operation (review R6); the explicit field keeps the
+                    # seal a visible seam instead of an implicit right of every
+                    # `keyring` call site.
+                    action_keyring=keyring,
                     now=now,
                     read_record=record_reader(control),
                     # A device is enrolled against the manifest this service is

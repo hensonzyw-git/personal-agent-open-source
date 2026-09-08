@@ -47,6 +47,7 @@ from personal_agent.api.calendar_query_projection import (
     decode_calendar_query_projection,
     summarise_calendar_projection,
 )
+from personal_agent.api.device_action_projection import open_device_action
 from personal_agent.api.finance_query_projection import (
     FinanceQueryProjectionError,
     decode_finance_query_projection,
@@ -255,6 +256,14 @@ class AgentApiDeps:
     #: merges the batch into the mirror. `None` means calendar sync is not
     #: composed and the route refuses rather than serving an unbound mirror.
     sync_ingest: Callable[[AuthContext, dict[str, Any]], dict[str, Any]] | None = None
+    #: The keyring that seals an issued device action onto its operation row
+    #: (review R6, 2026-09-08). Production composes the data keyring; the
+    #: separate field keeps the seal at a deliberate, visible seam rather than
+    #: letting every `keyring` call site implicitly gain write access to the
+    #: device-action column. `None` means device actions may not be issued,
+    #: and `run_operation` refuses one loudly instead of parking an
+    #: operation whose action nobody could ever deliver.
+    action_keyring: KeyRing | None = None
 
     def __post_init__(self) -> None:
         if self.sync_wait_seconds <= 0 or self.sync_wait_seconds > 30.0:
@@ -332,6 +341,15 @@ _CALENDAR_QUERY_RESULT_TOOLS = frozenset(
         "const"
     )
     == "apple_calendar_mirror"
+)
+
+#: The device-executed tools whose issued action the operation projection
+#: hands to the phone while the operation is parked (review R6). Derived from
+#: the IR's `executor` field like every other executor split, never
+#: hand-listed, so a second device tool is delivered by the same branch
+#: automatically.
+_DEVICE_EXECUTED_TOOLS = frozenset(
+    contract.name for contract in TOOL_CONTRACTS if contract.executor == "device"
 )
 
 
@@ -1815,6 +1833,7 @@ def _run_chat_turn(
             else None
         ),
         recorder=deps.recorder,
+        action_keyring=deps.action_keyring,
     )
     if result.state == "waiting_for_clarification":
         question = result.clarification
@@ -3020,13 +3039,14 @@ def _transient(result) -> dict[str, Any]:
         value = getattr(result, name, None)
         if value is not None:
             fields[name] = value
-    # The device-executed write travels to the phone as a transient field of
-    # the chat response itself: the response IS the hand-off to EventKit, and
-    # nothing about it is persisted on the operation (the operation parks at
-    # `source_in_progress` and is settled by the device's own report).
-    device_action = getattr(result, "device_action", None)
-    if device_action is not None:
-        fields["device_action"] = device_action
+    # The device action used to ride here as a transient field, which made the
+    # chat response the action's only delivery channel: a request that timed
+    # out at 202 lost the action while the operation stayed parked. The action
+    # is now sealed on the operation and delivered by `_operation_projection`
+    # while the operation sits at `source_in_progress` (review R6, 2026-09-08),
+    # so the 200 reply, the by-id poll and a replay all answer through the one
+    # door. The worker's copy is deliberately dropped -- two channels would
+    # mean two answers about what was handed over.
     return fields
 
 
@@ -3043,6 +3063,27 @@ def _operation_projection(
         "failure_reason": operation.failure_reason,
         "duplicate_check_id": operation.duplicate_check_id,
     }
+    if (
+        operation.state == "source_in_progress"
+        and operation.tool in _DEVICE_EXECUTED_TOOLS
+        and operation.encrypted_device_action is not None
+    ):
+        # Delivery-or-refusal (review R6, 2026-09-08). The issued action is
+        # sealed on the row, and this is its one delivery door: while the
+        # operation is parked, the 200 reply, the by-id poll and a replay all
+        # hand the same authorised action to the phone. The schema CHECK
+        # (`device_action_only_while_parked`) makes a settled state unable to
+        # carry a seal, so a read-back can never re-arm a finished write.
+        # An envelope that will not open (wrong key, tampering) omits the
+        # field instead of guessing: the operation stays parked and the
+        # timeout sweep is the witness, exactly as if nothing had been sealed.
+        action = open_device_action(
+            keyring,
+            operation_id=operation.operation_id,
+            envelope=operation.encrypted_device_action,
+        )
+        if action is not None:
+            projection["device_action"] = action
     if operation.safe_result is not None:
         if operation.state == "waiting_for_clarification":
             projection["clarification"] = operation.safe_result

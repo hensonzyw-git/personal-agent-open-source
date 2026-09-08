@@ -206,9 +206,13 @@ def plan_recovery(
     """
     if agent_state not in RECOVERABLE_OPERATION_STATES:
         raise ValueError(f"{agent_state} is not a recoverable operation state")
-    if executor == "device":
-        # Not Finance's to reconcile. The plan answers the caller's question
-        # (why nothing was projected) while changing nothing.
+    if executor == "device" and agent_state != _PRE_SUBMIT_RECOVERABLE:
+        # Not Finance's to reconcile, and not pre-submit: the response left, so
+        # settlement is the device report's or the timeout sweep's. LEAVE keeps
+        # it out of every projection while those own it. (The pre-submit device
+        # case is decided below, after the quiet-period guard — review R8,
+        # 2026-09-08: crashing in `dispatching` used to LEAVE the operation
+        # re-scanned forever instead of resolving it.)
         return RecoveryPlan(
             RecoveryAction.LEAVE,
             reason=(
@@ -225,6 +229,22 @@ def plan_recovery(
         return RecoveryPlan(
             RecoveryAction.LEAVE,
             reason="a live worker may still own this operation",
+        )
+
+    if executor == "device":
+        # Quiet, pre-submit, device-executed: the crash happened before the
+        # response could carry the action anywhere. The chat response is the
+        # only delivery channel a device action has, so this is zero-write
+        # evidence by construction — the same rule as Finance's own
+        # no-execution pre-submit branch below. (Review R8, 2026-09-08.)
+        return RecoveryPlan(
+            RecoveryAction.RESOLVE,
+            target_state="failed_safe",
+            reason=(
+                "device action crashed in dispatching: the response is the only "
+                "delivery channel and it never left, so nothing was handed to "
+                "the phone"
+            ),
         )
 
     if finance_status is None:

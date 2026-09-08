@@ -489,3 +489,191 @@ struct DeviceActionFlowTests {
         #expect(final.state == .succeeded)
     }
 }
+// --- review R6: the poll path must deliver a parked device action exactly once
+
+@Suite("Device action delivery on the poll path", .serialized)
+struct DeviceActionPollDeliveryTests {
+
+    /// The chat POST detaches (202, synthetic body, no action on it). The
+    /// operation is parked at `source_in_progress`, and the poll — the same
+    /// projection the server answers every `GET /v1/operations/{id}` with —
+    /// carries the action. Executing it is what settles the operation.
+    @Test("a delivered action rides the poll and is executed once")
+    func deliveredActionOnPollIsExecuted() async throws {
+        let service = Service()
+        service.answer { call, seen in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                // The detached synthetic body: no action travels here.
+                return .accepted(chatReceipt("accepted"))
+            case ("GET", "/v1/operations/op-1"):
+                if seen == 0 {
+                    // First poll: parked, and the action is on it.
+                    var receipt = chatReceipt(
+                        "source_in_progress", tool: "calendar.create_event"
+                    )
+                    receipt["device_action"] = Self.actionPayload()
+                    return .ok(receipt)
+                }
+                // Later polls: the report already settled it.
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-NEW-1"
+                ))
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-NEW-1"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, store) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        let final = try await chat.send(text: "周六下午三点网球")
+
+        #expect(executor.actions.count == 1)
+        #expect(executor.actions.first?.actionID == Self.actionPayload()["action_id"] as? String)
+        #expect(service.count("POST", "/v1/device-actions/018f0000-0000-7000-8000-00000000cafe/result") == 1)
+        #expect(final.state == .succeeded)
+        #expect(final.recordID == "EK-NEW-1")
+        #expect(try store.read(CredentialKey.pendingChatSend) == nil)
+    }
+
+    /// The delivery marker is durable: an app restart after a lost report
+    /// reply resumes the same operation, and the poll hands the action over
+    /// again — but an action this device already executed must never run a
+    /// second time. Re-running is how a duplicate event gets born; the sweep,
+    /// not a re-execution, is what owns the silence.
+    @Test("a resumed operation never re-executes an already-delivered action")
+    func resumedOperationDoesNotReexecute() async throws {
+        let service = Service()
+        service.answer { call, seen in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                return .accepted(chatReceipt("accepted"))
+            case ("GET", "/v1/operations/op-1"):
+                if seen < 4 {
+                    // Parked the whole time: the projection hands the action
+                    // over on every read, so polls 1–3 re-deliver it to the
+                    // settle loop that already executed it — the redelivery
+                    // the marker must absorb without a second run.
+                    var receipt = chatReceipt(
+                        "source_in_progress", tool: "calendar.create_event"
+                    )
+                    receipt["device_action"] = Self.actionPayload()
+                    return .ok(receipt)
+                }
+                // The resume's by-id read: the report's CAS finally landed.
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-NEW-1"
+                ))
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                // The first execution's report never settled the operation
+                // (its reply was lost in flight), so the operation stays
+                // parked and the projection keeps re-offering the action.
+                return .ok(chatReceipt("source_in_progress", tool: "calendar.create_event"))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, store) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        // First send: executes the delivered action once; the report never
+        // settles it, the four polls all re-deliver, and the pending record
+        // survives with the marker on disk. The execute count proves the
+        // re-deliveries inside the settle loop were absorbed silently —
+        // a second execution would make this 5, not 1.
+        _ = try await chat.send(text: "周六下午三点网球")
+        #expect(executor.actions.count == 1)
+        #expect(service.count("GET", "/v1/operations/op-1") >= 4)
+
+        // Resume (what `resume()` does after a restart): the by-id read
+        // finds the settled operation. The action is not re-offered on it —
+        // but if the read had caught the still-parked shape, the marker
+        // would have to refuse it just the same.
+        let final = try await chat.resume()
+
+        #expect(executor.actions.count == 1)
+        #expect(final?.state == .succeeded)
+        #expect(try store.read(CredentialKey.pendingChatSend) == nil)
+    }
+
+    /// A resume whose stored marker predates the poll's action has no marker:
+    /// the first poll delivery *is* the first execution. This is the fresh
+    /// detach + restart shape — the send exhausts its polls before the
+    /// worker parks the operation, so the by-id read on resume is the
+    /// delivery — and it must execute exactly once, not zero.
+    @Test("a resumed operation with no delivered marker executes the polled action")
+    func resumedFreshOperationExecutesPolledAction() async throws {
+        let service = Service()
+        service.answer { call, seen in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                return .accepted(chatReceipt("accepted"))
+            case ("GET", "/v1/operations/op-1"):
+                if seen < 4 {
+                    // The first send's polls: the worker is still running,
+                    // nothing parked yet, no action anywhere. The send gives
+                    // up and leaves the pending record with no marker.
+                    return .ok(chatReceipt(
+                        "source_in_progress", tool: "calendar.create_event"
+                    ))
+                }
+                if seen == 4 {
+                    // The resume's by-id read: parked now, action on it.
+                    var receipt = chatReceipt(
+                        "source_in_progress", tool: "calendar.create_event"
+                    )
+                    receipt["device_action"] = Self.actionPayload()
+                    return .ok(receipt)
+                }
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-NEW-1"
+                ))
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-NEW-1"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        // The send detaches and exhausts its polls without ever seeing an
+        // action; the resume is the delivery.
+        let detached = try await chat.send(text: "周六下午三点网球")
+        #expect(executor.actions.count == 0)
+        #expect(detached.state == .sourceInProgress)
+
+        let final = try await chat.resume()
+
+        #expect(executor.actions.count == 1)
+        #expect(final?.state == .succeeded)
+    }
+
+    private static func actionPayload() -> [String: Any] {
+        [
+            "action_id": "018f0000-0000-7000-8000-00000000cafe",
+            "tool": "calendar.create_event",
+            "event": [
+                "title": "网球",
+                "start": "2026-09-12T15:00:00Z",
+                "end": "2026-09-12T16:30:00Z",
+                "all_day": false,
+            ],
+        ]
+    }
+}

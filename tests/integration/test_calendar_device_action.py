@@ -177,6 +177,18 @@ def op_session(tmp_path):
     engine.dispose()
 
 
+def _action_keyring(kid: str = "agent-data-2026"):
+    """A real keyring so the seal is a real envelope, not a test stub.
+
+    The projection later has to *open* what the orchestrator sealed, so the
+    failing shapes (tampered envelope, wrong key) are only reproducible with
+    the production crypto in the loop.
+    """
+    from personal_agent_core.crypto import KeyRing, generate_key
+
+    return KeyRing([generate_key(kid, state="active")], service="personal-agent")
+
+
 def _make_operation(session) -> object:
     from datetime import datetime, timezone
 
@@ -235,7 +247,13 @@ def test_apply_resolve_moves_device_action_to_source_in_progress(op_session) -> 
             event_fields=dict(CAL_ARGS),
         )
         result = _apply_resolve(
-            session, operation, outcome, dispatcher=None, keyring=None, now=now
+            session,
+            operation,
+            outcome,
+            dispatcher=None,
+            keyring=None,
+            now=now,
+            action_keyring=_action_keyring(),
         )
         session.commit()
 
@@ -249,14 +267,17 @@ def test_apply_resolve_moves_device_action_to_source_in_progress(op_session) -> 
             "tool": "calendar.create_event",
             "event": dict(CAL_ARGS),
         }
+        # And it is sealed on the row in the same transition, so the poll can
+        # hand it over when the response did not (review R6).
+        assert operation.encrypted_device_action is not None
 
 
-def test_device_action_rides_the_chat_response_as_transient() -> None:
-    """The response IS the hand-off: `_transient` must carry the issued action
-    onto the chat body, or the phone would never see the event it is supposed
-    to create. It is transient because the operation parks at
-    `source_in_progress` and is settled by the device's own report; nothing
-    about the action is persisted into the projection."""
+def test_device_action_no_longer_rides_the_chat_response_as_transient() -> None:
+    """One delivery door, not two (review R6). The action is sealed on the
+    operation and handed over by the projection while parked, so the worker's
+    transient copy is dropped: the 200 reply, the by-id poll and a replay all
+    answer the same projection, and two channels could never be made to agree
+    about what was handed over."""
     from types import SimpleNamespace
 
     from personal_agent.api.app import _transient
@@ -271,13 +292,7 @@ def test_device_action_rides_the_chat_response_as_transient() -> None:
             "event": dict(CAL_ARGS),
         },
     )
-    assert _transient(result) == {
-        "device_action": {
-            "action_id": "action-key-1",
-            "tool": "calendar.create_event",
-            "event": dict(CAL_ARGS),
-        }
-    }
+    assert _transient(result) == {}
     # A plain turn (no device action) carries nothing new.
     plain = SimpleNamespace(
         answer="好的",
@@ -443,3 +458,291 @@ def test_sweep_never_touches_finance_operations(op_session) -> None:
         session.refresh(operation)
         assert result == []
         assert operation.state == "source_in_progress"
+
+
+# --- review R8: a device action crashed in `dispatching` must not be stuck ----
+
+
+def test_a_device_operation_crashed_in_dispatching_fails_safe(op_session) -> None:
+    """Review R8, reproduced: `dispatching` means the action was never handed
+    to the response, so the phone never received it — zero-write evidence by
+    construction. Recovery must resolve it to `failed_safe`, not LEAVE it in a
+    recoverable state forever, re-scanned and never settled."""
+    from personal_agent.api.recovery import RecoveryAction, plan_recovery
+
+    _ = op_session
+    plan = plan_recovery("dispatching", None, quiet=True, executor="device")
+    assert plan.action is RecoveryAction.RESOLVE
+    assert plan.target_state == "failed_safe"
+    # The reason states the evidence: the response is the only channel that
+    # carries a device action, and it never left.
+    assert "dispatch" in plan.reason
+
+
+def test_a_device_operation_in_dispatching_is_not_quiet_yet_left_alone(
+    op_session,
+) -> None:
+    """A live worker may still be between dispatch and the response: only the
+    quiet period turns the crash into evidence."""
+    from personal_agent.api.recovery import RecoveryAction, plan_recovery
+
+    _ = op_session
+    plan = plan_recovery("dispatching", None, quiet=False, executor="device")
+    assert plan.action is RecoveryAction.LEAVE
+
+
+def test_a_crashed_dispatching_device_operation_is_swept_by_recovery(
+    op_session,
+) -> None:
+    """End to end: an operation parked at `dispatching` on a device tool is
+    resolved to `failed_safe` by the recovery scan, and leaves the
+    recoverable set."""
+    from datetime import datetime, timedelta, timezone
+
+    from personal_agent.api.recovery import recover_pending
+
+    def _no_finance_execution(idempotency_key):
+        # The `read_status` callable shape: no execution exists for any key.
+        return None
+
+    factory, now = op_session
+    with factory() as session:
+        operation = _make_operation(session)
+        # `_make_operation` parks the operation at `dispatching` already.
+        session.refresh(operation)
+        operation_id = operation.operation_id
+
+    # The quiet period passes with the worker dead.
+    with factory() as session:
+        results = recover_pending(
+            session,
+            _no_finance_execution,
+            now=datetime(2026, 9, 7, 8, 0, tzinfo=timezone.utc) + timedelta(hours=1),
+        )
+        session.commit()
+
+    plans = dict(results)
+    assert operation_id in plans
+    assert plans[operation_id].target_state == "failed_safe"
+    from personal_agent.storage.models import Operation
+
+    with factory() as session:
+        operation = session.get(Operation, operation_id)
+        assert operation is not None
+        assert operation.state == "failed_safe"
+
+
+# --- review R6: the 202 path must still hand over the device action ----------
+
+
+def test_the_issued_action_is_sealed_on_the_operation_in_the_same_transition(
+    op_session,
+) -> None:
+    """Review R6: a device action that only ever rides the chat response is
+    lost when the request times out at 202 — the operation parks at
+    `source_in_progress` with the action nobody delivered. The seal must be
+    written in the same committed transition that steps to
+    `source_in_progress`, so the parked operation and its undelivered action
+    become durable together."""
+    from personal_agent.api.orchestrator import _apply_resolve
+
+    factory, now = op_session
+    with factory() as session:
+        operation = _make_operation(session)
+        outcome = DeviceActionIssued(
+            action_id="action-key-1",
+            tool="calendar.create_event",
+            event_fields=dict(CAL_ARGS),
+        )
+        result = _apply_resolve(
+            session,
+            operation,
+            outcome,
+            dispatcher=None,
+            keyring=None,
+            now=now,
+            action_keyring=_action_keyring(),
+        )
+        session.commit()
+
+        assert result.state == "source_in_progress"
+        session.refresh(operation)
+        # The envelope is sealed (an EncryptedEnvelope column refuses
+        # plaintext, and the dict here is the sealed shape).
+        envelope = operation.encrypted_device_action
+        assert envelope is not None
+        assert {"v", "kid", "nonce", "ciphertext", "tag"} <= set(envelope)
+
+
+def test_the_projection_hands_the_action_over_while_parked(op_session) -> None:
+    """The parked operation's poll must carry the action: the client that
+    detached at 202 polls by id, and this projection is its only door. The
+    action handed over is exactly the one that was authorised."""
+    from personal_agent.api.app import _operation_projection
+    from personal_agent.api.orchestrator import _apply_resolve
+
+    factory, now = op_session
+    keyring = _action_keyring()
+    with factory() as session:
+        operation = _make_operation(session)
+        _apply_resolve(
+            session,
+            operation,
+            DeviceActionIssued(
+                action_id="action-key-1",
+                tool="calendar.create_event",
+                event_fields=dict(CAL_ARGS),
+            ),
+            dispatcher=None,
+            keyring=None,
+            now=now,
+            action_keyring=keyring,
+        )
+        session.commit()
+        session.refresh(operation)
+
+        projection = _operation_projection(keyring, operation)
+        assert projection["device_action"] == {
+            "action_id": "action-key-1",
+            "tool": "calendar.create_event",
+            "event": dict(CAL_ARGS),
+        }
+
+
+def test_a_settled_operation_refuses_to_hand_the_action_over(op_session) -> None:
+    """Delivery-or-refusal: once the operation has settled, the action must
+    not travel again. A poll answered after the device's own report carries
+    the settled projection, never a re-executable action — replaying one
+    would let a stale read re-arm a finished write."""
+    from personal_agent.api.app import _operation_projection
+    from personal_agent.api.operation_store import transition_operation
+    from personal_agent.api.orchestrator import _apply_resolve
+
+    factory, now = op_session
+    keyring = _action_keyring()
+    with factory() as session:
+        operation = _make_operation(session)
+        _apply_resolve(
+            session,
+            operation,
+            DeviceActionIssued(
+                action_id="action-key-1",
+                tool="calendar.create_event",
+                event_fields=dict(CAL_ARGS),
+            ),
+            dispatcher=None,
+            keyring=None,
+            now=now,
+            action_keyring=keyring,
+        )
+        session.commit()
+        session.refresh(operation)
+        transition_operation(
+            session,
+            operation_id=operation.operation_id,
+            current_state=operation.state,
+            current_version=operation.state_version,
+            target_state="needs_manual_review",
+            failure_reason="device report timed out; the write may exist",
+            now=now,
+        )
+        session.commit()
+        session.refresh(operation)
+
+        projection = _operation_projection(keyring, operation)
+        assert "device_action" not in projection
+        # Settlement closes the delivery window centrally: leaving
+        # `source_in_progress` clears the seal, so no future settlement path
+        # can forget to, and the schema CHECK backstops the mechanism.
+        assert operation.encrypted_device_action is None
+
+
+def test_an_unopenable_action_envelope_fails_closed(op_session) -> None:
+    """A sealed action that will not open (wrong key, tampered envelope) must
+    not surface as an exception on a poll and must never surface as a
+    guessed action. The projection omits the field; the timeout sweep is the
+    remaining witness, exactly as for an envelope that never existed."""
+    from personal_agent.api.app import _operation_projection
+    from personal_agent.api.orchestrator import _apply_resolve
+
+    factory, now = op_session
+    keyring = _action_keyring()
+    other = _action_keyring(kid="agent-data-other")
+    with factory() as session:
+        operation = _make_operation(session)
+        _apply_resolve(
+            session,
+            operation,
+            DeviceActionIssued(
+                action_id="action-key-1",
+                tool="calendar.create_event",
+                event_fields=dict(CAL_ARGS),
+            ),
+            dispatcher=None,
+            keyring=None,
+            now=now,
+            action_keyring=other,
+        )
+        session.commit()
+        session.refresh(operation)
+
+        projection = _operation_projection(keyring, operation)
+        assert "device_action" not in projection
+
+
+def test_the_transient_channel_no_longer_carries_the_action(op_session) -> None:
+    """One delivery channel, not two: with the seal on the operation, the
+    projection is the single door. `_transient` keeping its own copy would
+    mean the 200 path and the poll answer could disagree about what was
+    handed over."""
+    from types import SimpleNamespace
+
+    from personal_agent.api.app import _transient
+
+    result = SimpleNamespace(
+        answer=None,
+        clarification=None,
+        duplicate_existing=None,
+        device_action={
+            "action_id": "action-key-1",
+            "tool": "calendar.create_event",
+            "event": dict(CAL_ARGS),
+        },
+    )
+    assert _transient(result) == {}
+
+
+def test_a_finance_operation_never_carries_a_device_action(op_session) -> None:
+    """The projection hands an action over only for a device-executed tool:
+    a Finance operation parked at `source_in_progress` is a governed write in
+    flight, and inventing a device action for it would invite the client to
+    execute something no policy authorised."""
+    from personal_agent.api.app import _operation_projection
+    from personal_agent.api.orchestrator import _apply_resolve
+
+    factory, now = op_session
+    keyring = _action_keyring()
+    with factory() as session:
+        operation = _make_operation(session)
+        _apply_resolve(
+            session,
+            operation,
+            DeviceActionIssued(
+                action_id="action-key-1",
+                tool="calendar.create_event",
+                event_fields=dict(CAL_ARGS),
+            ),
+            dispatcher=None,
+            keyring=None,
+            now=now,
+            action_keyring=keyring,
+        )
+        session.commit()
+        session.refresh(operation)
+        # Forged row: the tool does not match the executor the seal came from.
+        operation.tool = "finance.log_expense"
+        session.commit()
+        session.refresh(operation)
+
+        projection = _operation_projection(keyring, operation)
+        assert "device_action" not in projection

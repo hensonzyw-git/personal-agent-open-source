@@ -593,6 +593,25 @@ class Operation(Base):
     encrypted_result_record: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedEnvelope, nullable=True
     )
+    #: The device action issued for this operation (`calendar.create_event`),
+    #: sealed on the row in the same committed transition that parks the
+    #: operation at `source_in_progress` (review R6, 2026-09-08).
+    #:
+    #: Why it exists: the chat response used to be the action's only delivery
+    #: channel, and a request that timed out at 202 lost the action while the
+    #: operation stayed parked. With the seal, the operation projection is the
+    #: one delivery door -- the 200 reply, the by-id poll and a replay all
+    #: converge on the same parked-state read -- and a settled operation
+    #: refuses to hand the action over, so a stale read can never re-execute a
+    #: finished write.
+    #:
+    #: Sealed because the event fields are the user's personal schedule and
+    #: the model-authorised intent itself; the same exposure rule that governs
+    #: `encrypted_result_record` applies, and the Timeline's copy already
+    #: travels inside `encrypted_content`.
+    encrypted_device_action: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
     #: What a human concluded after looking at the ledger, for an operation that
     #: ended at `needs_manual_review`. A *flag*, not a state, for the same reason
     #: `cancel_requested` is one: the accounting outcome belongs to the state
@@ -628,6 +647,21 @@ class Operation(Base):
             "encrypted_result_record IS NULL"
             " OR state IN ('succeeded', 'needs_manual_review')",
             name="result_record_only_where_written",
+        ),
+        # An undelivered device action may only sit on an operation parked at
+        # `source_in_progress` — the one state whose meaning is "the write was
+        # authorised and handed off, the executor may act". A settled state
+        # carrying a live action would let a stale read re-arm a finished
+        # write, so settlement clears the seal (`transition_operation` does it
+        # centrally when leaving `source_in_progress`) and this constraint
+        # makes any future settlement path that forgets to fail loudly
+        # instead of silently re-arming an action. (`failed_safe` never holds
+        # one: the pre-submit recovery walk to `failed_safe` is exactly the
+        # case where no response ever carried the action anywhere. Review R6,
+        # 2026-09-08.)
+        CheckConstraint(
+            "encrypted_device_action IS NULL OR state = 'source_in_progress'",
+            name="device_action_only_while_parked",
         ),
         CheckConstraint(
             _in_set("manual_resolution", MANUAL_RESOLUTIONS)
