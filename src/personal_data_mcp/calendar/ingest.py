@@ -1,18 +1,27 @@
 """Merge a device-reported calendar snapshot into the mirror.
 
-The arbitration rule is the whole design: the device is the fact source, but
-its uploads may arrive out of order (a foreground refresh racing a retry), so
-every row carries the device's own `last_modified` and the merge is
-monotonic —
+The device is the fact source, but EventKit exposes no per-event modification
+time, so the **snapshot instant** (`snapshot_as_of`, identical across every
+batch of one window) is the only honest version the mirror can arbitrate on.
+The rules:
 
-- strictly newer `last_modified` overwrites;
-- equal or older `last_modified` skips, no matter what the fields say;
-- only a `window_complete` final chunk may tombstone window rows it did not
-  mention, and a tombstone can only be cleared by a strictly newer copy.
+- A batch whose snapshot is not newer than the device's watermark may upsert
+  rows, but may **never tombstone anything**: the sweep is a property of a
+  completed, current snapshot, not of any single batch.
+- Within one snapshot, rows merge monotonically on the device's own
+  `last_modified` (strictly newer overwrites; equal or older skips) — but a
+  row whose stored version equals this snapshot's instant is *re-asserted*:
+  a straggler chunk arriving after its own snapshot's sweep revives the rows
+  that snapshot holds (its testimony is this snapshot's, so it cannot lose
+  to a tombstone the same sweep wrote).
+- Only a `window_complete` batch whose snapshot is strictly newer than the
+  watermark sweeps the window: rows *not* part of this snapshot (stored
+  version ≠ snapshot instant) are tombstoned, and the tombstone's version is
+  the snapshot instant, so only a newer snapshot's assertion can clear it.
 
-The last property is what keeps a delayed chunk holding a pre-deletion copy
-from resurrecting a deleted event: the tombstone was written by evidence
-(newer state), and only newer evidence un-writes evidence.
+A per-device watermark (`calendar_device_sync`) records the newest completed
+snapshot and is also the freshness source: a partial upload never reads as
+fresh (review R2/R3/R10, 2026-09-08).
 
 One malformed batch fails whole, per the project's adversarial rule: no silent
 triage. A device that sends an incoherent snapshot is told to resend a
@@ -23,14 +32,16 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Final
+
+from sqlalchemy import select
 
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import parse_rfc3339
-from personal_data_mcp.storage.models import CalendarEvent
+from personal_data_mcp.storage.models import CalendarDeviceSync, CalendarEvent
 
 
 TABLE: Final[str] = "calendar_events"
@@ -39,17 +50,22 @@ MAX_WINDOW_DAYS: Final[int] = 400
 
 _SEALED_COLUMNS: Final[tuple[str, ...]] = ("title", "notes", "location")
 
+_UTC: Final[timezone] = timezone.utc
+
 
 def _epoch(moment: datetime) -> int:
     return int(moment.timestamp())
 
 
-def _validate(arguments: dict[str, Any], now: datetime) -> tuple[datetime, datetime, bool]:
+def _validate(
+    arguments: dict[str, Any], now: datetime
+) -> tuple[datetime, datetime, bool, datetime]:
     try:
         window_start = parse_rfc3339(arguments["window_start"])
         window_end = parse_rfc3339(arguments["window_end"])
         events = arguments["events"]
         window_complete = arguments["window_complete"]
+        snapshot_as_of = parse_rfc3339(arguments["snapshot_as_of"])
     except (KeyError, TypeError, ValueError) as exc:
         raise AppError(
             ErrorCode.INVALID_ARGUMENT,
@@ -75,7 +91,12 @@ def _validate(arguments: dict[str, Any], now: datetime) -> tuple[datetime, datet
             ErrorCode.INVALID_ARGUMENT,
             internal_detail=f"calendar ingest window exceeds {MAX_WINDOW_DAYS} days",
         )
-    return window_start, window_end, window_complete
+    if snapshot_as_of > now:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail="calendar ingest snapshot_as_of lies in the future",
+        )
+    return window_start, window_end, window_complete, snapshot_as_of
 
 
 def _row_from_event(
@@ -84,6 +105,7 @@ def _row_from_event(
     window_start: datetime,
     window_end: datetime,
     synced_at: datetime,
+    snapshot_ts: int,
     device_id: str,
     keyring: KeyRing,
 ) -> CalendarEvent:
@@ -91,7 +113,10 @@ def _row_from_event(
 
     A row disjoint from the declared window means the device and the snapshot
     disagree about what was being reported; that is a broken batch, not an
-    event to quietly widen the window for.
+    event to quietly widen the window for. The row's version is the snapshot
+    instant (`snapshot_ts`) — the only honest timestamp EventKit lets the
+    device vouch for; the per-event `last_modified` the schema still carries
+    is merged between snapshots but never arbitrates sweeps.
     """
     try:
         event_identifier = event["event_identifier"]
@@ -140,6 +165,7 @@ def _row_from_event(
         all_day=all_day,
         is_deleted=False,
         last_modified_ts=_epoch(last_modified),
+        snapshot_ts=snapshot_ts,
         synced_at=synced_at,
         created_by_agent=False,
         device_id=device_id,
@@ -188,13 +214,26 @@ def ingest_events(
     now: datetime,
 ) -> dict[str, Any]:
     """Merge one snapshot batch. Structural idempotency: replays skip."""
-    window_start, window_end, window_complete = _validate(arguments, now)
+    window_start, window_end, window_complete, snapshot_as_of = _validate(
+        arguments, now
+    )
     events = arguments["events"]
+    snapshot_ts = _epoch(snapshot_as_of)
 
     def work() -> dict[str, Any]:
         upserted = 0
         skipped = 0
         incoming_ids: set[tuple[str, str]] = set()
+
+        watermark_row = (
+            session.get(CalendarDeviceSync, device_id)
+        )
+        watermark_ts = watermark_row.watermark_ts if watermark_row else None
+        #: A snapshot at or older than the watermark is still honest evidence
+        #: about the rows it holds (a straggler may trail its own sweep), but
+        #: it has no standing to tombstone: only the newest completed snapshot
+        #: of a device speaks for its whole window.
+        may_sweep = window_complete and (watermark_ts is None or snapshot_ts > watermark_ts)
 
         for event in events:
             if not isinstance(event, dict):
@@ -207,6 +246,7 @@ def ingest_events(
                 window_start=window_start,
                 window_end=window_end,
                 synced_at=now,
+                snapshot_ts=snapshot_ts,
                 device_id=device_id,
                 keyring=keyring,
             )
@@ -227,11 +267,33 @@ def ingest_events(
                 .one_or_none()
             )
             if existing is not None and row.last_modified_ts <= existing.last_modified_ts:
-                skipped += 1
+                # Equal or older `last_modified` carries no new field evidence
+                # — with one exception: a row whose stored snapshot version is
+                # *this same* snapshot has been re-asserted by it (a straggler
+                # chunk trailing its own sweep). That assertion clears the
+                # sweep's own tombstone, because the tombstone's version is
+                # exactly this snapshot: the snapshot contradicts itself, and
+                # the member list is the part it vouches for.
+                same_snapshot_reassertion = (
+                    existing.snapshot_ts == snapshot_ts
+                    and existing.is_deleted
+                )
+                if not same_snapshot_reassertion:
+                    skipped += 1
+                    continue
+                existing.is_deleted = False
+                existing.synced_at = row.synced_at
+                existing.device_id = row.device_id
+                upserted += 1
                 continue
             if existing is not None:
-                # Monotonic merge: take the newer evidence, keep the identity
-                # (and the existing tombstone) unless this copy is newer.
+                # Monotonic merge: strictly newer `last_modified` takes the
+                # fields. A tombstone is only cleared by evidence from a
+                # snapshot at least as new as the tombstone's version — and
+                # the watermark rule has already refused sweeps from stale
+                # snapshots, so a strictly newer `last_modified` from a
+                # snapshot the device still considers current is exactly that
+                # evidence.
                 existing.start_ts = row.start_ts
                 existing.end_ts = row.end_ts
                 existing.all_day = row.all_day
@@ -239,6 +301,7 @@ def ingest_events(
                 existing.notes = row.notes
                 existing.location = row.location
                 existing.last_modified_ts = row.last_modified_ts
+                existing.snapshot_ts = snapshot_ts
                 existing.synced_at = row.synced_at
                 existing.device_id = row.device_id
                 existing.is_deleted = False
@@ -249,7 +312,7 @@ def ingest_events(
             upserted += 1
 
         marked_deleted = 0
-        if window_complete:
+        if may_sweep:
             start_bound = _epoch(window_start)
             end_bound = _epoch(window_end)
             for existing in (
@@ -257,15 +320,44 @@ def ingest_events(
                 .filter(
                     CalendarEvent.start_ts < end_bound,
                     CalendarEvent.end_ts > start_bound,
-                    CalendarEvent.is_deleted.is_(False),
                 )
                 .all()
             ):
-                if (existing.calendar_identifier, existing.event_identifier) not in (
+                if (existing.calendar_identifier, existing.event_identifier) in (
                     incoming_ids
                 ):
+                    continue
+                # A row whose snapshot version is this very snapshot was
+                # re-asserted by it (a straggler of the same snapshot); the
+                # sweep must not delete what its own snapshot holds. Rows
+                # from *other* snapshots — including older tombstones — are
+                # absent from this snapshot and are swept.
+                if existing.snapshot_ts == snapshot_ts:
+                    continue
+                if not existing.is_deleted:
+                    # The tombstone is versioned like any other row state: its
+                    # version is *this deleting* snapshot's instant, so a later
+                    # chunk of the same snapshot can recognise its own sweep
+                    # and revoke it, while a straggler from an *older* snapshot
+                    # — whose version no longer matches anything — can neither
+                    # match the reassertion rule nor clear the tombstone.
                     existing.is_deleted = True
+                    existing.last_modified_ts = snapshot_ts
+                    existing.snapshot_ts = snapshot_ts
                     marked_deleted += 1
+
+        if window_complete and (watermark_ts is None or snapshot_ts > watermark_ts):
+            if watermark_row is None:
+                session.add(
+                    CalendarDeviceSync(
+                        device_id=device_id,
+                        watermark_ts=snapshot_ts,
+                        updated_at=now,
+                    )
+                )
+            else:
+                watermark_row.watermark_ts = snapshot_ts
+                watermark_row.updated_at = now
 
         return {
             "status": "ok",
@@ -277,3 +369,12 @@ def ingest_events(
     # No external call happens inside this unit, so a lost snapshot may retry.
     with sessions() as session:
         return run_write_transaction(session, work)
+
+
+def device_watermark(sessions, *, device_id: str) -> datetime | None:
+    """The instant of this device's newest completed snapshot, or None."""
+    with sessions() as session:
+        row = session.get(CalendarDeviceSync, device_id)
+        if row is None:
+            return None
+        return datetime.fromtimestamp(row.watermark_ts, tz=_UTC)

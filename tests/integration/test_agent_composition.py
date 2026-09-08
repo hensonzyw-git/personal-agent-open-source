@@ -1932,6 +1932,7 @@ def test_calendar_sync_crosses_both_composition_roots_offline(
             }
         ],
         "window_complete": True,
+        "snapshot_as_of": "2026-09-07T07:30:00+00:00",
     }
     try:
 
@@ -2005,6 +2006,7 @@ def test_calendar_sync_refuses_a_device_without_the_current_manifest(
         "window_end": "2026-09-08T00:00:00+08:00",
         "events": [],
         "window_complete": True,
+        "snapshot_as_of": "2026-09-07T07:30:00+00:00",
     }
     try:
 

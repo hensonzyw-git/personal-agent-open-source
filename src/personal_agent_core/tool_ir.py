@@ -1094,7 +1094,11 @@ _CALENDAR_EVENT_FIELDS: Final[dict[str, Any]] = {
             "minLength": 1,
             "description": "该事件所在日历的标识。",
         },
-        "title": {"type": "string", "maxLength": 80},
+        "title": {
+            "type": ["string", "null"],
+            "maxLength": 80,
+            "description": "EventKit 允许无标题事件，null 是事实而非缺字段。",
+        },
         "start": {
             "type": "string",
             "format": "date-time",
@@ -1238,7 +1242,10 @@ _CALENDAR_QUERY_OUTPUT: Final[dict[str, Any]] = {
         "data_as_of": {
             "type": "string",
             "format": "date-time",
-            "description": "日历镜像最近一次同步的时间。",
+            "description": (
+                "日历镜像最近一次完整快照的拍摄瞬间。从未完成过快照时，实现"
+                "以查询时刻占位并令 mirror_stale=true——该字段保证非 null。"
+            ),
         },
         "mirror_stale": {"type": "boolean"},
         "source_system": {"const": "apple_calendar_mirror"},
@@ -1248,7 +1255,13 @@ _CALENDAR_QUERY_OUTPUT: Final[dict[str, Any]] = {
 _CALENDAR_INGEST_INPUT: Final[dict[str, Any]] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["window_start", "window_end", "events", "window_complete"],
+    "required": [
+        "window_start",
+        "window_end",
+        "events",
+        "window_complete",
+        "snapshot_as_of",
+    ],
     "properties": {
         "window_start": {
             "type": "string",
@@ -1259,6 +1272,15 @@ _CALENDAR_INGEST_INPUT: Final[dict[str, Any]] = {
             "type": "string",
             "format": "date-time",
             "description": "本次快照窗口结束。",
+        },
+        "snapshot_as_of": {
+            "type": "string",
+            "format": "date-time",
+            "description": (
+                "本次快照的拍摄瞬间（UTC）。同一窗口的每个分批必须携带同一值："
+                "它是镜像的唯一版本号——EventKit 没有逐事件修改时间，快照瞬间"
+                "就是设备能提供的全部版本证据。"
+            ),
         },
         "events": {
             "type": "array",
@@ -1294,8 +1316,9 @@ _CALENDAR_INGEST_INPUT: Final[dict[str, Any]] = {
         "window_complete": {
             "type": "boolean",
             "description": (
-                "本批是否已把窗口内全部事件送完。为 true 时，窗口内未在本批"
-                "出现的既有镜像行会被标记删除——设备是日历的事实源。"
+                "本批是否已把窗口内全部事件送完。为 true 且快照版本新于该设备"
+                "水位时，窗口内不属于本次快照的既有镜像行会被标记删除——设备是"
+                "日历的事实源。"
             ),
         },
     },

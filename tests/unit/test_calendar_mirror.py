@@ -78,17 +78,29 @@ def sessions(tmp_path: Path):
     engine = create_database_engine(tmp_path / "calendar.sqlite")
     db.upgrade(engine, "head")
     factory = session_factory(engine)
+    _SNAPSHOT_TICK[0] = 0
     yield factory
     engine.dispose()
 
 
-def _ingest(sessions, events, *, window_complete=True, device_id="dev-1"):
+_SNAPSHOT_TICK: list[int] = [0]
+
+
+def _ingest(sessions, events, *, window_complete=True, device_id="dev-1",
+            as_of=None):
+    """The pre-review helper. Each call is a *new* snapshot: the default
+    instant advances a minute per call, because two complete batches sharing
+    one snapshot instant are a replay, not a fresh observation."""
+    if as_of is None:
+        _SNAPSHOT_TICK[0] += 1
+        as_of = NOW - timedelta(hours=1) + timedelta(minutes=_SNAPSHOT_TICK[0])
     return ingest_events(
         {
             "window_start": WINDOW_START,
             "window_end": WINDOW_END,
             "events": events,
             "window_complete": window_complete,
+            "snapshot_as_of": to_rfc3339(as_of),
         },
         sessions=sessions,
         keyring=_keyring(),
@@ -114,6 +126,7 @@ def test_calendar_table_exists_with_composite_primary_key(sessions) -> None:
                 location=None,
                 is_deleted=False,
                 last_modified_ts=0,
+                snapshot_ts=0,
                 synced_at=NOW,
                 created_by_agent=False,
                 device_id="dev-1",
@@ -131,6 +144,7 @@ def test_calendar_table_exists_with_composite_primary_key(sessions) -> None:
                 location=None,
                 is_deleted=False,
                 last_modified_ts=0,
+                snapshot_ts=0,
                 synced_at=NOW,
                 created_by_agent=False,
                 device_id="dev-1",
@@ -319,7 +333,9 @@ def test_query_returns_window_events_with_freshness(sessions) -> None:
     assert result["record_count"] == 2
     assert result["source_system"] == "apple_calendar_mirror"
     assert result["mirror_stale"] is False
-    assert result["data_as_of"] == to_rfc3339(NOW)
+    # Freshness is the *snapshot* watermark (one minute past the hour, the
+    # helper's first tick), not the upload wall clock NOW.
+    assert result["data_as_of"] == to_rfc3339(NOW - timedelta(minutes=59))
     titles = sorted(event["title"] for event in result["events"])
     assert titles == ["网球", "网球"]
     identifiers = sorted(event["event_identifier"] for event in result["events"])
@@ -348,7 +364,12 @@ def test_query_window_is_overlap_semantics(sessions) -> None:
 
     def _ingest_wide(events, *, window_complete=True):
         return ingest_events(
-            {**ingest_window, "events": events, "window_complete": window_complete},
+            {
+                **ingest_window,
+                "events": events,
+                "window_complete": window_complete,
+                "snapshot_as_of": to_rfc3339(NOW - timedelta(minutes=1)),
+            },
             sessions=sessions,
             keyring=_keyring(),
             device_id="dev-1",
@@ -511,7 +532,11 @@ def test_query_rejects_a_cursor_from_a_different_window(sessions) -> None:
     assert excinfo.value.code is ErrorCode.INVALID_CURSOR
 
 
-def test_query_empty_mirror_reports_epoch_as_of(sessions) -> None:
+def test_query_empty_mirror_reports_query_time_as_of(sessions) -> None:
+    """Review R7: the output schema promises `data_as_of` is never null.
+    Before the first completed snapshot there is no honest instant, so the
+    query's own wall clock stands in — and `mirror_stale` says what that
+    placeholder means."""
     result = query_events(
         {"start": WINDOW_START, "end": WINDOW_END},
         sessions=sessions,
@@ -520,7 +545,7 @@ def test_query_empty_mirror_reports_epoch_as_of(sessions) -> None:
         now=NOW,
     )
     assert result["record_count"] == 0
-    assert result["data_as_of"] is None
+    assert result["data_as_of"] == to_rfc3339(NOW)
     assert result["mirror_stale"] is True
 
 
@@ -628,6 +653,7 @@ def test_ingest_handler_stamps_the_verified_caller_onto_rows(sessions) -> None:
             "window_end": WINDOW_END,
             "events": [_event("ek-verified", title="牙医复诊")],
             "window_complete": True,
+            "snapshot_as_of": to_rfc3339(NOW - timedelta(minutes=1)),
         },
         verified_call=VerifiedCall(
             tool="calendar.ingest_events",
@@ -652,3 +678,253 @@ def test_ingest_handler_stamps_the_verified_caller_onto_rows(sessions) -> None:
             ).decode("utf-8")
             == "牙医复诊"
         )
+
+
+# --- snapshot versioning (review R2/R3/R10) ---------------------------------
+#
+# The first cut arbitrated per-event `last_modified` and tombstoned from the
+# last batch's membership alone. Both premises were wrong: EventKit exposes no
+# per-event modification time (the device was stamping the snapshot instant
+# into every row), and a window split across batches deleted everything the
+# final batch did not mention. The corrected model makes the snapshot instant
+# the version: every batch of one window declares the same `snapshot_as_of`,
+# a complete snapshot newer than the device's watermark sweeps the window, and
+# freshness is the watermark — never any single row's sync time.
+
+
+def _ingest_as_of(sessions, events, *, as_of, window_complete=True, device_id="dev-1"):
+    """One batch of the snapshot taken at `as_of`, uploaded at NOW."""
+    return ingest_events(
+        {
+            "window_start": WINDOW_START,
+            "window_end": WINDOW_END,
+            "events": events,
+            "window_complete": window_complete,
+            "snapshot_as_of": to_rfc3339(as_of),
+        },
+        sessions=sessions,
+        keyring=_keyring(),
+        device_id=device_id,
+        now=NOW,
+    )
+
+
+def test_multi_batch_window_does_not_delete_earlier_batches(sessions) -> None:
+    """Review R2, reproduced: batch 1 uploads A, batch 2 uploads B and claims
+    window_complete — the mirror kept only B. A snapshot sweep must see the
+    whole window's membership, so both events survive."""
+    as_of = NOW - timedelta(minutes=1)
+    _ingest_as_of(sessions, [_event("ev-1")], as_of=as_of, window_complete=False)
+    result = _ingest_as_of(sessions, [_event("ev-2")], as_of=as_of, window_complete=True)
+    assert result["marked_deleted"] == 0
+
+    with sessions() as session:
+        rows = session.execute(select(CalendarEvent)).scalars().all()
+    assert {row.event_identifier for row in rows if not row.is_deleted} == {"ev-1", "ev-2"}
+
+
+def test_a_late_packet_from_an_older_snapshot_cannot_revive_or_delete(sessions) -> None:
+    """Review R3, reproduced: after a deletion a packet stamped between the
+    row's old version and the deletion resurrected it. The snapshot instant is
+    the version now: a packet whose `snapshot_as_of` is not newer than the
+    device's watermark may upsert rows but may never tombstone anything, and a
+    copy older than the tombstone's version cannot clear it."""
+    as_of_1 = NOW - timedelta(hours=3)
+    as_of_2 = NOW - timedelta(hours=2)
+    as_of_delete = NOW - timedelta(hours=1)
+    # Snapshot 1 has both events; snapshot 2 updates ev-1; snapshot 3 (newer)
+    # no longer holds ev-1 — a complete sweep tombstones it.
+    _ingest_as_of(sessions, [_event("ev-1"), _event("ev-2")], as_of=as_of_1)
+    _ingest_as_of(
+        sessions,
+        [_event("ev-1", title="改过", last_modified=to_rfc3339(as_of_2)), _event("ev-2")],
+        as_of=as_of_2,
+    )
+    _ingest_as_of(sessions, [_event("ev-2")], as_of=as_of_delete)
+    with sessions() as session:
+        row = session.execute(
+            select(CalendarEvent).where(CalendarEvent.event_identifier == "ev-1")
+        ).scalar_one()
+        assert row.is_deleted
+
+    # A late packet from *snapshot 2* (older than the deletion's watermark)
+    # replays ev-1 with ev-1's old last_modified. It must not resurrect it.
+    _ingest_as_of(
+        sessions,
+        [_event("ev-1", last_modified=to_rfc3339(as_of_2))],
+        as_of=as_of_2,
+        window_complete=False,
+    )
+    with sessions() as session:
+        row = session.execute(
+            select(CalendarEvent).where(CalendarEvent.event_identifier == "ev-1")
+        ).scalar_one()
+        assert row.is_deleted
+
+    # And the *deleting* snapshot replaying must not sweep snapshot-2 rows
+    # re-uploaded after it: the watermark guards the sweep, and a stale
+    # complete batch never tombstones.
+    _ingest_as_of(
+        sessions, [_event("ev-1", last_modified=to_rfc3339(as_of_2))], as_of=as_of_2
+    )
+    with sessions() as session:
+        row = session.execute(
+            select(CalendarEvent).where(CalendarEvent.event_identifier == "ev-1")
+        ).scalar_one()
+        assert row.is_deleted
+
+
+def test_same_snapshot_late_batch_revives_its_own_member(sessions) -> None:
+    """Out-of-order arrival *within* one snapshot: the complete batch may land
+    first, then the straggler chunk of the same snapshot arrives. The
+    straggler asserts the event exists — that testimony is newer evidence
+    than a tombstone this same snapshot wrote, so the row comes back."""
+    as_of = NOW - timedelta(minutes=2)
+    # First a row exists from an older snapshot, so the sweep has something
+    # to tombstone.
+    _ingest_as_of(sessions, [_event("ev-1")], as_of=NOW - timedelta(hours=1))
+    # The complete batch of the newer snapshot mentions only ev-2 → ev-1 is
+    # tombstoned (its version is the older snapshot's instant).
+    result = _ingest_as_of(sessions, [_event("ev-2")], as_of=as_of, window_complete=True)
+    assert result["marked_deleted"] == 1
+    with sessions() as session:
+        row = session.execute(
+            select(CalendarEvent).where(CalendarEvent.event_identifier == "ev-1")
+        ).scalar_one()
+        assert row.is_deleted
+
+    # The straggler chunk of the *same* snapshot re-asserts ev-1. Same
+    # snapshot version: the sweep of this snapshot cannot have meant to
+    # delete what this snapshot holds.
+    result = _ingest_as_of(sessions, [_event("ev-1")], as_of=as_of, window_complete=False)
+    assert result["upserted"] == 1
+    with sessions() as session:
+        row = session.execute(
+            select(CalendarEvent).where(CalendarEvent.event_identifier == "ev-1")
+        ).scalar_one()
+    assert not row.is_deleted
+
+
+def test_tombstone_revival_requires_a_newer_snapshot(sessions) -> None:
+    """A row tombstoned by snapshot N comes back only through a snapshot
+    *newer* than the tombstone's version asserting it again."""
+    as_of_delete = NOW - timedelta(hours=1)
+    # Seed the window with ev-1 from an older snapshot, then delete it: the
+    # newer complete snapshot no longer holds it, so the sweep tombstones it.
+    _ingest_as_of(sessions, [_event("ev-1")], as_of=NOW - timedelta(hours=3))
+    _ingest_as_of(sessions, [_event("ev-2")], as_of=as_of_delete)
+    with sessions() as session:
+        row = session.execute(
+            select(CalendarEvent).where(CalendarEvent.event_identifier == "ev-1")
+        ).scalar_one()
+    assert row.is_deleted  # swept by the empty-but-complete snapshot
+
+    # A replay of the deleting snapshot cannot revive it.
+    _ingest_as_of(sessions, [_event("ev-2")], as_of=as_of_delete)
+    with sessions() as session:
+        row = session.execute(
+            select(CalendarEvent).where(CalendarEvent.event_identifier == "ev-1")
+        ).scalar_one()
+    assert row.is_deleted
+
+    # A genuinely newer snapshot holding ev-1 revives it.
+    as_of_new = NOW - timedelta(minutes=1)
+    _ingest_as_of(
+        sessions,
+        [_event("ev-1", last_modified=to_rfc3339(as_of_new)), _event("ev-2")],
+        as_of=as_of_new,
+    )
+    with sessions() as session:
+        row = session.execute(
+            select(CalendarEvent).where(CalendarEvent.event_identifier == "ev-1")
+        ).scalar_one()
+    assert not row.is_deleted
+
+
+def test_empty_complete_snapshot_sweeps_and_advances_the_watermark(sessions) -> None:
+    """The calendar really is empty: one complete empty batch tombstones the
+    window and *advances the watermark*, so freshness (R10) reflects a real
+    observation of nothing, not a stale guess."""
+    _ingest_as_of(sessions, [_event("ev-1")], as_of=NOW - timedelta(hours=2))
+    result = _ingest_as_of(sessions, [], as_of=NOW - timedelta(hours=1))
+    assert result["marked_deleted"] == 1
+
+    from personal_data_mcp.calendar.ingest import device_watermark
+
+    watermark = device_watermark(sessions, device_id="dev-1")
+    assert watermark == NOW - timedelta(hours=1)
+
+
+def test_freshness_is_the_completed_snapshot_watermark(sessions) -> None:
+    """Review R10, reproduced: uploading only a first incomplete batch made the
+    whole mirror report fresh. Freshness is the last *completed* snapshot's
+    instant — an incomplete upload is honest silence, and the query says so."""
+    _ingest_as_of(sessions, [_event("ev-1")], as_of=NOW, window_complete=False)
+    result = query_events(
+        {"start": WINDOW_START, "end": WINDOW_END},
+        sessions=sessions,
+        keyring=_keyring(),
+        cursor_secret=SECRET,
+        now=NOW,
+    )
+    assert result["mirror_stale"] is True
+    # No completed snapshot yet: the schema's non-null promise (R7) makes the
+    # query wall clock the placeholder, and mirror_stale carries the honesty.
+    assert result["data_as_of"] == to_rfc3339(NOW)
+
+    # Completing the snapshot makes it fresh, and `data_as_of` is the snapshot
+    # instant — not the upload instant.
+    as_of = NOW - timedelta(minutes=5)
+    _ingest_as_of(sessions, [_event("ev-1")], as_of=as_of, window_complete=True)
+    result = query_events(
+        {"start": WINDOW_START, "end": WINDOW_END},
+        sessions=sessions,
+        keyring=_keyring(),
+        cursor_secret=SECRET,
+        now=NOW,
+    )
+    assert result["mirror_stale"] is False
+    assert result["data_as_of"] == to_rfc3339(as_of)
+
+
+def test_freshness_is_per_device_watermark(sessions) -> None:
+    """Freshness reads the completed snapshots of every device: the newest
+    completed snapshot across devices is `data_as_of`, and a device's own
+    watermark is what its own uploads produced."""
+    _ingest_as_of(sessions, [_event("ev-1")], as_of=NOW, device_id="dev-1")
+    _ingest_as_of(
+        sessions, [_event("ev-3")], as_of=NOW - timedelta(days=3), device_id="dev-2"
+    )
+    result = query_events(
+        {"start": WINDOW_START, "end": WINDOW_END},
+        sessions=sessions,
+        keyring=_keyring(),
+        cursor_secret=SECRET,
+        now=NOW,
+    )
+    assert result["mirror_stale"] is False
+
+    from personal_data_mcp.calendar.ingest import device_watermark
+
+    assert device_watermark(sessions, device_id="dev-2") == NOW - timedelta(days=3)
+    assert device_watermark(sessions, device_id="dev-none") is None
+
+
+def test_ingest_without_snapshot_as_of_is_refused(sessions) -> None:
+    """The schema made `snapshot_as_of` required: a batch that cannot say when
+    its snapshot was taken has no version, and versionless evidence must not
+    arbitrate anything."""
+    with pytest.raises(AppError) as excinfo:
+        ingest_events(
+            {
+                "window_start": WINDOW_START,
+                "window_end": WINDOW_END,
+                "events": [_event("ev-1")],
+                "window_complete": False,
+            },
+            sessions=sessions,
+            keyring=_keyring(),
+            device_id="dev-1",
+            now=NOW,
+        )
+    assert excinfo.value.code is ErrorCode.INVALID_ARGUMENT

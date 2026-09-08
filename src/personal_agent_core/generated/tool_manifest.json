@@ -87,7 +87,7 @@
     "calendar.create_event",
     "calendar.query_events"
   ],
-  "allowed_tools_version": "906fabd6f8aa6f75ba8af7a0de28bce320120862ea13614804107e61bc6eb43e",
+  "allowed_tools_version": "6eb06903e8e672a1e6fec363df165e9add3cada5896bb58974b4878802611d1b",
   "tools": [
     {
       "name": "finance.log_expense",
@@ -1880,8 +1880,12 @@
                   "description": "该事件所在日历的标识。"
                 },
                 "title": {
-                  "type": "string",
-                  "maxLength": 80
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 80,
+                  "description": "EventKit 允许无标题事件，null 是事实而非缺字段。"
                 },
                 "start": {
                   "type": "string",
@@ -1930,7 +1934,7 @@
           "data_as_of": {
             "type": "string",
             "format": "date-time",
-            "description": "日历镜像最近一次同步的时间。"
+            "description": "日历镜像最近一次完整快照的拍摄瞬间。从未完成过快照时，实现以查询时刻占位并令 mirror_stale=true——该字段保证非 null。"
           },
           "mirror_stale": {
             "type": "boolean"
@@ -1987,7 +1991,7 @@
         "SOURCE_UNAVAILABLE"
       ],
       "input_schema_hash": "c2312dca5342a0b9cb5995055531ff310c42fe2fc9f9fdc999963ecd708d8817",
-      "contract_hash": "ce8453a5d7a88347f36a4f128b856608900aa30a510d6ea03ce6d3833a03a57d"
+      "contract_hash": "537e2be39fc1a7be0a2277a18ec40a11533c603a042f4ee7a177d5ef7d6955c9"
     },
     {
       "name": "calendar.ingest_events",
@@ -2009,7 +2013,8 @@
           "window_start",
           "window_end",
           "events",
-          "window_complete"
+          "window_complete",
+          "snapshot_as_of"
         ],
         "properties": {
           "window_start": {
@@ -2021,6 +2026,11 @@
             "type": "string",
             "format": "date-time",
             "description": "本次快照窗口结束。"
+          },
+          "snapshot_as_of": {
+            "type": "string",
+            "format": "date-time",
+            "description": "本次快照的拍摄瞬间（UTC）。同一窗口的每个分批必须携带同一值：它是镜像的唯一版本号——EventKit 没有逐事件修改时间，快照瞬间就是设备能提供的全部版本证据。"
           },
           "events": {
             "type": "array",
@@ -2087,7 +2097,7 @@
           },
           "window_complete": {
             "type": "boolean",
-            "description": "本批是否已把窗口内全部事件送完。为 true 时，窗口内未在本批出现的既有镜像行会被标记删除——设备是日历的事实源。"
+            "description": "本批是否已把窗口内全部事件送完。为 true 且快照版本新于该设备水位时，窗口内不属于本次快照的既有镜像行会被标记删除——设备是日历的事实源。"
           }
         }
       },
@@ -2156,8 +2166,8 @@
         "INVALID_ARGUMENT",
         "SCOPE_DENIED"
       ],
-      "input_schema_hash": "1be726209917740d753dc2cbb11398f1a7f4c78f468f5d92e2076a48ee347e52",
-      "contract_hash": "dca128510ba6a9326ab8389bc675716904498a422b8382fe67a22e341c19359f"
+      "input_schema_hash": "b8ab33a00bfc47e43359e0d90819ed9d7e71ed09d4a2102c198d90deb24ad25e",
+      "contract_hash": "849304b379c93a79402f4f274fca7814fef2a3032c4ac1568f0eff7940636342"
     }
   ]
 }

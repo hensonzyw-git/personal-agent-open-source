@@ -2,10 +2,10 @@
 
 The mirror only knows what the phone last reported, so this module's second
 job — after filtering — is honesty about freshness: `data_as_of` is the
-newest `synced_at` in the mirror (or `None` when it has never heard from a
-device), and `mirror_stale` is a pure function of that instant's age, not of
-the model's confidence. The summary prompt receives both as part of the tool
-contract, not as a courtesy.
+newest *completed* snapshot watermark across devices (review R10: a partial
+upload is honest silence, not fresh data), and `mirror_stale` is a pure
+function of that instant's age, not of the model's confidence. The summary
+prompt receives both as part of the tool contract, not as a courtesy.
 
 Pagination follows the Finance read: a server-signed, opaque, expiring
 cursor bound to the canonical window. A cursor from a different window is a
@@ -29,7 +29,7 @@ from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.manifest import canonical_json
 from personal_agent_core.timeutil import parse_rfc3339, to_rfc3339
-from personal_data_mcp.storage.models import CalendarEvent
+from personal_data_mcp.storage.models import CalendarDeviceSync, CalendarEvent
 
 
 PAGE_SIZE: Final[int] = 50
@@ -185,16 +185,19 @@ def query_events(
             .all()
         )
 
+        # Freshness (review R10) reads the *completed snapshot* watermarks,
+        # never any row's sync time: a device that has only uploaded an
+        # incomplete first batch has vouched for nothing, and a device that
+        # has never finished a snapshot reads as honestly stale. Across
+        # devices the newest watermark wins — one current device keeps the
+        # mirror's answer as current as its own evidence.
         data_as_of: datetime | None = None
-        for row in rows:
-            if data_as_of is None or row.synced_at > data_as_of:
-                data_as_of = row.synced_at
-        if data_as_of is None:
-            for value in (
-                session.execute(select(CalendarEvent.synced_at)).scalars().all()
-            ):
-                if data_as_of is None or value > data_as_of:
-                    data_as_of = value
+        for watermark_ts in (
+            session.execute(select(CalendarDeviceSync.watermark_ts)).scalars().all()
+        ):
+            value = datetime.fromtimestamp(watermark_ts, tz=timezone.utc)
+            if data_as_of is None or value > data_as_of:
+                data_as_of = value
 
         page = rows[offset : offset + page_size]
         next_offset = offset + len(page)
@@ -239,7 +242,11 @@ def query_events(
             "events": events,
             "record_count": len(rows),
             "next_cursor": next_cursor,
-            "data_as_of": to_rfc3339(data_as_of) if data_as_of is not None else None,
+            # The output schema promises a non-null `data_as_of` (review R7):
+            # before the first completed snapshot there is no honest instant,
+            # so the query's own wall clock stands in and `mirror_stale` says
+            # what the placeholder means.
+            "data_as_of": to_rfc3339(data_as_of if data_as_of is not None else now),
             "mirror_stale": data_as_of is None or (now - data_as_of) > STALE_AFTER,
             "source_system": "apple_calendar_mirror",
         }

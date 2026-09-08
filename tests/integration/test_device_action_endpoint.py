@@ -585,6 +585,7 @@ def test_sync_ingests_a_batch_through_the_governed_seam(
         "window_start": "2026-08-09T00:00:00+08:00",
         "window_end": "2026-09-07T00:00:00+08:00",
         "window_complete": True,
+        "snapshot_as_of": "2026-09-07T07:30:00+00:00",
         "events": [
             {
                 "event_identifier": "ev-1",
@@ -626,6 +627,7 @@ def test_sync_refuses_a_batch_with_one_malformed_event_whole(
         "window_start": "2026-08-09T00:00:00+08:00",
         "window_end": "2026-09-07T00:00:00+08:00",
         "window_complete": True,
+        "snapshot_as_of": "2026-09-07T07:30:00+00:00",
         "events": [
             {
                 "event_identifier": "ev-good",
@@ -674,6 +676,7 @@ def test_sync_rejects_a_batch_beyond_the_size_cap(
         "window_start": "2026-08-09T00:00:00+08:00",
         "window_end": "2026-09-07T00:00:00+08:00",
         "window_complete": False,
+        "snapshot_as_of": "2026-09-07T07:30:00+00:00",
         "events": [one] * 201,
     }
 
@@ -709,6 +712,7 @@ def test_sync_requires_a_scope_the_device_may_not_have(
         "window_start": "2026-08-09T00:00:00+08:00",
         "window_end": "2026-09-07T00:00:00+08:00",
         "window_complete": True,
+        "snapshot_as_of": "2026-09-07T07:30:00+00:00",
         "events": [],
     }
 
@@ -766,6 +770,7 @@ def test_sync_refuses_a_device_enrolled_for_a_stale_manifest_version(
         "window_start": "2026-08-09T00:00:00+08:00",
         "window_end": "2026-09-07T00:00:00+08:00",
         "window_complete": True,
+        "snapshot_as_of": "2026-09-07T07:30:00+00:00",
         "events": [],
     }
 

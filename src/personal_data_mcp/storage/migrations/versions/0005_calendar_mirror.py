@@ -12,6 +12,12 @@ shape.
 is what an upsert arbitrates on. `row_key` is a surrogate the sealing AAD can
 name, since two columns cannot form one AAD string.
 
+`calendar_device_sync` holds one watermark per device: the newest
+`snapshot_as_of` that arrived with `window_complete=true`. Snapshot versioning
+(review 2026-09-08, R2/R3/R10) replaced per-event `last_modified` as the
+arbiter — EventKit exposes no per-event modification time, so the snapshot
+instant is the only honest version.
+
 Revision ID: 0005_calendar_mirror
 Revises: 0004_manual_review_resolution
 Create Date: 2026-09-07
@@ -49,6 +55,7 @@ def upgrade() -> None:
         ),
         sa.Column("is_deleted", sa.Boolean(), nullable=False),
         sa.Column("last_modified_ts", sa.Integer(), nullable=False),
+        sa.Column("snapshot_ts", sa.Integer(), nullable=False),
         sa.Column("synced_at", personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
         sa.Column("created_by_agent", sa.Boolean(), nullable=False),
         sa.Column("device_id", sa.Text(), nullable=False),
@@ -61,9 +68,21 @@ def upgrade() -> None:
     with op.batch_alter_table("calendar_events", schema=None) as batch_op:
         batch_op.create_index("ix_calendar_events_start_ts", ["start_ts"])
         batch_op.create_index("ix_calendar_events_end_ts", ["end_ts"])
+    # Per-device watermark of the newest *completed* window snapshot. It is
+    # the version sweeps and freshness checks arbitrate on: without it, a
+    # last batch would tombstone from its own membership alone (deleting
+    # earlier batches' events) and a partial upload would read as fresh.
+    op.create_table(
+        "calendar_device_sync",
+        sa.Column("device_id", sa.Text(), nullable=False),
+        sa.Column("watermark_ts", sa.Integer(), nullable=False),
+        sa.Column("updated_at", personal_agent_core.sqlite.UtcTimestamp(), nullable=False),
+        sa.PrimaryKeyConstraint("device_id", name="pk_calendar_device_sync"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_table("calendar_device_sync")
     with op.batch_alter_table("calendar_events", schema=None) as batch_op:
         batch_op.drop_index("ix_calendar_events_end_ts")
         batch_op.drop_index("ix_calendar_events_start_ts")

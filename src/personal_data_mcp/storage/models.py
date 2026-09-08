@@ -402,7 +402,15 @@ class CalendarEvent(Base):
     #: Tombstone. The row is kept so a late stale chunk cannot be mistaken for
     #: a new event, and queries exclude it by default.
     is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    #: The device's own per-event `last_modified` (EventKit-free approximation
+    #: the device may still send). Arbitrates field merges *between* snapshots;
+    #: never the sweep.
     last_modified_ts: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: The snapshot instant of the upload that last wrote this row. This is
+    #: the sweep's arbiter: a row is "part of" snapshot N when this equals
+    #: N's instant, and a tombstone's version is the deleting snapshot's
+    #: instant, so only a newer snapshot's assertion clears it.
+    snapshot_ts: Mapped[int] = mapped_column(Integer, nullable=False)
     #: When this row last heard from the device. `data_as_of` is the max of it.
     synced_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     created_by_agent: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -414,3 +422,30 @@ class CalendarEvent(Base):
         Index("ix_calendar_events_start_ts", "start_ts"),
         Index("ix_calendar_events_end_ts", "end_ts"),
     )
+
+
+class CalendarDeviceSync(Base):
+    """One device's calendar-sync watermark, per the snapshot-versioned mirror.
+
+    A row is written only when the device completes a whole window snapshot
+    (`window_complete=true` on a batch whose `snapshot_as_of` is newer than
+    the stored watermark). It answers two questions the event rows cannot:
+
+    - **Arbitration**: a snapshot older than the watermark may upsert rows
+      but may never tombstone anything — the sweep is a property of a
+      *completed, current* snapshot, not of any single batch.
+    - **Freshness**: `data_as_of` / `mirror_stale` read this table, so a
+      partial upload (or a device that has never finished a snapshot) reads
+      as honestly stale instead of freshly wrong. An empty window still
+      completes, so an observed empty calendar is a real observation.
+    """
+
+    __tablename__ = "calendar_device_sync"
+
+    device_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    #: The `snapshot_as_of` instant of the newest completed snapshot.
+    #: Epoch seconds, UTC — the version every sweep and freshness check
+    #: arbitrates on.
+    watermark_ts: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: When this device last completed a snapshot (upload wall clock).
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
