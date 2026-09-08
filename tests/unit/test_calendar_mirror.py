@@ -580,6 +580,70 @@ def test_query_reported_events_match_the_output_schema(sessions) -> None:
     assert "metric" not in event
 
 
+def test_a_titleless_event_satisfies_the_output_schema(sessions) -> None:
+    """Review R7: EventKit allows events with no title, and a mirror that
+    reports `null` is a fact, not a missing field. The IR schema already
+    declares `title` nullable; this pins the implementation to it — the real
+    output contract must accept exactly what the mirror really produces."""
+    from jsonschema import Draft202012Validator, FormatChecker
+
+    from personal_agent_core.tool_ir import CALENDAR_QUERY_EVENTS
+
+    _ingest(
+        sessions,
+        [_event("ev-1", title=None, location=None, notes=None)],
+    )
+    result = query_events(
+        {"start": WINDOW_START, "end": WINDOW_END},
+        sessions=sessions,
+        keyring=_keyring(),
+        cursor_secret=SECRET,
+        now=NOW,
+    )
+    assert result["events"][0]["title"] is None
+    Draft202012Validator(
+        CALENDAR_QUERY_EVENTS.output_schema, format_checker=FormatChecker()
+    ).validate(result)
+
+
+def test_the_full_query_result_validates_against_the_output_schema(
+    sessions,
+) -> None:
+    """Review R7: the whole result — not just events — must satisfy the
+    contract, including the non-null `data_as_of` promise after a real
+    snapshot and the empty-mirror placeholder case."""
+    from jsonschema import Draft202012Validator, FormatChecker
+
+    from personal_agent_core.tool_ir import CALENDAR_QUERY_EVENTS
+
+    validator = Draft202012Validator(
+        CALENDAR_QUERY_EVENTS.output_schema, format_checker=FormatChecker()
+    )
+
+    # Empty mirror: data_as_of is the query-instant placeholder.
+    empty = query_events(
+        {"start": WINDOW_START, "end": WINDOW_END},
+        sessions=sessions,
+        keyring=_keyring(),
+        cursor_secret=SECRET,
+        now=NOW,
+    )
+    validator.validate(empty)
+
+    _ingest(sessions, [_event("ev-1"), _event("ev-2", title="无题事件")])
+    result = query_events(
+        {"start": WINDOW_START, "end": WINDOW_END},
+        sessions=sessions,
+        keyring=_keyring(),
+        cursor_secret=SECRET,
+        now=NOW,
+    )
+    validator.validate(result)
+    # And the placeholder case's honesty fields: after a completed snapshot
+    # the as_of is the snapshot instant and the mirror is not stale.
+    assert result["mirror_stale"] is False
+
+
 # --- server handlers -------------------------------------------------------
 
 
