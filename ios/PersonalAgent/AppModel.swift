@@ -44,6 +44,9 @@ final class AppModel {
     private var session: DeviceSession?
     private var chatTimeline: ChatTimeline?
     private var reviewCenter: ReviewCenter?
+    /// The calendar mirror's production driver (review R5). Built with the
+    /// session it uploads through; `nil` until a session exists.
+    private var mirrorSyncEngine: CalendarMirrorSyncEngine?
     /// `DEV-040`. Built once a session exists; the app delegate forwards iOS's
     /// remote-notification callbacks into it. Nil until enrollment, because a
     /// token cannot be uploaded without a device id and access token.
@@ -114,6 +117,15 @@ final class AppModel {
             phase = .ready
             lastError = nil
             await openChat(session: session, conversationID: read.conversationID)
+            // The foreground trigger for the mirror (review R5): every path
+            // that brings the app to usable state runs `refresh()`, so this
+            // is the one seam that covers launch, pull-to-refresh, and
+            // return-to-foreground alike. Fire-and-degrade: a mirror that
+            // cannot sync must not block the surfaces this method opens —
+            // the server answers calendar queries with `mirror_stale` until
+            // the next attempt, which is honest, versus a launch error card
+            // that is not.
+            await syncCalendarMirror(session: session)
             // §1c: the empty state's 能力清单 is the server's answer, not a list
             // compiled here. Pushed on every refresh rather than at construction so
             // a tool granted or withdrawn server-side appears without a reinstall.
@@ -133,6 +145,7 @@ final class AppModel {
             chatTimeline = nil
             review = nil
             reviewCenter = nil
+            mirrorSyncEngine = nil
             lastError = "服务端已不再为本设备签发 token（设备被撤销或密钥不匹配）。"
         } catch {
             lastError = describe(error)
@@ -150,6 +163,7 @@ final class AppModel {
             chatTimeline = nil
             review = nil
             reviewCenter = nil
+            mirrorSyncEngine = nil
             // A revoked device's stored token is dead weight; forgetting it
             // here means a re-enrollment (new device id) re-registers rather
             // than assuming this token already belongs to the new row.
@@ -175,6 +189,7 @@ final class AppModel {
             chatTimeline = nil
             review = nil
             reviewCenter = nil
+            mirrorSyncEngine = nil
             PushCoordinator.forgetConfirmedToken()
             // The previous phase's error described a device that no longer exists
             // here; carrying it onto the enrollment screen would report a failure
@@ -202,6 +217,18 @@ final class AppModel {
             }
         }
         delegate.pushCoordinator = pushCoordinator
+        // The foreground mirror trigger (review R5): iOS's `didBecomeActive`
+        // is the one signal SwiftUI does not observe, and a foreground return
+        // is when the calendar may have changed under us. It degrades through
+        // the same `syncCalendarMirror` the refresh path uses.
+        delegate.foregroundMirrorSync = { [weak self] in
+            guard let self, let session = self.session, self.phase == .ready else {
+                return
+            }
+            Task { @MainActor in
+                await self.syncCalendarMirror(session: session)
+            }
+        }
     }
 
     /// Ask the user, ask iOS, and upload — or return quietly. Failing to
@@ -223,6 +250,41 @@ final class AppModel {
             // unreachable server are all non-fatal. The next launch retries.
         }
         #endif
+    }
+
+    // --- calendar mirror (`review R5`) ---------------------------------------
+
+    /// Run the mirror sync if its durable marker says it is stale. The
+    /// production caller for `CalendarMirrorSyncEngine`: the engine composes
+    /// `EventKitCalendarStore.snapshot` with `DeviceSession.uploadCalendarSync`
+    /// through `CalendarSyncUploader`'s batching — before this call existed,
+    /// those three were wired to nothing and the mirror stayed empty forever.
+    ///
+    /// Every failure degrades: the engine throws only what the snapshot or an
+    /// upload threw, and this method turns it into a `lastError` only if the
+    /// screen is not already showing something more important. The marker
+    /// moves only when a whole window completed, so a failing sync retries on
+    /// the next `refresh()` — there is no separate repair path to forget.
+    private func syncCalendarMirror(session: DeviceSession) async {
+        if mirrorSyncEngine == nil {
+            // The same EventKit store the device-action executor uses: one
+            // permission prompt, one calendar access, two consumers.
+            mirrorSyncEngine = CalendarMirrorSyncEngine(
+                store: EventKitCalendarStore(), backend: session, storage: store
+            )
+        }
+        guard let engine = mirrorSyncEngine else { return }
+        do {
+            _ = try await engine.syncIfNeeded()
+        } catch {
+            // Degrade, never block: the chat and review surfaces above this
+            // call must open whether or not the mirror synced. The failure is
+            // surfaced without displacing a primary error the user is mid-way
+            // through reading.
+            if lastError == nil {
+                lastError = "日历镜像同步未完成，查询结果可能不是最新（\(describe(error))）"
+            }
+        }
     }
 
     // --- helpers -------------------------------------------------------------
@@ -254,6 +316,12 @@ final class AppModel {
                     self?.describe(error) ?? String(describing: error)
                 }
             )
+            // The pre-send mirror top-up (review R5): the same engine the
+            // refresh path uses, so the staleness gate lives in one place.
+            chat?.onSyncMirror = { [weak self] in
+                guard let session = self?.session else { return }
+                await self?.syncCalendarMirror(session: session)
+            }
             await chat?.open(conversationID: conversationID)
         } else if await chatTimeline.boundConversationID != conversationID {
             // The server named a different Timeline. Adopting it is the client's

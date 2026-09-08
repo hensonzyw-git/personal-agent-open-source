@@ -107,6 +107,9 @@ final class ChatModel {
 
     private let timeline: ChatTimeline
     private let describe: @MainActor (Error) -> String
+    /// The pre-send mirror top-up (review R5), owned by the composition and
+    /// optional so tests compose without one. Absent ⇒ no top-up is attempted.
+    var onSyncMirror: (() async -> Void)?
 
     init(timeline: ChatTimeline, describe: @escaping @MainActor (Error) -> String) {
         self.timeline = timeline
@@ -214,6 +217,12 @@ final class ChatModel {
         guard !text.isEmpty else { return }
         busy = true
         defer { busy = false }
+        // The pre-send mirror top-up (review R5): a calendar question in this
+        // very message is answered against the mirror, so a stale one would
+        // be summarised without being labelled honestly-current. Best effort
+        // only — a failed top-up degrades (the server answers `mirror_stale`)
+        // and must never block or delay-fail the send itself.
+        await onSyncMirror?()
         let clarificationOf = answering?.operationID
         let startNewSession = startNewTopic
         // Out of the composer and onto the screen before the request leaves.

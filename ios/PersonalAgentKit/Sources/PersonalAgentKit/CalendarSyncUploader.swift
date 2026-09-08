@@ -85,3 +85,108 @@ public struct CalendarSyncUploader: Sendable {
         return chunks
     }
 }
+
+/// The production driver the mirror never had (review R5, 2026-09-08):
+/// snapshot the whole window, upload it in batches, and stamp the durable
+/// marker **only** when the last batch — the one carrying
+/// `window_complete` — was accepted. Composed into `AppModel` and triggered
+/// from the foreground path and before chat sends that read the mirror.
+///
+/// The failure posture is "degrade, never lie":
+///
+/// - a snapshot that throws uploads **nothing**. Uploading an empty complete
+///   batch after a failed snapshot would tell the server "the user's calendar
+///   emptied out", which is a false deletion of the whole mirror window —
+///   the one error this engine must be incapable of.
+/// - a batch that throws leaves the marker at its previous value: the server's
+///   `mirror_stale` is what then answers 「数据截至」 honestly, and the next
+///   attempt re-runs the whole window (the window derives from `now`, not
+///   from the marker, so a partially-uploaded window is restarted in full —
+///   `window_complete` is what makes a window authoritative, and it exists
+///   only at the end of a full pass).
+/// - callers that cannot sync (no store access, offline) surface the failure
+///   to their own degrade path; the engine never swallows into a fake success.
+///
+/// Concurrency: the engine is an actor, so overlapping triggers coalesce on
+/// an in-flight flag rather than racing two full windows.
+public actor CalendarMirrorSyncEngine {
+    private let store: any CalendarStore
+    private let backend: any ChatBackend
+    private let storage: CredentialStore
+    private let now: @Sendable () -> Date
+    private let stalenessThreshold: TimeInterval
+    private let uploader: CalendarSyncUploader
+    private var inFlight = false
+
+    public init(
+        store: any CalendarStore,
+        backend: any ChatBackend,
+        storage: CredentialStore,
+        uploader: CalendarSyncUploader = CalendarSyncUploader(),
+        now: @escaping @Sendable () -> Date = { Date() },
+        stalenessThreshold: TimeInterval = 25 * 3600
+    ) {
+        self.store = store
+        self.backend = backend
+        self.storage = storage
+        self.uploader = uploader
+        self.now = now
+        // The server answers `mirror_stale` past 25h; syncing before that is
+        // wasted upload, syncing after it is required for honest「数据截至」.
+        self.stalenessThreshold = stalenessThreshold
+    }
+
+    /// Sync when the marker is older than the threshold (or absent). Returns
+    /// whether a sync actually ran; throws what the snapshot or an upload
+    /// threw, for the caller's degrade path.
+    @discardableResult
+    public func syncIfNeeded() async throws -> Bool {
+        if inFlight { return false }
+        guard try Self.isStale(storage: storage, now: now(), threshold: stalenessThreshold) else {
+            return false
+        }
+        inFlight = true
+        defer { inFlight = false }
+
+        let instant = now()
+        let events = try await store.snapshot(
+            since: instant.addingTimeInterval(Double(-uploader.lookbackDays) * 86_400),
+            until: instant.addingTimeInterval(Double(uploader.lookaheadDays) * 86_400),
+            asOf: instant
+        )
+        // `asOf` is the device's stamp of vouching: the batch, not the row, is
+        // what the upsert arbitrates on (CalendarStore.snapshot's contract).
+        var lastError: Error?
+        for chunk in uploader.chunk(events, now: instant) where lastError == nil {
+            do {
+                _ = try await backend.uploadCalendarSync(
+                    windowStart: chunk.windowStart,
+                    windowEnd: chunk.windowEnd,
+                    events: chunk.events,
+                    windowComplete: chunk.lastBatch
+                )
+            } catch {
+                lastError = error
+            }
+        }
+        if let lastError { throw lastError }
+        // Only here: every batch — including window_complete — was accepted.
+        let encoded = String(instant.timeIntervalSince1970).data(using: .utf8)!
+        try storage.write(CredentialKey.calendarMirrorSyncedAt, value: encoded)
+        return true
+    }
+
+    /// Read the durable marker and decide staleness. A missing or unreadable
+    /// marker reads as stale — a first sync must run, and an unparseable one
+    /// is exactly the shape that must not silently disable syncing forever.
+    private static func isStale(
+        storage: CredentialStore, now: Date, threshold: TimeInterval
+    ) throws -> Bool {
+        guard let data = try storage.read(CredentialKey.calendarMirrorSyncedAt),
+              let text = String(data: data, encoding: .utf8),
+              let interval = Double(text) else {
+            return true
+        }
+        return now.timeIntervalSince1970 - interval > threshold
+    }
+}

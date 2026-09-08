@@ -38,6 +38,11 @@ public enum CredentialKey {
     /// outcome instead of starting a second decision, so they belong in the same
     /// durable store as the chat send slot.
     public static let pendingDuplicateDecisions = "pending-duplicate-decisions-v1"
+    /// The instant the device last completed a *whole* calendar mirror window
+    /// (the review-R5 engine's marker). It decides staleness on the client and
+    /// lives in the same durable store so a restart neither re-syncs for
+    /// nothing nor believes a sync that never finished.
+    public static let calendarMirrorSyncedAt = "calendar-mirror-synced-at-v1"
     /// Legacy keys from the first DEV-029 simulator build. `DeviceSession`
     /// migrates them on read and deletes them when the user forgets locally.
     public static let deviceKeyBlob = "device-key-blob"
