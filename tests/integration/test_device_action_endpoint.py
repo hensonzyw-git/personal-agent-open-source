@@ -385,6 +385,66 @@ def test_a_created_report_without_an_event_id_is_refused(
     assert _result(engine, operation_id).state == "source_in_progress"
 
 
+def test_a_report_for_a_non_device_tool_is_refused(
+    engine, token_ring, keyring
+) -> None:
+    """The report endpoint is the settlement surface *for device-executed
+    actions*. A Finance operation parked by its own execution path may not be
+    settled by a phone POST claiming a calendar event it never held — the
+    ownership check alone does not ask what kind of operation this is. The
+    tool must be one the IR marks `executor: "device"`, and the report must
+    find the operation in a state that still expects the device's word."""
+    from personal_agent.api.operation_store import transition_operation
+    from personal_agent.storage.models import ApiRequest
+
+    with session_factory(engine)() as session:
+        session.add(
+            ApiRequest(
+                request_id="req-fin",
+                device_id="device-1",
+                client_request_id=ACTION_KEY,
+                request_fingerprint="fp",
+                received_at=NOW,
+            )
+        )
+        session.flush()
+        operation = Operation(
+            operation_id="op_fin",
+            request_id="req-fin",
+            trace_id="trace-fin",
+            idempotency_key=ACTION_KEY,
+            state="dispatching",
+            created_at=NOW,
+            updated_at=NOW,
+            tool="finance.log_expense",
+        )
+        session.add(operation)
+        session.commit()
+        session.refresh(operation)
+        operation_id = operation.operation_id
+        transition_operation(
+            session,
+            operation_id=operation.operation_id,
+            current_state=operation.state,
+            current_version=operation.state_version,
+            target_state="source_in_progress",
+            now=NOW,
+        )
+        session.commit()
+
+    client = _client(engine, token_ring, keyring)
+    response = client.post(
+        f"/v1/device-actions/{ACTION_KEY}/result",
+        json={"result": "created", "event_id": "FAKE-EVENT"},
+        headers=_auth_headers(token_ring),
+    )
+
+    assert response.status_code == 400, response.text
+    # The forged report neither settled the operation nor fabricated evidence.
+    assert _result(engine, operation_id).state == "source_in_progress"
+    assert _result(engine, operation_id).safe_result is None
+
+
 def test_an_unknown_result_value_is_refused(engine, token_ring, keyring) -> None:
     """The result vocabulary is closed. Everything else — a server crash, a
     device bug, a probe — is silence about a write that may exist, and silence

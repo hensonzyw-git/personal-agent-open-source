@@ -2376,6 +2376,21 @@ def _process_device_action_result(
                         f"no operation anchored for action {action_id} on this device"
                     ),
                 )
+            # This endpoint settles *device-executed* actions. Ownership alone
+            # is not enough: a Finance operation parked by its own execution
+            # path must not be settleable by a phone POST claiming a calendar
+            # write it never held. Derived from the IR, so a second device
+            # tool is admitted automatically.
+            if not any(
+                contract.name == operation.tool and contract.executor == "device"
+                for contract in TOOL_CONTRACTS
+            ):
+                raise AppError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    internal_detail=(
+                        f"action {action_id} is not a device-executed tool"
+                    ),
+                )
             session.refresh(operation)
             if not is_terminal(operation.state):
                 now = deps.now()
