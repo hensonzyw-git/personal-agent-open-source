@@ -1,0 +1,1420 @@
+{
+  "catalog_sha256": "2da88a1407f3dacf139692b986f1db48e061fde84159622d125c66406447960f",
+  "fixtures": {
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/cancel/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "cancel",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [
+                {
+                  "type": "cancelled"
+                }
+              ],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": null,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "cancel",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "cancel"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/classifier_drift/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "classifier_drift",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [
+                {
+                  "content": "I'll implement the change.",
+                  "type": "text"
+                },
+                {
+                  "arguments": {
+                    "path": "src/x.py"
+                  },
+                  "name": "read",
+                  "turn": 1,
+                  "type": "tool_call"
+                },
+                {
+                  "arguments": {
+                    "path": "src/x.py"
+                  },
+                  "name": "edit",
+                  "turn": 2,
+                  "type": "tool_call"
+                },
+                {
+                  "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                  "changed_files": [
+                    "src/x.py"
+                  ],
+                  "content": "dal.patch-artifact/1.0:ref",
+                  "context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "turn": 3,
+                  "type": "final"
+                }
+              ],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": null,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "classifier_drift",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "classifier_drift"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/context_drift/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "context_drift",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [
+                {
+                  "base_sha": "0000000000000000000000000000000000000000",
+                  "changed_files": [
+                    "src/x.py"
+                  ],
+                  "content": "dal.patch-artifact/1.0:ref",
+                  "context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "turn": 1,
+                  "type": "final"
+                }
+              ],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": null,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "context_drift",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "context_drift"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/done_diff_empty/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "done_diff_empty",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [
+                {
+                  "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                  "changed_files": [],
+                  "content": "dal.patch-artifact/1.0:ref",
+                  "context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "turn": 1,
+                  "type": "final"
+                }
+              ],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": null,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "done_diff_empty",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "done_diff_empty"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/empty/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "empty",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": null,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "empty",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "empty"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/half_stream/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "half_stream",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [
+                {
+                  "arguments": {
+                    "path": "src/x.py"
+                  },
+                  "name": "read",
+                  "turn": 1,
+                  "type": "tool_call"
+                },
+                {
+                  "code": "econnreset",
+                  "type": "transport_error"
+                }
+              ],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": null,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "half_stream",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "half_stream"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/happy_multi_tool/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "happy_multi_tool",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [
+                {
+                  "content": "I'll implement the change.",
+                  "type": "text"
+                },
+                {
+                  "arguments": {
+                    "path": "src/x.py"
+                  },
+                  "name": "read",
+                  "turn": 1,
+                  "type": "tool_call"
+                },
+                {
+                  "arguments": {
+                    "path": "src/x.py"
+                  },
+                  "name": "edit",
+                  "turn": 2,
+                  "type": "tool_call"
+                },
+                {
+                  "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                  "changed_files": [
+                    "src/x.py"
+                  ],
+                  "content": "dal.patch-artifact/1.0:ref",
+                  "context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "turn": 3,
+                  "type": "final"
+                }
+              ],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": null,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "happy_multi_tool",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "happy_multi_tool"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/malformed_args/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "malformed_args",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [
+                {
+                  "arguments": {
+                    "path": "src/x.py"
+                  },
+                  "arguments_json": "{\"path\": \"src/x.py\"}",
+                  "name": "read",
+                  "turn": 1,
+                  "type": "tool_call"
+                }
+              ],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": null,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "malformed_args",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "malformed_args"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/multi_final/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "multi_final",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [
+                {
+                  "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                  "changed_files": [
+                    "src/a.py"
+                  ],
+                  "content": "dal.patch-artifact/1.0:ref",
+                  "context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "turn": 1,
+                  "type": "final"
+                },
+                {
+                  "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                  "changed_files": [
+                    "src/b.py"
+                  ],
+                  "content": "dal.patch-artifact/1.0:ref",
+                  "context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "turn": 1,
+                  "type": "final"
+                }
+              ],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": null,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "multi_final",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "multi_final"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/out_of_scope_patch/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "out_of_scope_patch",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [
+                {
+                  "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                  "changed_files": [
+                    "/etc/passwd"
+                  ],
+                  "content": "dal.patch-artifact/1.0:ref",
+                  "context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "turn": 1,
+                  "type": "final"
+                }
+              ],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": null,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "out_of_scope_patch",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "out_of_scope_patch"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/quota/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "quota",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [],
+              "transport": {
+                "account_scoped_429": true,
+                "disconnected": false,
+                "http_status": 429,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "quota",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "quota"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/real_auth/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "real_auth",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": 401,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "real_auth",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "real_auth"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/recovery/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "recovery",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": 429,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "recovery",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "recovery"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/tampered_host/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "tampered_host",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "evil.example.com:443",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [
+                {
+                  "content": "I'll implement the change.",
+                  "type": "text"
+                },
+                {
+                  "arguments": {
+                    "path": "src/x.py"
+                  },
+                  "name": "read",
+                  "turn": 1,
+                  "type": "tool_call"
+                },
+                {
+                  "arguments": {
+                    "path": "src/x.py"
+                  },
+                  "name": "edit",
+                  "turn": 2,
+                  "type": "tool_call"
+                },
+                {
+                  "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                  "changed_files": [
+                    "src/x.py"
+                  ],
+                  "content": "dal.patch-artifact/1.0:ref",
+                  "context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "turn": 3,
+                  "type": "final"
+                }
+              ],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": null,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "tampered_host",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "tampered_host"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/transient/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "transient",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": false,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": 503,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "transient",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "transient"
+    },
+    "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/turn_ceiling/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "coder-adapter",
+          "idempotency_key": "turn_ceiling",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_coder_stream",
+                "contract_version": "dal.coder-response/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "allowed_paths": [
+                "src/",
+                "tests/"
+              ],
+              "allowed_tools": [
+                "read",
+                "edit",
+                "bash"
+              ],
+              "base_sha": "0123456789abcdef0123456789abcdef01234567",
+              "max_patch_bytes": 1048576,
+              "max_turns": 8,
+              "max_wall_seconds": 900,
+              "pinned_endpoint": "127.0.0.1:3456",
+              "requested_classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_context_envelope_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "injected_results": {
+              "budget": {
+                "patch_bytes_exhausted": false,
+                "turns_exhausted": true,
+                "wall_seconds_exhausted": false
+              },
+              "canary_observed": false,
+              "classifier_digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "endpoint_policy": "passed",
+              "exit_code": 0,
+              "observed_endpoint": "127.0.0.1:3456",
+              "redaction_scan": "passed",
+              "sandbox_violation": false,
+              "stream": [
+                {
+                  "arguments": {
+                    "path": "src/x.py"
+                  },
+                  "name": "read",
+                  "turn": 9,
+                  "type": "tool_call"
+                }
+              ],
+              "transport": {
+                "account_scoped_429": false,
+                "disconnected": false,
+                "http_status": null,
+                "provider_error_code": null,
+                "timed_out": false
+              }
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "turn_ceiling",
+          "operation_spec_id": "OP-CODER-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.coder-adapter-fixture/1.0",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "turn_ceiling"
+    }
+  },
+  "registry_sha256": "0c0ece280b24d4cdda0d5b1989f2a9b5f6c3b3a7a887acfce632ad863d76684e",
+  "schema_version": "dal.coder-adapter-fixture-catalog/1.0"
+}

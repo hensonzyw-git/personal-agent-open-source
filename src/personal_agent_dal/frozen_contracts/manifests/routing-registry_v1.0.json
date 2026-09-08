@@ -1,0 +1,79 @@
+{
+  "block_event": "feature.blocked",
+  "block_write_set": [
+    "aggregate",
+    "audit",
+    "business_event",
+    "decision_create",
+    "decision_projection",
+    "notification_outbox",
+    "transition_receipt"
+  ],
+  "classification_precedence": [
+    "classifier_integrity",
+    "unknown_slot_request",
+    "non_fallback_slot",
+    "fallback_unconfigured",
+    "primary_failure_class_eligibility"
+  ],
+  "classifier_observed_fields": [
+    "digest_post",
+    "digest_pre",
+    "model",
+    "provider"
+  ],
+  "command_type": "consume_handoff",
+  "contract_version": "dal.routing-resolution/1.0",
+  "evidence_source": "routing-adapter",
+  "fact_fields": [
+    "classifier_digest",
+    "requested_slot",
+    "routing_snapshot",
+    "work_state"
+  ],
+  "failure_to_reason": {
+    "contract_failure": "PROVIDER_CONTRACT_FAILURE",
+    "policy_failure": "POLICY_FAILURE"
+  },
+  "fallback_allowed_classes": [
+    "auth",
+    "contract_failure",
+    "transient",
+    "usage_limit"
+  ],
+  "feature_transition_receipt_schema": "dal.transition-receipt/1.0",
+  "injected_fields": [
+    "observed_classifier",
+    "primary_failure_class"
+  ],
+  "operation_spec_id": "OP-ROUTING-CONTRACT-001",
+  "reason_to_state": {
+    "POLICY_FAILURE": "needs_human",
+    "PROVIDER_CONTRACT_FAILURE": "needs_human"
+  },
+  "registry_sha256": "2806ee32b9398377dc3d6fcf52b6a582fdedba8c8d7675fe20a11bcb76ad82d1",
+  "result_status_enum": [
+    "blocked",
+    "fallback_allowed",
+    "fallback_denied",
+    "no_fallback_route"
+  ],
+  "schema_version": "dal.routing-registry/1.0",
+  "service_actor": "service",
+  "slot_fields": [
+    "model",
+    "provider"
+  ],
+  "slot_names": [
+    "classifier",
+    "fallback",
+    "primary",
+    "review"
+  ],
+  "work_state_fields": [
+    "base_sha",
+    "diff_sha",
+    "last_verified_sha",
+    "tests_receipt"
+  ]
+}

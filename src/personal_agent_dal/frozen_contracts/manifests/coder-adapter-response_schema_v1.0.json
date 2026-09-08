@@ -1,0 +1,107 @@
+{
+  "$comment": "The coder classifier result. failure_class has NO task_failure: deterministic verification is DAL-029's stage, the coder only produces a patch. result_status=failed carries contract/policy/transient failure; blocked carries usage/auth/budget limit.",
+  "$id": "dal.coder-adapter-response/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "changed_files": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "endpoint_policy": {
+      "enum": [
+        "passed",
+        "failed"
+      ]
+    },
+    "exit_code": {
+      "type": "integer"
+    },
+    "failure_class": {
+      "enum": [
+        "usage_limit",
+        "transient",
+        "auth",
+        "contract_failure",
+        "policy_failure",
+        "budget_limit",
+        null
+      ],
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "final_state": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "patch_artifact_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "patch_artifact_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "quarantined": {
+      "type": "boolean"
+    },
+    "reason_code": {
+      "enum": [
+        "AUTH_REQUIRED",
+        "BUDGET_LIMIT",
+        "POLICY_FAILURE",
+        "PROVIDER_CONTRACT_FAILURE",
+        "TRANSIENT_RETRY_EXHAUSTED",
+        "USAGE_LIMIT",
+        null
+      ],
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "redaction_scan": {
+      "enum": [
+        "passed",
+        "failed"
+      ]
+    },
+    "result_status": {
+      "enum": [
+        "succeeded",
+        "cancelled",
+        "blocked",
+        "failed"
+      ]
+    },
+    "schema_version": {
+      "const": "dal.coder-adapter-response/1.0"
+    }
+  },
+  "required": [
+    "schema_version",
+    "result_status",
+    "failure_class",
+    "reason_code",
+    "final_state",
+    "patch_artifact_ref",
+    "patch_artifact_sha256",
+    "changed_files",
+    "exit_code",
+    "redaction_scan",
+    "endpoint_policy",
+    "quarantined"
+  ],
+  "schema_version": "dal.coder-adapter-response/1.0",
+  "type": "object"
+}

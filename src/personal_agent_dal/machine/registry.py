@@ -31,9 +31,34 @@ from personal_agent_dal.errors import DalError, DalErrorCode
 
 
 #: The frozen contract package. Read-only at runtime.
-MANIFESTS_DIR: Final[Path] = (
-    Path(__file__).resolve().parents[3] / "docs" / "dal" / "manifests"
+#:
+#: Two deployment shapes must both resolve. In a venv/wheel deploy the
+#: manifests are packaged inside this package (`frozen_contracts/`, force-
+#: included at build time) and the checkout's docs/ tree does not exist —
+#: the first candidate wins there. In a source checkout the packaged copy
+#: is absent, so the checkout path is the fallback. Both copies carry the
+#: same bytes: the loader hash-verifies whichever it opens, so a drifted
+#: or tampered copy is a hard failure either way (R10 T1 intake, 2026-09-09).
+_PACKAGED_CONTRACTS_DIR: Final[Path] = (
+    Path(__file__).resolve().parents[1] / "frozen_contracts"
 )
+_CHECKOUT_CONTRACTS_DIR: Final[Path] = (
+    Path(__file__).resolve().parents[3] / "docs" / "dal"
+)
+
+
+def _contracts_dir() -> Path:
+    if (_PACKAGED_CONTRACTS_DIR / "manifests").is_dir():
+        return _PACKAGED_CONTRACTS_DIR
+    if _CHECKOUT_CONTRACTS_DIR.is_dir():
+        return _CHECKOUT_CONTRACTS_DIR
+    raise RegistryError(
+        "frozen contract package not found: neither "
+        f"{_PACKAGED_CONTRACTS_DIR} nor {_CHECKOUT_CONTRACTS_DIR} exists"
+    )
+
+
+MANIFESTS_DIR: Final[Path] = _contracts_dir() / "manifests"
 
 TRANSITION_REGISTRY: Final[str] = "transition-spec-registry_v1.0.json"
 GUARD_REGISTRY: Final[str] = "guard-predicate-registry_v1.0.json"

@@ -1,0 +1,584 @@
+{
+  "$comment": "P4/P5 denominator order and ready-state non-null route/limit constraints are enforced by allOf/oneOf/if/then; manifest_sha256 canonical-byte verification remains a controller operation.",
+  "$id": "dal.eval-run-manifest/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "case_ids_and_order": {
+              "const": [
+                "DAL-EVAL-001",
+                "DAL-EVAL-003",
+                "DAL-EVAL-010"
+              ]
+            },
+            "case_inputs": {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-001"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                },
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-003"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                },
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-010"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                }
+              ]
+            },
+            "series_profile": {
+              "const": "P4"
+            }
+          },
+          "required": [
+            "series_profile",
+            "case_ids_and_order",
+            "case_inputs"
+          ]
+        },
+        {
+          "properties": {
+            "case_ids_and_order": {
+              "const": [
+                "DAL-EVAL-001",
+                "DAL-EVAL-002",
+                "DAL-EVAL-003",
+                "DAL-EVAL-004",
+                "DAL-EVAL-005",
+                "DAL-EVAL-006",
+                "DAL-EVAL-007",
+                "DAL-EVAL-008",
+                "DAL-EVAL-009",
+                "DAL-EVAL-010",
+                "DAL-EVAL-011",
+                "DAL-EVAL-012"
+              ]
+            },
+            "case_inputs": {
+              "maxItems": 12,
+              "minItems": 12,
+              "prefixItems": [
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-001"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                },
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-002"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                },
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-003"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                },
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-004"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                },
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-005"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                },
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-006"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                },
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-007"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                },
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-008"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                },
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-009"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                },
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-010"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                },
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-011"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                },
+                {
+                  "properties": {
+                    "case_id": {
+                      "const": "DAL-EVAL-012"
+                    }
+                  },
+                  "required": [
+                    "case_id"
+                  ]
+                }
+              ]
+            },
+            "series_profile": {
+              "const": "P5"
+            }
+          },
+          "required": [
+            "series_profile",
+            "case_ids_and_order",
+            "case_inputs"
+          ]
+        }
+      ]
+    },
+    {
+      "if": {
+        "properties": {
+          "series_status": {
+            "enum": [
+              "ready",
+              "running",
+              "closed"
+            ]
+          }
+        },
+        "required": [
+          "series_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "limits": {
+            "properties": {
+              "max_changed_files": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "max_fix_review_cycles": {
+                "const": 3
+              },
+              "max_patch_bytes": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "max_provider_attempts_per_run": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "max_subscription_runs_per_day": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "max_turns_per_run": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "max_usd_per_day": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              "max_usd_per_run": {
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              "max_wall_seconds_per_run": {
+                "minimum": 1,
+                "type": "integer"
+              }
+            }
+          },
+          "route": {
+            "properties": {
+              "binary_sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "classifier_sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "config_sha256": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "case_ids_and_order": {
+      "items": {
+        "pattern": "^DAL-EVAL-[0-9]{3}$",
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "case_inputs": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "base_commit_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "base_tree_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "behavior_oracle_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "case_contract_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "case_id": {
+            "pattern": "^DAL-EVAL-[0-9]{3}$",
+            "type": "string"
+          },
+          "output_schema_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "prompt_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "reference_commit_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "task_brief_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "tool_policy_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "trusted_test_bundle_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "case_id",
+          "base_commit_sha",
+          "reference_commit_sha",
+          "base_tree_sha256",
+          "trusted_test_bundle_sha256",
+          "task_brief_sha256",
+          "case_contract_sha256",
+          "behavior_oracle_sha256",
+          "prompt_sha256",
+          "output_schema_sha256",
+          "tool_policy_sha256"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "limits": {
+      "additionalProperties": false,
+      "properties": {
+        "max_changed_files": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_fix_review_cycles": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_patch_bytes": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_provider_attempts_per_run": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_subscription_runs_per_day": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_turns_per_run": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_usd_per_day": {
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_usd_per_run": {
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_wall_seconds_per_run": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "max_turns_per_run",
+        "max_wall_seconds_per_run",
+        "max_provider_attempts_per_run",
+        "max_fix_review_cycles",
+        "max_usd_per_run",
+        "max_usd_per_day",
+        "max_subscription_runs_per_day",
+        "max_patch_bytes",
+        "max_changed_files"
+      ],
+      "type": "object"
+    },
+    "manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "repeat_n": {
+      "const": 3
+    },
+    "route": {
+      "additionalProperties": false,
+      "properties": {
+        "billing_mode": {
+          "enum": [
+            "api",
+            "subscription"
+          ]
+        },
+        "binary_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "classifier_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "config_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harness_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "harness_version": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "model_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "provider_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider_id",
+        "model_id",
+        "harness_id",
+        "harness_version",
+        "billing_mode",
+        "binary_sha256",
+        "config_sha256",
+        "classifier_sha256"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "dal.eval-run-manifest/1.0"
+    },
+    "seed": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "series_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "series_profile": {
+      "enum": [
+        "P4",
+        "P5"
+      ]
+    },
+    "series_status": {
+      "enum": [
+        "not_ready",
+        "ready",
+        "running",
+        "closed"
+      ]
+    },
+    "stop_rule_ids": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema_version",
+    "series_id",
+    "series_profile",
+    "series_status",
+    "case_ids_and_order",
+    "repeat_n",
+    "seed",
+    "case_inputs",
+    "route",
+    "limits",
+    "stop_rule_ids",
+    "created_at",
+    "manifest_sha256"
+  ],
+  "type": "object",
+  "x-canonicalization": {
+    "algorithm": "RFC8785-JCS",
+    "array_order": "preserved",
+    "excluded_hash_fields": [
+      "manifest_sha256"
+    ],
+    "hash": "SHA-256"
+  }
+}

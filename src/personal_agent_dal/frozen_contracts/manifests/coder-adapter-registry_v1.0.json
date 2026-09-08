@@ -1,0 +1,143 @@
+{
+  "block_event": "feature.blocked",
+  "block_write_set": [
+    "aggregate",
+    "audit",
+    "business_event",
+    "decision_create",
+    "decision_projection",
+    "notification_outbox",
+    "transition_receipt"
+  ],
+  "budget_fields": [
+    "patch_bytes_exhausted",
+    "turns_exhausted",
+    "wall_seconds_exhausted"
+  ],
+  "classification_precedence": [
+    "classifier_digest_drift",
+    "host_tamper",
+    "redaction_or_endpoint_policy",
+    "sandbox_or_canary",
+    "patch_or_tool_out_of_scope",
+    "cancel",
+    "budget_exhausted",
+    "transport_auth_usage",
+    "stream_correctness",
+    "conforming"
+  ],
+  "command_type": "consume_coder_stream",
+  "contract_version": "dal.coder-response/1.0",
+  "event_vocabulary": {
+    "cancelled": {
+      "optional": [],
+      "required": [
+        "type"
+      ]
+    },
+    "final": {
+      "optional": [
+        "turn"
+      ],
+      "required": [
+        "base_sha",
+        "changed_files",
+        "content",
+        "context_envelope_sha256",
+        "type"
+      ]
+    },
+    "stream_delta": {
+      "optional": [],
+      "required": [
+        "content",
+        "type"
+      ]
+    },
+    "text": {
+      "optional": [],
+      "required": [
+        "content",
+        "type"
+      ]
+    },
+    "tool_call": {
+      "optional": [
+        "arguments",
+        "arguments_json",
+        "turn"
+      ],
+      "required": [
+        "name",
+        "type"
+      ]
+    },
+    "transport_error": {
+      "optional": [],
+      "required": [
+        "code",
+        "type"
+      ]
+    }
+  },
+  "evidence_source": "coder-adapter",
+  "fact_fields": [
+    "allowed_paths",
+    "allowed_tools",
+    "base_sha",
+    "max_patch_bytes",
+    "max_turns",
+    "max_wall_seconds",
+    "pinned_endpoint",
+    "requested_classifier_digest",
+    "requested_context_envelope_sha256"
+  ],
+  "failure_class_enum": [
+    "usage_limit",
+    "transient",
+    "auth",
+    "contract_failure",
+    "policy_failure",
+    "budget_limit"
+  ],
+  "failure_to_reason": {
+    "auth": "AUTH_REQUIRED",
+    "budget_limit": "BUDGET_LIMIT",
+    "contract_failure": "PROVIDER_CONTRACT_FAILURE",
+    "policy_failure": "POLICY_FAILURE",
+    "transient": "TRANSIENT_RETRY_EXHAUSTED",
+    "usage_limit": "USAGE_LIMIT"
+  },
+  "feature_transition_receipt_schema": "dal.transition-receipt/1.0",
+  "injected_fields": [
+    "budget",
+    "canary_observed",
+    "classifier_digest_post",
+    "endpoint_policy",
+    "exit_code",
+    "observed_endpoint",
+    "redaction_scan",
+    "sandbox_violation",
+    "stream",
+    "transport"
+  ],
+  "operation_spec_id": "OP-CODER-CONTRACT-001",
+  "reason_to_state": {
+    "AUTH_REQUIRED": "blocked_auth",
+    "BUDGET_LIMIT": "needs_human",
+    "POLICY_FAILURE": "needs_human",
+    "PROVIDER_CONTRACT_FAILURE": "needs_human",
+    "TRANSIENT_RETRY_EXHAUSTED": "needs_human",
+    "USAGE_LIMIT": "blocked_usage"
+  },
+  "registry_sha256": "0c0ece280b24d4cdda0d5b1989f2a9b5f6c3b3a7a887acfce632ad863d76684e",
+  "schema_version": "dal.coder-adapter-registry/1.0",
+  "service_actor": "service",
+  "transport_fields": [
+    "account_scoped_429",
+    "disconnected",
+    "http_status",
+    "provider_error_code",
+    "timed_out"
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "$comment": "The trusted (protected) half of a verification run. registry_commands declares exactly the five registered stages (diff capture + format/lint/build/test), each a non-empty argv; base_sha is the base the diff was taken against; prior_last_verified_sha is the last verified SHA before this run (preserved on failure).",
+  "$id": "dal.verification-request/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "authoritative_facts": {
+      "additionalProperties": false,
+      "properties": {
+        "base_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "prior_last_verified_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "registry_commands": {
+          "additionalProperties": false,
+          "properties": {
+            "build": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "diff": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "format": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "lint": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            },
+            "test": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array"
+            }
+          },
+          "required": [
+            "build",
+            "diff",
+            "format",
+            "lint",
+            "test"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "base_sha",
+        "prior_last_verified_sha",
+        "registry_commands"
+      ],
+      "type": "object"
+    },
+    "contract_version": {
+      "const": "dal.verification-report/1.0"
+    },
+    "operation_spec_id": {
+      "const": "OP-VERIFICATION-CONTRACT-001"
+    },
+    "schema_version": {
+      "const": "dal.verification-request/1.0"
+    }
+  },
+  "required": [
+    "schema_version",
+    "operation_spec_id",
+    "contract_version",
+    "authoritative_facts"
+  ],
+  "schema_version": "dal.verification-request/1.0",
+  "type": "object"
+}

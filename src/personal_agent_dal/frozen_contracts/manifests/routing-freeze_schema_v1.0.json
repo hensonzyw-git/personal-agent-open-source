@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dal.routing-freeze/1.0",
+  "title": "Routing freeze manifest — sanitized and provider-agnostic",
+  "description": "The DAL-025 read-only export of the host's configured routing, with every credential reduced to a location/role reference (sha256) and every provider/agent/CCR choice recorded as a data row rather than a schema key. The contract is invariant to future changes of agent, provider and CCR configuration: a value change re-freezes the digest (drift detection); a shape change is absorbed by the fail-closed completeness witness (`redacted`) without ever widening this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "frozen_at",
+    "host",
+    "cli",
+    "providers",
+    "routing",
+    "credentials",
+    "redacted",
+    "violations",
+    "plaintext_credentials"
+  ],
+  "properties": {
+    "schema": {
+      "const": "dal.routing-freeze/1.0"
+    },
+    "frozen_at": {
+      "type": "string",
+      "description": "Freeze timestamp (RFC 3339)."
+    },
+    "host": {
+      "type": "string",
+      "description": "Which machine the freeze was taken on (home-mac / ecs)."
+    },
+    "cli": {
+      "type": "array",
+      "description": "Every agent CLI present, with its version. Agent is a VALUE, never a schema key.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["agent", "cli", "version"],
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "Agent family: codex / claude-code / ccr / any future agent."
+          },
+          "cli": { "type": "string" },
+          "version": { "type": "string" }
+        }
+      }
+    },
+    "providers": {
+      "type": "array",
+      "description": "Provider choices, one row per provider. A new provider is a new row, not a schema change.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "models", "endpoints"],
+        "properties": {
+          "name": { "type": "string" },
+          "models": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Model identifiers routed through this provider."
+          },
+          "endpoints": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Pinned endpoint host:port pairs. Host and port are both frozen."
+          }
+        }
+      }
+    },
+    "routing": {
+      "type": "array",
+      "description": "The routing slots (primary / fallback / classifier / review). Slot is a stable role vocabulary, independent of which provider fills it.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slot", "provider", "model"],
+        "properties": {
+          "slot": {
+            "type": "string",
+            "description": "primary / fallback / classifier / review — a role, not a provider name."
+          },
+          "provider": { "type": "string" },
+          "model": { "type": "string" }
+        }
+      }
+    },
+    "credentials": {
+      "type": "array",
+      "description": "Every credential, reduced to a role + a sha256 reference. The secret value never appears, in the manifest or in the digest input.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "ref"],
+        "properties": {
+          "role": {
+            "enum": ["auth-store", "key-helper", "secret-field"],
+            "description": "How the credential is held, by structural role — not by which provider owns it."
+          },
+          "ref": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "description": "sha256 of the credential's location (path) or, for inline secret fields, of the value. Detects drift without revealing it."
+          },
+          "mode": {
+            "enum": ["file", "env", "keychain", "script"],
+            "description": "Compliance facts for the auth-store role (DAL-006 §3.3)."
+          },
+          "owner": { "type": "string" },
+          "perm": { "type": "string" },
+          "parent_perm": { "type": "string" }
+        }
+      }
+    },
+    "redacted": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Completeness witness. Every config field the exporter could not classify as routing/version/usage-state is force-redacted and its path listed here. Empty means nothing fell through unclassified — a structural proof that no unknown field silently entered the freeze. This is the fail-closed invariant that keeps the rules forward-compatible with future provider/agent/CCR shapes."
+    },
+    "violations": {
+      "type": "array",
+      "description": "Credential-compliance hard gate (DAL-006 §3.3): credential stores must be 0600 file / 0700 parent. Empty means compliant. A non-empty list marks the freeze non-compliant and the downstream preflight/adapter must refuse it. A plaintext key inside a 0600-protected third-party store is NOT a violation — Henson ruled (2026-08-22, option 2) that the 'no plaintext' gate applies only to credentials the DAL system itself writes; CCR-native storage is judged by file permissions. The pinned-host runtime check is deliberately NOT here — that is DAL-026's job.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "store"],
+        "properties": {
+          "code": {
+            "enum": ["credential-store-loose-file-perm", "credential-store-loose-parent-perm", "credential-store-unreadable"],
+            "description": "loose-file-perm = store file not 0600; loose-parent-perm = store dir not 0700; unreadable = could not be opened read-only to verify (fail closed)."
+          },
+          "store": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      }
+    },
+    "plaintext_credentials": {
+      "type": "array",
+      "description": "Informational, NOT a hard gate. CCR-native credentials stored unencrypted at rest, detected without ever outputting a key value (name only). Henson accepted these as CCR-native on 2026-08-22 (option 2); they are recorded so the fact stays visible and drift-tracked, but they do not mark the freeze non-compliant.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "store"],
+        "properties": {
+          "name": { "type": "string" },
+          "store": { "type": "string" },
+          "encryption": { "enum": ["plain", "unreadable"] }
+        }
+      }
+    }
+  }
+}

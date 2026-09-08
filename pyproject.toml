@@ -77,6 +77,15 @@ packages = [
 [tool.hatch.build.targets.wheel.force-include]
 "evals/finance_v0.2.jsonl" = "personal_agent_core/data/finance_v0.2.jsonl"
 
+# The frozen DAL contract registries ship as real package data under
+# src/personal_agent_dal/frozen_contracts/ (manifests + dal_jcs.py, copied
+# verbatim from docs/dal/ — the checkout copy is the frozen master). The
+# registry loader hash-verifies whichever copy it opens; in a venv/wheel
+# deploy the docs/ tree does not exist (R10 T1 intake, 2026-09-09), so the
+# packaged copy is the primary candidate and the checkout path is the
+# fallback. tests/dal/test_registry_manifest_resolution.py pins that both
+# copies stay byte-identical.
+
 [tool.pytest.ini_options]
 addopts = "-q"
 pythonpath = ["src", "tests", "scripts"]

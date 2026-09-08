@@ -1,0 +1,208 @@
+{
+  "$comment": "finding.location.path must resolve to a regular file blob (mode 100644/100755, not tree/submodule 160000/symlink) in the result_sha tree, line_end >= line_start, and location.anchor_sha must equal result_sha; coverage must biject with the approved plan's acceptance_criteria, and disposition=approve requires empty findings/acceptance_gaps plus complete coverage. These are controller checks over Git/plan facts.",
+  "$id": "dal.review-findings/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "findings": {
+                "minItems": 1
+              }
+            }
+          },
+          {
+            "properties": {
+              "acceptance_gaps": {
+                "minItems": 1
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "disposition": {
+            "const": "request_changes"
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "acceptance_gaps": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "failure_scenario": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "summary": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "acceptance_id",
+          "summary",
+          "failure_scenario"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "base_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "coverage": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptance_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "verification_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "acceptance_id",
+          "verification_ids"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "disposition": {
+      "enum": [
+        "approve",
+        "request_changes"
+      ]
+    },
+    "findings": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "enum": [
+              "correctness",
+              "security",
+              "data_integrity",
+              "concurrency",
+              "recovery",
+              "contract",
+              "test_coverage",
+              "documentation"
+            ]
+          },
+          "failure_scenario": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "finding_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "location": {
+            "additionalProperties": false,
+            "properties": {
+              "anchor_sha": {
+                "pattern": "^[0-9a-f]{40}$",
+                "type": "string"
+              },
+              "line_end": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "line_start": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "minLength": 1,
+                "pattern": "^(?!\\/)(?!^\\.\\.?($|\\/))(?!.*\\/\\.\\.?($|\\/))(?!^\\.git($|\\/))(?!.*\\/\\.git($|\\/))",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "line_start",
+              "line_end",
+              "anchor_sha"
+            ],
+            "type": "object"
+          },
+          "severity": {
+            "enum": [
+              "P0",
+              "P1",
+              "P2",
+              "P3"
+            ]
+          },
+          "summary": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_id",
+          "severity",
+          "location",
+          "summary",
+          "failure_scenario",
+          "category"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "result_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    },
+    "review_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "reviewed_diff_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "reviewed_input_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "dal.review-findings/1.0"
+    }
+  },
+  "required": [
+    "schema_version",
+    "review_id",
+    "reviewed_input_manifest_sha256",
+    "reviewed_diff_sha256",
+    "base_sha",
+    "result_sha",
+    "findings",
+    "acceptance_gaps",
+    "coverage",
+    "disposition"
+  ],
+  "type": "object"
+}

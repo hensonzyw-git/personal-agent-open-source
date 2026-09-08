@@ -1,0 +1,150 @@
+{
+  "$comment": "The trusted (protected) half of the routing handoff. routing_snapshot carries the frozen slot table (primary/classifier required, fallback/review optional); a slot with empty provider/model is unconfigured, never an invented route. classifier_digest is the frozen classifier fingerprint; work_state is the four-field state a fallback must inherit verbatim.",
+  "$id": "dal.routing-request/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "authoritative_facts": {
+      "additionalProperties": false,
+      "properties": {
+        "classifier_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "requested_slot": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "routing_snapshot": {
+          "additionalProperties": false,
+          "properties": {
+            "classifier": {
+              "additionalProperties": false,
+              "properties": {
+                "model": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "provider",
+                "model"
+              ],
+              "type": "object"
+            },
+            "fallback": {
+              "additionalProperties": false,
+              "properties": {
+                "model": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "provider",
+                "model"
+              ],
+              "type": "object"
+            },
+            "primary": {
+              "additionalProperties": false,
+              "properties": {
+                "model": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "provider",
+                "model"
+              ],
+              "type": "object"
+            },
+            "review": {
+              "additionalProperties": false,
+              "properties": {
+                "model": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "provider",
+                "model"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "primary",
+            "classifier"
+          ],
+          "type": "object"
+        },
+        "work_state": {
+          "additionalProperties": false,
+          "properties": {
+            "base_sha": {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            "diff_sha": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "last_verified_sha": {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tests_receipt": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "base_sha",
+            "diff_sha",
+            "last_verified_sha",
+            "tests_receipt"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "classifier_digest",
+        "requested_slot",
+        "routing_snapshot",
+        "work_state"
+      ],
+      "type": "object"
+    },
+    "contract_version": {
+      "const": "dal.routing-resolution/1.0"
+    },
+    "operation_spec_id": {
+      "const": "OP-ROUTING-CONTRACT-001"
+    },
+    "schema_version": {
+      "const": "dal.routing-request/1.0"
+    }
+  },
+  "required": [
+    "schema_version",
+    "operation_spec_id",
+    "contract_version",
+    "authoritative_facts"
+  ],
+  "schema_version": "dal.routing-request/1.0",
+  "type": "object"
+}
