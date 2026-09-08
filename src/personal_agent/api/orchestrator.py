@@ -215,10 +215,15 @@ class ReadCompleted:
     ``finance.query_expenses`` the read also carries the validated
     ``projection`` and a deterministic ``answer`` fallback for clients that
     predate ``query_result``; every other read carries only the result string.
+    ``projection`` is either a ``FinanceQueryProjection`` (whose ``to_dict()``
+    the API serves as ``query_result``) or an already-decoded calendar
+    projection dict (whose strict decoder returned exactly the display
+    shape) — the two query domains share the same client field, so this
+    carries whichever validated projection the read produced.
     """
 
     result: str
-    projection: FinanceQueryProjection | None = None
+    projection: FinanceQueryProjection | dict[str, Any] | None = None
     answer: str | None = None
 
 
@@ -748,11 +753,19 @@ def _apply_resolve(
     if isinstance(outcome, ReadCompleted):
         _step(session, operation, "succeeded", now, safe_result=outcome.result)
         if outcome.projection is not None:
+            # A Finance projection carries a to_dict(); a calendar projection
+            # is already the decoded display dict. Both are strict decoders'
+            # outputs, so what travels to the client is the validated shape.
+            query_result = (
+                outcome.projection.to_dict()
+                if isinstance(outcome.projection, FinanceQueryProjection)
+                else outcome.projection
+            )
             return RunResult(
                 state="succeeded",
                 record_id=None,
                 answer=outcome.answer,
-                query_result=outcome.projection.to_dict(),
+                query_result=query_result,
             )
         return RunResult(state="succeeded", record_id=None, answer=outcome.result)
 

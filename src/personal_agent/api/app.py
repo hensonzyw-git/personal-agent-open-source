@@ -42,6 +42,11 @@ from sqlalchemy import text as text_clause
 from sqlalchemy.exc import IntegrityError
 
 from personal_agent.api import events
+from personal_agent.api.calendar_query_projection import (
+    CalendarQueryProjectionError,
+    decode_calendar_query_projection,
+    summarise_calendar_projection,
+)
 from personal_agent.api.finance_query_projection import (
     FinanceQueryProjectionError,
     decode_finance_query_projection,
@@ -313,6 +318,20 @@ _QUERY_RESULT_TOOLS = frozenset(
     and contract.enabled
     and contract.output_schema.get("properties", {}).get("metric", {}).get("const")
     == "personal_spend_total_cny"
+)
+
+#: Same discipline for the calendar mirror read (review R4): a governed read
+#: whose `safe_result` is the calendar projection, keyed on the output
+#: contract's `source_system` const the way the Finance set keys on `metric`.
+_CALENDAR_QUERY_RESULT_TOOLS = frozenset(
+    contract.name
+    for contract in TOOL_CONTRACTS
+    if contract.effect == "read"
+    and contract.enabled
+    and contract.output_schema.get("properties", {}).get("source_system", {}).get(
+        "const"
+    )
+    == "apple_calendar_mirror"
 )
 
 
@@ -3048,6 +3067,20 @@ def _operation_projection(
                 else:
                     projection["query_result"] = query.to_dict()
                     projection["answer"] = summarise_query_projection(query)
+            elif operation.tool in _CALENDAR_QUERY_RESULT_TOOLS:
+                # Same fail-closed discipline for the calendar mirror read:
+                # the safe_result must decode as the whitelisted calendar
+                # projection or nothing is shown. The decoder returns exactly
+                # the display dict, so `query_result` is the projection itself.
+                try:
+                    calendar_query = decode_calendar_query_projection(
+                        operation.safe_result
+                    )
+                except CalendarQueryProjectionError:
+                    pass
+                else:
+                    projection["query_result"] = calendar_query
+                    projection["answer"] = summarise_calendar_projection(calendar_query)
             else:
                 projection["answer"] = operation.safe_result
 

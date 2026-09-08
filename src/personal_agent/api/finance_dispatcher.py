@@ -49,6 +49,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from personal_agent.api.calendar_query_projection import (
+    CalendarQueryProjectionError,
+    canonical_calendar_projection_json,
+    decode_calendar_query_projection,
+    summarise_calendar_projection,
+)
 from personal_agent.api.control_client import (
     ControlPlaneError,
     FinanceControlClient,
@@ -100,14 +106,21 @@ _log = logging.getLogger(__name__)
 
 
 #: Tools with no side effect, which `resolve` may therefore execute outright.
+#: Derived from the IR's effect field, never hand-listed (review R4): the
+#: hand-listed set held exactly the Finance reads and `meta.capabilities`, so
+#: `calendar.query_events` — a governed read in the IR — fell through to the
+#: write branch and parked in the commit flow awaiting a record id that a read
+#: will never produce.
 READ_TOOLS: frozenset[str] = frozenset(
-    {*FINANCE_READ_TOOLS, "meta.capabilities"}
+    contract.name
+    for contract in TOOL_CONTRACTS
+    if contract.effect == "read" and contract.enabled
 )
 
-#: The governed read tools whose `trusted_result` is a structured query
+#: The governed read tools whose `trusted_result` is the *expense* query
 #: projection rather than a prose answer. Derived from the IR so a second
-#: governed read tool cannot silently bypass the strict decoder and have its
-#: canonical JSON echoed as `answer` -- the exact bug this change exists to fix.
+#: governed read tool cannot silently bypass a strict decoder and have its
+#: canonical JSON echoed as `answer` -- the exact bug this set exists to fix.
 #: Narrowed to the tools whose output contract is the expense query projection
 #: (identified by its `metric` const): `meta.capabilities` is a read but not a
 #: query, and must keep the plain `answer` path.
@@ -118,6 +131,21 @@ _QUERY_RESULT_TOOLS: frozenset[str] = frozenset(
     and contract.enabled
     and contract.output_schema.get("properties", {}).get("metric", {}).get("const")
     == "personal_spend_total_cny"
+)
+
+#: The same idea for the calendar mirror read (review R4): a governed read
+#: whose result is a structured projection — here keyed on the output
+#: contract's `source_system` const, exactly the way the Finance set keys on
+#: `metric`. A read in neither set keeps the plain `answer` path.
+_CALENDAR_QUERY_RESULT_TOOLS: frozenset[str] = frozenset(
+    contract.name
+    for contract in TOOL_CONTRACTS
+    if contract.effect == "read"
+    and contract.enabled
+    and contract.output_schema.get("properties", {}).get("source_system", {}).get(
+        "const"
+    )
+    == "apple_calendar_mirror"
 )
 
 
@@ -274,6 +302,19 @@ class McpFinanceDispatcher:
                 result=canonical_projection_json(projection),
                 projection=projection,
                 answer=summarise_query_projection(projection),
+            )
+        if tool in _CALENDAR_QUERY_RESULT_TOOLS:
+            # Same discipline, calendar shape: the mirror read's result is a
+            # structured projection the calendar decoder whitelists, never a
+            # string the model may restate as its own answer.
+            try:
+                calendar_projection = decode_calendar_query_projection(result)
+            except CalendarQueryProjectionError:
+                return ResolveFailedSafe(reason=QUERY_RESULT_UNREADABLE)
+            return ReadCompleted(
+                result=canonical_calendar_projection_json(calendar_projection),
+                projection=calendar_projection,
+                answer=summarise_calendar_projection(calendar_projection),
             )
         return ReadCompleted(result=canonical_json(result))
 
