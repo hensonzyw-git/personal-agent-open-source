@@ -23,9 +23,11 @@ prompt's own contract requires the staleness to be stated, not implied.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 from personal_agent_core.manifest import canonical_json
+from personal_agent_core.timeutil import LEDGER_TIMEZONE, parse_rfc3339
 
 
 #: The stable failure reason a non-projectable query result receives. Shared
@@ -120,9 +122,21 @@ def decode_calendar_query_projection(
     events = data.get("events")
     if not isinstance(events, list):
         raise CalendarQueryProjectionError("events is not a list")
-    if len(events) != record_count:
+    next_cursor = data.get("next_cursor")
+    if next_cursor is not None and not isinstance(next_cursor, str):
+        raise CalendarQueryProjectionError("next_cursor is not a string or null")
+    # Second review F5: `events` is one *page* of the result; `record_count`
+    # is the whole window's total. A page may carry fewer events than the
+    # total, but never more, and a page with a next cursor must be a strict
+    # prefix. The final page legitimately carries fewer than the total — it
+    # carries only the remainder.
+    if len(events) > record_count:
         raise CalendarQueryProjectionError(
-            "record_count does not match the number of events"
+            "the page carries more events than the record_count total"
+        )
+    if next_cursor is not None and len(events) >= record_count:
+        raise CalendarQueryProjectionError(
+            "a page with a next_cursor cannot already hold every record"
         )
     next_cursor = data.get("next_cursor")
     if next_cursor is not None and not isinstance(next_cursor, str):
@@ -150,13 +164,46 @@ def summarise_calendar_projection(projection: dict[str, Any]) -> str:
 
     Never model prose: it is derived solely from the validated projection, so
     the compatibility ``answer`` and the structured card can never disagree.
+
+    Second review F6: the fallback *names* what the mirror holds (up to the
+    first three events, with titles and start times), says when the data was
+    taken, and warns when the mirror is stale — a summary that says only
+    共 N 条日程 answers none of the question the user asked. A never-synced
+    mirror (the placeholder `data_as_of` shape) says so in words rather than
+    presenting the query instant as an observation.
     """
     count = projection["record_count"]
     more = "，还有更多" if projection["next_cursor"] else ""
-    return (
-        f"共 {count} 条日程{more}，"
-        f"数据截至 {projection['data_as_of']}"
-    )
+    lines: list[str] = []
+    if count == 0:
+        lines.append("这个时间段没有日程")
+    else:
+        for event in projection["events"][:3]:
+            title = event.get("title") or "（无标题日程）"
+            # The wall-clock time the user lives in, not the wire's UTC: the
+            # calendar contract is Asia/Shanghai absolute time, and the
+            # summary that renders 07:00 for a 15:00 appointment answers a
+            # different question than the one asked. The structured card
+            # carries the full instant; this is only the human line.
+            start_text = event.get("start") or ""
+            try:
+                local = parse_rfc3339(start_text).astimezone(LEDGER_TIMEZONE)
+                readable = local.strftime("%m-%d %H:%M")
+            except ValueError:
+                readable = start_text[:16].replace("T", " ")
+            lines.append(f"{title}（{readable} 开始）")
+        if count > len(projection["events"]):
+            lines.append(f"另有 {count - len(projection['events'])} 条未列出")
+    summary = "；".join(lines)
+    if projection["mirror_stale"]:
+        # The stale flag already covers both the age and the window-coverage
+        # shapes (F7): the phrasing stays generic on purpose.
+        summary += "；注意：日历镜像已陈旧或未覆盖该时间段，结果可能不全"
+        if projection["record_count"] == 0 and not projection["events"]:
+            summary = "日历镜像尚未同步，暂时无法给出安排"
+    else:
+        summary += f"，数据截至 {projection['data_as_of']}"
+    return summary + more
 
 
 def canonical_calendar_projection_json(projection: dict[str, Any]) -> str:

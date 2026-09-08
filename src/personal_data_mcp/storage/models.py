@@ -429,15 +429,19 @@ class CalendarDeviceSync(Base):
 
     A row is written only when the device completes a whole window snapshot
     (`window_complete=true` on a batch whose `snapshot_as_of` is newer than
-    the stored watermark). It answers two questions the event rows cannot:
+    the stored watermark). It answers three questions the event rows cannot:
 
-    - **Arbitration**: a snapshot older than the watermark may upsert rows
-      but may never tombstone anything — the sweep is a property of a
-      *completed, current* snapshot, not of any single batch.
+    - **Arbitration**: a snapshot older than the watermark is a late packet —
+      it may re-assert known rows but may not insert new ones, may not revive
+      a tombstone, and may never tombstone anything.
     - **Freshness**: `data_as_of` / `mirror_stale` read this table, so a
       partial upload (or a device that has never finished a snapshot) reads
       as honestly stale instead of freshly wrong. An empty window still
       completes, so an observed empty calendar is a real observation.
+    - **Coverage** (second review F7): the watermark records *which window*
+      it completed. A query window outside the covered range is honestly
+      stale even when the snapshot instant itself is recent — completing the
+      September window says nothing about January.
     """
 
     __tablename__ = "calendar_device_sync"
@@ -447,5 +451,12 @@ class CalendarDeviceSync(Base):
     #: Epoch seconds, UTC — the version every sweep and freshness check
     #: arbitrates on.
     watermark_ts: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: The window the completed snapshot covered. Epoch seconds, UTC. A
+    #: freshness answer may only trust the watermark for queries inside this
+    #: range; the columns are nullable because rows written before coverage
+    #: was recorded (second review F7) must still decode, and read as
+    #: covering nothing.
+    window_start_ts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    window_end_ts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: When this device last completed a snapshot (upload wall clock).
     updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)

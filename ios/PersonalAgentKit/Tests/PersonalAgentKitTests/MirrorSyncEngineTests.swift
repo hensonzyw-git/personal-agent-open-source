@@ -38,7 +38,8 @@ private final class StubMirrorBackend: ChatBackend, @unchecked Sendable {
     var failAfterBatches = 0
 
     func uploadCalendarSync(
-        windowStart: Date, windowEnd: Date, events: [CalendarMirrorEvent], windowComplete: Bool
+        windowStart: Date, windowEnd: Date, events: [CalendarMirrorEvent],
+        windowComplete: Bool, snapshotAsOf: Date
     ) async throws -> CalendarSyncResponse {
         let shouldFail = lock.withLock {
             _uploads.append((windowStart, windowEnd, events, windowComplete))
@@ -262,5 +263,72 @@ struct MirrorSyncEngineTests {
         #expect(backend.uploads.count == 2)
         let stamped = try readMarker(storage)
         #expect(markerDate(stamped) == t0)
+    }
+
+    // --- second review F1: the wire request must carry snapshot_as_of ------
+
+    /// The request the *real* client sends must satisfy the real route's
+    /// schema: `snapshot_as_of` is required, and one window's batches all
+    /// carry the same instant. The unit stubs above cannot catch this — they
+    /// take the field as a parameter and never read a wire body — so this
+    /// test drives `AgentClient` itself through the URLProtocol stub and
+    /// inspects the JSON the real encoder produced.
+    @Test("the wire request carries snapshot_as_of, identical across batches")
+    func wireRequestCarriesSnapshotAsOf() async throws {
+        let service = Service()
+        // JSONSerialization products are not Sendable, so the bodies collect
+        // as `Data` inside a lock-protected box and are parsed on the test
+        // side after the calls return.
+        final class BodyBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var bodies: [Data] = []
+            func append(_ data: Data) { lock.withLock { bodies.append(data) } }
+            var all: [Data] { lock.withLock { bodies } }
+        }
+        let box = BodyBox()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/calendar/sync"):
+                box.append(call.rawBody)
+                return .ok([
+                    "status": "ok", "upserted": 0, "skipped": 0, "marked_deleted": 0,
+                ])
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ChatStub.self]
+        let client = try AgentClient(
+            baseURL: service.baseURL,
+            session: URLSession(configuration: configuration)
+        )
+        let instant = Date(timeIntervalSince1970: 1_783_000_000)
+        let window = DateInterval(
+            start: instant.addingTimeInterval(-90 * 86_400),
+            end: instant.addingTimeInterval(180 * 86_400)
+        )
+        let events = (0..<3).map { mirrorEvent("EK-\($0)", offset: Double($0)) }
+        // Two batches of the same window: same snapshot instant.
+        _ = try await client.uploadCalendarSync(
+            windowStart: window.start, windowEnd: window.end,
+            events: Array(events.prefix(2)), windowComplete: false,
+            snapshotAsOf: instant, token: "token"
+        )
+        _ = try await client.uploadCalendarSync(
+            windowStart: window.start, windowEnd: window.end,
+            events: Array(events.suffix(1)), windowComplete: true,
+            snapshotAsOf: instant, token: "token"
+        )
+        let bodies = box.all
+            .compactMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        #expect(bodies.count == 2)
+        for body in bodies {
+            #expect(body["snapshot_as_of"] != nil)
+            #expect(body["window_complete"] != nil)
+        }
+        #expect(
+            bodies[0]["snapshot_as_of"] as? String == bodies[1]["snapshot_as_of"] as? String
+        )
     }
 }

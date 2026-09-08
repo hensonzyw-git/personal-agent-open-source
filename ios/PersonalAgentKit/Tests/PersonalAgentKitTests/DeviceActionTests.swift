@@ -664,6 +664,77 @@ struct DeviceActionPollDeliveryTests {
         #expect(final?.state == .succeeded)
     }
 
+    // --- second review F2: concurrent resumes must not re-execute ---------
+
+    /// F2, reproduced: two `resume()` calls read the pending slot before
+    /// either network reply lands (both see `operationID == nil`), the first
+    /// reply anchors the operation and executes the action, then the second
+    /// reply *writes its stale in-memory copy of the slot back* — erasing the
+    /// `deliveredActionID` marker — and executes the same action a second
+    /// time. The marker must survive a concurrent anchor write: the slot is
+    /// merged from disk after the network wait, never overwritten from
+    /// memory.
+    @Test("two concurrent resumes anchor once and execute once")
+    func concurrentResumesExecuteOnce() async throws {
+        let service = Service()
+        service.answer { call, seen in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                // Both resumes re-present the same idempotent key; the second
+                // reply is the server's replay of the first. The real server
+                // answers a replay with the operation's current projection —
+                // parked, with the action on it.
+                var receipt = chatReceipt("source_in_progress", tool: "calendar.create_event")
+                receipt["device_action"] = Self.actionPayload()
+                return .ok(receipt)
+            case ("GET", "/v1/operations/op-1"):
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-NEW-1"
+                ))
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-NEW-1"
+                ))
+            default:
+                // A request this scenario did not plan is a defect in the
+                // test, not a silent 404: surface it as a loud 400.
+                return .error(400, "INVALID_ARGUMENT")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let store = InMemoryCredentialStore()
+        let session = try makeChatSession(service: service, store: store)
+        _ = try await session.enroll(code: "code", displayName: "iPhone")
+        let chat = ChatTimeline(
+            backend: session, store: store, deviceActionExecutor: executor,
+            pollDelays: Array(repeating: .zero, count: 4), sleep: { _ in }
+        )
+        executor.backend = session
+
+        // Seed the pending slot the way a crash mid-send leaves it: the key
+        // is durable, the operation never anchored.
+        let pending = ChatTimeline.PendingSend(
+            idempotencyKey: "018f0000-0000-4000-8000-00000000f00d",
+            conversationID: chatTimelineID,
+            text: "周六下午三点网球",
+            clarificationOf: nil,
+            startNewSession: nil,
+            operationID: nil
+        )
+        try store.write(
+            CredentialKey.pendingChatSend,
+            value: try JSONEncoder().encode(pending)
+        )
+
+        // Two concurrent resumes over the same slot.
+        async let a: OperationReceipt? = chat.resume()
+        async let b: OperationReceipt? = chat.resume()
+        _ = try await [a, b] as [OperationReceipt?]
+
+        #expect(executor.actions.count == 1, "the same action must execute exactly once")
+        #expect(service.count("POST", "/v1/device-actions/018f0000-0000-7000-8000-00000000cafe/result") == 1)
+    }
+
     private static func actionPayload() -> [String: Any] {
         [
             "action_id": "018f0000-0000-7000-8000-00000000cafe",

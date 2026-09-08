@@ -354,12 +354,14 @@ public actor DeviceSession {
 
     /// A read-scope upload (`calendar.event.read`): it exists to be read back,
     /// so a retry that re-presents an identical whole batch is safe — the
-    /// upsert arbitrates by `last_modified` and identical rows are skipped.
+    /// upsert arbitrates by the snapshot version and identical rows are
+    /// skipped.
     public func uploadCalendarSync(
         windowStart: Date,
         windowEnd: Date,
         events: [CalendarMirrorEvent],
-        windowComplete: Bool
+        windowComplete: Bool,
+        snapshotAsOf: Date
     ) async throws -> CalendarSyncResponse {
         try await authorized {
             try await self.client.uploadCalendarSync(
@@ -367,6 +369,7 @@ public actor DeviceSession {
                 windowEnd: windowEnd,
                 events: events,
                 windowComplete: windowComplete,
+                snapshotAsOf: snapshotAsOf,
                 token: $0
             )
         }

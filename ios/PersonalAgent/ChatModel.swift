@@ -2,6 +2,41 @@ import Foundation
 import Observation
 import PersonalAgentKit
 
+/// A mirror sync the send path may briefly wait on, bounded (F8).
+///
+/// The composition starts the sync on its own task — the wait is *optional*,
+/// and past the budget the sender proceeds while the sync keeps running. The
+/// type lives here rather than in the Kit because the budget is a product
+/// decision about the send path, not a property of the engine.
+struct MirrorSyncHandle: Sendable {
+    private let task: Task<Void, Never>
+    private let budget: Duration
+
+    init(run: @escaping @Sendable () async -> Void, budget: Duration = .seconds(2)) {
+        self.budget = budget
+        self.task = Task { await run() }
+    }
+
+    /// A handle for a sync that already finished (tests and no-op paths).
+    static func done() -> MirrorSyncHandle {
+        MirrorSyncHandle(run: {}, budget: .zero)
+    }
+
+    /// Wait for the sync, but no longer than the budget. A timeout is not an
+    /// error: the sync continues in the background and the send proceeds.
+    func wait() async {
+        _ = await withTaskGroup(of: Void.self) { group in
+            group.addTask { [task] in await task.value }
+            group.addTask {
+                try? await Task.sleep(for: self.budget)
+            }
+            // First finisher wins: the sync completed, or the budget ran out.
+            await group.next()
+            group.cancelAll()
+        }
+    }
+}
+
 /// The view state for `DEV-030`'s chat surface.
 ///
 /// Everything that could be wrong is in `PersonalAgentKit` and tested with
@@ -109,7 +144,11 @@ final class ChatModel {
     private let describe: @MainActor (Error) -> String
     /// The pre-send mirror top-up (review R5), owned by the composition and
     /// optional so tests compose without one. Absent ⇒ no top-up is attempted.
-    var onSyncMirror: (() async -> Void)?
+    /// Returns a handle whose `wait()` bounds how long the send path blocks on
+    /// the top-up: past the budget the send proceeds and the sync continues
+    /// in the background (second review F8 — a permission prompt or a slow
+    /// upload must never stop an unrelated 记账 message).
+    var onSyncMirror: (() -> MirrorSyncHandle)?
 
     init(timeline: ChatTimeline, describe: @escaping @MainActor (Error) -> String) {
         self.timeline = timeline
@@ -217,12 +256,15 @@ final class ChatModel {
         guard !text.isEmpty else { return }
         busy = true
         defer { busy = false }
-        // The pre-send mirror top-up (review R5): a calendar question in this
-        // very message is answered against the mirror, so a stale one would
-        // be summarised without being labelled honestly-current. Best effort
-        // only — a failed top-up degrades (the server answers `mirror_stale`)
-        // and must never block or delay-fail the send itself.
-        await onSyncMirror?()
+        // The pre-send mirror top-up (review R5), **bounded** (second review
+        // F8): a calendar question in this very message is answered against
+        // the mirror, so a stale one is topped up first — but a permission
+        // prompt, a slow network or a multi-batch upload is not allowed to
+        // stop an unrelated 记账 message. The wait has a budget; past it the
+        // send proceeds while the sync keeps running in the background, and
+        // the server labels a still-stale answer honestly.
+        let syncHandle = onSyncMirror?()
+        await syncHandle?.wait()
         let clarificationOf = answering?.operationID
         let startNewSession = startNewTopic
         // Out of the composer and onto the screen before the request leaves.

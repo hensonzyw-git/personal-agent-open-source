@@ -407,11 +407,18 @@ public struct AgentClient: Sendable {
     /// Upload one mirror batch. The reply is the server's ingest summary;
     /// a 400 means the whole batch was refused and the caller should fix its
     /// window, never split the batch to sneak a bad event through.
+    ///
+    /// `snapshotAsOf` is the batch's *version*: identical across every batch
+    /// of one window, because EventKit exposes no per-event modification time
+    /// and the snapshot instant is the only thing the device can vouch for.
+    /// The server's schema makes it required — a request without it is
+    /// INVALID_ARGUMENT, not a defaulted snapshot (second review F1).
     public func uploadCalendarSync(
         windowStart: Date,
         windowEnd: Date,
         events: [CalendarMirrorEvent],
         windowComplete: Bool,
+        snapshotAsOf: Date,
         token: String
     ) async throws -> CalendarSyncResponse {
         try await send(
@@ -434,6 +441,7 @@ public struct AgentClient: Sendable {
                     ]
                 },
                 "window_complete": windowComplete,
+                "snapshot_as_of": RFC3339.string(from: snapshotAsOf),
             ],
             token: token,
             accepting: [200],

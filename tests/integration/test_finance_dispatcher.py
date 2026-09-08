@@ -378,7 +378,9 @@ def test_resolving_a_calendar_query_executes_it_and_completes() -> None:
     assert json.loads(outcome.result) == outcome.projection
     assert json.loads(outcome.result)["data_as_of"] == "2026-09-07T07:30:00+00:00"
     # The deterministic text fallback is derived from the projection only.
-    assert outcome.answer == "共 1 条日程，数据截至 2026-09-07T07:30:00+00:00"
+    # Second review F6: the fallback names the events (title + local start
+    # time) and the data-as-of instant, instead of a bare count.
+    assert outcome.answer == "网球（09-07 15:00 开始），数据截至 2026-09-07T07:30:00+00:00"
     assert len(bridge.calls) == 1
 
 

@@ -168,6 +168,39 @@ def query_events(
     with sessions() as session:
         start_ts = int(start.timestamp())
         end_ts = int(end.timestamp())
+        # Freshness (review R10) reads the *completed snapshot* watermarks,
+        # never any row's sync time: a device that has only uploaded an
+        # incomplete first batch has vouched for nothing, and a device that
+        # has never finished a snapshot reads as honestly stale. Across
+        # devices the newest watermark wins — one current device keeps the
+        # mirror's answer as current as its own evidence.
+        #
+        # Second review F7: a watermark also names *which window* its
+        # snapshot covered. Completing the September window is not evidence
+        # about January: a query is fresh only when some completed snapshot
+        # covered the queried window *and* is recent. A watermark row whose
+        # coverage bounds are null (written before coverage was recorded)
+        # covers nothing — the honest answer, never an inherited one.
+        data_as_of: datetime | None = None
+        covered_as_of: datetime | None = None
+        for row in session.execute(
+            select(
+                CalendarDeviceSync.watermark_ts,
+                CalendarDeviceSync.window_start_ts,
+                CalendarDeviceSync.window_end_ts,
+            )
+        ).all():
+            value = datetime.fromtimestamp(row.watermark_ts, tz=timezone.utc)
+            if data_as_of is None or value > data_as_of:
+                data_as_of = value
+            covers = (
+                row.window_start_ts is not None
+                and row.window_end_ts is not None
+                and row.window_start_ts <= start_ts
+                and row.window_end_ts >= end_ts
+            )
+            if covers and (covered_as_of is None or value > covered_as_of):
+                covered_as_of = value
         # Overlap semantics: an event belongs to the window when it intersects
         # it. An all-day event therefore matches its whole day, and a meeting
         # that straddles the boundary is not invisibly split in half.
@@ -185,20 +218,8 @@ def query_events(
             .all()
         )
 
-        # Freshness (review R10) reads the *completed snapshot* watermarks,
-        # never any row's sync time: a device that has only uploaded an
-        # incomplete first batch has vouched for nothing, and a device that
-        # has never finished a snapshot reads as honestly stale. Across
-        # devices the newest watermark wins — one current device keeps the
-        # mirror's answer as current as its own evidence.
-        data_as_of: datetime | None = None
-        for watermark_ts in (
-            session.execute(select(CalendarDeviceSync.watermark_ts)).scalars().all()
-        ):
-            value = datetime.fromtimestamp(watermark_ts, tz=timezone.utc)
-            if data_as_of is None or value > data_as_of:
-                data_as_of = value
-
+        # (The freshness watermark scan above is the one freshness source; the
+        # comment that used to sit here moved with it.)
         page = rows[offset : offset + page_size]
         next_offset = offset + len(page)
 
@@ -246,8 +267,16 @@ def query_events(
             # before the first completed snapshot there is no honest instant,
             # so the query's own wall clock stands in and `mirror_stale` says
             # what the placeholder means.
+            # `data_as_of` reports the newest completed snapshot (review R10);
+            # `mirror_stale` additionally demands that a completed snapshot
+            # actually covered the queried window (second review F7) and that
+            # it is recent. The two can disagree: a September-only mirror
+            # answering a January query reports September as its honest
+            # `data_as_of` while flagging itself stale for that window.
             "data_as_of": to_rfc3339(data_as_of if data_as_of is not None else now),
-            "mirror_stale": data_as_of is None or (now - data_as_of) > STALE_AFTER,
+            "mirror_stale": (
+                covered_as_of is None or (now - covered_as_of) > STALE_AFTER
+            ),
             "source_system": "apple_calendar_mirror",
         }
 

@@ -155,7 +155,9 @@ public actor CalendarMirrorSyncEngine {
             asOf: instant
         )
         // `asOf` is the device's stamp of vouching: the batch, not the row, is
-        // what the upsert arbitrates on (CalendarStore.snapshot's contract).
+        // what the upsert arbitrates on (CalendarStore.snapshot's contract),
+        // and it is the *version* every batch of this window shares — the
+        // server's schema requires it on the wire (second review F1).
         var lastError: Error?
         for chunk in uploader.chunk(events, now: instant) where lastError == nil {
             do {
@@ -163,7 +165,8 @@ public actor CalendarMirrorSyncEngine {
                     windowStart: chunk.windowStart,
                     windowEnd: chunk.windowEnd,
                     events: chunk.events,
-                    windowComplete: chunk.lastBatch
+                    windowComplete: chunk.lastBatch,
+                    snapshotAsOf: instant
                 )
             } catch {
                 lastError = error

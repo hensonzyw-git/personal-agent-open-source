@@ -36,10 +36,23 @@ struct Call: Sendable {
     /// Scalar JSON fields are split by type so the recorded call stays Sendable.
     let body: [String: String]
     let booleans: [String: Bool]
+    /// The full request JSON as encoded, for the cross-language contract
+    /// tests that must assert a *field's presence* the scalars do not carry
+    /// (e.g. `snapshot_as_of`, whose absence the real route rejects).
+    /// Re-parsed on access from the retained bytes so the recorded call
+    /// stays Sendable.
+    let rawBody: Data
 
     var idempotencyKey: String? { headers["Idempotency-Key"] }
     func string(_ field: String) -> String? { body[field] }
     func bool(_ field: String) -> Bool? { booleans[field] }
+
+    /// The parsed JSON object, or an empty dict when the body was not JSON.
+    /// Access is confined to tests; a corrupt body reads as empty rather
+    /// than trapping, because the assertion that follows is the point.
+    var rawJSONBody: [String: Any] {
+        (try? JSONSerialization.jsonObject(with: rawBody)) as? [String: Any] ?? [:]
+    }
 }
 
 struct Reply: Sendable {
@@ -174,7 +187,8 @@ final class ChatStub: URLProtocol {
             path: request.url?.path ?? "",
             query: query,
             headers: request.allHTTPHeaderFields ?? [:],
-            decodedBody: Self.decodeBody(request)
+            decodedBody: Self.decodeBody(request),
+            rawBody: Self.readBody(request) ?? Data()
         )
         guard let port = request.url?.port,
               let service = ServiceRegistry.shared.service(port: port)
@@ -230,9 +244,7 @@ final class ChatStub: URLProtocol {
     /// `URLProtocol` usually hands the body over as a stream rather than as
     /// `httpBody`, and reading only the latter would silently assert against an
     /// empty request. Both are checked.
-    private static func decodeBody(
-        _ request: URLRequest
-    ) -> (strings: [String: String], booleans: [String: Bool]) {
+    private static func readBody(_ request: URLRequest) -> Data? {
         var data = request.httpBody
         if data == nil, let stream = request.httpBodyStream {
             stream.open()
@@ -247,7 +259,13 @@ final class ChatStub: URLProtocol {
             }
             data = collected
         }
-        guard let data, !data.isEmpty,
+        return data
+    }
+
+    private static func decodeBody(
+        _ request: URLRequest
+    ) -> (strings: [String: String], booleans: [String: Bool]) {
+        guard let data = readBody(request), !data.isEmpty,
               let object = try? JSONSerialization.jsonObject(with: data)
                 as? [String: Any]
         else { return ([:], [:]) }
@@ -264,7 +282,8 @@ private extension Call {
         path: String,
         query: [String: String],
         headers: [String: String],
-        decodedBody: (strings: [String: String], booleans: [String: Bool])
+        decodedBody: (strings: [String: String], booleans: [String: Bool]),
+        rawBody: Data
     ) {
         self.init(
             method: method,
@@ -272,7 +291,8 @@ private extension Call {
             query: query,
             headers: headers,
             body: decodedBody.strings,
-            booleans: decodedBody.booleans
+            booleans: decodedBody.booleans,
+            rawBody: rawBody
         )
     }
 }

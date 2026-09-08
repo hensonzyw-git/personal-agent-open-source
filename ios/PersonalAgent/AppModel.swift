@@ -318,9 +318,15 @@ final class AppModel {
             )
             // The pre-send mirror top-up (review R5): the same engine the
             // refresh path uses, so the staleness gate lives in one place.
+            // The handle bounds what the send path waits (F8): the sync runs
+            // on its own task and the send waits at most its budget.
             chat?.onSyncMirror = { [weak self] in
-                guard let session = self?.session else { return }
-                await self?.syncCalendarMirror(session: session)
+                guard let self, let session = self.session else {
+                    return MirrorSyncHandle.done()
+                }
+                return MirrorSyncHandle {
+                    await self.syncCalendarMirror(session: session)
+                }
             }
             await chat?.open(conversationID: conversationID)
         } else if await chatTimeline.boundConversationID != conversationID {

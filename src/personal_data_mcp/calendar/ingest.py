@@ -5,9 +5,12 @@ time, so the **snapshot instant** (`snapshot_as_of`, identical across every
 batch of one window) is the only honest version the mirror can arbitrate on.
 The rules:
 
-- A batch whose snapshot is not newer than the device's watermark may upsert
-  rows, but may **never tombstone anything**: the sweep is a property of a
-  completed, current snapshot, not of any single batch.
+- A batch whose snapshot is not newer than the device's watermark is a
+  **late packet**. It may re-assert rows that same-or-newer snapshots hold,
+  but it may **never insert** a row the mirror has never seen and may **never
+  revive** a tombstone: the device already vouched, at a newer instant, that
+  the window did not contain those events. It also may never tombstone — the
+  sweep is a property of a completed, current snapshot.
 - Within one snapshot, rows merge monotonically on the device's own
   `last_modified` (strictly newer overwrites; equal or older skips) — but a
   row whose stored version equals this snapshot's instant is *re-asserted*:
@@ -15,13 +18,17 @@ The rules:
   that snapshot holds (its testimony is this snapshot's, so it cannot lose
   to a tombstone the same sweep wrote).
 - Only a `window_complete` batch whose snapshot is strictly newer than the
-  watermark sweeps the window: rows *not* part of this snapshot (stored
-  version ≠ snapshot instant) are tombstoned, and the tombstone's version is
-  the snapshot instant, so only a newer snapshot's assertion can clear it.
+  watermark sweeps the window, and the sweep obeys version monotonicity: a
+  row is tombstoned only when its stored version is **older** than this
+  snapshot's instant. Rows a newer (possibly still incomplete) snapshot
+  already upserted are not deletable by an older complete snapshot arriving
+  late (second review F4). The tombstone's version is the snapshot instant,
+  so only a newer snapshot's assertion can clear it.
 
 A per-device watermark (`calendar_device_sync`) records the newest completed
-snapshot and is also the freshness source: a partial upload never reads as
-fresh (review R2/R3/R10, 2026-09-08).
+snapshot and the window it covered, and is also the freshness source: a
+partial upload never reads as fresh, and a window the completed snapshot did
+not cover never reads as covered (review R2/R3/R10 + second review F7).
 
 One malformed batch fails whole, per the project's adversarial rule: no silent
 triage. A device that sends an incoherent snapshot is told to resend a
@@ -229,11 +236,15 @@ def ingest_events(
             session.get(CalendarDeviceSync, device_id)
         )
         watermark_ts = watermark_row.watermark_ts if watermark_row else None
-        #: A snapshot at or older than the watermark is still honest evidence
-        #: about the rows it holds (a straggler may trail its own sweep), but
-        #: it has no standing to tombstone: only the newest completed snapshot
-        #: of a device speaks for its whole window.
-        may_sweep = window_complete and (watermark_ts is None or snapshot_ts > watermark_ts)
+        #: A snapshot at or older than the watermark is a *late packet*: it is
+        #: still honest evidence about rows that same-or-newer snapshots hold
+        #: (a straggler may trail its own sweep), but it has no standing to
+        #: speak for events the completed snapshots never saw — so it may not
+        #: insert an unknown row and may not revive a tombstone. It also has
+        #: no standing to tombstone: only the newest completed snapshot of a
+        #: device speaks for its whole window.
+        is_late_packet = watermark_ts is not None and snapshot_ts <= watermark_ts
+        may_sweep = window_complete and not is_late_packet
 
         for event in events:
             if not isinstance(event, dict):
@@ -266,49 +277,71 @@ def ingest_events(
                 )
                 .one_or_none()
             )
-            if existing is not None and row.last_modified_ts <= existing.last_modified_ts:
-                # Equal or older `last_modified` carries no new field evidence
-                # — with one exception: a row whose stored snapshot version is
-                # *this same* snapshot has been re-asserted by it (a straggler
-                # chunk trailing its own sweep). That assertion clears the
-                # sweep's own tombstone, because the tombstone's version is
-                # exactly this snapshot: the snapshot contradicts itself, and
-                # the member list is the part it vouches for.
-                same_snapshot_reassertion = (
+            if existing is None:
+                # Second review F3a: a late packet may not introduce a row the
+                # mirror has never seen. The watermark is the device's own
+                # testimony that a *newer* completed snapshot existed; letting
+                # an older packet invent rows behind it is exactly how a
+                # deleted-then-late-arriving event comes back.
+                if is_late_packet:
+                    skipped += 1
+                    continue
+                session.add(row)
+                upserted += 1
+                continue
+            if existing.is_deleted:
+                # A tombstone clears only through evidence at least as new as
+                # the tombstone's version (which a sweep set to *its* snapshot
+                # instant, and which only advances): the same snapshot's own
+                # straggler chunk, or a genuinely newer snapshot asserting the
+                # event. A late packet (older than the watermark, hence older
+                # than the tombstone's version) has no standing (F3b).
+                tombstone_version = existing.snapshot_ts
+                clears = (
+                    row.last_modified_ts > existing.last_modified_ts
+                    and snapshot_ts >= tombstone_version
+                ) or (
                     existing.snapshot_ts == snapshot_ts
-                    and existing.is_deleted
                 )
-                if not same_snapshot_reassertion:
+                if not clears:
                     skipped += 1
                     continue
                 existing.is_deleted = False
                 existing.synced_at = row.synced_at
                 existing.device_id = row.device_id
+                if row.last_modified_ts > existing.last_modified_ts:
+                    existing.start_ts = row.start_ts
+                    existing.end_ts = row.end_ts
+                    existing.all_day = row.all_day
+                    existing.title = row.title
+                    existing.notes = row.notes
+                    existing.location = row.location
+                    existing.last_modified_ts = row.last_modified_ts
+                    existing.snapshot_ts = snapshot_ts
+                    existing.row_key = row.row_key
                 upserted += 1
                 continue
-            if existing is not None:
-                # Monotonic merge: strictly newer `last_modified` takes the
-                # fields. A tombstone is only cleared by evidence from a
-                # snapshot at least as new as the tombstone's version — and
-                # the watermark rule has already refused sweeps from stale
-                # snapshots, so a strictly newer `last_modified` from a
-                # snapshot the device still considers current is exactly that
-                # evidence.
-                existing.start_ts = row.start_ts
-                existing.end_ts = row.end_ts
-                existing.all_day = row.all_day
-                existing.title = row.title
-                existing.notes = row.notes
-                existing.location = row.location
-                existing.last_modified_ts = row.last_modified_ts
-                existing.snapshot_ts = snapshot_ts
-                existing.synced_at = row.synced_at
-                existing.device_id = row.device_id
-                existing.is_deleted = False
-                existing.row_key = row.row_key
-                upserted += 1
+            if row.last_modified_ts <= existing.last_modified_ts:
+                # Equal or older `last_modified` carries no new field evidence
+                # — with one exception: a row whose stored snapshot version is
+                # *this same* snapshot has been re-asserted by it (a straggler
+                # chunk trailing its own sweep). That assertion is a no-op on a
+                # live row but is the revive path for a tombstone handled above.
+                skipped += 1
                 continue
-            session.add(row)
+            # Monotonic merge: strictly newer `last_modified` takes the fields.
+            existing.start_ts = row.start_ts
+            existing.end_ts = row.end_ts
+            existing.all_day = row.all_day
+            existing.title = row.title
+            existing.notes = row.notes
+            existing.location = row.location
+            existing.last_modified_ts = row.last_modified_ts
+            existing.snapshot_ts = snapshot_ts
+            existing.synced_at = row.synced_at
+            existing.device_id = row.device_id
+            existing.is_deleted = False
+            existing.row_key = row.row_key
             upserted += 1
 
         marked_deleted = 0
@@ -329,10 +362,16 @@ def ingest_events(
                     continue
                 # A row whose snapshot version is this very snapshot was
                 # re-asserted by it (a straggler of the same snapshot); the
-                # sweep must not delete what its own snapshot holds. Rows
-                # from *other* snapshots — including older tombstones — are
-                # absent from this snapshot and are swept.
+                # sweep must not delete what its own snapshot holds.
                 if existing.snapshot_ts == snapshot_ts:
+                    continue
+                # Second review F4: deletion obeys version monotonicity. A row
+                # whose version is *newer* than this sweeping snapshot — an
+                # incomplete newer snapshot upserted it, and this older
+                # complete one arrived late — is not this snapshot's to
+                # delete. Only rows older than this snapshot are absent from
+                # *this* observation.
+                if existing.snapshot_ts > snapshot_ts:
                     continue
                 if not existing.is_deleted:
                     # The tombstone is versioned like any other row state: its
@@ -345,6 +384,13 @@ def ingest_events(
                     existing.last_modified_ts = snapshot_ts
                     existing.snapshot_ts = snapshot_ts
                     marked_deleted += 1
+                else:
+                    # Already tombstoned, but an older version. Re-confirming
+                    # absence at a newer instant is still testimony (F3b): the
+                    # tombstone's version advances, so a straggler stamped
+                    # between the two can no longer clear it.
+                    existing.last_modified_ts = snapshot_ts
+                    existing.snapshot_ts = snapshot_ts
 
         if window_complete and (watermark_ts is None or snapshot_ts > watermark_ts):
             if watermark_row is None:
@@ -352,11 +398,15 @@ def ingest_events(
                     CalendarDeviceSync(
                         device_id=device_id,
                         watermark_ts=snapshot_ts,
+                        window_start_ts=_epoch(window_start),
+                        window_end_ts=_epoch(window_end),
                         updated_at=now,
                     )
                 )
             else:
                 watermark_row.watermark_ts = snapshot_ts
+                watermark_row.window_start_ts = _epoch(window_start)
+                watermark_row.window_end_ts = _epoch(window_end)
                 watermark_row.updated_at = now
 
         return {

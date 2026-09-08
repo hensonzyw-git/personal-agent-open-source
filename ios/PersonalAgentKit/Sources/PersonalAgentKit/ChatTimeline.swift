@@ -314,7 +314,7 @@ public actor ChatTimeline {
         if let pending = try loadPending() {
             throw ChatError.unresolvedSend(pending)
         }
-        var pending = PendingSend(
+        let pending = PendingSend(
             idempotencyKey: IdempotencyKey.mint(),
             conversationID: id,
             text: text,
@@ -347,14 +347,23 @@ public actor ChatTimeline {
             try? clearPending()
             throw error
         }
-        pending.operationID = receipt.operationID
-        try savePending(pending)
+        // The anchor merge (second review F2): the slot is re-read and only
+        // the operation id is added, never the in-memory copy written back
+        // whole. A `send` starts from an empty slot so the concurrent shape
+        // cannot arise here, but the rule is one rule — the slot's authority
+        // is the disk, and `deliveredActionID` survives from it.
+        guard let anchored = try mergeAnchoredOperation(receipt.operationID) else {
+            // Unreachable for a send that owns the slot, but refusing is the
+            // safe answer: nothing is executed on a slot this call no longer
+            // owns.
+            return receipt
+        }
         // The device-action hand-off runs here, before settling: the reply is
         // the only time the action exists on the wire, and the parked
         // operation cannot settle until this device reports what it did.
         // Executing *is* the settle step for this shape, so the returned
         // receipt replaces the polling loop's input.
-        return try await runDeviceActionIfAny(receipt, pending: pending)
+        return try await runDeviceActionIfAny(receipt, pending: anchored)
     }
 
     /// Finish whatever was left unresolved, if anything.
@@ -383,15 +392,43 @@ public actor ChatTimeline {
             try? clearPending()
             throw error
         }
-        var updated = pending
-        updated.operationID = receipt.operationID
-        try savePending(updated)
+        // Second review F2: the anchor merge re-reads the stored slot rather
+        // than writing the in-memory copy back. Two concurrent resumes both
+        // read `operationID == nil` before either reply lands; the first
+        // anchors and its hand-off may already have claimed the action by
+        // writing `deliveredActionID`. Overwriting from this function's
+        // stale copy would erase that marker and let the second reply
+        // execute the same action twice. The merge keeps whatever is on disk
+        // and adds only what it uniquely knows: the operation id.
+        guard let updated = try mergeAnchoredOperation(receipt.operationID) else {
+            // The slot was released while this request was in flight — a
+            // concurrent path settled the operation. Nothing is ours to run;
+            // the caller receives the server's answer as a plain read.
+            return receipt
+        }
         // This branch anchored the operation *now*, so the reply really can
         // hand this device an action. The by-id branch above does not lose the
         // shape either: the parked projection hands the action over on any
         // read (review R6), and `settle` handles a delivered action inside its
         // poll loop through the same exactly-once gate.
         return try await runDeviceActionIfAny(receipt, pending: updated)
+    }
+
+    /// Record a just-learned operation id onto the durable slot, **merging**
+    /// with whatever the slot now holds instead of overwriting it.
+    ///
+    /// Returns the merged record, or `nil` when the slot no longer exists or
+    /// belongs to a different message (a concurrent send settled and released
+    /// it mid-flight). The only field this call owns is `operationID`; every
+    /// other field — above all `deliveredActionID` — survives from disk.
+    private func mergeAnchoredOperation(_ operationID: String) throws -> PendingSend? {
+        guard var stored = try loadPending() else { return nil }
+        guard stored.operationID == nil || stored.operationID == operationID else {
+            return nil
+        }
+        stored.operationID = operationID
+        try savePending(stored)
+        return stored
     }
 
     /// Ask the server to cancel. The reply is the operation's real state: past a
@@ -972,11 +1009,14 @@ public protocol ChatBackend: Sendable {
 
     /// Upload one calendar mirror batch. `window_complete` on the last batch
     /// authorises the server to mark window events absent from the upload as
-    /// deleted — the device is the fact source.
+    /// deleted — the device is the fact source. `snapshotAsOf` is the batch's
+    /// version, identical across every batch of one window (second review F1:
+    /// the server's schema requires it).
     func uploadCalendarSync(
         windowStart: Date,
         windowEnd: Date,
         events: [CalendarMirrorEvent],
-        windowComplete: Bool
+        windowComplete: Bool,
+        snapshotAsOf: Date
     ) async throws -> CalendarSyncResponse
 }
