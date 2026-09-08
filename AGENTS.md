@@ -85,6 +85,13 @@ The authoritative handoff point and ordered next work is always
   for the task, and report what was read or written.
 - Before changes, inspect the worktree and preserve unrelated user changes.
   Use focused edits; do not refactor adjacent code or documents unless asked.
+- For any new domain, feature, or cross-cutting capability, first submit a PRD
+  draft and wait for Henson's explicit approval; then submit the technical
+  design and wait for Henson's explicit approval; only after both approvals may
+  implementation begin. A development branch must not implement first and
+  backfill the PRD or technical design afterward. Emergency fixes and purely
+  documentary or test-only changes are exempt, but the exception and reason
+  must be recorded.
 - For requested implementation or documentation changes, after the work and
   required verification are complete, local staging and `git commit` are
   pre-authorized; do not wait for a second commit authorization. An explicit
