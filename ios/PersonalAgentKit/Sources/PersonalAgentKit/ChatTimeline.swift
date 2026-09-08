@@ -610,7 +610,14 @@ public actor ChatTimeline {
         switch envelope.resolve() {
         case .execute(let action):
             if let executor = deviceActionExecutor {
-                reported = await executor.executeAndReport(action)
+                // The operation's own id travels with the action: if the
+                // report reply is lost, the executor's parked-shape receipt
+                // must poll by the real operation id, never by the action id
+                // (which is the idempotency key the report endpoint answers
+                // on, not an operation id). Review R9, 2026-09-08.
+                reported = await executor.executeAndReport(
+                    action, settlesOperationID: receipt.operationID
+                )
             } else {
                 reported = try await reportFailure(
                     actionID: action.actionID,

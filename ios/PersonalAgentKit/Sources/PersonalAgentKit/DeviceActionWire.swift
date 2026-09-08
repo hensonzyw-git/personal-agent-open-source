@@ -235,7 +235,17 @@ public protocol DeviceActionExecuting: Sendable {
     /// Execute one action and report the outcome to the server. The returned
     /// receipt is the settled operation projection — executing *is* the
     /// settlement step, so the caller gets the final state in the same turn.
-    func executeAndReport(_ action: DeviceEventAction) async -> OperationReceipt
+    ///
+    /// `settlesOperationID` is the parked operation's *own* id, from the chat
+    /// reply this action arrived on. The action id is the operation's
+    /// idempotency key — the report endpoint's address, never an operation id —
+    /// so when a report reply is lost, the parked-shape receipt this method
+    /// degrades to must carry the real id: the caller's bounded poll reads
+    /// `GET /v1/operations/{id}`, and polling the key would 404 on a write the
+    /// server may well have settled.
+    func executeAndReport(
+        _ action: DeviceEventAction, settlesOperationID: String
+    ) async -> OperationReceipt
 
     /// The one failure shape the executor cannot produce itself: an action
     /// this build decoded but cannot run at all (no executor composed, or a

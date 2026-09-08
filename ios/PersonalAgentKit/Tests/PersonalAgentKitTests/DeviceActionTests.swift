@@ -214,8 +214,15 @@ final class StubDeviceActionExecutor: DeviceActionExecuting, @unchecked Sendable
     /// The backend the report goes through — set after `makeChat` builds the
     /// session, which the executor cannot capture at construction time.
     var backend: (any ChatBackend)?
+    /// What the stub answers on the report endpoint, or nil to proxy through
+    /// to `backend` (the real endpoint interaction).
+    var reportReply: OperationReceipt?
+    /// Throws instead of answering when set — the lost-report-reply shape.
+    var reportFails = false
 
-    func executeAndReport(_ action: DeviceEventAction) async -> OperationReceipt {
+    func executeAndReport(
+        _ action: DeviceEventAction, settlesOperationID: String
+    ) async -> OperationReceipt {
         lock.withLock { _actions.append(action) }
         let body: DeviceActionResultBody
         switch outcome ?? .created(eventID: "EK-NEW-1") {
@@ -227,11 +234,18 @@ final class StubDeviceActionExecutor: DeviceActionExecuting, @unchecked Sendable
         // The report goes through the real backend (the stub service), so the
         // endpoint interaction is the real one.
         do {
+            if reportFails {
+                throw AgentClientError.transport(
+                    URLError(.networkConnectionLost).localizedDescription
+                )
+            }
+            if let reportReply { return reportReply }
             return try await #require(backend)
                 .reportDeviceActionResult(actionID: action.actionID, body: body)
         } catch {
             return OperationReceipt(
-                operationID: "op-1", state: .sourceInProgress, cancelRequested: false,
+                operationID: settlesOperationID,
+                state: .sourceInProgress, cancelRequested: false,
                 clientDetached: false, tool: nil, recordID: nil, failureReason: nil,
                 duplicateCheckID: nil, clarification: nil, duplicateExisting: nil,
                 answer: nil
@@ -436,5 +450,42 @@ struct DeviceActionFlowTests {
         let report = try #require(service.log.first { $0.path.hasPrefix("/v1/device-actions/") })
         #expect(report.string("result") == "denied")
         #expect(final.state == .failedSafe)
+    }
+
+    @Test("a lost report reply polls the operation id, never the action id")
+    func lostReportReplyPollsTheOperationID() async throws {
+        // Review R9, reproduced: the executor degraded to a parked receipt
+        // carrying the *action id* (the report endpoint's address, and the
+        // operation's idempotency key), so the settle loop polled
+        // `GET /v1/operations/{action id}` — an id no operation has.
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                var receipt = chatReceipt("source_in_progress", tool: "calendar.create_event")
+                receipt["device_action"] = Self.actionPayload()
+                return .ok(receipt)
+            case ("GET", "/v1/operations/op-1"):
+                // The settle loop must land here: the real operation id from
+                // the chat reply.
+                return .ok(chatReceipt("succeeded", tool: "calendar.create_event", recordID: "EK-1"))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        executor.reportFails = true
+        let (chat, _, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+
+        let final = try await chat.send(text: "周六下午三点网球")
+
+        // The poll reached the real operation, so the turn still settles
+        // honestly after the lost report reply; the action id — the
+        // idempotency key — was never used as an operation id.
+        #expect(service.count("GET", "/v1/operations/op-1") >= 1)
+        #expect(service.count("GET", "/v1/operations/018f0000-0000-7000-8000-00000000cafe") == 0)
+        #expect(final.state == .succeeded)
     }
 }

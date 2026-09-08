@@ -22,13 +22,16 @@ public struct DeviceEventActionExecutor: DeviceActionExecuting {
         self.backend = backend
     }
 
-    public func executeAndReport(_ action: DeviceEventAction) async -> OperationReceipt {
+    public func executeAndReport(
+        _ action: DeviceEventAction, settlesOperationID: String
+    ) async -> OperationReceipt {
         // The decode layer already pinned start/end to parseable instants; a
         // nil here is unreachable in practice, but a guessed instant is worse
         // than a reported failure, so it fails closed as one.
         guard let draft = action.event.draft() else {
             return await report(
                 actionID: action.actionID,
+                settlesOperationID: settlesOperationID,
                 body: .failed(detail: "the authorised event times are not readable instants")
             )
         }
@@ -44,7 +47,11 @@ public struct DeviceEventActionExecutor: DeviceActionExecuting {
         case .failed(let detail):
             body = .failed(detail: detail)
         }
-        return await report(actionID: action.actionID, body: body)
+        return await report(
+            actionID: action.actionID,
+            settlesOperationID: settlesOperationID,
+            body: body
+        )
     }
 
     public func failedReport(detail: String) -> DeviceActionResultBody {
@@ -55,7 +62,9 @@ public struct DeviceEventActionExecutor: DeviceActionExecuting {
     /// a transport failure degrades to the server's own sweep, silently —
     /// the error is logged for the trail, never re-thrown into the chat flow,
     /// whose outcome is the operation the server still owns.
-    private func report(actionID: String, body: DeviceActionResultBody) async -> OperationReceipt {
+    private func report(
+        actionID: String, settlesOperationID: String, body: DeviceActionResultBody
+    ) async -> OperationReceipt {
         do {
             return try await backend.reportDeviceActionResult(actionID: actionID, body: body)
         } catch {
@@ -65,8 +74,13 @@ public struct DeviceEventActionExecutor: DeviceActionExecuting {
             // receipt the server already answered with — re-fetched if the
             // report never left. Best effort: the flow must not crash the chat
             // turn over a lost *report* reply.
+            //
+            // The parked receipt carries the *operation's* id, not the action
+            // id: the action id is the idempotency key the report endpoint is
+            // addressed by, and the caller's poll reads operations by id.
+            // (Review R9, 2026-09-08.)
             return OperationReceipt(
-                operationID: actionID,
+                operationID: settlesOperationID,
                 state: .sourceInProgress,
                 cancelRequested: false,
                 clientDetached: false,
