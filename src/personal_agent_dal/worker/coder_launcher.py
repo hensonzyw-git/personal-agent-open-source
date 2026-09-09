@@ -57,6 +57,33 @@ ANTHROPIC_TOKEN_VAR: Final[str] = "ANTHROPIC_AUTH_TOKEN"
 #: and re-checked at P2/P3 (§7.1).
 DEEPSEEK_MODEL_ID: Final[str] = "DeepSeek/deepseek-v4-pro"
 
+#: The closed universe of CLI tool names the deny list is derived from:
+#: `--disallowedTools` gets UNIVERSE minus the manifest's allowlist. Frozen,
+#: never a runtime query of the CLI — a live query would make the launch
+#: argv depend on an untrusted, version-drifting source. Re-check when the
+#: pinned CLI version changes. R10 T1 dispatch 4 (2026-09-09) proved the
+#: need: DeepSeek launched an Agent subagent successfully and attempted
+#: Write with only `--allowedTools` in force — that flag shapes the default
+#: offer, it does not gate execution.
+CLI_TOOL_UNIVERSE: Final[frozenset[str]] = frozenset(
+    {
+        "Read",
+        "Edit",
+        "Write",
+        "Bash",
+        "Glob",
+        "Grep",
+        "Agent",
+        "Task",
+        "WebFetch",
+        "WebSearch",
+        "NotebookEdit",
+        "TodoWrite",
+        "KillShell",
+        "SlashCommand",
+    }
+)
+
 #: The stdout byte cap: an I/O guard, not a product budget. 1 MiB, matching
 #: the system's existing total-patch I/O bound (machine/patch_policy.
 #: MAX_PATCH_TOTAL_SIZE_BYTES). The product budgets — max_turns, wall clock,
@@ -148,7 +175,16 @@ def coder_argv(spec: CoderRunSpec, settings_path: Path) -> list[str]:
     `--allowedTools` spelling and `--max-turns` are frozen here and re-checked
     against the installed CLI at P2/P3; the allowlist is the caller's frozen
     tool set, never derived from a model.
+
+    `--disallowedTools` is the CLOSED UNIVERSE (`CLI_TOOL_UNIVERSE`) minus the
+    allowlist — an enumerated blacklist of observed offenders would silently
+    miss whatever the next CLI version adds. `--allowedTools` alone does not
+    gate execution (R10 T1 dispatch 4: an Agent subagent launched and a Write
+    was attempted under it); the deny list moves the refusal ahead of
+    execution and feeds it back to the model, which adapts within the run
+    (observed live: Write refused -> model switched to Edit and succeeded).
     """
+    denied = sorted(CLI_TOOL_UNIVERSE - frozenset(spec.allowed_tools))
     return [
         CLAUDE_BIN,
         "-p",
@@ -160,6 +196,8 @@ def coder_argv(spec: CoderRunSpec, settings_path: Path) -> list[str]:
         str(spec.max_turns),
         "--allowedTools",
         ",".join(spec.allowed_tools),
+        "--disallowedTools",
+        ",".join(denied),
         "--settings",
         str(settings_path),
         "--model",
@@ -308,12 +346,23 @@ def run_coder(
     """
     settings_path = write_settings_file(spec.run_root)
     argv = coder_argv(spec, settings_path)
-    environment = coder_environment(upstream_token)
     started = monotonic()
 
     with tempfile.TemporaryDirectory(prefix="personal-agent-dal-coder-") as raw_temp:
         temp_path = Path(raw_temp)
         os.chmod(temp_path, 0o700)
+        # The env is built INSIDE the with-block: CLAUDE_CODE_TMPDIR can only
+        # be bound once the per-run temp dir exists. The CLI builds its own
+        # per-uid scratch root (claude-<uid>/<cwd-slug>) for shell snapshots
+        # under os.tmpdir() by default — /tmp is outside the coder sandbox's
+        # writable set, so every Bash call died pre-execution with EPERM
+        # mkdir /tmp/claude-501/... (R10 T1, spike 5b falsified plain TMPDIR;
+        # spike 5c proved this knob: Bash executed, marker readable). The
+        # trailing slash is the macOS TMPDIR convention, observed live.
+        # Widening the sandbox to /tmp/claude-501 was rejected: that path is
+        # shared with the operator's own Claude Code sessions.
+        environment = coder_environment(upstream_token)
+        environment["CLAUDE_CODE_TMPDIR"] = str(temp_path) + "/"
         process = subprocess.Popen(
             sandboxed_coder_argv(argv, spec.cwd, temp_path, spec.run_root),
             cwd=str(spec.cwd),

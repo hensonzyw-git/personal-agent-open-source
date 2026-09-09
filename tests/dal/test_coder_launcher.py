@@ -261,6 +261,117 @@ def test_truncation_cut_mid_json_line_yields_no_json_marker(
     assert "truncated" not in last_line
 
 
+def test_argv_carries_disallowed_tools_as_the_closed_universe_minus_allowlist() -> None:
+    """The argv denies every CLI tool outside the frozen allowlist.
+
+    R10 T1 dispatch 4 (job 71f8f8c9, 2026-09-09): DeepSeek drifted off the
+    frozen tool set — it launched an Agent subagent successfully and attempted
+    Write (permission-layer refused). The stream classifier caught it after
+    the fact as policy_failure, but the subagent had already executed: the
+    `--allowedTools` flag alone does not gate execution, it only shapes the
+    default offer. `--disallowedTools` moves the refusal ahead of execution
+    and feeds the refusal back to the model, which adapts within the run
+    (observed: Write refused -> model switched to Edit and succeeded).
+
+    The deny list is the CLOSED UNIVERSE minus the allowlist — not an
+    enumerated blacklist of observed offenders, which would silently miss
+    whatever the next CLI version adds.
+    """
+    settings = Path("/tmp/run-root/coder-settings.json")
+    spec = _spec(allowed_tools=("Read", "Edit", "Bash"))
+    argv = coder_argv(spec, settings)
+
+    assert "--disallowedTools" in argv
+    idx = argv.index("--disallowedTools")
+    denied = argv[idx + 1]
+    # Frozen universe minus the allowlist: the major execution surfaces.
+    assert "Agent" in denied.split(",")
+    assert "Write" in denied.split(",")
+    assert "WebFetch" in denied.split(",")
+    assert "WebSearch" in denied.split(",")
+    assert "Task" in denied.split(",")
+    assert "NotebookEdit" in denied.split(",")
+    # And nothing from the allowlist is denied.
+    for allowed in ("Read", "Edit", "Bash"):
+        assert allowed not in denied.split(",")
+
+
+def test_disallowed_universe_is_version_pinned_and_explicit() -> None:
+    """The deny universe is a frozen constant, not a runtime query.
+
+    A runtime query of the CLI's live tool list would make the launch argv
+    depend on an untrusted, version-drifting source; the universe is frozen
+    here instead and re-checked when the pinned CLI version changes.
+    """
+    universe = coder_launcher.CLI_TOOL_UNIVERSE
+    assert "Read" in universe and "Edit" in universe and "Bash" in universe
+    # The R10 incident's escapees are in the universe — otherwise they could
+    # not be denied.
+    assert "Agent" in universe and "Write" in universe
+
+
+def test_environment_injects_claude_code_tmpdir_inside_the_temp_block(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """`CLAUDE_CODE_TMPDIR` points the CLI's per-uid scratch at the sandbox
+    temp dir, reviving Bash inside the coder sandbox.
+
+    Spike 5c (2026-09-09, mini): every Bash call died pre-execution with
+    EPERM mkdir /tmp/claude-501/<cwd-slug> — the CLI builds its own per-uid
+    scratch root under os.tmpdir() for shell snapshots, and /tmp is not in
+    the coder sandbox's writable set. `TMPDIR` alone does NOT participate
+    (spike 5b, falsified); `CLAUDE_CODE_TMPDIR` does (binary grep + 5c
+    intervention: Bash executed, marker readable, 3-turn clean run). The
+    value carries a trailing slash (macOS TMPDIR convention, observed live).
+
+    Widening the sandbox's writable set to /tmp/claude-501 was rejected:
+    that directory is shared with the operator's own Claude Code sessions
+    — making it writable would make every coder sandbox able to read every
+    local session snapshot. CLAUDE_CODE_TMPDIR adds zero writable surface.
+    """
+    seen: dict[str, str | None] = {}
+
+    def fake_popen(argv, **kwargs):
+        seen["env"] = kwargs.get("env")
+        process = mock.Mock()
+        process.pid = 4242
+        process.communicate.return_value = ('{"type":"result"}\n', None)
+        process.returncode = 0
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(os, "killpg", mock.Mock())
+
+    run_coder(_spec(run_root=tmp_path), monotonic=lambda: 0.0)
+
+    env = seen["env"]
+    assert env is not None
+    assert "CLAUDE_CODE_TMPDIR" in env, (
+        "the coder child env must redirect the CLI's per-uid scratch root, "
+        "or every Bash call dies with EPERM before executing"
+    )
+    value = env["CLAUDE_CODE_TMPDIR"]
+    assert value.endswith("/"), "macOS TMPDIR convention: trailing slash"
+    assert "personal-agent-dal-coder-" in value, (
+        "must point at the per-run TemporaryDirectory, not a shared path"
+    )
+
+
+def test_coder_environment_pure_function_stays_tmpdir_free() -> None:
+    """`coder_environment` itself carries no tmpdir: the redirect is per-run.
+
+    The pure builder cannot know the run's temp dir (it is born inside
+    `run_coder`'s with-block), so pinning its absence here makes any future
+    refactor that reintroduces a static tmpdir a visible test failure
+    rather than a silent shared-scratch regression.
+    """
+    env = coder_environment("some-token")
+    assert "CLAUDE_CODE_TMPDIR" not in env
+    assert "TMPDIR" not in env
+    env_no_token = coder_environment(None)
+    assert "CLAUDE_CODE_TMPDIR" not in env_no_token
+
+
 def test_output_at_exact_cap_is_not_truncated(
     monkeypatch, tmp_path: Path
 ) -> None:
