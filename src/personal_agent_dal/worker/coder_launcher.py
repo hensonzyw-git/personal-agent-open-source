@@ -57,16 +57,22 @@ ANTHROPIC_TOKEN_VAR: Final[str] = "ANTHROPIC_AUTH_TOKEN"
 #: and re-checked at P2/P3 (§7.1).
 DEEPSEEK_MODEL_ID: Final[str] = "DeepSeek/deepseek-v4-pro"
 
-#: The stdout byte cap. 256 KiB, aligned with the frozen coder budget
-#: (`max_patch_bytes` = 262144): a run whose stream exceeds this is refused
-#: as a budget condition, so the cap only bites runs that would already be
-#: over the patch budget. The historical 64 KiB cut healthy ~65 KiB streams
-#: mid-event (R10 T1, 2026-09-09): the marker appended to the truncated text
-#: was itself not JSON, so a complete, correct coder run was refused as
-#: `coder_output_unparseable`. Truncation is now signalled structurally via
-#: `CoderRunResult.truncated`; no marker is ever appended to stdout, which
-#: keeps the stdout-is-pure-NDJSON invariant for complete runs.
-MAX_OUTPUT_BYTES: Final[int] = 256 * 1024
+#: The stdout byte cap: an I/O guard, not a product budget. 1 MiB, matching
+#: the system's existing total-patch I/O bound (machine/patch_policy.
+#: MAX_PATCH_TOTAL_SIZE_BYTES). The product budgets — max_turns, wall clock,
+#: max_patch_bytes — are enforced by the frozen manifest and the contract
+#: classifier; this cap exists only so an unbounded subprocess cannot exhaust
+#: worker memory/disk. Sizing history (both directions observed live):
+#: 64 KiB cut a healthy 65,562-byte stream mid-event and the marker appended
+#: to the truncated text was itself not JSON, so a complete, correct run was
+#: refused as `coder_output_unparseable` (R10 T1, 2026-09-09); 256 KiB
+#: survived four days before the same task's non-deterministic stream size
+#: (DeepSeek thinking-event count varies run to run) tripped
+#: `coder_output_truncated` on job 3d2ae1dd. Truncation is signalled
+#: structurally via `CoderRunResult.truncated`; no marker is ever appended
+#: to stdout, which keeps the stdout-is-pure-NDJSON invariant for complete
+#: runs.
+MAX_OUTPUT_BYTES: Final[int] = 1024 * 1024
 TIMEOUT_RETURNCODE: Final[int] = 124
 
 

@@ -187,17 +187,22 @@ def test_clean_exit_captures_the_returncode(
     os.killpg.assert_not_called()
 
 
-def test_output_cap_is_256kib_aligned_with_the_patch_budget() -> None:
-    """The cap must exceed the manifest's max_patch_bytes (262144).
+def test_output_cap_is_1mib_matching_the_io_bound() -> None:
+    """The cap matches the system's existing I/O bound: 1 MiB.
 
-    R10 T1 (2026-09-09): the historical 64 KiB cap cut a healthy 65,562-byte
-    NDJSON stream mid-event, and the truncation marker itself was not JSON,
-    so `_parse_coder_stream` refused a run whose coder work was complete and
-    correct (README rewritten, nothing else touched). The cap is raised to
-    256 KiB — aligned with the frozen coder budget — and the failure is
-    pinned here so a future reduction cannot silently bring it back.
+    History: 64 KiB cut healthy streams (R10 T1 incident run, 65,562 bytes);
+    256 KiB survived four days before the same task's non-deterministic
+    stream size (DeepSeek thinking-event count varies run to run) produced
+    a 262,144+ byte run and hit `coder_output_truncated` (2026-09-09,
+    job 3d2ae1dd). The cap is NOT the product budget — turns, wall clock
+    and patch bytes are, enforced by the contract — it is an I/O guard
+    against an unbounded subprocess. It therefore matches the system's
+    existing total-patch I/O bound (`MAX_PATCH_TOTAL_SIZE_BYTES`,
+    1 MiB) rather than tracking any single observed stream size, and
+    `max_turns=12` keeps the event-count ceiling that bounds a hostile
+    runaway regardless.
     """
-    assert coder_launcher.MAX_OUTPUT_BYTES == 256 * 1024
+    assert coder_launcher.MAX_OUTPUT_BYTES == 1024 * 1024
 
 
 def _run_with_output(monkeypatch, tmp_path: Path, text: str):
@@ -225,7 +230,7 @@ def test_truncation_keeps_stdout_pure_ndjson_and_reports_the_flag(
     failure the caller can attribute to the cap via the flag.
     """
     line = json.dumps({"type": "assistant", "message": {"content": []}}) + "\n"
-    oversized = line * 8000  # ~304 KiB, past the 256 KiB cap
+    oversized = line * 30000  # ~1.5 MiB, past the 1 MiB cap
     result = _run_with_output(monkeypatch, tmp_path, oversized)
 
     assert result.truncated is True
@@ -244,9 +249,9 @@ def test_truncation_cut_mid_json_line_yields_no_json_marker(
     """
     good = json.dumps({"type": "system", "subtype": "init"}) + "\n"
     tail_fragment = '{"type": "assistant", "message": {"cont'
-    # Pad so the cap falls inside the fragment: 8000 lines (~304 KiB) plus
+    # Pad so the cap falls inside the fragment: 30000 lines (~1.14 MiB) plus
     # the fragment pushes the cut point past the fragment's start.
-    oversized = good * 8000 + tail_fragment
+    oversized = good * 30000 + tail_fragment
     result = _run_with_output(monkeypatch, tmp_path, oversized)
 
     assert result.truncated is True
