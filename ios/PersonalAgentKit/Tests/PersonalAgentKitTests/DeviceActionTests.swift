@@ -868,6 +868,102 @@ struct DeviceActionPollDeliveryTests {
         )
     }
 
+    // --- fourth review H1: a late settled report must not clear a replaced slot --
+
+    /// H1, reproduced: A's action executed and its report POST is held open;
+    /// the user discards A and sends B (the slot now holds B's key); A's
+    /// report is then released and answers settled. The clear path after the
+    /// report deleted B's pending — B's own reply could then never anchor and
+    /// B's action never executed. Clearing must verify the slot's owner
+    /// (idempotency key) and its operation, exactly like the anchor merge.
+    @Test("a late settled report does not clear another message's slot")
+    func lateSettledReportDoesNotClearAReplacedSlot() async throws {
+        // The gate holds A's report POST until the test has demonstrably
+        // replaced the slot with B.
+        final class FlagBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = false
+            var isSet: Bool { lock.withLock { value } }
+            func set() { lock.withLock { value = true } }
+        }
+        let replaced = FlagBox()
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                var receipt = chatReceipt(
+                    "source_in_progress", tool: "calendar.create_event"
+                )
+                receipt["device_action"] = Self.actionPayload()
+                return .ok(receipt)
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                // A's report hangs until B owns the slot.
+                waitForGate("A's slot is replaced by B") { replaced.isSet }
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-A"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let store = InMemoryCredentialStore()
+        let session = try makeChatSession(service: service, store: store)
+        _ = try await session.enroll(code: "code", displayName: "iPhone")
+        let chat = ChatTimeline(
+            backend: session, store: store, deviceActionExecutor: executor,
+            pollDelays: Array(repeating: .zero, count: 4), sleep: { _ in }
+        )
+        executor.backend = session
+
+        // Seed A's slot; its resume anchors and executes, then blocks inside
+        // the held report.
+        let a = ChatTimeline.PendingSend(
+            idempotencyKey: "018f0000-0000-4000-8000-00000000aaa1",
+            conversationID: chatTimelineID,
+            text: "周六下午三点网球",
+            clarificationOf: nil,
+            startNewSession: nil,
+            operationID: nil
+        )
+        try store.write(
+            CredentialKey.pendingChatSend, value: try JSONEncoder().encode(a)
+        )
+        async let resumed: OperationReceipt? = chat.resume()
+        // A's action has executed and its report POST is in flight.
+        waitForGate("A's action executed") { !executor.actions.isEmpty }
+        waitForGate("A's report POST is in flight") {
+            service.log.contains { call in
+                call.method == "POST" && call.path.hasPrefix("/v1/device-actions/")
+            }
+        }
+
+        // The user discards A and sends B: the slot is replaced with B's key.
+        let b = ChatTimeline.PendingSend(
+            idempotencyKey: "018f0000-0000-4000-8000-00000000bbb2",
+            conversationID: chatTimelineID,
+            text: "周一上午十点体检",
+            clarificationOf: nil,
+            startNewSession: nil,
+            operationID: nil
+        )
+        try store.write(
+            CredentialKey.pendingChatSend, value: try JSONEncoder().encode(b)
+        )
+        // Release A's report: it answers settled.
+        replaced.set()
+
+        _ = try await resumed
+
+        // B's slot must survive A's settled report.
+        let slot = try store.read(CredentialKey.pendingChatSend)
+            .flatMap { try? JSONDecoder().decode(
+                ChatTimeline.PendingSend.self, from: $0
+            ) }
+        #expect(slot?.idempotencyKey == "018f0000-0000-4000-8000-00000000bbb2")
+        #expect(slot?.operationID == nil, "A's report must not anchor into B's slot")
+    }
+
     private static func actionPayload() -> [String: Any] {
         [
             "action_id": "018f0000-0000-7000-8000-00000000cafe",

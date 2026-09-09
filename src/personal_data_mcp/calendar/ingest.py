@@ -343,6 +343,16 @@ def ingest_events(
                     existing.row_key = row.row_key
                 upserted += 1
                 continue
+            if snapshot_ts < existing.snapshot_ts:
+                # Fourth review H2: the snapshot version is monotonic. A
+                # packet whose snapshot is *older* than the row's stored
+                # version has no standing to change anything — even when its
+                # `last_modified` looks newer, because the two clocks are
+                # unrelated fields and the schema does not order them. Without
+                # this gate, a stale snapshot could overwrite revived content
+                # and demote the stored version.
+                skipped += 1
+                continue
             if row.last_modified_ts <= existing.last_modified_ts:
                 # Equal or older `last_modified` carries no new field evidence
                 # — with one exception: a row whose stored snapshot version is

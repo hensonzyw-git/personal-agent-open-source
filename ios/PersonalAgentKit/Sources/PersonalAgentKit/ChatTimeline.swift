@@ -448,9 +448,15 @@ public actor ChatTimeline {
     /// comes from the server.
     public func cancel(operationID: String) async throws -> OperationReceipt {
         let receipt = try await backend.cancelOperation(operationID: operationID)
-        if receipt.outcome.releasesPendingSlot, let pending = try loadPending(),
-           pending.operationID == receipt.operationID {
-            try clearPending()
+        if receipt.outcome.releasesPendingSlot {
+            // The cancel reply can land after the slot was discarded and
+            // replaced (fourth review H1): release only what this call owns.
+            if let pending = try loadPending(),
+               pending.operationID == receipt.operationID {
+                try releaseSlotIfStillOwned(
+                    key: pending.idempotencyKey, operationID: receipt.operationID
+                )
+            }
         }
         return receipt
     }
@@ -682,7 +688,14 @@ public actor ChatTimeline {
         // rather than trusting the report's echo.
         if reported.outcome.isSettled {
             if reported.outcome.releasesPendingSlot {
-                try? clearPending()
+                // Fourth review H1: the report may have landed long after the
+                // user discarded this message — the slot can belong to a
+                // different send by now. Clearing unconditionally deleted
+                // that message's pending. The release verifies ownership,
+                // exactly like the anchor merge.
+                try? releaseSlotIfStillOwned(
+                    key: pending.idempotencyKey, operationID: pending.operationID
+                )
             }
             return reported
         }
@@ -815,11 +828,37 @@ public actor ChatTimeline {
             // Polling may stop without releasing the slot. Unknown and
             // needs-manual-review outcomes stay on disk because the client
             // giving up on watching is not proof that another key is safe.
-            if let stored = try loadPending(), stored.operationID == receipt.operationID {
-                try clearPending()
-            }
+            // The release also verifies ownership (fourth review H1): a poll
+            // answering after the slot was discarded and replaced must not
+            // delete the replacement.
+            try? releaseSlotIfStillOwned(
+                key: pending.idempotencyKey, operationID: receipt.operationID
+            )
         }
         return receipt
+    }
+
+    /// Clear the pending slot **only if it still belongs to the message that
+    /// earned the release** (fourth review H1).
+    ///
+    /// Every path that clears the slot after a network wait — the settled
+    /// report, the settle loop's terminal poll, a cancellation — can land
+    /// after the user discarded that message and sent another; the slot then
+    /// holds a different idempotency key, and deleting it would strand the
+    /// new message's write. Ownership is the pair (key, operation): the key
+    /// names the message, the operation names the server-side work this
+    /// release speaks for. A slot with a `nil` operation matches by key alone
+    /// (the discard-and-replace window before any reply anchors).
+    private func releaseSlotIfStillOwned(
+        key: String, operationID: String?
+    ) throws {
+        guard let stored = try loadPending() else { return }
+        guard stored.idempotencyKey == key else { return }
+        if let operationID, let storedOperation = stored.operationID,
+           storedOperation != operationID {
+            return
+        }
+        try clearPending()
     }
 
     /// Run the by-key trail concurrently with the chat POST.

@@ -414,3 +414,76 @@ def test_the_summary_counts_only_what_it_omits(sessions) -> None:
         "the summary must say how many it omitted, computed against what it "
         f"actually displayed — got: {summary}"
     )
+
+
+# --- fourth review H2: updates obey snapshot-version monotonicity ------------
+
+
+def test_an_older_snapshot_cannot_overwrite_or_version_demote(sessions) -> None:
+    """H2: after a T3 snapshot deletes A and a T3 straggler revives it with
+    new content, a T2 packet carrying a *newer-looking* last_modified may
+    still arrive (the two clocks are unrelated; every request passes the IR
+    schema). The plain-update branch compared only last_modified, so the T2
+    packet overwrote the revived content and demoted the stored version from
+    T3 to T2. Every write must first obey snapshot monotonicity: a packet
+    whose snapshot is older than the row's stored version changes nothing."""
+    t2 = NOW - timedelta(hours=4)
+    t3 = NOW - timedelta(hours=3)
+    # T2 seeds ev-1.
+    _ingest_as_of(sessions, [_event("ev-1", title="seed")], as_of=t2)
+    # T3's last batch completes without ev-1: the sweep tombstones it.
+    _ingest_as_of(sessions, [_event("ev-2")], as_of=t3, window_complete=True)
+    # T3's straggler revives ev-1 with the new title.
+    _ingest_as_of(
+        sessions,
+        [_event("ev-1", title="new", last_modified=to_rfc3339(t3))],
+        as_of=t3,
+        window_complete=False,
+    )
+    assert _titles(sessions)["ev-1"] == "new"
+
+    # A T2 packet arrives carrying a last_modified *newer than everything*
+    # (the device's two clocks are unrelated fields; the schema allows it).
+    result = _ingest_as_of(
+        sessions,
+        [
+            _event(
+                "ev-1",
+                title="STALE-T2",
+                last_modified=to_rfc3339(NOW),
+            )
+        ],
+        as_of=t2,
+        window_complete=False,
+    )
+    # The older snapshot has no standing regardless of its last_modified.
+    assert result["upserted"] == 0
+    assert result["skipped"] == 1
+    assert _titles(sessions)["ev-1"] == "new"
+    with sessions() as session:
+        row = session.execute(
+            select(CalendarEvent).where(CalendarEvent.event_identifier == "ev-1")
+        ).scalar_one()
+    assert not row.is_deleted
+    assert row.snapshot_ts == int(t3.timestamp()), "the version must not demote"
+
+
+def test_a_newer_snapshot_still_updates_normally(sessions) -> None:
+    """The monotonicity gate must not block the legitimate case: a genuinely
+    newer snapshot's plain update (last_modified also newer) still takes the
+    fields and advances the version."""
+    t3 = NOW - timedelta(hours=3)
+    t4 = NOW - timedelta(hours=2)
+    _ingest_as_of(sessions, [_event("ev-1", title="old")], as_of=t3)
+    _ingest_as_of(
+        sessions,
+        [_event("ev-1", title="newer", last_modified=to_rfc3339(t4))],
+        as_of=t4,
+        window_complete=False,
+    )
+    assert _titles(sessions)["ev-1"] == "newer"
+    with sessions() as session:
+        row = session.execute(
+            select(CalendarEvent).where(CalendarEvent.event_identifier == "ev-1")
+        ).scalar_one()
+    assert row.snapshot_ts == int(t4.timestamp())
