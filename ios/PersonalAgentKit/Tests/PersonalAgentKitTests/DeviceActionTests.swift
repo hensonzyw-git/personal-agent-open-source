@@ -964,6 +964,115 @@ struct DeviceActionPollDeliveryTests {
         #expect(slot?.operationID == nil, "A's report must not anchor into B's slot")
     }
 
+    // --- fifth review I1: a late refusal must not clear a replaced slot ------
+
+    /// I1: the `provesNotAnchored` catch in both `send()` and `resume()`
+    /// cleared the slot unconditionally. A's POST hangs; the user discards A
+    /// and sends B; A's refusal (badRequest) then lands and deletes B's
+    /// pending — stranding B's reply with no slot to anchor into. Both paths
+    /// verified separately.
+    private func replacedSlotSurvivesALateRefusal(
+        route: String,
+        drive: @escaping @Sendable (ChatTimeline) async throws -> Void
+    ) async throws {
+        final class FlagBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = false
+            var isSet: Bool { lock.withLock { value } }
+            func set() { lock.withLock { value = true } }
+        }
+        let replaced = FlagBox()
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                // A's POST hangs until B owns the slot, then refuses.
+                waitForGate("\(route): A's slot is replaced by B") { replaced.isSet }
+                return .error(400, "INVALID_ARGUMENT")
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let store = InMemoryCredentialStore()
+        let session = try makeChatSession(service: service, store: store)
+        _ = try await session.enroll(code: "code", displayName: "iPhone")
+        let chat = ChatTimeline(
+            backend: session, store: store, deviceActionExecutor: executor,
+            pollDelays: Array(repeating: .zero, count: 4), sleep: { _ in }
+        )
+        executor.backend = session
+        // `send()` refuses to run without a bound conversation.
+        await chat.bind(conversationID: chatTimelineID)
+
+        // Resume needs a pre-existing slot (it is the crash-recovery path);
+        // send mints its own, so the helper only seeds on the resume route —
+        // seeding for send would just make `send` refuse with
+        // `unresolvedSend` before any POST left.
+        if route == "resume" {
+            let a = ChatTimeline.PendingSend(
+                idempotencyKey: "018f0000-0000-4000-8000-00000000aaa1",
+                conversationID: chatTimelineID,
+                text: "周六下午三点网球",
+                clarificationOf: nil,
+                startNewSession: nil,
+                operationID: nil
+            )
+            try store.write(
+                CredentialKey.pendingChatSend, value: try JSONEncoder().encode(a)
+            )
+        }
+        async let driven: Void = try drive(chat)
+        waitForGate("\(route): A's POST is in flight") {
+            service.count("POST", "/v1/chat/messages") >= 1
+        }
+
+        // The user discards A (a send can only start from an empty slot, so
+        // the discard comes first on this path) and sends B: the slot now
+        // holds B's key.
+        if route == "send" {
+            try await chat.discardPending()
+        }
+        let b = ChatTimeline.PendingSend(
+            idempotencyKey: "018f0000-0000-4000-8000-00000000bbb2",
+            conversationID: chatTimelineID,
+            text: "周一上午十点体检",
+            clarificationOf: nil,
+            startNewSession: nil,
+            operationID: nil
+        )
+        try store.write(
+            CredentialKey.pendingChatSend, value: try JSONEncoder().encode(b)
+        )
+        // Release A's refusal.
+        replaced.set()
+        _ = try? await driven
+
+        // B's slot must survive A's late refusal.
+        let slot = try store.read(CredentialKey.pendingChatSend)
+            .flatMap { try? JSONDecoder().decode(
+                ChatTimeline.PendingSend.self, from: $0
+            ) }
+        #expect(
+            slot?.idempotencyKey == "018f0000-0000-4000-8000-00000000bbb2",
+            "\(route): A's refusal deleted B's pending"
+        )
+    }
+
+    @Test("a late POST refusal does not clear a replaced slot (resume path)")
+    func lateRefusalDoesNotClearAReplacedSlotOnResume() async throws {
+        try await replacedSlotSurvivesALateRefusal(route: "resume") { chat in
+            _ = try await chat.resume()
+        }
+    }
+
+    @Test("a late POST refusal does not clear a replaced slot (send path)")
+    func lateRefusalDoesNotClearAReplacedSlotOnSend() async throws {
+        try await replacedSlotSurvivesALateRefusal(route: "send") { chat in
+            _ = try await chat.send(text: "周六下午三点网球")
+        }
+    }
+
     private static func actionPayload() -> [String: Any] {
         [
             "action_id": "018f0000-0000-7000-8000-00000000cafe",

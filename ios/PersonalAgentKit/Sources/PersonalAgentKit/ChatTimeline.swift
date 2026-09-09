@@ -343,8 +343,13 @@ public actor ChatTimeline {
         } catch let error as AgentClientError where Self.provesNotAnchored(error) {
             // The server refused before it could create an operation, so there is
             // nothing to resume and keeping the record would block every later
-            // message behind a request that can never land.
-            try? clearPending()
+            // message behind a request that can never land. The refusal may
+            // land long after the user discarded this message (fifth review
+            // I1): the release verifies the slot still belongs to it before
+            // clearing, so a replaced message's pending survives.
+            try? releaseSlotIfStillOwned(
+                key: pending.idempotencyKey, operationID: nil
+            )
             throw error
         }
         // The anchor merge (second review F2 / third review G1): the slot is
@@ -392,7 +397,12 @@ public actor ChatTimeline {
                 idempotencyKey: pending.idempotencyKey
             )
         } catch let error as AgentClientError where Self.provesNotAnchored(error) {
-            try? clearPending()
+            // Same rule as the send path (fifth review I1): a refusal landing
+            // after this message was discarded and replaced must not delete
+            // the replacement's slot.
+            try? releaseSlotIfStillOwned(
+                key: pending.idempotencyKey, operationID: nil
+            )
             throw error
         }
         // Second review F2 / third review G1: the anchor merge re-reads the
@@ -560,10 +570,15 @@ public actor ChatTimeline {
         )
         // Bind to the *server's* operation id, not the argument: the slot must
         // only ever be released for the operation the server actually answered
-        // about.
+        // about — and only when the slot still belongs to that message (the
+        // same ownership rule as every other post-wait release; a resolution
+        // landing after a discard-and-replace must not delete the
+        // replacement's slot).
         if let pending = try loadPending(),
            pending.operationID == receipt.operationID {
-            try clearPending()
+            try releaseSlotIfStillOwned(
+                key: pending.idempotencyKey, operationID: receipt.operationID
+            )
         }
         return receipt
     }
