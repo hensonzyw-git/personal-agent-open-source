@@ -280,7 +280,41 @@ def _adapt_claude_stream(
     knows `final`/`text`/`tool_call`/..., so this maps the native events onto that
     vocabulary and appends exactly one `final` bound to the request and the actual
     worktree diff (which the worker derives separately via `_changed_files`).
+
+    A `tool_call` is projected ONLY for a tool_use whose `tool_result` exists
+    and is not an error. The CLI polices execution itself
+    (`--disallowedTools` unregisters the tool, so a denied attempt still
+    surfaces as an assistant tool_use whose user tool_result carries
+    `is_error` — "No such tool available... disabled for this session"); the
+    classifier reads intent, and double-charging a refused attempt as
+    out-of-scope turned every adaptive run into a terminal policy_failure
+    (R10 T1 dispatch 5, repro 6). What counts as out-of-scope is EXECUTION:
+    a tool_use with a non-error result. A dangling tool_use (result never
+    observed — truncated or malformed stream) carries no execution evidence
+    and is dropped the same way; a real execution always carries its result,
+    so this drop cannot mask one.
     """
+    # First pass: which tool_use ids actually executed (result present, no error)?
+    executed_ids: set[str] = set()
+    for event in claude_events:
+        if event.get("type") != "user":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_result"
+                and not block.get("is_error")
+            ):
+                tool_use_id = block.get("tool_use_id")
+                if isinstance(tool_use_id, str) and tool_use_id:
+                    executed_ids.add(tool_use_id)
+
     events: list[dict] = []
     for event in claude_events:
         if event.get("type") != "assistant":
@@ -301,15 +335,22 @@ def _adapt_claude_stream(
                     events.append({"type": "text", "content": text})
             elif block_type == "tool_use":
                 name = block.get("name")
-                if isinstance(name, str) and name:
-                    arguments = block.get("input")
-                    events.append(
-                        {
-                            "type": "tool_call",
-                            "name": name,
-                            "arguments": arguments if isinstance(arguments, dict) else {},
-                        }
-                    )
+                tool_use_id = block.get("id")
+                if not (isinstance(name, str) and name):
+                    continue
+                if not (isinstance(tool_use_id, str) and tool_use_id):
+                    # No id to pair a result with: not provable execution.
+                    continue
+                if tool_use_id not in executed_ids:
+                    continue
+                arguments = block.get("input")
+                events.append(
+                    {
+                        "type": "tool_call",
+                        "name": name,
+                        "arguments": arguments if isinstance(arguments, dict) else {},
+                    }
+                )
     events.append(
         {
             "type": "final",

@@ -1271,9 +1271,15 @@ def _make_claude_fake(
     result_error: bool = False,
     output: str | None = None,
     truncated: bool = False,
+    refused_tool: str | None = None,
 ):
     """A fake `run_coder` emitting claude's native stream-json, not the
-    coder_contract vocabulary — so the adapter under test is actually exercised."""
+    coder_contract vocabulary — so the adapter under test is actually exercised.
+
+    ``refused_tool`` prepends a tool_use/tool_result pair whose result carries
+    ``is_error: True`` — the exact shape the CLI's ``--disallowedTools``
+    produces when a denied tool is attempted ("No such tool available").
+    """
 
     def fake(spec, **kw):
         if write:
@@ -1290,6 +1296,59 @@ def _make_claude_fake(
                         "model": "DeepSeek/deepseek-v4-pro",
                     }
                 ),
+            ]
+            if refused_tool is not None:
+                # The CLI's --disallowedTools refusal shape: the intent still
+                # appears as an assistant tool_use; the outcome is a user
+                # tool_result with is_error and the "No such tool available"
+                # text (R10 T1 dispatch 5, repro 6).
+                lines.extend(
+                    [
+                        json.dumps(
+                            {
+                                "type": "assistant",
+                                "message": {
+                                    "role": "assistant",
+                                    "content": [
+                                        {
+                                            "type": "tool_use",
+                                            "id": f"toolu_refused_{refused_tool}",
+                                            "name": refused_tool,
+                                            "input": {
+                                                "file_path": "README.md",
+                                                "content": "whole-file rewrite\n",
+                                            },
+                                        }
+                                    ],
+                                },
+                                "stop_reason": "tool_use",
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "type": "user",
+                                "message": {
+                                    "role": "user",
+                                    "content": [
+                                        {
+                                            "type": "tool_result",
+                                            "tool_use_id": f"toolu_refused_{refused_tool}",
+                                            "is_error": True,
+                                            "content": (
+                                                "Error: No such tool available: "
+                                                f"{refused_tool}. {refused_tool} is "
+                                                "disabled for this session, in "
+                                                "subagents as well as here."
+                                            ),
+                                        }
+                                    ],
+                                },
+                            }
+                        ),
+                    ]
+                )
+            lines.extend(
+                [
                 json.dumps(
                     {
                         "type": "assistant",
@@ -1326,7 +1385,8 @@ def _make_claude_fake(
                         },
                     }
                 ),
-            ]
+                ]
+            )
             if result_error:
                 lines.append(
                     json.dumps(
@@ -1393,6 +1453,104 @@ def test_poll_once_provider_coder_succeeds(
     bundle = checkpoint_mod.load_checkpoint(config.checkpoint_root, "feat-demo")
     assert bundle is not None
     assert "coder change" in bundle.patch
+
+
+def test_poll_once_provider_coder_refused_intent_is_not_a_policy_failure(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    """A disallowed tool ATTEMPTED and refused is not an out-of-scope execution.
+
+    R10 T1 dispatch 5 (job 2f94d64f, repro 6): the CLI's --disallowedTools
+    unregisters the tool, so a denied attempt still surfaces as an assistant
+    tool_use whose user tool_result carries is_error ("No such tool
+    available... disabled for this session, in subagents as well as here").
+    The model then adapts (Write -> Edit) and completes the task. The adapter
+    must not convert the refused intent into a tool_call: the classifier reads
+    intent, the CLI already polices execution, and double-charging a refused
+    attempt as policy_failure turns every adaptive run into a terminal
+    failure. What counts as out-of-scope is EXECUTION — a tool_use whose
+    result is a non-error — never an attempt the harness rejected.
+    """
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, coder=True)
+    job_id = _seed_job_for(engine, base_sha)
+
+    monkeypatch.setattr(
+        "personal_agent_dal.worker.poll_once.run_coder",
+        _make_claude_fake(base_sha, refused_tool="Write"),
+    )
+
+    outcome = _poll(engine, _coder_config(tmp_path, config))
+
+    assert outcome.state == "succeeded", (
+        "a refused-and-adapted run must complete: the classifier may only "
+        f"see executed tool calls, got {outcome.state}/{outcome.error}"
+    )
+
+
+def test_poll_once_provider_coder_dangling_tool_use_is_not_an_execution(
+    engine, config, tmp_path: Path, monkeypatch
+) -> None:
+    """A tool_use with NO tool_result at all is not provable execution.
+
+    A truncated or malformed stream can orphan a tool_use (intent emitted,
+    outcome never observed). Fail closed on the classifier side too: an
+    unverifiable call is dropped from the tool_call projection rather than
+    counted as executed. The stream's own integrity is separately guarded
+    (parse, result event, diff binding), so this drop cannot mask a real
+    out-of-scope execution — a real execution always carries its result.
+    """
+    repo = tmp_path / "repo"
+    base_sha = _make_synthetic_repo(repo, coder=True)
+    job_id = _seed_job_for(engine, base_sha)
+
+    dangling = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_dangling",
+                        "name": "Write",
+                        "input": {"file_path": "README.md", "content": "x"},
+                    }
+                ],
+            },
+            "stop_reason": "tool_use",
+        }
+    )
+    monkeypatch.setattr(
+        "personal_agent_dal.worker.poll_once.run_coder",
+        _make_claude_fake(base_sha, output=None),
+    )
+    # Splice the dangling tool_use into the fake's stream by wrapping it.
+    original_fake = _make_claude_fake(base_sha)
+
+    def fake_with_dangling(spec, **kw):
+        result = original_fake(spec, **kw)
+        lines = result.output.splitlines()
+        lines.insert(1, dangling)
+        return CoderRunResult(
+            returncode=result.returncode,
+            output="\n".join(lines) + "\n",
+            timed_out=result.timed_out,
+            cancelled=result.cancelled,
+            duration_s=result.duration_s,
+            truncated=result.truncated,
+        )
+
+    monkeypatch.setattr(
+        "personal_agent_dal.worker.poll_once.run_coder", fake_with_dangling
+    )
+
+    outcome = _poll(engine, _coder_config(tmp_path, config))
+
+    assert outcome.state == "succeeded", (
+        "an orphaned tool_use carries no execution evidence; it must not "
+        f"poison the classification, got {outcome.state}/{outcome.error}"
+    )
 
 
 def test_poll_once_provider_coder_refuses_a_provider_error(
