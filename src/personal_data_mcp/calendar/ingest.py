@@ -236,15 +236,22 @@ def ingest_events(
             session.get(CalendarDeviceSync, device_id)
         )
         watermark_ts = watermark_row.watermark_ts if watermark_row else None
-        #: A snapshot at or older than the watermark is a *late packet*: it is
-        #: still honest evidence about rows that same-or-newer snapshots hold
-        #: (a straggler may trail its own sweep), but it has no standing to
-        #: speak for events the completed snapshots never saw — so it may not
-        #: insert an unknown row and may not revive a tombstone. It also has
-        #: no standing to tombstone: only the newest completed snapshot of a
-        #: device speaks for its whole window.
-        is_late_packet = watermark_ts is not None and snapshot_ts <= watermark_ts
-        may_sweep = window_complete and not is_late_packet
+        #: A snapshot **strictly older** than the watermark is a *late
+        #: packet*: it has no standing to speak for events the completed
+        #: snapshots never saw — so it may not insert an unknown row and may
+        #: not revive a tombstone, and it has no standing to tombstone either.
+        #:
+        #: A snapshot **equal** to the watermark is a straggler of the very
+        #: snapshot that set the watermark (third review G3): its membership
+        #: is testimony of the snapshot the watermark itself names, so it may
+        #: insert and revive — the watermark's completion said "this window is
+        #: all of this snapshot", and a chunk of that same snapshot arriving
+        #: late is how the whole window actually arrives. It still may not
+        #: sweep: the window is already complete.
+        is_late_packet = watermark_ts is not None and snapshot_ts < watermark_ts
+        may_sweep = window_complete and (
+            watermark_ts is None or snapshot_ts > watermark_ts
+        )
 
         for event in events:
             if not isinstance(event, dict):
@@ -297,19 +304,34 @@ def ingest_events(
                 # event. A late packet (older than the watermark, hence older
                 # than the tombstone's version) has no standing (F3b).
                 tombstone_version = existing.snapshot_ts
+                same_snapshot = existing.snapshot_ts == snapshot_ts
                 clears = (
                     row.last_modified_ts > existing.last_modified_ts
                     and snapshot_ts >= tombstone_version
-                ) or (
-                    existing.snapshot_ts == snapshot_ts
-                )
+                ) or same_snapshot
                 if not clears:
                     skipped += 1
                     continue
                 existing.is_deleted = False
                 existing.synced_at = row.synced_at
                 existing.device_id = row.device_id
-                if row.last_modified_ts > existing.last_modified_ts:
+                if same_snapshot:
+                    # Third review G4: a same-snapshot revive takes the
+                    # uploaded fields unconditionally. The sweep stamped
+                    # `last_modified_ts` with the snapshot instant, so the
+                    # event's *real* last_modified is never strictly newer —
+                    # gating the field copy on it kept the swept-away stale
+                    # content on a row this snapshot explicitly asserts.
+                    existing.start_ts = row.start_ts
+                    existing.end_ts = row.end_ts
+                    existing.all_day = row.all_day
+                    existing.title = row.title
+                    existing.notes = row.notes
+                    existing.location = row.location
+                    existing.last_modified_ts = row.last_modified_ts
+                    existing.snapshot_ts = snapshot_ts
+                    existing.row_key = row.row_key
+                elif row.last_modified_ts > existing.last_modified_ts:
                     existing.start_ts = row.start_ts
                     existing.end_ts = row.end_ts
                     existing.all_day = row.all_day

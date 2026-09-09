@@ -2294,7 +2294,7 @@ final class KeyBox: @unchecked Sendable {
 /// fixed sleep races machine speed, and the CI runner lost that race — one
 /// by-key poll inside a 30 ms window where a laptop found two. A starved gate
 /// answers anyway so the assertions below fail loudly instead of hanging.
-private func waitForGate(
+func waitForGate(
     _ name: String,
     until predicate: @escaping @Sendable () -> Bool
 ) {

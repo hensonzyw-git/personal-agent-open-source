@@ -174,11 +174,16 @@ def summarise_calendar_projection(projection: dict[str, Any]) -> str:
     """
     count = projection["record_count"]
     more = "，还有更多" if projection["next_cursor"] else ""
+    # How many lines the summary will actually show. The omitted count is
+    # computed against *this* number (third review G5): the first cut
+    # subtracted the whole page's length, so a page of five showed three
+    # lines and claimed nothing was missing.
+    displayed = min(3, len(projection["events"]))
     lines: list[str] = []
     if count == 0:
         lines.append("这个时间段没有日程")
     else:
-        for event in projection["events"][:3]:
+        for event in projection["events"][:displayed]:
             title = event.get("title") or "（无标题日程）"
             # The wall-clock time the user lives in, not the wire's UTC: the
             # calendar contract is Asia/Shanghai absolute time, and the
@@ -192,8 +197,8 @@ def summarise_calendar_projection(projection: dict[str, Any]) -> str:
             except ValueError:
                 readable = start_text[:16].replace("T", " ")
             lines.append(f"{title}（{readable} 开始）")
-        if count > len(projection["events"]):
-            lines.append(f"另有 {count - len(projection['events'])} 条未列出")
+        if count > displayed:
+            lines.append(f"另有 {count - displayed} 条未列出")
     summary = "；".join(lines)
     if projection["mirror_stale"]:
         # The stale flag already covers both the age and the window-coverage

@@ -735,6 +735,139 @@ struct DeviceActionPollDeliveryTests {
         #expect(service.count("POST", "/v1/device-actions/018f0000-0000-7000-8000-00000000cafe/result") == 1)
     }
 
+    // --- third review G1: a late reply must not steal another message's slot --
+
+    /// G1, reproduced: resume A's re-present POST is in flight when the user
+    /// discards A and sends B — the slot now holds B's key. A's reply lands
+    /// and the anchor merge (which checked only `operationID == nil`) writes
+    /// op-A into B's slot and executes action-A, while B's own action never
+    /// runs. The merge must carry and verify the *requesting* message's
+    /// idempotency key: a slot that now belongs to a different message is not
+    /// this reply's to anchor.
+    @Test("a late reply cannot anchor into another message's slot")
+    func lateReplyCannotStealAReplacedSlot() async throws {
+        let service = Service()
+        service.answer { call, seen in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                // Whichever message's POST this is, the server parks an
+                // operation and hands the action over.
+                let key = call.idempotencyKey ?? "?"
+                var receipt = chatReceipt(
+                    "source_in_progress", tool: "calendar.create_event"
+                )
+                receipt["device_action"] = Self.actionPayload()
+                // Distinguish the two operations so the test can assert who
+                // executed what.
+                receipt["operation_id"] = "op-a"
+                _ = key
+                return .ok(receipt)
+            case ("GET", "/v1/operations/op-a"):
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-A"
+                ))
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-A"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let store = InMemoryCredentialStore()
+        let session = try makeChatSession(service: service, store: store)
+        _ = try await session.enroll(code: "code", displayName: "iPhone")
+        let chat = ChatTimeline(
+            backend: session, store: store, deviceActionExecutor: executor,
+            pollDelays: Array(repeating: .zero, count: 4), sleep: { _ in }
+        )
+        executor.backend = session
+
+        // The POST holds its response until the slot has demonstrably been
+        // taken over by B (the trail suite's gate pattern): this makes the
+        // steal land strictly between A's request and A's reply, which a
+        // fixed sleep could only race.
+        final class FlagBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = false
+            var isSet: Bool { lock.withLock { value } }
+            func set() { lock.withLock { value = true } }
+        }
+        let stolen = FlagBox()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                waitForGate("A's slot is replaced by B") { stolen.isSet }
+                var receipt = chatReceipt(
+                    "source_in_progress", tool: "calendar.create_event"
+                )
+                receipt["device_action"] = Self.actionPayload()
+                return .ok(receipt)
+            case ("GET", "/v1/operations/op-1"):
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-A"
+                ))
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-A"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+
+        // Seed A's slot the way a crash mid-send leaves it.
+        let a = ChatTimeline.PendingSend(
+            idempotencyKey: "018f0000-0000-4000-8000-00000000aaa1",
+            conversationID: chatTimelineID,
+            text: "周六下午三点网球",
+            clarificationOf: nil,
+            startNewSession: nil,
+            operationID: nil
+        )
+        try store.write(
+            CredentialKey.pendingChatSend, value: try JSONEncoder().encode(a)
+        )
+
+        // A's resume is in flight, its POST held open; meanwhile the user
+        // discards A and sends B — the slot is replaced with B's record.
+        async let resumed: OperationReceipt? = chat.resume()
+        waitForGate("the resume's POST is in flight") {
+            service.count("POST", "/v1/chat/messages") >= 1
+        }
+        let b = ChatTimeline.PendingSend(
+            idempotencyKey: "018f0000-0000-4000-8000-00000000bbb2",
+            conversationID: chatTimelineID,
+            text: "周一上午十点体检",
+            clarificationOf: nil,
+            startNewSession: nil,
+            operationID: nil
+        )
+        try store.write(
+            CredentialKey.pendingChatSend, value: try JSONEncoder().encode(b)
+        )
+        stolen.set()
+
+        _ = try await resumed
+
+        // A's late reply must NOT have anchored op-a into B's slot, and must
+        // not have executed A's action: the slot now belongs to B.
+        let slot = try store.read(CredentialKey.pendingChatSend)
+            .flatMap { try? JSONDecoder().decode(
+                ChatTimeline.PendingSend.self, from: $0
+            ) }
+        #expect(slot?.idempotencyKey == "018f0000-0000-4000-8000-00000000bbb2")
+        #expect(
+            slot?.deliveredActionID == nil,
+            "A's marker must not have been written into B's slot"
+        )
+        #expect(
+            executor.actions.isEmpty,
+            "A's action must not execute against B's slot"
+        )
+    }
+
     private static func actionPayload() -> [String: Any] {
         [
             "action_id": "018f0000-0000-7000-8000-00000000cafe",

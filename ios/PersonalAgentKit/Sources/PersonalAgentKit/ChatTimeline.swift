@@ -347,12 +347,15 @@ public actor ChatTimeline {
             try? clearPending()
             throw error
         }
-        // The anchor merge (second review F2): the slot is re-read and only
-        // the operation id is added, never the in-memory copy written back
-        // whole. A `send` starts from an empty slot so the concurrent shape
-        // cannot arise here, but the rule is one rule — the slot's authority
-        // is the disk, and `deliveredActionID` survives from it.
-        guard let anchored = try mergeAnchoredOperation(receipt.operationID) else {
+        // The anchor merge (second review F2 / third review G1): the slot is
+        // re-read and only the operation id is added, never the in-memory
+        // copy written back whole, and the merge verifies the slot still
+        // carries this send's key. A `send` starts from an empty slot it just
+        // wrote, so the shape cannot arise here, but the rule is one rule —
+        // the slot's authority is the disk, and its owner is the key.
+        guard let anchored = try mergeAnchoredOperation(
+            receipt.operationID, forKey: pending.idempotencyKey
+        ) else {
             // Unreachable for a send that owns the slot, but refusing is the
             // safe answer: nothing is executed on a slot this call no longer
             // owns.
@@ -392,18 +395,20 @@ public actor ChatTimeline {
             try? clearPending()
             throw error
         }
-        // Second review F2: the anchor merge re-reads the stored slot rather
-        // than writing the in-memory copy back. Two concurrent resumes both
-        // read `operationID == nil` before either reply lands; the first
-        // anchors and its hand-off may already have claimed the action by
-        // writing `deliveredActionID`. Overwriting from this function's
-        // stale copy would erase that marker and let the second reply
-        // execute the same action twice. The merge keeps whatever is on disk
-        // and adds only what it uniquely knows: the operation id.
-        guard let updated = try mergeAnchoredOperation(receipt.operationID) else {
-            // The slot was released while this request was in flight — a
-            // concurrent path settled the operation. Nothing is ours to run;
-            // the caller receives the server's answer as a plain read.
+        // Second review F2 / third review G1: the anchor merge re-reads the
+        // stored slot rather than writing the in-memory copy back, and it
+        // verifies the slot still belongs to **this message** — the idempotency
+        // key the request was sent under. A reply that lands after the user
+        // discarded this message and sent another must not anchor into the
+        // new message's slot and must not execute this message's action: the
+        // slot's owner is the key, and `operationID == nil` alone proves
+        // nothing about who the slot now belongs to.
+        guard let updated = try mergeAnchoredOperation(
+            receipt.operationID, forKey: pending.idempotencyKey
+        ) else {
+            // The slot was released — or taken over by a different message —
+            // while this request was in flight. Nothing is ours to run; the
+            // caller receives the server's answer as a plain read.
             return receipt
         }
         // This branch anchored the operation *now*, so the reply really can
@@ -417,12 +422,19 @@ public actor ChatTimeline {
     /// Record a just-learned operation id onto the durable slot, **merging**
     /// with whatever the slot now holds instead of overwriting it.
     ///
-    /// Returns the merged record, or `nil` when the slot no longer exists or
-    /// belongs to a different message (a concurrent send settled and released
-    /// it mid-flight). The only field this call owns is `operationID`; every
-    /// other field — above all `deliveredActionID` — survives from disk.
-    private func mergeAnchoredOperation(_ operationID: String) throws -> PendingSend? {
+    /// Returns the merged record, or `nil` when the slot no longer exists,
+    /// was released, or was taken over by a *different* message (third review
+    /// G1: the merge carries the requesting message's idempotency key and
+    /// verifies it against the stored record — a late reply whose message was
+    /// discarded and replaced mid-flight must not anchor into the new
+    /// message's slot or execute the old message's action). The only field
+    /// this call owns is `operationID`; every other field — above all
+    /// `deliveredActionID` — survives from disk.
+    private func mergeAnchoredOperation(
+        _ operationID: String, forKey idempotencyKey: String
+    ) throws -> PendingSend? {
         guard var stored = try loadPending() else { return nil }
+        guard stored.idempotencyKey == idempotencyKey else { return nil }
         guard stored.operationID == nil || stored.operationID == operationID else {
             return nil
         }

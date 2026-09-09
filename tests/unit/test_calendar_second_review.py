@@ -299,3 +299,118 @@ def test_freshness_requires_the_window_to_be_covered(sessions) -> None:
 
     uncovered = _query(sessions, start=january[0], end=january[1])
     assert uncovered["mirror_stale"] is True
+
+
+# --- third-review defects (2026-09-09, G3/G4/G5) ------------------------------
+#
+# The watermark fix over-corrected: "not newer than the watermark" also
+# swallowed a straggler *of the very snapshot that set the watermark* — its
+# early batches arriving after the last batch completed. And the tombstone
+# revive kept the swept row's stale fields, because the sweep itself had
+# stamped last_modified with the snapshot instant.
+
+
+def _titles(sessions) -> dict[str, str | None]:
+    """event_identifier -> title, through the sealed column."""
+    with sessions() as session:
+        rows = session.execute(select(CalendarEvent)).scalars().all()
+    ring = _keyring()
+    out: dict[str, str | None] = {}
+    for row in rows:
+        envelope = row.title
+        out[row.event_identifier] = (
+            None
+            if envelope is None
+            else ring.decrypt(
+                envelope,
+                table="calendar_events",
+                column="title",
+                row_id=row.row_key,
+            ).decode("utf-8")
+        )
+    return out
+
+
+def test_a_same_snapshot_straggler_batch_still_lands(sessions) -> None:
+    """G3: the last batch of a snapshot completes the window (the watermark
+    advances to that snapshot's instant); an early batch of the *same*
+    snapshot arrives afterwards. Its events are not late evidence about a
+    *different* older state — they are members of the snapshot the watermark
+    itself names, and they must land. Treating `== watermark` as late loses
+    them and the query answers as if the window had only the last batch."""
+    as_of = NOW - timedelta(hours=1)
+    # Batch 1 (incomplete) is delayed in flight; batch 2 (the last one)
+    # completes the window first.
+    _ingest_as_of(
+        sessions, [_event("ev-2")], as_of=as_of, window_complete=True
+    )
+    # The delayed batch 1 of the same snapshot arrives now.
+    result = _ingest_as_of(
+        sessions, [_event("ev-1")], as_of=as_of, window_complete=False
+    )
+    assert result["upserted"] == 1
+    answer = _query(sessions)
+    assert answer["record_count"] == 2
+    assert {event["event_identifier"] for event in answer["events"]} == {
+        "ev-1",
+        "ev-2",
+    }
+
+
+def test_a_same_snapshot_revive_takes_the_uploaded_fields(sessions) -> None:
+    """G4: the last batch completes first and the sweep tombstones a row the
+    snapshot still holds; the row's own batch arrives afterwards and revives
+    it. The sweep had stamped `last_modified_ts` with the snapshot instant —
+    strictly newer than the event's real last_modified — so a revive gated on
+    "strictly newer last_modified" copies no fields and the row keeps its
+    swept-away stale content. A same-snapshot revive must take the fields the
+    snapshot actually uploaded."""
+    as_of = NOW - timedelta(hours=1)
+    # An older snapshot seeds ev-1 with the old title.
+    _ingest_as_of(
+        sessions, [_event("ev-1", title="old")], as_of=NOW - timedelta(hours=3)
+    )
+    # The same snapshot's last batch (only ev-2) completes and sweeps ev-1.
+    _ingest_as_of(
+        sessions, [_event("ev-2")], as_of=as_of, window_complete=True
+    )
+    # The delayed batch of the *same* snapshot carries ev-1's new content.
+    result = _ingest_as_of(
+        sessions,
+        [_event("ev-1", title="new", last_modified=to_rfc3339(as_of))],
+        as_of=as_of,
+        window_complete=False,
+    )
+    assert result["upserted"] == 1
+    assert _titles(sessions)["ev-1"] == "new"
+
+
+def test_the_summary_counts_only_what_it_omits(sessions) -> None:
+    """G5: the summary showed three events but computed the omitted count
+    against the whole *page* (count − len(events)), so a page of five showed
+    three lines and claimed nothing was missing. The omitted count is against
+    what was actually displayed."""
+    from personal_agent.api.calendar_query_projection import (
+        decode_calendar_query_projection,
+        summarise_calendar_projection,
+    )
+
+    events = [
+        _event(
+            f"ev-{index}",
+            title=f"日程{index}",
+            start=f"2026-09-07T{8 + index:02d}:00:00+08:00",
+            end=f"2026-09-07T{8 + index:02d}:30:00+08:00",
+        )
+        for index in range(5)
+    ]
+    _ingest_as_of(sessions, events, as_of=NOW - timedelta(hours=1))
+    result = _query(sessions)
+    assert len(result["events"]) == 5
+    summary = summarise_calendar_projection(decode_calendar_query_projection(result))
+    assert "日程0" in summary and "日程2" in summary
+    assert "日程3" not in summary and "日程4" not in summary
+    assert "另有 2 条未列出" in summary, (
+        "the summary must say how many it omitted, computed against what it "
+        f"actually displayed — got: {summary}"
+    )

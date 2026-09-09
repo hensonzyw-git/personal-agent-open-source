@@ -2,41 +2,6 @@ import Foundation
 import Observation
 import PersonalAgentKit
 
-/// A mirror sync the send path may briefly wait on, bounded (F8).
-///
-/// The composition starts the sync on its own task — the wait is *optional*,
-/// and past the budget the sender proceeds while the sync keeps running. The
-/// type lives here rather than in the Kit because the budget is a product
-/// decision about the send path, not a property of the engine.
-struct MirrorSyncHandle: Sendable {
-    private let task: Task<Void, Never>
-    private let budget: Duration
-
-    init(run: @escaping @Sendable () async -> Void, budget: Duration = .seconds(2)) {
-        self.budget = budget
-        self.task = Task { await run() }
-    }
-
-    /// A handle for a sync that already finished (tests and no-op paths).
-    static func done() -> MirrorSyncHandle {
-        MirrorSyncHandle(run: {}, budget: .zero)
-    }
-
-    /// Wait for the sync, but no longer than the budget. A timeout is not an
-    /// error: the sync continues in the background and the send proceeds.
-    func wait() async {
-        _ = await withTaskGroup(of: Void.self) { group in
-            group.addTask { [task] in await task.value }
-            group.addTask {
-                try? await Task.sleep(for: self.budget)
-            }
-            // First finisher wins: the sync completed, or the budget ran out.
-            await group.next()
-            group.cancelAll()
-        }
-    }
-}
-
 /// The view state for `DEV-030`'s chat surface.
 ///
 /// Everything that could be wrong is in `PersonalAgentKit` and tested with

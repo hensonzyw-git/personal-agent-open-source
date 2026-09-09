@@ -331,4 +331,53 @@ struct MirrorSyncEngineTests {
             bodies[0]["snapshot_as_of"] as? String == bodies[1]["snapshot_as_of"] as? String
         )
     }
+
+    // --- third review G2: the wait budget must actually bound the wait ------
+
+    /// G2, reproduced against the first implementation: a task group holding
+    /// both the timer and `await task.value` cannot return early — the group
+    /// waits for all children and `cancelAll()` does not interrupt an
+    /// unstructured task's `value` — so a 50 ms budget waited out a 900 ms
+    /// sync. The wait must return within the budget while the sync itself
+    /// still completes in the background (it is not cancelled).
+    @Test("wait() returns within the budget while a slow sync keeps running")
+    func waitIsBoundedByTheBudget() async throws {
+        final class FlagBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = false
+            var isSet: Bool { lock.withLock { value } }
+            func set() { lock.withLock { value = true } }
+        }
+        let finished = FlagBox()
+        let handle = MirrorSyncHandle(
+            run: {
+                try? await Task.sleep(for: .milliseconds(300))
+                finished.set()
+            },
+            budget: .milliseconds(50)
+        )
+        let started = ContinuousClock.now
+        await handle.wait()
+        let waited = ContinuousClock.now - started
+        // The wait returned within the budget (plus scheduling slop far below
+        // the sync's own duration — the repro waited ~300 ms).
+        #expect(waited < .milliseconds(200), "waited \(waited) for a 50 ms budget")
+        // The timeout did not cancel the sync: it finishes on its own.
+        waitForGate("the slow sync completes after the timeout") { finished.isSet }
+        #expect(finished.isSet)
+    }
+
+    /// The other side of the race: a sync that finishes inside the budget
+    /// wakes the waiter immediately — the budget is a ceiling, not a delay.
+    @Test("wait() returns as soon as a fast sync finishes")
+    func waitReturnsWhenTheSyncFinishes() async throws {
+        let handle = MirrorSyncHandle(
+            run: { try? await Task.sleep(for: .milliseconds(20)) },
+            budget: .seconds(5)
+        )
+        let started = ContinuousClock.now
+        await handle.wait()
+        let waited = ContinuousClock.now - started
+        #expect(waited < .seconds(1), "waited \(waited) for a 20 ms sync")
+    }
 }

@@ -86,7 +86,98 @@ public struct CalendarSyncUploader: Sendable {
     }
 }
 
-/// The production driver the mirror never had (review R5, 2026-09-08):
+/// A mirror sync the send path may briefly wait on, bounded (review F8,
+/// second round; fixed in the third round, G2).
+///
+/// The composition starts the sync on its own task. `wait()` gives it a
+/// budget; past the budget the sender proceeds and the sync keeps running —
+/// a permission prompt, a slow network or a multi-batch upload never blocks
+/// an unrelated message.
+///
+/// Implementation note (G2): the wait must be a **one-way race between the
+/// timer and the sync's completion** — never a task group holding both. A
+/// task group waits for *all* its children before returning, and
+/// `cancelAll()` cannot interrupt a child that is `await`-ing an
+/// unstructured task's `value`, so the "budget" of the first implementation
+/// silently waited for the full sync (reproduced: 50 ms budget, 900 ms sync,
+/// ~900 ms wait). Here only the timer runs inside the group; the sync task
+/// lives outside it and signals completion through a one-shot gate, so the
+/// group returns the moment either the gate opens or the timer fires.
+public struct MirrorSyncHandle: Sendable {
+    private let task: Task<Void, Never>
+    private let budget: Duration
+
+    public init(
+        run: @escaping @Sendable () async -> Void, budget: Duration = .seconds(2)
+    ) {
+        self.budget = budget
+        self.task = Task { await run() }
+    }
+
+    /// A handle for a sync that already finished (tests and no-op paths).
+    public static func done() -> MirrorSyncHandle {
+        MirrorSyncHandle(run: {}, budget: .zero)
+    }
+
+    /// Wait for the sync, but no longer than the budget. A timeout is not an
+    /// error and does not cancel the sync: it keeps running in the
+    /// background, and the next send's staleness check (or the refresh
+    /// trigger) reaps its result through the engine's own marker.
+    public func wait() async {
+        // The gate opens exactly once, whichever side wins; the other side's
+        // late arrival is a no-op resume on an already-finished continuation.
+        let gate = Gate()
+        let timer = Task {
+            try? await Task.sleep(for: budget)
+            gate.open()
+        }
+        let observer = Task { [task] in
+            await task.value
+            gate.open()
+        }
+        await gate.wait()
+        timer.cancel()
+        observer.cancel()
+    }
+}
+
+/// A one-shot, one-waiter gate. Resuming a finished continuation more than
+/// once traps, so the box guards the transition with a lock and tolerates
+/// the losing side's arrival after the winner already woke the waiter.
+private final class Gate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var opened = false
+
+    func open() {
+        let toResume: CheckedContinuation<Void, Never>? = lock.withLock {
+            guard !opened else { return nil }
+            opened = true
+            let pending = continuation
+            continuation = nil
+            return pending
+        }
+        toResume?.resume()
+    }
+
+    func wait() async {
+        // The continuation's body runs synchronously *before* the suspend:
+        // it either finds the gate already open and resumes immediately, or
+        // registers itself for the first `open()`. Both paths hold the lock,
+        // so a racing `open()` can never miss a registered waiter and never
+        // resumes twice.
+        await withCheckedContinuation { cont in
+            let toResumeNow = lock.withLock { () -> Bool in
+                if opened { return true }
+                continuation = cont
+                return false
+            }
+            if toResumeNow {
+                cont.resume()
+            }
+        }
+    }
+}
 /// snapshot the whole window, upload it in batches, and stamp the durable
 /// marker **only** when the last batch — the one carrying
 /// `window_complete` — was accepted. Composed into `AppModel` and triggered
