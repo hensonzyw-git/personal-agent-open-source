@@ -53,3 +53,4 @@ ios/**/.swiftpm/
 ios/**/*.xcodeproj/project.xcworkspace/
 ios/**/*.xcodeproj/xcuserdata/
 DerivedData/
+tmp-monitor-t1.sh
