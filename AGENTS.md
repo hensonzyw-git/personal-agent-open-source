@@ -62,6 +62,10 @@ Phase 1 docs, or agent runtime code).
 The authoritative handoff point and ordered next work is always
 `PROJECT_STATUS.md`.
 
+For DAL continuation, first read `docs/dal/DAL_完整开发流程优先规划_v0.1.md`
+(2026-09-10 highest-priority planning entry). It supersedes older DAL execution
+ordering, not existing safety contracts; PRD/design approval gates still apply.
+
 ## 5. Engineering and safety rules
 
 - Keep business policy outside ADK and outside any individual model SDK:
