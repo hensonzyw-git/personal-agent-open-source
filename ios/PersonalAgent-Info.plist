@@ -17,5 +17,16 @@
 	<!-- iOS 14+ asks the user before an app talks to the local network. -->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>用于连接你自己的 Personal Agent 后端服务（开发阶段在 Mac 上运行）。</string>
+	<!--
+	  iOS 26 端侧语音转写（SpeechAnalyzer）。音频不离开设备，但系统要求录音与语音识别
+	  分作两条权限分别声明，缺一条都会在使用时被拒绝。
+
+	  这两句是**面向用户的承诺**，措辞必须与实现保持一致：若日后加入任何服务端 ASR
+	  回落，"识别在设备本地完成" 就不再为真，必须同步改这里的文案。
+	-->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>长按说话时录音，用于把语音转成文字。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>用于把长按录入的语音转写成文字；识别在设备本地完成，音频不会上传。</string>
 </dict>
 </plist>
