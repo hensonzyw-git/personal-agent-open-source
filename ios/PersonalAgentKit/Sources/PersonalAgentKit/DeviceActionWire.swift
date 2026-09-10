@@ -78,23 +78,24 @@ public struct DeviceEventFields: Sendable, Equatable {
         self.skipLocalDedup = skipLocalDedup
     }
 
-    /// Convert to the executor's draft. `start`/`end` arrive as RFC 3339
-    /// instants; the ISO8601DateFormatter parses them back into `Date`.
-    ///
-    /// Still the pre-v2 construction for an all-day event, and deliberately
-    /// untouched here: §3.2 replaces it with the floating dates built from
-    /// `start_date`/`end_date` in the device calendar, and that change belongs
-    /// with the write binding this action's `calendarIdentifier` exists for
-    /// (§3.1, §3.2). Doing it here would leave the calendar binding behind —
-    /// a write that knows the right dates but still lands in whichever
-    /// calendar the device defaults to.
+    /// Convert to the executor's draft: the v2 binding travels through with
+    /// the instants, and saving is where it is applied (§3.1, §3.2). The
+    /// all-day dates stay strings here — they are calendar dates, not instants,
+    /// and only the store's calendar can turn them into the floating span
+    /// EventKit has to be handed.
     public func draft() -> CalendarEventDraft? {
-        guard let startDate = RFC3339.parse(start),
-              let endDate = RFC3339.parse(end)
+        guard let startInstant = RFC3339.parse(start),
+              let endInstant = RFC3339.parse(end)
         else { return nil }
         return CalendarEventDraft(
-            title: title, start: startDate, end: endDate, allDay: allDay,
-            location: location, notes: notes
+            title: title, start: startInstant, end: endInstant, allDay: allDay,
+            location: location, notes: notes,
+            calendarIdentifier: calendarIdentifier,
+            calendarTitle: calendarTitle,
+            timeZoneIdentifier: timeZoneIdentifier,
+            startDate: startDate,
+            endDate: endDate,
+            skipLocalDedup: skipLocalDedup
         )
     }
 }
@@ -209,6 +210,16 @@ public struct DeviceEventAction: Sendable, Equatable {
         guard (raw.startDate == nil) == (raw.endDate == nil) else {
             return .failure(.malformed(
                 "device_action event carries only one all-day date"
+            ))
+        }
+        // Dates on a timed event are the same contradiction from the other
+        // side: the server writes them as null for a timed event and refuses
+        // to build one that carries them. §3.2 would construct the span from
+        // them anyway, so a payload claiming both is one whose two halves
+        // disagree about what to write.
+        guard raw.startDate == nil || allDay else {
+            return .failure(.malformed(
+                "device_action event carries all-day dates but is not all-day"
             ))
         }
         return .success(DeviceEventAction(

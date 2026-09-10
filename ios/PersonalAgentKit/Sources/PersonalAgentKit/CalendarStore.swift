@@ -5,17 +5,45 @@ import Foundation
 
 /// One event as this device's calendar owns it — the shape both the device
 /// action and the mirror upload travel in.
+///
+/// The v2 fields are the action's binding (§3.2), not EventKit's state: which
+/// calendar the write is bound to, the zone a timed event displays in, and the
+/// floating dates an all-day event is constructed from. They are `nil` for a v1
+/// action, and every consumer degrades to what the v1 build did rather than
+/// inventing a value — the delivery gate stops a v2 action reaching a v1
+/// client, never the reverse.
 public struct CalendarEventDraft: Sendable, Equatable {
     public var title: String
+    /// The absolute instants the server authorised. For an all-day event these
+    /// are the action's offsets, not the dates to write: `startDate`/`endDate`
+    /// below are what the device constructs from (§3.2).
     public var start: Date
     public var end: Date
     public var allDay: Bool
     public var location: String?
     public var notes: String?
 
+    /// The EventKit identifier the write is bound to. `nil` means the action
+    /// predates the field: write to the default writable calendar, as v1 did.
+    public var calendarIdentifier: String?
+    /// The name the server's routing matched on, for the rename check.
+    public var calendarTitle: String?
+    /// The zone a **timed** event is displayed in. Never applied to an all-day
+    /// event: EventKit flips `isAllDay` back to false when one is set.
+    public var timeZoneIdentifier: String?
+    /// All-day floating dates, exclusive end, `YYYY-MM-DD`.
+    public var startDate: String?
+    public var endDate: String?
+    /// The 「仍要创建」 override (§3.3). Only the override endpoint sets it.
+    public var skipLocalDedup: Bool
+
     public init(
         title: String, start: Date, end: Date, allDay: Bool,
-        location: String? = nil, notes: String? = nil
+        location: String? = nil, notes: String? = nil,
+        calendarIdentifier: String? = nil, calendarTitle: String? = nil,
+        timeZoneIdentifier: String? = nil,
+        startDate: String? = nil, endDate: String? = nil,
+        skipLocalDedup: Bool = false
     ) {
         self.title = title
         self.start = start
@@ -23,6 +51,12 @@ public struct CalendarEventDraft: Sendable, Equatable {
         self.allDay = allDay
         self.location = location
         self.notes = notes
+        self.calendarIdentifier = calendarIdentifier
+        self.calendarTitle = calendarTitle
+        self.timeZoneIdentifier = timeZoneIdentifier
+        self.startDate = startDate
+        self.endDate = endDate
+        self.skipLocalDedup = skipLocalDedup
     }
 }
 
@@ -123,6 +157,11 @@ public protocol CalendarStore: Sendable {
     /// Save one single-occurrence event, with local duplicate detection:
     /// a same-title event within ±5 minutes of the proposed start makes this
     /// a `duplicate` rather than a second event.
+    ///
+    /// A draft that names its calendar (§3.2) is bound to it: the duplicate
+    /// check runs only inside that calendar (§3.1), and every way the calendar
+    /// can be unusable — gone, read-only, renamed — is a `failed` with a
+    /// reason. The store never silently writes somewhere else.
     func save(_ draft: CalendarEventDraft) async -> CalendarSaveOutcome
 
     /// The device's calendar directory (design §2.1): every ordinary event
@@ -275,35 +314,106 @@ public struct EventKitCalendarStore: CalendarStore {
         guard await requestAccess() else {
             return .denied
         }
-        // Local duplicate detection before any write: the same calendar and
-        // title within ±5 minutes of the proposed start means the user (or an
-        // earlier attempt) already put this event there. Auto-retry is off at
-        // the server precisely because it could double-create; this is the
+
+        // §3.2: a v2 action names its calendar, and the write is bound to it.
+        // A v1 action names none and keeps the pre-v2 behaviour — the delivery
+        // gate stops a v2 action reaching a v1 client, never the reverse, so
+        // this build still meets actions that carry no binding.
+        let target: EKCalendar?
+        if let identifier = draft.calendarIdentifier {
+            let directory: [CalendarDirectoryEntry]
+            do {
+                directory = try await calendarDirectory()
+            } catch {
+                return .denied
+            }
+            switch CalendarWriteRules.target(
+                identifier: identifier, title: draft.calendarTitle, in: directory
+            ) {
+            case .refuse(let detail):
+                return .failed(detail: detail)
+            case .write(let entry):
+                guard let resolved = store.calendar(
+                    withIdentifier: entry.calendarIdentifier
+                ) else {
+                    // The directory listed it a moment ago; nothing this build
+                    // does can account for it vanishing between two reads.
+                    return .failed(detail: "the target calendar is not on this device")
+                }
+                target = resolved
+            }
+        } else {
+            target = defaultWritableCalendar()
+            guard target != nil else {
+                return .failed(detail: "no writable calendar")
+            }
+        }
+
+        // Local duplicate detection before any write: the same title within
+        // ±5 minutes of the proposed start means the user (or an earlier
+        // attempt) already put this event there. Auto-retry is off at the
+        // server precisely because it could double-create; this is the
         // mitigation, not a guarantee.
-        let windowStart = draft.start.addingTimeInterval(-5 * 60)
-        let windowEnd = draft.start.addingTimeInterval(5 * 60)
-        let calendars = store.calendars(for: .event)
+        //
+        // §3.1 narrows the scan to the target calendar. The predicate is the
+        // optimisation; `CalendarWriteRules.duplicate` is the rule and applies
+        // the same scope, so the two cannot disagree about what was checked.
+        let scope: [EKCalendar] = target.map { [$0] } ?? store.calendars(for: .event)
+        let windowStart = draft.start.addingTimeInterval(-CalendarWriteRules.duplicateWindow)
+        let windowEnd = draft.start.addingTimeInterval(CalendarWriteRules.duplicateWindow)
         let predicate = store.predicateForEvents(
-            withStart: windowStart, end: windowEnd, calendars: calendars
+            withStart: windowStart, end: windowEnd, calendars: scope
         )
-        let near = store.events(matching: predicate)
-        if let existing = near.first(where: { event in
-            event.title == draft.title
-                && abs(event.startDate.timeIntervalSince(draft.start)) <= 5 * 60
-        }) {
-            return .duplicate(existingID: existing.eventIdentifier)
+        let candidates = store.events(matching: predicate).compactMap { event -> CalendarDuplicateCandidate? in
+            guard let eventIdentifier = event.eventIdentifier,
+                  let owner = event.calendar?.calendarIdentifier
+            else { return nil }
+            return CalendarDuplicateCandidate(
+                eventIdentifier: eventIdentifier, calendarIdentifier: owner,
+                title: event.title, start: event.startDate
+            )
+        }
+        if let existing = CalendarWriteRules.duplicate(
+            of: draft, in: draft.calendarIdentifier, among: candidates
+        ) {
+            return .duplicate(existingID: existing)
         }
 
         let event = EKEvent(eventStore: store)
         event.title = draft.title
-        event.startDate = draft.start
-        event.endDate = draft.end
         event.isAllDay = draft.allDay
         event.location = draft.location
         event.notes = draft.notes
-        event.calendar = defaultWritableCalendar()
-        guard event.calendar != nil else {
-            return .failed(detail: "no writable calendar")
+        event.calendar = target
+        // A v1 all-day action carries no dates at all, and keeps the v1
+        // construction. *Half* a pair is a different thing — the decode layer
+        // refuses it, and one arriving here anyway fails closed rather than
+        // falling back to the absolute instants and writing the wrong day.
+        let hasAllDayDates = draft.startDate != nil || draft.endDate != nil
+        if draft.allDay, hasAllDayDates {
+            // §3.2: the floating dates, constructed in the device calendar.
+            // No `event.timeZone` is set — the probe showed it flips
+            // `isAllDay` back to false.
+            guard let startDate = draft.startDate, let endDate = draft.endDate,
+                  let span = CalendarWriteRules.allDaySpan(
+                      startDate: startDate, endDate: endDate, in: calendar
+                  )
+            else {
+                return .failed(detail: "the authorised all-day dates are not usable")
+            }
+            event.startDate = span.start
+            event.endDate = span.end
+        } else {
+            event.startDate = draft.start
+            event.endDate = draft.end
+            // Timed: the zone makes the event *display* by the local rules.
+            // An identifier this device does not know is ignored rather than
+            // refused — the instant is correct either way — and an all-day
+            // draft yields none at all (§3.2; `displayZone` is the rule).
+            if let identifier = CalendarWriteRules.displayZone(for: draft),
+               let zone = TimeZone(identifier: identifier) {
+                event.timeZone = zone
+            }
         }
         do {
             try store.save(event, span: .thisEvent)

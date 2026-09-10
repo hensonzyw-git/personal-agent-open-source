@@ -1794,6 +1794,83 @@ struct AgentCreatedRecordTests {
         #expect(report.string("result") == "failed")
     }
 
+    @Test("the draft the store receives carries the action's whole binding")
+    func theDraftCarriesTheBinding() async throws {
+        // The one place the binding could be dropped in silence. A draft that
+        // lost `calendarIdentifier` would still write an event — into the
+        // default calendar — and the user would be told it succeeded.
+        var payload = Self.allDayPayload()
+        var event = payload["event"] as! [String: Any]
+        event["skip_local_dedup"] = true
+        payload["event"] = event
+
+        let (_, calendar, _) = try await run(
+            payload: payload, outcome: .created(eventID: "EK-TRIP-1"),
+            text: "十月一号到三号去西班牙"
+        )
+
+        let draft = try #require(calendar.drafts.first)
+        #expect(draft.calendarIdentifier == "CAL-TRIP")
+        #expect(draft.calendarTitle == "出游计划")
+        #expect(draft.skipLocalDedup)
+        #expect(draft.allDay)
+        // The dates travel as calendar dates, not as instants: only the
+        // store's own calendar can turn them into the floating span EventKit
+        // takes (§3.2). The instants are the action's offsets, kept as they
+        // were authorised.
+        #expect(draft.startDate == "2026-10-01")
+        #expect(draft.endDate == "2026-10-03")
+        #expect(RFC3339.string(from: draft.start) == "2026-09-30T16:00:00Z")
+    }
+
+    @Test("a timed action's zone reaches the draft; an all-day one carries none")
+    func theZoneTravelsOnlyForTimedEvents() async throws {
+        let (_, timed, _) = try await run(
+            payload: [
+                "action_id": Self.actionID,
+                "tool": "calendar.create_event",
+                "event": [
+                    "title": "网球", "start": "2026-09-12T15:00:00Z",
+                    "end": "2026-09-12T16:30:00Z", "all_day": false,
+                    "calendar_identifier": "CAL-TRIP", "calendar_title": "出游计划",
+                    "timezone": "Asia/Tokyo", "start_date": NSNull(), "end_date": NSNull(),
+                ],
+            ],
+            outcome: .created(eventID: "EK-TENNIS"),
+            text: "周六下午三点网球"
+        )
+        #expect(try #require(timed.drafts.first).timeZoneIdentifier == "Asia/Tokyo")
+
+        // The server writes `timezone: null` for an all-day event, and §3.2
+        // forbids setting one: the probe showed EventKit flips `isAllDay` back
+        // to false when a zone is attached.
+        let (_, allDay, _) = try await run(
+            payload: Self.allDayPayload(), outcome: .created(eventID: "EK-TRIP-1"),
+            text: "十月一号到三号去西班牙"
+        )
+        #expect(try #require(allDay.drafts.first).timeZoneIdentifier == nil)
+    }
+
+    @Test("all-day dates on a timed action are refused, not quietly applied")
+    func datesOnATimedActionAreRefused() async throws {
+        // The two halves of a payload disagreeing about what to write is not a
+        // shape to repair: §3.2 would construct the span from the dates while
+        // the server authorised a timed event.
+        var payload = Self.allDayPayload()
+        var event = payload["event"] as! [String: Any]
+        event["all_day"] = false
+        payload["event"] = event
+
+        let (final, calendar, service) = try await run(
+            payload: payload, outcome: .created(eventID: "EK-TRIP-1"),
+            text: "十月一号到三号去西班牙"
+        )
+
+        #expect(calendar.drafts.isEmpty)
+        #expect(final.state == .failedSafe)
+        #expect(service.count("POST", Self.reportPath) == 1)
+    }
+
     @Test("half an all-day pair is refused: one date is a half-truth")
     func halfAnAllDayPairIsRefused() async throws {
         var payload = Self.allDayPayload()
