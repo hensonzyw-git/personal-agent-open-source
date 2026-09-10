@@ -22,16 +22,13 @@ public struct DeviceEventActionExecutor: DeviceActionExecuting {
         self.backend = backend
     }
 
-    public func executeAndReport(
-        _ action: DeviceEventAction, settlesOperationID: String
-    ) async -> OperationReceipt {
+    public func executeAndReport(_ action: DeviceEventAction) async -> OperationReceipt? {
         // The decode layer already pinned start/end to parseable instants; a
         // nil here is unreachable in practice, but a guessed instant is worse
         // than a reported failure, so it fails closed as one.
         guard let draft = action.event.draft() else {
             return await report(
                 actionID: action.actionID,
-                settlesOperationID: settlesOperationID,
                 body: .failed(detail: "the authorised event times are not readable instants")
             )
         }
@@ -47,51 +44,28 @@ public struct DeviceEventActionExecutor: DeviceActionExecuting {
         case .failed(let detail):
             body = .failed(detail: detail)
         }
-        return await report(
-            actionID: action.actionID,
-            settlesOperationID: settlesOperationID,
-            body: body
-        )
+        return await report(actionID: action.actionID, body: body)
     }
 
     public func failedReport(detail: String) -> DeviceActionResultBody {
         .failed(detail: detail)
     }
 
-    /// Send the report. The endpoint answers with the settled projection;
-    /// a transport failure degrades to the server's own sweep, silently —
-    /// the error is logged for the trail, never re-thrown into the chat flow,
+    /// Send the report. The endpoint answers with the settled projection; a
+    /// transport failure degrades to the server's own sweep, silently — the
+    /// error is logged for the trail, never re-thrown into the chat flow,
     /// whose outcome is the operation the server still owns.
+    ///
+    /// The lost reply is `nil`, not a receipt this method builds. The caller
+    /// already holds the parked projection of the operation it is polling, and
+    /// that one carries the *operation's* id — the action id is the idempotency
+    /// key the report endpoint is addressed by, never an operation id, and the
+    /// caller's poll reads operations by id. (Review R9, 2026-09-08, and design
+    /// §4.2: with several actions in one reply there is no single id left to
+    /// rebuild it from.)
     private func report(
-        actionID: String, settlesOperationID: String, body: DeviceActionResultBody
-    ) async -> OperationReceipt {
-        do {
-            return try await backend.reportDeviceActionResult(actionID: actionID, body: body)
-        } catch {
-            // The projection is unreachable this instant; the operation stays
-            // parked and the sweep is the witness. The client cannot render a
-            // settled card it never received, so it returns the parked-shape
-            // receipt the server already answered with — re-fetched if the
-            // report never left. Best effort: the flow must not crash the chat
-            // turn over a lost *report* reply.
-            //
-            // The parked receipt carries the *operation's* id, not the action
-            // id: the action id is the idempotency key the report endpoint is
-            // addressed by, and the caller's poll reads operations by id.
-            // (Review R9, 2026-09-08.)
-            return OperationReceipt(
-                operationID: settlesOperationID,
-                state: .sourceInProgress,
-                cancelRequested: false,
-                clientDetached: false,
-                tool: DeviceEventAction.supportedTool,
-                recordID: nil,
-                failureReason: nil,
-                duplicateCheckID: nil,
-                clarification: nil,
-                duplicateExisting: nil,
-                answer: nil
-            )
-        }
+        actionID: String, body: DeviceActionResultBody
+    ) async -> OperationReceipt? {
+        try? await backend.reportDeviceActionResult(actionID: actionID, body: body)
     }
 }

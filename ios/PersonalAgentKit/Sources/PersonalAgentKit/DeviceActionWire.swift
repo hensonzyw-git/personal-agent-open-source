@@ -190,6 +190,21 @@ public struct DeviceActionEnvelope: Decodable, Sendable, Equatable {
         case refuse(actionID: String?, error: DeviceActionError)
     }
 
+    /// One element of `device_actions` this build could not read as an object
+    /// at all — a string where an action should be, say. It keeps its place in
+    /// the list so the plan's length still describes the reply, and it resolves
+    /// to a refusal naming no action: nothing here says which operation is
+    /// waiting, so nothing is reportable and the sweep owns the outcome.
+    static let unreadable = DeviceActionEnvelope(
+        actionID: nil, tool: nil, event: nil
+    )
+
+    private init(actionID: String?, tool: String?, event: RawEvent?) {
+        self.actionID = actionID
+        self.tool = tool
+        self.event = event
+    }
+
     public func resolve() -> Resolution {
         let rawEvent = event.map { ($0.title, $0.start, $0.end, $0.allDay, $0.location, $0.notes) }
         switch DeviceEventAction.validated(
@@ -207,6 +222,56 @@ public struct DeviceActionEnvelope: Decodable, Sendable, Equatable {
         case .failure(let error):
             return .refuse(actionID: actionID, error: error)
         }
+    }
+}
+
+/// The plural `device_actions` field: every action one reply hands over, in
+/// plan order (design §2.5.4, §4.2).
+///
+/// The list is the shape a v2 client reads, and a single action is a list of
+/// one — never a second decode path, because a client that switched on length
+/// would read a single-action reply through code no multi-action reply ever
+/// exercised. The singular `device_action` is read only as the historical
+/// field older servers emitted; it is a separate branch, never a merge, so a
+/// response carrying both can never smuggle a second action past the list.
+///
+/// **One unreadable element does not drop its siblings.** A malformed list
+/// element becomes an envelope that resolves to a refusal naming no action —
+/// the same "cannot name what it refuses, so nothing is reportable" state a
+/// nameless singular refusal has, which the timeout sweep owns. Dropping it
+/// instead would silently shrink the plan, and every sibling that *did* decode
+/// still has to run: they are different operations on the server, and one bad
+/// row is not a reason to leave the others parked forever.
+public struct DeviceActionEnvelopes: Sendable, Equatable {
+    public let envelopes: [DeviceActionEnvelope]
+
+    public init(_ envelopes: [DeviceActionEnvelope]) {
+        self.envelopes = envelopes
+    }
+}
+
+extension DeviceActionEnvelopes: Decodable {
+    /// A wrapper that absorbs one element's decode failure instead of letting
+    /// it fail the whole array. It cannot throw, so the unkeyed container
+    /// always advances and the loop always terminates.
+    private struct Lenient: Decodable {
+        let envelope: DeviceActionEnvelope?
+        init(from decoder: Decoder) throws {
+            envelope = try? DeviceActionEnvelope(from: decoder)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        var parsed: [DeviceActionEnvelope] = []
+        while !container.isAtEnd {
+            // `?? .unreadable` keeps the element in the list so the count
+            // still describes the reply. It is not a placeholder for an action
+            // this build guesses at: an unreadable envelope resolves to a
+            // refusal that names nothing, so nothing is executed or reported.
+            parsed.append(try container.decode(Lenient.self).envelope ?? .unreadable)
+        }
+        envelopes = parsed
     }
 }
 
@@ -236,16 +301,21 @@ public protocol DeviceActionExecuting: Sendable {
     /// receipt is the settled operation projection — executing *is* the
     /// settlement step, so the caller gets the final state in the same turn.
     ///
-    /// `settlesOperationID` is the parked operation's *own* id, from the chat
-    /// reply this action arrived on. The action id is the operation's
-    /// idempotency key — the report endpoint's address, never an operation id —
-    /// so when a report reply is lost, the parked-shape receipt this method
-    /// degrades to must carry the real id: the caller's bounded poll reads
-    /// `GET /v1/operations/{id}`, and polling the key would 404 on a write the
-    /// server may well have settled.
-    func executeAndReport(
-        _ action: DeviceEventAction, settlesOperationID: String
-    ) async -> OperationReceipt
+    /// **`nil` is the lost-report case, and it is not a failure.** The report
+    /// either never left or its reply never arrived, so this device holds no
+    /// settled projection to show; the operation stays parked and the server's
+    /// 15-minute sweep is the witness. The caller already holds the parked
+    /// receipt for the operation it is polling, so it degrades to *that* rather
+    /// than to a receipt constructed here — which is why this method no longer
+    /// takes an operation id at all. It used to, to rebuild a parked-shape
+    /// receipt on this path; with several actions in one reply (design §4.2)
+    /// there is no single id to take. Only the message's *own* operation is
+    /// polled by the caller, and an action's id is the operation's idempotency
+    /// key, not an operation id — so for a sibling action the parameter had no
+    /// honest value left, and a constructed one would have named the wrong
+    /// operation. The parked receipt the caller already holds names the right
+    /// one by construction.
+    func executeAndReport(_ action: DeviceEventAction) async -> OperationReceipt?
 
     /// The one failure shape the executor cannot produce itself: an action
     /// this build decoded but cannot run at all (no executor composed, or a

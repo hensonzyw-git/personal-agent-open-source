@@ -68,14 +68,22 @@ public actor ChatTimeline {
         public let startNewSession: Bool?
         /// Known only once the server has answered at least once.
         public var operationID: String?
-        /// The device action this device has already executed for the pending
-        /// operation, persisted *before* the executor runs (review R6). A
-        /// poll, a resume or a replay can hand the same action over again —
-        /// the server's projection carries it while the operation is parked —
-        /// and executing twice is how a duplicate event gets born. The marker
-        /// makes the execution exactly-once across restarts; the timeout
-        /// sweep, not a re-execution, owns what the report's silence means.
-        public var deliveredActionID: String?
+        /// The device actions this device has already executed or refused for
+        /// the pending operation, persisted *before* the executor runs (review
+        /// R6). A poll, a resume or a replay can hand the same action over
+        /// again — the server's projection carries it while the operation is
+        /// parked — and executing twice is how a duplicate event gets born.
+        /// The marker makes the execution exactly-once across restarts; the
+        /// timeout sweep, not a re-execution, owns what the report's silence
+        /// means.
+        ///
+        /// A list rather than one id, because a single reply may hand over
+        /// several actions and each is its own operation with its own write
+        /// (design §4.2: 每项独立持有 deliveredActionID). The set is per
+        /// message, which is what the invariants need: a sibling's action is
+        /// only ever delivered on the message's own projection, so the marker
+        /// that must survive a restart is the message's.
+        public var deliveredActionIDs: [String]
 
         public init(
             idempotencyKey: String,
@@ -84,7 +92,7 @@ public actor ChatTimeline {
             clarificationOf: String?,
             startNewSession: Bool? = nil,
             operationID: String?,
-            deliveredActionID: String? = nil
+            deliveredActionIDs: [String] = []
         ) {
             self.idempotencyKey = idempotencyKey
             self.conversationID = conversationID
@@ -92,7 +100,61 @@ public actor ChatTimeline {
             self.clarificationOf = clarificationOf
             self.startNewSession = startNewSession
             self.operationID = operationID
-            self.deliveredActionID = deliveredActionID
+            self.deliveredActionIDs = deliveredActionIDs
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case idempotencyKey, conversationID, text, clarificationOf
+            case startNewSession, operationID, deliveredActionIDs
+            /// The one-action marker builds before design §4.2 wrote. Read as
+            /// a fact about what already ran; also written, so that a build
+            /// rolled back to one of those does not read an empty marker and
+            /// execute an action this slot already claimed.
+            case deliveredActionID
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            idempotencyKey = try container.decode(String.self, forKey: .idempotencyKey)
+            conversationID = try container.decode(String.self, forKey: .conversationID)
+            text = try container.decode(String.self, forKey: .text)
+            clarificationOf = try container.decodeIfPresent(
+                String.self, forKey: .clarificationOf
+            )
+            startNewSession = try container.decodeIfPresent(
+                Bool.self, forKey: .startNewSession
+            )
+            operationID = try container.decodeIfPresent(String.self, forKey: .operationID)
+            var claimed =
+                try container.decodeIfPresent([String].self, forKey: .deliveredActionIDs)
+                ?? []
+            // An upgraded build must not forget an action the build it is
+            // replacing already ran: losing that marker is how a restart
+            // re-executes a write the server may have settled long ago.
+            if let legacy = try container.decodeIfPresent(
+                String.self, forKey: .deliveredActionID
+            ), !claimed.contains(legacy) {
+                claimed.append(legacy)
+            }
+            deliveredActionIDs = claimed
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(idempotencyKey, forKey: .idempotencyKey)
+            try container.encode(conversationID, forKey: .conversationID)
+            try container.encode(text, forKey: .text)
+            try container.encodeIfPresent(clarificationOf, forKey: .clarificationOf)
+            try container.encodeIfPresent(startNewSession, forKey: .startNewSession)
+            try container.encodeIfPresent(operationID, forKey: .operationID)
+            try container.encode(deliveredActionIDs, forKey: .deliveredActionIDs)
+            // The first claim is the message's own action (design §4.1: item 0
+            // is the message's operation, delivered first), which is the one a
+            // rolled-back single-action build could be handed a second time.
+            // Writing it can only make that build *skip*, never re-execute.
+            try container.encodeIfPresent(
+                deliveredActionIDs.first, forKey: .deliveredActionID
+            )
         }
     }
 
@@ -687,17 +749,16 @@ public actor ChatTimeline {
     private func runDeviceActionIfAny(
         _ receipt: OperationReceipt, pending: PendingSend
     ) async throws -> OperationReceipt {
-        guard let envelope = receipt.deviceAction else {
-            return try await settle(receipt, pending: pending)
-        }
         // The direct hand-off routes through the same exactly-once helper the
         // poll path uses: the server now delivers the action on every reply
         // that reads the parked projection, so the "same" action legitimately
         // arrives twice (immediate reply, then a poll), and the second arrival
         // must be a no-op. (Review R6, 2026-09-08.)
-        let reported = try await handleDeliveredAction(
-            envelope, pending: pending, pollReceipt: receipt
-        )
+        guard let reported = try await runDeliveredActions(
+            receipt, pending: pending
+        ) else {
+            return try await settle(receipt, pending: pending)
+        }
         // A settled report needs no polling; an unexpectedly non-terminal
         // projection still gets the bounded loop, reading the server's state
         // rather than trusting the report's echo.
@@ -715,6 +776,43 @@ public actor ChatTimeline {
             return reported
         }
         return try await settle(reported, pending: pending)
+    }
+
+    /// Execute and report every action a reply hands over, in plan order, and
+    /// answer with the message's own projection — item 0's — or `nil` when the
+    /// reply carried no action at all (design §4.1: item 0 is the message's
+    /// operation; §4.2: 交付循环逐项执行、逐项回报).
+    ///
+    /// Every item runs, not just the first. Each is a separate operation on the
+    /// server, parked separately, and only the actions actually delivered on
+    /// this reply will ever be delivered — the server hands each one over on
+    /// the projection of *its own* operation, and this device never reads the
+    /// siblings' operations to poll them. Executing only item 0 would leave
+    /// every sibling parked until the sweep turned it into needs_manual_review
+    /// for a write the device was told to make.
+    ///
+    /// The return value is item 0's because that is the operation this turn is
+    /// about: its projection is the card the user is watching and the one the
+    /// pending slot belongs to. Siblings' receipts are dropped here — they
+    /// settled their own operations, and the Timeline's existing operation-poll
+    /// picks their cards up. Nothing is inferred from a dropped receipt.
+    ///
+    /// `nil` is *no action*, never a lost report: `handleDeliveredAction`
+    /// always answers with a receipt, degrading to the parked one it was given
+    /// when a report's reply is lost, so the two cases cannot be confused.
+    private func runDeliveredActions(
+        _ receipt: OperationReceipt, pending: PendingSend
+    ) async throws -> OperationReceipt? {
+        guard !receipt.deviceActions.isEmpty else { return nil }
+        var primary: OperationReceipt?
+        for (index, envelope) in receipt.deviceActions.enumerated() {
+            let reported = try await handleDeliveredAction(
+                envelope, pending: pending, pollReceipt: receipt
+            )
+            if index == 0 { primary = reported }
+        }
+        // Non-empty list ⇒ set: item 0's branch always returns a receipt.
+        return primary ?? receipt
     }
 
     /// Execute (or skip, if already executed) a delivered device action and
@@ -741,14 +839,10 @@ public actor ChatTimeline {
                 return pollReceipt
             }
             if let executor = deviceActionExecutor {
-                // The operation's own id travels with the action: if the
-                // report reply is lost, the executor's parked-shape receipt
-                // must poll by the real operation id, never by the action id
-                // (which is the idempotency key the report endpoint answers
-                // on, not an operation id). Review R9, 2026-09-08.
-                return await executor.executeAndReport(
-                    action, settlesOperationID: pollReceipt.operationID
-                )
+                // A lost report reply degrades to the parked projection this
+                // call was given — the one that names the right operation by
+                // construction. (Review R9, 2026-09-08; design §4.2.)
+                return await executor.executeAndReport(action) ?? pollReceipt
             } else {
                 return try await reportFailure(
                     actionID: action.actionID,
@@ -792,8 +886,8 @@ public actor ChatTimeline {
         guard var stored = try loadPending(), stored.operationID == pending.operationID else {
             return false
         }
-        guard stored.deliveredActionID != actionID else { return false }
-        stored.deliveredActionID = actionID
+        guard !stored.deliveredActionIDs.contains(actionID) else { return false }
+        stored.deliveredActionIDs.append(actionID)
         try savePending(stored)
         return true
     }
@@ -823,20 +917,17 @@ public actor ChatTimeline {
             if let stage = Self.stage(of: receipt) {
                 await report(stage)
             }
-            // The parked projection can hand the action over on any poll
+            // The parked projection can hand the actions over on any poll
             // (review R6): a send that detached at 202, or a lost reply,
-            // reaches its action here. Executing it is what settles the
-            // operation, so the delivered action is handled inside the loop
-            // and the loop continues from the report's answer.
-            if let envelope = receipt.deviceAction, !receipt.outcome.isSettled {
-                let reported = try await handleDeliveredAction(
-                    envelope, pending: pending, pollReceipt: receipt
-                )
-                if reported.outcome.isSettled {
-                    receipt = reported
-                    break
-                }
+            // reaches its actions here. Executing them is what settles the
+            // operations, so every delivered action is handled inside the loop
+            // and the loop continues from item 0's answer — the operation this
+            // slot and this card belong to.
+            if let reported = try await runDeliveredActions(
+                receipt, pending: pending
+            ) {
                 receipt = reported
+                if reported.outcome.isSettled { break }
             }
         }
         if receipt.outcome.releasesPendingSlot {

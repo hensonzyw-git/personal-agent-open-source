@@ -462,10 +462,15 @@ public struct OperationReceipt: Sendable, Equatable {
     /// The written ledger row, when this was a governed write the server could
     /// project (`G1`). `nil` for every other tool and for a replay.
     public let record: FinanceExpenseRecord?
-    /// The device-action hand-off (`calendar.create_event`), when the server
-    /// issued one on this turn. Nothing about it is persisted: a Timeline
-    /// replay never re-executes a device write.
-    public let deviceAction: DeviceActionEnvelope?
+    /// The device actions this reply hands over, in plan order — empty when
+    /// there are none. One message may carry several arrangements (design
+    /// §4.2), so this is **always** a list, even for a single action; a client
+    /// that switched on length would read the single-action reply through code
+    /// no multi-action reply ever exercises.
+    ///
+    /// Nothing about them is persisted: a Timeline replay never re-executes a
+    /// device write.
+    public let deviceActions: [DeviceActionEnvelope]
 
     public init(
         operationID: String,
@@ -481,7 +486,7 @@ public struct OperationReceipt: Sendable, Equatable {
         answer: String?,
         queryResult: FinanceQueryResult? = nil,
         record: FinanceExpenseRecord? = nil,
-        deviceAction: DeviceActionEnvelope? = nil
+        deviceActions: [DeviceActionEnvelope] = []
     ) {
         self.operationID = operationID
         self.state = state
@@ -496,7 +501,7 @@ public struct OperationReceipt: Sendable, Equatable {
         self.answer = answer
         self.queryResult = queryResult
         self.record = record
-        self.deviceAction = deviceAction
+        self.deviceActions = deviceActions
     }
 
     /// The tools whose success is a ledger row. Kept here so `succeeded` for one
@@ -652,6 +657,7 @@ extension OperationReceipt: Decodable {
         case answer
         case queryResult = "query_result"
         case record
+        case deviceActions = "device_actions"
         case deviceAction = "device_action"
     }
 
@@ -692,15 +698,31 @@ extension OperationReceipt: Decodable {
         record = try? container.decodeIfPresent(
             FinanceExpenseRecord.self, forKey: .record
         )
-        // The device-action hand-off rides the same reply. A shape this build
-        // cannot decode is an action to report failed, not a reason to lose
-        // the receipt — but an un-decodable field also cannot name its action,
-        // so it decodes to `nil` and the server's timeout sweep is the
-        // remaining witness. (The decoded envelope itself resolves refusal
-        // with the id when the id was readable.)
-        deviceAction = try? container.decodeIfPresent(
+        // The device-action hand-off rides the same reply, and since design
+        // §2.5.4 it is the plural `device_actions`. Which branch runs is
+        // decided by **key presence**, not by whether decoding succeeded: a
+        // malformed list must not fall through to the historical singular
+        // field, because that is a downgrade path — a v2 action smuggled
+        // through, or an unreadable reply silently repaired into an older
+        // shape. A reply that carries the plural key is read as a list and
+        // nothing else, and an unreadable one yields no actions at all: the
+        // operations stay parked and the timeout sweep is the witness.
+        if container.contains(.deviceActions) {
+            deviceActions =
+                (try? container.decodeIfPresent(
+                    DeviceActionEnvelopes.self, forKey: .deviceActions
+                ))?.envelopes ?? []
+        } else if let legacy = try? container.decodeIfPresent(
             DeviceActionEnvelope.self, forKey: .deviceAction
-        )
+        ) {
+            // Read-only compatibility with the field servers emitted before
+            // the plural shape existed. It is never merged with the list — a
+            // reply carrying both would otherwise hand over more actions than
+            // the list declared.
+            deviceActions = [legacy]
+        } else {
+            deviceActions = []
+        }
     }
 }
 

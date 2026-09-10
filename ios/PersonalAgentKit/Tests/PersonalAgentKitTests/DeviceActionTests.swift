@@ -220,9 +220,7 @@ final class StubDeviceActionExecutor: DeviceActionExecuting, @unchecked Sendable
     /// Throws instead of answering when set — the lost-report-reply shape.
     var reportFails = false
 
-    func executeAndReport(
-        _ action: DeviceEventAction, settlesOperationID: String
-    ) async -> OperationReceipt {
+    func executeAndReport(_ action: DeviceEventAction) async -> OperationReceipt? {
         lock.withLock { _actions.append(action) }
         let body: DeviceActionResultBody
         switch outcome ?? .created(eventID: "EK-NEW-1") {
@@ -243,13 +241,10 @@ final class StubDeviceActionExecutor: DeviceActionExecuting, @unchecked Sendable
             return try await #require(backend)
                 .reportDeviceActionResult(actionID: action.actionID, body: body)
         } catch {
-            return OperationReceipt(
-                operationID: settlesOperationID,
-                state: .sourceInProgress, cancelRequested: false,
-                clientDetached: false, tool: nil, recordID: nil, failureReason: nil,
-                duplicateCheckID: nil, clarification: nil, duplicateExisting: nil,
-                answer: nil
-            )
+            // The lost report reply: no settled projection exists on this
+            // device, and the stub will not invent one — the caller degrades to
+            // the parked receipt it already holds (design §4.2).
+            return nil
         }
     }
 
@@ -279,7 +274,7 @@ struct DeviceActionFlowTests {
         ]
     }
 
-    /// A chat send whose reply carries a `device_action` and parks the
+    /// A chat send whose reply carries a `device_actions` list and parks the
     /// operation at `source_in_progress`. The report endpoint answers the way
     /// the real one does: a `created`/`duplicate` report settles succeeded
     /// with the reported event id as evidence; a `denied`/`failed` report
@@ -291,7 +286,7 @@ struct DeviceActionFlowTests {
             switch (call.method, call.path) {
             case ("POST", "/v1/chat/messages"):
                 var receipt = chatReceipt("source_in_progress", tool: "calendar.create_event")
-                receipt["device_action"] = Self.actionPayload()
+                receipt["device_actions"] = [Self.actionPayload()]
                 return .ok(receipt)
             case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
                 if call.string("result") == "created" || call.string("result") == "duplicate" {
@@ -359,7 +354,7 @@ struct DeviceActionFlowTests {
                 var payload = Self.actionPayload()
                 payload["tool"] = "future.tool"
                 var receipt = chatReceipt("source_in_progress", tool: "calendar.create_event")
-                receipt["device_action"] = payload
+                receipt["device_actions"] = [payload]
                 return .ok(receipt)
             case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
                 return .ok(chatReceipt("failed_safe", failureReason: "DEVICE_EXECUTION_FAILED"))
@@ -390,7 +385,7 @@ struct DeviceActionFlowTests {
                 var payload = Self.actionPayload()
                 payload.removeValue(forKey: "action_id")
                 var receipt = chatReceipt("source_in_progress", tool: "calendar.create_event")
-                receipt["device_action"] = payload
+                receipt["device_actions"] = [payload]
                 return .ok(receipt)
             case ("GET", "/v1/operations/op-1"):
                 // One poll answers terminal; nothing may report to the
@@ -463,7 +458,7 @@ struct DeviceActionFlowTests {
             switch (call.method, call.path) {
             case ("POST", "/v1/chat/messages"):
                 var receipt = chatReceipt("source_in_progress", tool: "calendar.create_event")
-                receipt["device_action"] = Self.actionPayload()
+                receipt["device_actions"] = [Self.actionPayload()]
                 return .ok(receipt)
             case ("GET", "/v1/operations/op-1"):
                 // The settle loop must land here: the real operation id from
@@ -512,7 +507,7 @@ struct DeviceActionPollDeliveryTests {
                     var receipt = chatReceipt(
                         "source_in_progress", tool: "calendar.create_event"
                     )
-                    receipt["device_action"] = Self.actionPayload()
+                    receipt["device_actions"] = [Self.actionPayload()]
                     return .ok(receipt)
                 }
                 // Later polls: the report already settled it.
@@ -564,7 +559,7 @@ struct DeviceActionPollDeliveryTests {
                     var receipt = chatReceipt(
                         "source_in_progress", tool: "calendar.create_event"
                     )
-                    receipt["device_action"] = Self.actionPayload()
+                    receipt["device_actions"] = [Self.actionPayload()]
                     return .ok(receipt)
                 }
                 // The resume's by-id read: the report's CAS finally landed.
@@ -632,7 +627,7 @@ struct DeviceActionPollDeliveryTests {
                     var receipt = chatReceipt(
                         "source_in_progress", tool: "calendar.create_event"
                     )
-                    receipt["device_action"] = Self.actionPayload()
+                    receipt["device_actions"] = [Self.actionPayload()]
                     return .ok(receipt)
                 }
                 return .ok(chatReceipt(
@@ -674,7 +669,12 @@ struct DeviceActionPollDeliveryTests {
     /// time. The marker must survive a concurrent anchor write: the slot is
     /// merged from disk after the network wait, never overwritten from
     /// memory.
-    @Test("two concurrent resumes anchor once and execute once")
+    ///
+    /// In list form the claim is per item, so the race is per item too: the
+    /// two resumes may legitimately split the list between them (each item is
+    /// its own operation, and whichever resume claims it runs it), but no item
+    /// may run twice.
+    @Test("two concurrent resumes anchor once and execute each item once")
     func concurrentResumesExecuteOnce() async throws {
         let service = Service()
         service.answer { call, seen in
@@ -683,9 +683,9 @@ struct DeviceActionPollDeliveryTests {
                 // Both resumes re-present the same idempotent key; the second
                 // reply is the server's replay of the first. The real server
                 // answers a replay with the operation's current projection —
-                // parked, with the action on it.
+                // parked, with the whole plan on it.
                 var receipt = chatReceipt("source_in_progress", tool: "calendar.create_event")
-                receipt["device_action"] = Self.actionPayload()
+                receipt["device_actions"] = Self.actionPair()
                 return .ok(receipt)
             case ("GET", "/v1/operations/op-1"):
                 return .ok(chatReceipt(
@@ -731,8 +731,15 @@ struct DeviceActionPollDeliveryTests {
         async let b: OperationReceipt? = chat.resume()
         _ = try await [a, b] as [OperationReceipt?]
 
-        #expect(executor.actions.count == 1, "the same action must execute exactly once")
-        #expect(service.count("POST", "/v1/device-actions/018f0000-0000-7000-8000-00000000cafe/result") == 1)
+        // Each item exactly once — the two resumes may split the list, but
+        // neither may re-run an item the other already claimed.
+        #expect(executor.actions.count == 2, "each item must execute exactly once")
+        #expect(
+            Set(executor.actions.map(\.actionID))
+                == [Self.primaryID, Self.siblingID]
+        )
+        #expect(service.count("POST", "/v1/device-actions/\(Self.primaryID)/result") == 1)
+        #expect(service.count("POST", "/v1/device-actions/\(Self.siblingID)/result") == 1)
     }
 
     // --- third review G1: a late reply must not steal another message's slot --
@@ -756,7 +763,7 @@ struct DeviceActionPollDeliveryTests {
                 var receipt = chatReceipt(
                     "source_in_progress", tool: "calendar.create_event"
                 )
-                receipt["device_action"] = Self.actionPayload()
+                receipt["device_actions"] = [Self.actionPayload()]
                 // Distinguish the two operations so the test can assert who
                 // executed what.
                 receipt["operation_id"] = "op-a"
@@ -802,7 +809,7 @@ struct DeviceActionPollDeliveryTests {
                 var receipt = chatReceipt(
                     "source_in_progress", tool: "calendar.create_event"
                 )
-                receipt["device_action"] = Self.actionPayload()
+                receipt["device_actions"] = Self.actionPair()
                 return .ok(receipt)
             case ("GET", "/v1/operations/op-1"):
                 return .ok(chatReceipt(
@@ -859,12 +866,12 @@ struct DeviceActionPollDeliveryTests {
             ) }
         #expect(slot?.idempotencyKey == "018f0000-0000-4000-8000-00000000bbb2")
         #expect(
-            slot?.deliveredActionID == nil,
+            slot?.deliveredActionIDs.isEmpty == true,
             "A's marker must not have been written into B's slot"
         )
         #expect(
             executor.actions.isEmpty,
-            "A's action must not execute against B's slot"
+            "no item of A's plan may execute against B's slot"
         )
     }
 
@@ -876,6 +883,13 @@ struct DeviceActionPollDeliveryTests {
     /// report deleted B's pending — B's own reply could then never anchor and
     /// B's action never executed. Clearing must verify the slot's owner
     /// (idempotency key) and its operation, exactly like the anchor merge.
+    ///
+    /// In list form the ownership rule applies per item, and the pin is twofold:
+    /// item 0, already claimed before the takeover, still runs and reports; the
+    /// sibling, not yet claimed, is refused because the slot is no longer this
+    /// message's to run. That refusal is the honest fail-closed outcome — the
+    /// server's sweep parks it for review rather than this device writing an
+    /// event for a message the user discarded.
     @Test("a late settled report does not clear another message's slot")
     func lateSettledReportDoesNotClearAReplacedSlot() async throws {
         // The gate holds A's report POST until the test has demonstrably
@@ -894,7 +908,7 @@ struct DeviceActionPollDeliveryTests {
                 var receipt = chatReceipt(
                     "source_in_progress", tool: "calendar.create_event"
                 )
-                receipt["device_action"] = Self.actionPayload()
+                receipt["device_actions"] = Self.actionPair()
                 return .ok(receipt)
             case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
                 // A's report hangs until B owns the slot.
@@ -962,6 +976,11 @@ struct DeviceActionPollDeliveryTests {
             ) }
         #expect(slot?.idempotencyKey == "018f0000-0000-4000-8000-00000000bbb2")
         #expect(slot?.operationID == nil, "A's report must not anchor into B's slot")
+        // The ownership rule applies per item: item 0 was claimed while the
+        // slot was still A's and still runs; the sibling was not, and the slot
+        // having moved on is exactly what stops this device writing an event
+        // for a message the user discarded. It is left parked for the sweep.
+        #expect(executor.actions.map(\.actionID) == [Self.primaryID])
     }
 
     // --- fifth review I1: a late refusal must not clear a replaced slot ------
@@ -1084,5 +1103,464 @@ struct DeviceActionPollDeliveryTests {
                 "all_day": false,
             ],
         ]
+    }
+
+    /// The two ids the list-form counterexamples below use: item 0 (the
+    /// message's own operation) and one sibling.
+    static let primaryID = "018f0000-0000-7000-8000-00000000cafe"
+    static let siblingID = "018f0000-0000-7000-8000-00000000face"
+
+    /// The list the slot-ownership counterexamples carry (design §12: G1/H1/
+    /// F2 全部并发反例在列表形态重写). One item would only re-run the
+    /// single-action shape under a new name; the point is that each item is an
+    /// independent operation with its own marker, and the races have to be
+    /// re-won per item.
+    static func actionPair() -> [[String: Any]] {
+        var sibling = actionPayload()
+        sibling["action_id"] = siblingID
+        var event = sibling["event"] as! [String: Any]
+        event["title"] = "体检"
+        sibling["event"] = event
+        return [actionPayload(), sibling]
+    }
+}
+
+// --- the plural list (design §4.1/§4.2, §13 step 6 items 2–3) -----------------
+//
+// The failure shapes are designed before the implementation, as §5.1 requires.
+// The list introduces exactly three new ways for the client to be wrong, and
+// each one gets a test:
+//
+// - **running only the first item.** The server parked N operations and will
+//   never hand a sibling over anywhere else; a client that stops at item 0
+//   leaves those parked until the sweep calls them needs_manual_review.
+// - **running an item twice.** The list arrives again on every reply that reads
+//   the parked projection, so the marker has to be per item, not per reply.
+// - **letting one bad row swallow the good ones.** A malformed element is a
+//   refusal that names no action; it must not shrink the plan, and it must not
+//   stop the siblings that *did* decode from running.
+//
+// The legacy singular branch is exercised too: it is the rollback path (design
+// §14.2), and a branch nothing tests is a branch that is wrong the first time
+// it is needed.
+
+@Suite("The plural device-action list", .serialized)
+struct DeviceActionListTests {
+
+    private static let firstID = "018f0000-0000-7000-8000-000000000001"
+    private static let secondID = "018f0000-0000-7000-8000-000000000002"
+
+    private static func action(_ id: String, title: String) -> [String: Any] {
+        [
+            "action_id": id,
+            "tool": "calendar.create_event",
+            "event": [
+                "title": title,
+                "start": "2026-09-12T15:00:00Z",
+                "end": "2026-09-12T16:30:00Z",
+                "all_day": false,
+            ],
+        ]
+    }
+
+    private static func pair() -> [[String: Any]] {
+        [
+            action(firstID, title: "网球"),
+            action(secondID, title: "体检"),
+        ]
+    }
+
+    /// The report endpoint's answer, driven by the action the path names. Each
+    /// action settles its *own* operation, so the fixture answers per action
+    /// rather than with one blanket reply — a fake that settled every report
+    /// the same way could not show a sibling failing on its own.
+    private static func actionID(from path: String) -> String {
+        path.replacingOccurrences(of: "/v1/device-actions/", with: "")
+            .replacingOccurrences(of: "/result", with: "")
+    }
+
+    @Test("a reply carrying several actions runs and reports every one")
+    func everyDeliveredActionRuns() async throws {
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                var receipt = chatReceipt(
+                    "source_in_progress", tool: "calendar.create_event"
+                )
+                receipt["device_actions"] = Self.pair()
+                return .ok(receipt)
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event",
+                    recordID: "EK-\(Self.actionID(from: path))"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        let final = try await chat.send(text: "周六网球，周一上午体检")
+
+        // Both ran, in plan order — not just item 0.
+        #expect(executor.actions.map(\.actionID) == [Self.firstID, Self.secondID])
+        // And each was reported under its own action id, exactly once.
+        #expect(service.count("POST", "/v1/device-actions/\(Self.firstID)/result") == 1)
+        #expect(service.count("POST", "/v1/device-actions/\(Self.secondID)/result") == 1)
+        // The turn's card is the message's own operation — item 0's.
+        #expect(final.state == .succeeded)
+        #expect(final.operationID == "op-1")
+    }
+
+    @Test("a second delivery of the same list re-runs nothing")
+    func aredeliveredListIsANoOp() async throws {
+        let service = Service()
+        service.answer { call, seen in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                var receipt = chatReceipt(
+                    "source_in_progress", tool: "calendar.create_event"
+                )
+                receipt["device_actions"] = Self.pair()
+                return .ok(receipt)
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                // Item 0's report is accepted but its operation has not
+                // settled yet: the client must poll, and the poll re-delivers
+                // the whole list.
+                if path.contains(Self.firstID), seen == 0 {
+                    return .ok(chatReceipt(
+                        "source_in_progress", tool: "calendar.create_event"
+                    ))
+                }
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-1"
+                ))
+            case ("GET", "/v1/operations/op-1"):
+                if seen == 0 {
+                    var parked = chatReceipt(
+                        "source_in_progress", tool: "calendar.create_event"
+                    )
+                    parked["device_actions"] = Self.pair()
+                    return .ok(parked)
+                }
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-1"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        let final = try await chat.send(text: "周六网球，周一上午体检")
+
+        // Each action ran once across the reply *and* the re-delivering poll.
+        #expect(executor.actions.map(\.actionID) == [Self.firstID, Self.secondID])
+        #expect(service.count("POST", "/v1/device-actions/\(Self.firstID)/result") == 1)
+        #expect(service.count("POST", "/v1/device-actions/\(Self.secondID)/result") == 1)
+        #expect(final.state == .succeeded)
+    }
+
+    @Test("an unreadable element does not drop its siblings")
+    func oneBadRowDoesNotSwallowTheOthers() async throws {
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                var receipt = chatReceipt(
+                    "source_in_progress", tool: "calendar.create_event"
+                )
+                // A string where an action should be: the element cannot name
+                // an action, so nothing about it is reportable.
+                receipt["device_actions"] = [
+                    Self.action(Self.firstID, title: "网球"),
+                    "this is not an action",
+                ]
+                return .ok(receipt)
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-1"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        _ = try await chat.send(text: "周六网球")
+
+        // The sibling that decoded still ran...
+        #expect(executor.actions.map(\.actionID) == [Self.firstID])
+        // ...and nothing was reported for the row that could not be named:
+        // exactly one report left this device, for the one readable action.
+        let reports = service.log.filter { $0.path.hasPrefix("/v1/device-actions/") }
+        #expect(reports.map { $0.path } == ["/v1/device-actions/\(Self.firstID)/result"])
+    }
+
+    @Test("a refused sibling is reported without stopping the ones after it")
+    func aRefusedSiblingDoesNotStopTheRest() async throws {
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                var unknown = Self.action(Self.firstID, title: "网球")
+                unknown["tool"] = "future.tool"
+                var receipt = chatReceipt(
+                    "source_in_progress", tool: "calendar.create_event"
+                )
+                receipt["device_actions"] = [
+                    unknown, Self.action(Self.secondID, title: "体检"),
+                ]
+                return .ok(receipt)
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                if Self.actionID(from: path) == Self.firstID {
+                    return .ok(chatReceipt(
+                        "failed_safe", failureReason: "DEVICE_EXECUTION_FAILED"
+                    ))
+                }
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-2"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        _ = try await chat.send(text: "周六网球，周一上午体检")
+
+        // The tool this build does not run was never handed to EventKit...
+        #expect(executor.actions.map(\.actionID) == [Self.secondID])
+        // ...it was reported as a known failure instead of being dropped...
+        let first = service.calls(
+            "POST", "/v1/device-actions/\(Self.firstID)/result"
+        )
+        #expect(first.count == 1)
+        #expect(first.first?.string("result") == "failed")
+        // ...and the sibling that followed it still ran and reported.
+        #expect(service.count("POST", "/v1/device-actions/\(Self.secondID)/result") == 1)
+    }
+
+    @Test("the message's action still runs when its own report is lost")
+    func siblingsRunWhenThePrimaryReportIsLost() async throws {
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                var receipt = chatReceipt(
+                    "source_in_progress", tool: "calendar.create_event"
+                )
+                receipt["device_actions"] = Self.pair()
+                return .ok(receipt)
+            case ("GET", "/v1/operations/op-1"):
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-1"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        executor.reportFails = true
+        let (chat, session, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        let final = try await chat.send(text: "周六网球，周一上午体检")
+
+        // A lost report reply does not skip the items behind it: both writes
+        // still happened, and the server's sweep is the witness for the
+        // testimony that never arrived.
+        #expect(executor.actions.map(\.actionID) == [Self.firstID, Self.secondID])
+        #expect(service.log.filter { $0.path.hasPrefix("/v1/device-actions/") }.isEmpty)
+        // The turn degrades to the polled state, never to a made-up receipt.
+        #expect(final.state == .succeeded)
+    }
+
+    @Test("an empty list is no action at all")
+    func anEmptyListNeverReachesTheExecutor() async throws {
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                var receipt = chatReceipt("succeeded", tool: "calendar.create_event")
+                receipt["device_actions"] = []
+                return .ok(receipt)
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        let final = try await chat.send(text: "周六网球")
+
+        #expect(executor.actions.isEmpty)
+        #expect(service.log.filter { $0.path.hasPrefix("/v1/device-actions/") }.isEmpty)
+        #expect(final.state == .succeeded)
+    }
+
+    @Test("a list is never merged with a legacy singular field")
+    func aListIsNeverMergedWithTheLegacyField() async throws {
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                var receipt = chatReceipt(
+                    "source_in_progress", tool: "calendar.create_event"
+                )
+                receipt["device_actions"] = [Self.action(Self.firstID, title: "网球")]
+                // A response carrying both must not smuggle a second action
+                // past the list.
+                receipt["device_action"] = Self.action(Self.secondID, title: "体检")
+                return .ok(receipt)
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-1"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        _ = try await chat.send(text: "周六网球")
+
+        #expect(executor.actions.map(\.actionID) == [Self.firstID])
+        #expect(service.calls("POST", "/v1/device-actions/\(Self.secondID)/result").isEmpty)
+    }
+
+    /// The rollback path (design §14.2): a build at v2 rolled back to the
+    /// previous API, which still answers with the singular field.
+    @Test("the legacy singular field still runs")
+    func theLegacySingularFieldStillRuns() async throws {
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                var receipt = chatReceipt(
+                    "source_in_progress", tool: "calendar.create_event"
+                )
+                receipt["device_action"] = Self.action(Self.firstID, title: "网球")
+                return .ok(receipt)
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-1"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        _ = try await chat.send(text: "周六网球")
+
+        #expect(executor.actions.map(\.actionID) == [Self.firstID])
+        #expect(service.count("POST", "/v1/device-actions/\(Self.firstID)/result") == 1)
+    }
+}
+
+// --- the pending slot's delivery marker across the list change ---------------
+
+@Suite("The pending slot's delivery marker")
+struct PendingSendMarkerTests {
+
+    private static let firstID = "018f0000-0000-7000-8000-000000000001"
+    private static let secondID = "018f0000-0000-7000-8000-000000000002"
+
+    private func slot(_ json: [String: Any]) throws -> ChatTimeline.PendingSend {
+        try JSONDecoder().decode(
+            ChatTimeline.PendingSend.self, from: chatJSON(json)
+        )
+    }
+
+    private func base() -> [String: Any] {
+        [
+            "idempotencyKey": "018f0000-0000-4000-8000-0000000000aa",
+            "conversationID": chatTimelineID,
+            "text": "周六网球，周一上午体检",
+            "clarificationOf": NSNull(),
+            "operationID": "op-1",
+        ]
+    }
+
+    /// A slot written by the build before the list must not read as empty on
+    /// the build after it. Losing that marker is how a restart re-executes a
+    /// write the server may have settled long ago.
+    @Test("a single-action marker is read into the list")
+    func legacyMarkerIsRead() throws {
+        var json = base()
+        json["deliveredActionID"] = Self.firstID
+        let decoded = try slot(json)
+        #expect(decoded.deliveredActionIDs == [Self.firstID])
+    }
+
+    /// The reverse direction, which is why the legacy field is still written:
+    /// a build rolled back to one action per slot reads an empty marker as
+    /// "nothing ran yet" and executes a second time.
+    @Test("the encoder still writes the first claim as the legacy field")
+    func theLegacyFieldIsStillWritten() throws {
+        let encoded = try JSONEncoder().encode(
+            ChatTimeline.PendingSend(
+                idempotencyKey: "018f0000-0000-4000-8000-0000000000aa",
+                conversationID: chatTimelineID,
+                text: "周六网球，周一上午体检",
+                clarificationOf: nil,
+                operationID: "op-1",
+                deliveredActionIDs: [Self.firstID, Self.secondID]
+            )
+        )
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        #expect(json["deliveredActionID"] as? String == Self.firstID)
+        #expect(json["deliveredActionIDs"] as? [String] == [Self.firstID, Self.secondID])
+    }
+
+    /// A response that carries both must not double-count: the same action
+    /// must not appear twice in the marker, or a later membership test still
+    /// works but the list stops describing the plan.
+    @Test("an action named by both fields is claimed once")
+    func bothFieldsDoNotDoubleCount() throws {
+        var json = base()
+        json["deliveredActionID"] = Self.firstID
+        json["deliveredActionIDs"] = [Self.firstID, Self.secondID]
+        let decoded = try slot(json)
+        #expect(decoded.deliveredActionIDs == [Self.firstID, Self.secondID])
+    }
+
+    @Test("a slot that never delivered anything reads as no claims")
+    func aFreshSlotHasNoClaims() throws {
+        let decoded = try slot(base())
+        #expect(decoded.deliveredActionIDs.isEmpty)
     }
 }
