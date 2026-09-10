@@ -311,10 +311,10 @@ class StructuredModelClient:
 #: today's behaviour and the operator opts in.
 #:
 #: Read-only check on 2026-08-07: the ECS deployment sets neither this nor
-#: ``GLM_MODEL``, so the classifier still falls back to the Chat model and both
+#: ``MODEL_ID``, so the classifier still falls back to the Chat model and both
 #: run on the same one. The isolation exists in code and not yet in production.
 #: Do not read the paragraph above as a description of what is deployed.
-CLASSIFIER_MODEL_ENV: Final[str] = "GLM_CLASSIFIER_MODEL"
+CLASSIFIER_MODEL_ENV: Final[str] = "CLASSIFIER_MODEL"
 
 #: Boundary classification runs after the response has been anchored, so it no
 #: longer consumes the chat request's latency budget.  Keep the timeout bounded
@@ -329,14 +329,14 @@ def structured_client_from_env(
     input_budget_tokens: int,
     generate: Generate | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
-    model_env: str = "GLM_MODEL",
+    model_env: str = "MODEL_ID",
     recorder: Recorder | None = None,
     purpose: str = "structured",
 ) -> StructuredModelClient:
     """Build the production client from an already-loaded environment.
 
     `model_env` lets one deployment run the two auxiliary calls on different
-    models. It falls back to `GLM_MODEL`, so an unset override changes nothing.
+    models. It falls back to `MODEL_ID`, so an unset override changes nothing.
     The provider comes from ``MODEL_PROVIDER`` (default: Zhipu) and decides
     which pinned endpoint and which credential variable apply.
     """
@@ -350,13 +350,13 @@ def structured_client_from_env(
 
     provider = provider_from_env()
     model = (
-        os.environ.get(model_env) or os.environ.get("GLM_MODEL") or ""
+        os.environ.get(model_env) or os.environ.get("MODEL_ID") or ""
     ).strip() or provider.default_model
     return StructuredModelClient(
         model=f"openai/{model}",
         api_key=credential_from_env(provider),
         input_budget_tokens=input_budget_tokens,
-        api_base=os.environ.get("GLM_OPENAI_BASE_URL", canonical_api_base(provider)),
+        api_base=os.environ.get("MODEL_API_BASE", canonical_api_base(provider)),
         generate=generate,
         timeout=timeout,
         recorder=recorder,

@@ -122,7 +122,7 @@ def _envelope(tmp: Path, *, user_text: str, tools: list) -> object:
         )
 
 
-_MAIN = {"MODEL_PROVIDER": "deepseek", "GLM_MODEL": "deepseek-flash"}
+_MAIN = {"MODEL_PROVIDER": "deepseek", "MODEL_ID": "deepseek-flash"}
 
 results: list[tuple[str, str]] = []
 
@@ -141,8 +141,8 @@ def _gateway() -> object:
 def main() -> int:
     _load_credential()
     os.environ["MODEL_PROVIDER"] = _MAIN["MODEL_PROVIDER"]
-    os.environ["GLM_MODEL"] = _MAIN["GLM_MODEL"]
-    os.environ.pop("GLM_OPENAI_BASE_URL", None)
+    os.environ["MODEL_ID"] = _MAIN["MODEL_ID"]
+    os.environ.pop("MODEL_API_BASE", None)
     provider = provider_from_env(os.environ)
     if credential_from_env(provider, os.environ) is None:
         print("no DEEPSEEK_API_KEY in environment")
@@ -196,7 +196,7 @@ def main() -> int:
 
     # Shape 2: a wrong model name must fail with a provider error.
     try:
-        os.environ["GLM_MODEL"] = "deepseek-nonexistent-model-xyz"
+        os.environ["MODEL_ID"] = "deepseek-nonexistent-model-xyz"
         gateway = _gateway()
         with tempfile.TemporaryDirectory() as tmp:
             envelope = _envelope(Path(tmp), user_text="一句话即可", tools=[])

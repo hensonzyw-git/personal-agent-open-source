@@ -43,9 +43,9 @@ def main() -> int:
     # DeepSeek composition, matching the ECS production env (2026-09-05;
     # id updated 2026-09-10 when V4.1 Flash renamed deepseek-flash).
     os.environ["MODEL_PROVIDER"] = "deepseek"
-    os.environ["GLM_MODEL"] = "deepseek-flash"
+    os.environ["MODEL_ID"] = "deepseek-flash"
     # A stale Zhipu credential or base URL must not leak into this run.
-    for stale in ("ZAI_API_KEY", "GLM_OPENAI_BASE_URL", "GLM_CLASSIFIER_MODEL"):
+    for stale in ("ZAI_API_KEY", "MODEL_API_BASE", "CLASSIFIER_MODEL"):
         os.environ.pop(stale, None)
 
     from personal_agent.eval_cli import main as eval_main
