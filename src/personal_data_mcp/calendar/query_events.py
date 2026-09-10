@@ -287,6 +287,13 @@ def _calendar_names(session, page: list[CalendarEvent]) -> dict[tuple[str, str],
     anything else. Keyed by `(device_id, calendar_identifier)`: two devices
     can name the same string differently, and the row knows which device
     reported it.
+
+    A *retired* row still names the events it already mirrored, deliberately:
+    retirement means the phone no longer offers that calendar for a new create,
+    not that the events on it never happened. A list card that forgot where an
+    event lives the moment its calendar was deleted would be the worse answer,
+    and filtering here the way the routing lookup does would blank the calendar
+    on every row of a deleted calendar.
     """
     wanted = {(row.device_id, row.calendar_identifier) for row in page}
     if not wanted:

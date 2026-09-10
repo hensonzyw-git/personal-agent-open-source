@@ -209,11 +209,19 @@ def resolve_calendar_target(
     The identifier is an EventKit UUID and leaves only on the resolved path,
     where the caller seals it into a device action. Candidates carry titles and
     source names, which is all a "which one did you mean?" question needs.
+
+    A retired row is not a candidate at all: the directory is the device's
+    *whole* statement about its calendars, so a calendar absent from it is one
+    the phone no longer has, and sealing its identifier would issue a write the
+    phone cannot execute. Retired rows stay in the table (events mirrored from
+    them are still named by them) and are filtered here, at the one place where
+    a calendar is chosen.
     """
     rows = (
         session.execute(
             select(CalendarDirectory)
             .where(CalendarDirectory.device_id == device_id)
+            .where(CalendarDirectory.retired_at.is_(None))
             .order_by(CalendarDirectory.calendar_identifier)
         )
         .scalars()

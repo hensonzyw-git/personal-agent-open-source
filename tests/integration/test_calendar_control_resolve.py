@@ -54,6 +54,7 @@ def _calendar(
     source_title: str | None = "iCloud",
     allows_content_modifications: bool = True,
     is_subscribed: bool = False,
+    retired_at: datetime | None = None,
 ) -> CalendarDirectory:
     return CalendarDirectory(
         device_id=device_id,
@@ -62,6 +63,7 @@ def _calendar(
         source_title=source_title,
         allows_content_modifications=allows_content_modifications,
         is_subscribed=is_subscribed,
+        retired_at=retired_at,
         updated_at=NOW,
     )
 
@@ -238,6 +240,67 @@ def test_a_writable_twin_wins_over_a_subscribed_namesake(
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "resolved"
     assert response.json()["calendar_identifier"] == "uuid-mine"
+
+
+# --- a calendar the phone no longer has --------------------------------------
+
+
+def test_a_retired_calendar_is_not_a_candidate(caller, client, sf) -> None:
+    """The directory is the device's *whole* statement about its calendars, so
+    a name it no longer lists must not resolve -- and must not be offered as a
+    twin either. Routing to it would seal an identifier the phone cannot write.
+    """
+    _seed(
+        sf,
+        _calendar("uuid-old", "日常安排", retired_at=NOW),
+        _calendar("uuid-new", "出游计划"),
+    )
+
+    assert _resolve(client, caller, title="日常安排").json()["status"] == "not_found"
+    assert (
+        _resolve(client, caller, title="出游计划").json()["calendar_identifier"]
+        == "uuid-new"
+    )
+
+
+def test_a_retired_twin_no_longer_makes_a_unique_name_ambiguous(
+    caller, client, sf
+) -> None:
+    """The defect this closes: a re-installed phone reports a fresh identifier
+    for the same calendar, and while both rows were live the name resolved to
+    「ambiguous」 -- a clarification the user could not answer usefully, for a
+    calendar that is unique on the phone."""
+    _seed(
+        sf,
+        _calendar("uuid-before-reinstall", "日常安排", retired_at=NOW),
+        _calendar("uuid-after-reinstall", "日常安排"),
+    )
+
+    response = _resolve(client, caller, title="日常安排")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "status": "resolved",
+        "calendar_identifier": "uuid-after-reinstall",
+        "title": "日常安排",
+    }
+
+
+def test_a_directory_whose_every_calendar_was_dropped_reads_as_empty(
+    caller, client, sf
+) -> None:
+    """Pins a boundary of the filter rather than a wish: with every row
+    retired the device has no candidate left, which is the same answer as a
+    device that never reported -- `directory_empty`, whose copy is 「请先打开
+    App 同步一次日历」. That is a re-sync the device will repeat to no effect,
+    so it is only acceptable because the phone cannot reach this state with
+    calendar access granted (EventKit always offers at least one event
+    calendar) and because a name that is merely *absent* still gets the
+    accurate `not_found` above. A separate status would be a wire change both
+    services would have to learn for a case the phone cannot produce."""
+    _seed(sf, _calendar("uuid-gone", "假期", is_subscribed=True, retired_at=NOW))
+
+    assert _resolve(client, caller, title="假期").json()["status"] == "directory_empty"
 
 
 # --- per-device, and bound to the question asked -----------------------------

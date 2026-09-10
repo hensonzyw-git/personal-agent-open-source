@@ -54,6 +54,7 @@ from personal_agent_core.crypto import KeyRing, generate_key
 from personal_agent_core.tool_ir import (
     ALLOWED_EXPENSE_CATEGORIES,
     DEFAULT_CLIENT_WIRE_VERSION,
+    DEVICE_EXECUTED_TOOL_NAMES,
     TOOL_CONTRACTS,
 )
 
@@ -118,12 +119,20 @@ def _operation_for(case: dict) -> Operation:
     record = receipt.get("record")
     return Operation(
         operation_id=operation_id,
+        # The action id a device action is reported and overridden by *is* the
+        # operation's idempotency key (`_owned_action_operation`), so a case that
+        # declares one declares this column. The projection is what decides
+        # whether it may be emitted at all -- see
+        # `test_a_connector_write_never_exposes_its_idempotency_key`, which sets
+        # the key on a tool the device does not execute and requires null.
+        idempotency_key=receipt.get("device_action_id") or f"key-{operation_id}",
         state=receipt["state"],
         cancel_requested=receipt["cancel_requested"],
         client_detached=receipt["client_detached"],
         tool=receipt["tool"],
         failure_reason=receipt["failure_reason"],
         duplicate_check_id=receipt["duplicate_check_id"],
+        device_result=receipt.get("device_result"),
         safe_result=safe_result,
         # `G1`'s business fields are their own sealed column, not more content
         # in `safe_result`. Sealing them here with the same helper the write
@@ -142,7 +151,7 @@ def _operation_for(case: dict) -> Operation:
 
 
 def test_contract_version_is_pinned() -> None:
-    assert V["contract"] == "chat_receipt_projection_v7"
+    assert V["contract"] == "chat_receipt_projection_v8"
     assert V["cases"], "an empty vector file would pass every check vacuously"
 
 
@@ -290,6 +299,47 @@ def test_manual_review_preserves_a_known_record_id() -> None:
     assert _operation_projection(RING, _operation_for(case), client_wire_version=_WIRE)["record_id"] == "rec123"
 
 
+def test_device_executed_tools_match_the_server() -> None:
+    """The client's card choice is held to the IR, not to a name it recognises.
+
+    The client draws its own card for a device-executed tool and a ledger receipt
+    for everything else, so a second device tool shipping without this list being
+    updated means its receipt renders as a ledger row -- the 2026-09-10 defect,
+    reachable again by a different route.
+    """
+    assert V["device_executed_tools"] == sorted(DEVICE_EXECUTED_TOOL_NAMES)
+
+
+@pytest.mark.parametrize("case", V["cases"], ids=lambda case: case["name"])
+def test_a_connector_write_never_exposes_its_idempotency_key(case: dict) -> None:
+    """The fail-closed half of `device_action_id`.
+
+    Every case's reconstructed row carries an idempotency key -- real where the
+    case declares an action id, synthetic otherwise -- so "it is null" can only
+    mean the projection withheld it. A Finance write's key is an internal
+    handle, and a card that named it would be naming the thing a replay is
+    addressed by.
+    """
+    receipt = case["receipt"]
+    is_device = receipt["tool"] in DEVICE_EXECUTED_TOOL_NAMES
+    assert (receipt["device_action_id"] is not None) is is_device, case["name"]
+
+
+def test_only_a_device_write_can_report_what_the_phone_decided() -> None:
+    """`device_result` is a fact about a write *this phone* performed.
+
+    A connector write is executed by the backend, so a body claiming `created`
+    for one is describing an executor that does not exist. Pinning it here keeps
+    the field from becoming a general-purpose "how did it go" that a card might
+    learn to read for the wrong domain.
+    """
+    for case in V["cases"]:
+        receipt = case["receipt"]
+        if receipt["device_result"] is not None:
+            assert receipt["tool"] in DEVICE_EXECUTED_TOOL_NAMES, case["name"]
+            assert receipt["device_result"] in {"created", "duplicate"}, case["name"]
+
+
 @pytest.mark.parametrize("case", V["cases"], ids=lambda case: case["name"])
 def test_each_receipt_is_what_the_projection_emits(case: dict) -> None:
     assert _operation_projection(RING, _operation_for(case), client_wire_version=_WIRE) == case["receipt"]
@@ -312,6 +362,15 @@ def test_receipt_fields_are_closed(case: dict) -> None:
         "record_id",
         "failure_reason",
         "duplicate_check_id",
+        # What the phone decided about a device-executed write (v8): `created`
+        # or `duplicate`, both of which settle as `succeeded` with the same
+        # event id. The client draws a different card for each, and only
+        # `duplicate` may offer 「仍要创建」.
+        "device_result",
+        # The action id that override names. Emitted only for a tool the IR
+        # marks device-executed; null for every connector write, so an internal
+        # idempotency key never reaches a card.
+        "device_action_id",
         "clarification",
         "duplicate_existing",
         "answer",

@@ -365,6 +365,59 @@ extension FinanceQueryResult.RecordRow: Decodable {
 
 /// What the app is allowed to tell the user about one operation.
 ///
+/// What the phone decided about a device-executed write (design §3.3).
+///
+/// `created` and `duplicate` are **both successes and are not interchangeable**:
+/// the first says the phone made the event, the second says it found one already
+/// there. The server settles both as `succeeded` with the same EventKit id, and
+/// only `device_result` separates them — which is why folding them into one
+/// "written" outcome is not a simplification. 「仍要创建」 is offered for exactly
+/// one of the two, so a receipt that merged them would put the button on the
+/// wrong card.
+public enum CalendarDeviceResult: Sendable, Equatable {
+    /// The phone wrote the event.
+    case created
+    /// The phone found an event it judged to be the same one and wrote nothing.
+    case duplicate
+    /// No readable device result: a Timeline event frozen before the server
+    /// projected the field, or a value a later server added. The write is still
+    /// proven by the event id — *which* of the two it was is not, and the card
+    /// says so rather than guessing one. **No override may be offered from
+    /// here**: re-issuing a write is only safe when the server has confirmed
+    /// this is a duplicate, and `.unstated` is precisely the absence of that
+    /// confirmation.
+    case unstated
+
+    /// Read the server's `device_result`. An unknown string is `.unstated`
+    /// rather than a failure: the field is an addition to a receipt whose write
+    /// is proven elsewhere, so a value this build cannot name costs the card its
+    /// distinction and never the receipt.
+    init(wire: String?) {
+        switch wire {
+        case "created": self = .created
+        case "duplicate": self = .duplicate
+        default: self = .unstated
+        }
+    }
+
+    /// The terminal-state label the calendar receipt earns (§1o 组件二).
+    ///
+    /// Here rather than in the view so it can be held by a test: the defect this
+    /// replaced was not a wrong colour or a mislaid row, it was the *ledger's*
+    /// label on a calendar write — and only a string-level assertion can tell
+    /// those apart. `.unstated` claims neither of the two, which is the whole
+    /// reason it exists: 「已创建」 is false for a duplicate, 「日历里已有」 is
+    /// false for a create, and a history that recorded neither must not be
+    /// dressed as if it had.
+    public var terminalLabel: String {
+        switch self {
+        case .created: return "已创建日程"
+        case .duplicate: return "日历里已有此日程"
+        case .unstated: return "已写入日历"
+        }
+    }
+}
+
 /// Every case is reachable only from structured fields. There is no case built
 /// from prose, and `recorded` is the only case that claims a ledger row exists.
 public enum OperationOutcome: Sendable, Equatable {
@@ -383,6 +436,23 @@ public enum OperationOutcome: Sendable, Equatable {
     /// status row in that case; the write is still proven by `recordID`, which
     /// is why the fields are allowed to be absent at all.
     case recorded(recordID: String, tool: String?, record: FinanceExpenseRecord?)
+    /// An event exists in the user's **own calendar**, and this is its EventKit
+    /// identifier.
+    ///
+    /// A separate case from `recorded` for the reason the two query cards are
+    /// separate cases: the ledger receipt's wording is not merely inaccurate for
+    /// a calendar write, it names a different fact. The 2026-09-10 review found
+    /// a successfully created calendar event rendering 「账本已存在此记录」 beside
+    /// a 打开飞书账本 link — a card telling the user to go and check a ledger
+    /// that was never involved.
+    ///
+    /// `evidence` carries what the phone reported, because the card's wording
+    /// and its 「仍要创建」 button are both chosen by it: `.created` claims the
+    /// phone made the event, `.duplicate` claims it found one, and `.unstated`
+    /// claims neither.
+    case calendarEventWritten(
+        eventID: String, tool: String?, evidence: CalendarDeviceResult
+    )
     /// A no-side-effect answer.
     case answered(String)
     /// A structured Finance query result, read-only, rendered as a card rather
@@ -432,17 +502,21 @@ public enum OperationOutcome: Sendable, Equatable {
         switch self {
         case .running, .needsManualReview, .indeterminate:
             return false
-        case .needsClarification, .needsDuplicateDecision, .recorded, .answered,
-             .answeredWithQuery, .answeredWithCalendarQuery, .failedSafe,
-             .cancelledBeforeSubmit:
+        case .needsClarification, .needsDuplicateDecision, .recorded,
+             .calendarEventWritten, .answered, .answeredWithQuery,
+             .answeredWithCalendarQuery, .failedSafe, .cancelledBeforeSubmit:
             return true
         }
     }
 
-    /// True only where an external ledger row is proven to exist.
+    /// True only where an external object is proven to exist -- a ledger row, or
+    /// an event in the user's calendar. Both are proof the outside world
+    /// changed; neither is inferable from a state alone.
     public var provesWrite: Bool {
-        if case .recorded = self { return true }
-        return false
+        switch self {
+        case .recorded, .calendarEventWritten: return true
+        default: return false
+        }
     }
 }
 
@@ -488,6 +562,10 @@ public struct OperationReceipt: Sendable, Equatable {
     /// The written ledger row, when this was a governed write the server could
     /// project (`G1`). `nil` for every other tool and for a replay.
     public let record: FinanceExpenseRecord?
+    /// What the phone reported about a device-executed write. `.unstated` when
+    /// the receipt carries no readable `device_result` — every Finance receipt,
+    /// and every calendar one frozen before the server projected the field.
+    public let deviceResult: CalendarDeviceResult
     /// The device actions this reply hands over, in plan order — empty when
     /// there are none. One message may carry several arrangements (design
     /// §4.2), so this is **always** a list, even for a single action; a client
@@ -514,6 +592,7 @@ public struct OperationReceipt: Sendable, Equatable {
         queryResult: FinanceQueryResult? = nil,
         calendarQuery: CalendarQueryResult? = nil,
         record: FinanceExpenseRecord? = nil,
+        deviceResult: CalendarDeviceResult = .unstated,
         deviceActions: [DeviceActionEnvelope] = []
     ) {
         self.operationID = operationID
@@ -531,6 +610,7 @@ public struct OperationReceipt: Sendable, Equatable {
         self.queryResult = queryResult
         self.calendarQuery = calendarQuery
         self.record = record
+        self.deviceResult = deviceResult
         self.deviceActions = deviceActions
     }
 
@@ -557,9 +637,25 @@ public struct OperationReceipt: Sendable, Equatable {
         // a correction that landed on a row nobody can point at.
         "finance.update_expense_category",
         // The device-executed calendar write is R2 like the server writes: its
-        // succeeded receipt carries `record_id` = the device-reported event_id
-        // and renders as 已写入 through the same recorded path. No `record`
-        // fields travel for it, so the card has only the status row.
+        // succeeded receipt carries `record_id` = the device-reported event_id,
+        // so the write is proven by the same field. What it does **not** share
+        // is the card: `project` routes it to `.calendarEventWritten` on
+        // `deviceExecutedTools` before this set is consulted, because the ledger
+        // receipt's wording and its 打开飞书账本 link describe a different fact.
+        // It stays listed here because the fact this set states -- "a succeeded
+        // write must carry its external evidence" -- is true of it too, and the
+        // server's `_RECORD_ID_RESULT_TOOLS` is where that is decided.
+        "calendar.create_event",
+    ]
+
+    /// The tools whose effect happens in the calling device rather than behind
+    /// the governed MCP bridge.
+    ///
+    /// Mirrors the server's IR-derived `DEVICE_EXECUTED_TOOL_NAMES`; the client
+    /// uses it only to pick which success card to draw. `chat_receipt_vectors.json`
+    /// (`device_executed_tools`) holds the two sides equal, so a second device
+    /// tool cannot ship a receipt this build renders as a ledger row.
+    public static let deviceExecutedTools: Set<String> = [
         "calendar.create_event",
     ]
 
@@ -608,7 +704,8 @@ public struct OperationReceipt: Sendable, Equatable {
             answer: answer,
             queryResult: queryResult,
             calendarQuery: calendarQuery,
-            record: record
+            record: record,
+            deviceResult: deviceResult
         )
     }
 
@@ -640,7 +737,8 @@ public struct OperationReceipt: Sendable, Equatable {
         answer: String?,
         queryResult: FinanceQueryResult? = nil,
         calendarQuery: CalendarQueryResult? = nil,
-        record: FinanceExpenseRecord? = nil
+        record: FinanceExpenseRecord? = nil,
+        deviceResult: CalendarDeviceResult = .unstated
     ) -> OperationOutcome {
         let tool: String?
         if case .known(let value) = toolEvidence { tool = value } else { tool = nil }
@@ -659,6 +757,23 @@ public struct OperationReceipt: Sendable, Equatable {
                 checkID: duplicateCheckID, existing: duplicateExisting
             )
         case .succeeded:
+            // A device-executed write draws its own card, and is checked before
+            // `recordID` sends it down the ledger path. The two share the
+            // evidence field and nothing else: `record_id` here is the EventKit
+            // identifier the phone reported, and the ledger receipt would render
+            // it beside 「账本已存在此记录」 and a 打开飞书账本 link.
+            if let tool, Self.deviceExecutedTools.contains(tool) {
+                guard let recordID, !recordID.isEmpty else {
+                    // The same rule `recordEvidenceTools` states below, applied
+                    // to the device's own write: a succeeded device write must
+                    // carry the identifier it reported. Without one there is no
+                    // proof an event exists, and a state alone is not proof.
+                    return .indeterminate(state: state.wire)
+                }
+                return .calendarEventWritten(
+                    eventID: recordID, tool: tool, evidence: deviceResult
+                )
+            }
             if let recordID, !recordID.isEmpty {
                 return .recorded(recordID: recordID, tool: tool, record: record)
             }
@@ -730,6 +845,7 @@ extension OperationReceipt: Decodable {
         case answer
         case queryResult = "query_result"
         case record
+        case deviceResult = "device_result"
         case deviceActions = "device_actions"
         case deviceAction = "device_action"
     }
@@ -785,6 +901,12 @@ extension OperationReceipt: Decodable {
         // card falls back to the status row.
         record = try? container.decodeIfPresent(
             FinanceExpenseRecord.self, forKey: .record
+        )
+        // `.unstated` for every absent or unreadable value, which is the honest
+        // reading of both: a Finance receipt never carries this field, and a
+        // calendar receipt frozen before 2026-09-10 carries no fact about it.
+        deviceResult = CalendarDeviceResult(
+            wire: try container.decodeIfPresent(String.self, forKey: .deviceResult)
         )
         // The device-action hand-off rides the same reply, and since design
         // §2.5.4 it is the plural `device_actions`. Which branch runs is
@@ -1150,7 +1272,17 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                     answer: content["answer"]?.stringValue,
                     queryResult: queryResult,
                     calendarQuery: calendarQuery,
-                    record: record
+                    record: record,
+                    // Frozen with the event when it was appended, so a calendar
+                    // receipt scrolled back to still says whether it created the
+                    // event or found it. An event appended before the server
+                    // projected the field carries none, which reads as
+                    // `.unstated` -- the write is still proven by `record_id`,
+                    // and which of the two it was is exactly what that history
+                    // does not know.
+                    deviceResult: CalendarDeviceResult(
+                        wire: content["device_result"]?.stringValue
+                    )
                 ),
                 state: state,
                 toolEvidence: toolEvidence

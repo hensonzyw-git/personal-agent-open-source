@@ -408,13 +408,6 @@ def ingest_events(
         skipped = 0
         incoming_ids: set[tuple[str, str, int]] = set()
 
-        # The directory rides in the same transaction as the events it
-        # describes; a create routed from this batch and the events that
-        # batch reported therefore cannot disagree about the world.
-        upsert_calendars(
-            session, device_id=device_id, calendars=calendars, now=now
-        )
-
         watermark_row = session.get(CalendarDeviceSync, device_id)
         watermark_ts = watermark_row.watermark_ts if watermark_row else None
         #: A snapshot **strictly older** than the watermark is a *late
@@ -433,6 +426,30 @@ def ingest_events(
         may_sweep = window_complete and (
             watermark_ts is None or snapshot_ts > watermark_ts
         )
+
+        # The directory rides in the same transaction as the events it
+        # describes; a create routed from this batch and the events that batch
+        # reported therefore cannot disagree about the world. It is applied
+        # *after* the watermark is read, because the directory is a statement
+        # about a set and a late packet has no standing to make one: it may not
+        # rename a calendar the newer statement renamed, nor re-add one that
+        # statement dropped, nor retire one it keeps. The rule inside
+        # `upsert_calendars` is the same version monotonicity the events below
+        # are merged under; this gate is the batch-level half of it, which is
+        # the half that also stops a late packet *introducing* a calendar.
+        if not is_late_packet:
+            upsert_calendars(
+                session,
+                device_id=device_id,
+                calendars=calendars,
+                now=now,
+                snapshot_ts=snapshot_ts,
+                # An absent `calendars` key is a client that says nothing about
+                # the directory, and saying nothing may not retire anything.
+                # (`_validate` folds absent and explicit null into one empty
+                # list, so the raw argument is what distinguishes them.)
+                states_the_whole_directory=arguments.get("calendars") is not None,
+            )
 
         for event in events:
             if not isinstance(event, dict):

@@ -513,6 +513,21 @@ class CalendarDirectory(Base):
     )
     is_subscribed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    #: The snapshot instant of the batch that last asserted this row. The
+    #: phone uploads its *whole* directory every batch, so a statement that
+    #: does not name a calendar is a statement that the device does not have
+    #: it -- and ordering two such statements needs a version, exactly as
+    #: `calendar_events` does. Nullable because rows written before this column
+    #: existed carry no version testimony; null reads as *oldest*, so the first
+    #: statement after the upgrade may freely correct them.
+    snapshot_ts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: When a newer whole-directory statement stopped naming this calendar.
+    #: Retiring is not deleting: events already mirrored from this calendar
+    #: still point at its identifier and are still named by it, and the phone
+    #: re-adding the calendar clears this again. What it removes the row from
+    #: is *choice* -- `resolve_calendar_target` never routes to a calendar the
+    #: phone no longer lists.
+    retired_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
 
 
 class CalendarDeviceSync(Base):

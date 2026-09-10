@@ -3314,6 +3314,16 @@ def _operation_event_content(
         "duplicate_check_id",
         "duplicate_existing",
         "failure_reason",
+        # A calendar receipt says which of the two successes it was, and names
+        # the action a 「仍要创建」 would re-issue (design 3.3). `device_action_id`
+        # is the idempotency key *alone* -- not the sealed action, which stays
+        # out of history for the reason above: the key lets a card point at an
+        # action that is already the user's, while the action itself would be a
+        # hand-off frozen into a scroll-back. An event written before these two
+        # fields existed carries neither, and a card falls back to reading the
+        # operation rather than reading "created" into a missing fact.
+        "device_result",
+        "device_action_id",
     ):
         value = projection.get(name)
         if value is not None:
@@ -3503,6 +3513,26 @@ def _operation_projection(
         "record_id": None,
         "failure_reason": operation.failure_reason,
         "duplicate_check_id": operation.duplicate_check_id,
+        # What the phone decided, kept distinct from `state` because the two are
+        # not the same fact: `created` and `duplicate` both settle as `succeeded`
+        # with the event id above, and only this says whether the phone *made*
+        # the event or *found* it. 「仍要创建」 may be offered for exactly one of
+        # those (design 3.3), so a receipt that folded them together would put a
+        # button on the wrong card. Null for every Finance operation, and null on
+        # a receipt written before this field existed.
+        "device_result": operation.device_result,
+        # The action id the device reports and overrides by. It *is* the
+        # operation's idempotency key (`_owned_action_operation`), and it is
+        # emitted only for a tool the IR marks device-executed: for anything
+        # else an idempotency key is an internal key that no card has business
+        # naming, and a client that offered to re-issue one would be offering to
+        # replay a connector write. Fail closed -- an unrecognised tool yields
+        # null rather than the key.
+        "device_action_id": (
+            operation.idempotency_key
+            if operation.tool in DEVICE_EXECUTED_TOOL_NAMES
+            else None
+        ),
     }
     # Delivery-or-refusal (review R6, 2026-09-08). An issued action is sealed on
     # its own row, and this is its one delivery door: the 200 reply, the by-id

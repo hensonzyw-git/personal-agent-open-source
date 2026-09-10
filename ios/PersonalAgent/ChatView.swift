@@ -762,6 +762,17 @@ struct ChatView: View {
                 record: record,
                 operationID: operationID
             )
+        } else if case .calendarEventWritten(let eventID, let tool, let evidence) = outcome {
+            // Its own branch, not a fallthrough to `recordedReceipt`. The two
+            // receipts share the evidence field and nothing else: the ledger
+            // row's wording, its fields and its 打开飞书账本 link all name a
+            // place this write never went. (2026-09-10 review.)
+            calendarWriteReceipt(
+                eventID: eventID,
+                tool: tool,
+                evidence: evidence,
+                operationID: operationID
+            )
         } else if case .answeredWithQuery(let result, let tool) = outcome {
             queryReceiptCard(result: result, tool: tool, operationID: operationID)
         } else if case .answeredWithCalendarQuery(let result, let tool) = outcome {
@@ -879,6 +890,43 @@ struct ChatView: View {
                 fields: fields
             )
         }
+    }
+
+    /// The calendar write's receipt: 状态行, and nothing else.
+    ///
+    /// It shares the status-row shape with the ledger's because the shape is
+    /// right — a receipt with no business fields to draw must not pretend to
+    /// a structured record. What it does not share is the *content*: the badge
+    /// comes from the device result (已创建 / 日历里已有 / 已写入, see
+    /// `CalendarDeviceResult.terminalLabel`), and there is no 打开飞书账本
+    /// link, because this write never went near the ledger. The 2026-09-10
+    /// review found exactly those two strings on a created calendar event.
+    ///
+    /// The EventKit id stays reachable through the same long-press menu the
+    /// ledger receipt uses: it is the evidence the write happened, and 20
+    /// opaque characters on the row would cost more than it buys.
+    private func calendarWriteReceipt(
+        eventID: String,
+        tool: String?,
+        evidence: CalendarDeviceResult,
+        operationID: String?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            terminalChip(
+                for: .calendarEventWritten(
+                    eventID: eventID, tool: tool, evidence: evidence
+                ),
+                toolEvidence: .known(tool)
+            )
+
+            if let tool, !tool.isEmpty {
+                Text(Capabilities.displayName(forAlias: tool, tools: model.tools))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(evidenceMenu(recordID: eventID, operationID: operationID, explicit: false))
     }
 
     /// §3a/§3b 档一档二: 状态行. The lightest possible receipt.
@@ -1534,10 +1582,11 @@ struct ChatView: View {
                     Text("服务端仍在处理（\(state.wire)）").font(.callout)
                 }
 
-            // Handled by `recordedReceipt` and `queryReceiptCard` above;
-            // listed only to keep the switch exhaustive, so a new outcome still
-            // fails to compile here.
-            case .recorded, .answeredWithQuery, .answeredWithCalendarQuery:
+            // Handled by `recordedReceipt`, `calendarWriteReceipt` and
+            // `queryReceiptCard` above; listed only to keep the switch
+            // exhaustive, so a new outcome still fails to compile here.
+            case .recorded, .calendarEventWritten, .answeredWithQuery,
+                 .answeredWithCalendarQuery:
                 EmptyView()
 
             case .answered(let text):
@@ -1718,6 +1767,15 @@ struct ChatView: View {
             // this name states the verifiable fact instead, and can be promoted
             // back only if the comparison is ever actually implemented.
             return TerminalBadge(text: "账本已存在此记录", color: .accentText)
+        case .calendarEventWritten(_, _, let evidence):
+            // The calendar's own label, chosen by what the phone reported. It
+            // deliberately does **not** say 账本, which is what this card said
+            // before the 2026-09-10 review: a created calendar event was
+            // labelled 「账本已存在此记录」 beside a 打开飞书账本 link.
+            //
+            // The words live in the Kit so a test can hold them; a view is not
+            // where "does this card name the wrong system" can be asserted.
+            return TerminalBadge(text: evidence.terminalLabel, color: .accentText)
         case .answered:
             // 无工具调用 is only claimed when the server explicitly recorded
             // `tool == null` for a direct answer. A history event that predates

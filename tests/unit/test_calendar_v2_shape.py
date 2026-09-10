@@ -32,6 +32,7 @@ from personal_agent_core.manifest import load_manifest
 from personal_agent_core.timeutil import to_rfc3339
 from personal_data_mcp.calendar.ingest import ingest_events
 from personal_data_mcp.calendar.query_events import query_events
+from personal_data_mcp.server.control_queries import resolve_calendar_target
 from personal_data_mcp.storage import db
 from personal_data_mcp.storage.engine import (
     create_database_engine,
@@ -521,6 +522,161 @@ def test_a_v1_batch_leaves_the_directory_alone(sessions) -> None:
     with sessions() as session:
         rows = session.execute(select(CalendarDirectory)).scalars().all()
     assert len(rows) == 1
+
+
+# --- the directory is one whole statement, not an accumulating one -----------
+#
+# The phone uploads its *entire* directory with every batch (design 2.1), so a
+# calendar the newest statement does not name is one the device no longer has.
+# Keeping it is not a harmless leftover: the row still answers the create
+# routing lookup. A re-installed phone hands every calendar a fresh EventKit
+# identifier, so the old and the new row carry the same title -- and a name
+# that is unique on the phone resolves to 「两个以上的日历都叫…」 and cannot be
+# written to at all. That is the reported defect (2026-09-10 review), and it is
+# why a whole-directory statement has to be able to *remove*.
+
+
+def _directory_rows(sessions) -> dict[str, CalendarDirectory]:
+    with sessions() as session:
+        return {
+            row.calendar_identifier: row
+            for row in session.execute(select(CalendarDirectory)).scalars().all()
+        }
+
+
+def _resolved(sessions, title: str, *, device_id: str = "dev-1"):
+    with sessions() as session:
+        return resolve_calendar_target(session, device_id=device_id, title=title)
+
+
+def test_a_whole_directory_statement_retires_what_it_stops_naming(sessions) -> None:
+    """{A, B} then {A}: B stops being selectable, and stays on record.
+
+    The row is kept rather than deleted because events already mirrored from
+    that calendar still point at its identifier, and the display read names
+    them by it. Retiring is what removes it from *choice*; it is not a claim
+    that it never existed.
+    """
+    _ingest(
+        sessions,
+        [_timed()],
+        calendars=[
+            _directory_entry("cal-1", "日常安排"),
+            _directory_entry("cal-2", "出游计划"),
+        ],
+    )
+    _ingest(sessions, [_timed()], calendars=[_directory_entry("cal-1", "日常安排")])
+
+    assert _resolved(sessions, "出游计划")["status"] == "not_found"
+    assert _resolved(sessions, "日常安排")["status"] == "resolved"
+
+    rows = _directory_rows(sessions)
+    assert set(rows) == {"cal-1", "cal-2"}
+    assert rows["cal-2"].retired_at is not None
+    assert rows["cal-1"].retired_at is None
+
+
+def test_a_reinstalled_phones_old_calendar_does_not_make_the_name_ambiguous(
+    sessions,
+) -> None:
+    """The defect's actual shape, end to end: a name that is unique on the
+    phone must resolve, even though the mirror has seen another identifier
+    under that title."""
+    _ingest(sessions, [_timed()], calendars=[_directory_entry("old-uuid", "日常安排")])
+    _ingest(sessions, [_timed()], calendars=[_directory_entry("new-uuid", "日常安排")])
+
+    resolution = _resolved(sessions, "日常安排")
+    assert resolution == {
+        "status": "resolved",
+        "calendar_identifier": "new-uuid",
+        "title": "日常安排",
+    }
+
+
+def test_a_late_packet_may_not_rename_readd_or_retire_a_calendar(sessions) -> None:
+    """A batch whose snapshot is older than the watermark has no standing to
+    speak about the directory either (§5.1: the device is the fact source, and
+    an older packet is not newer testimony). It may not rename a calendar the
+    newer statement renamed, may not re-add one it retired, and may not retire
+    one it keeps."""
+    first = NOW - timedelta(hours=2)
+    newer = first + timedelta(minutes=30)
+    _ingest(
+        sessions,
+        [_timed()],
+        as_of=newer,
+        calendars=[_directory_entry("cal-1", "演出")],
+    )
+    # A packet from the *older* snapshot, carrying the directory as it was:
+    # cal-1 under its old name, plus a calendar the newer one dropped.
+    _ingest(
+        sessions,
+        [_timed()],
+        as_of=first,
+        calendars=[
+            _directory_entry("cal-1", "演出&活动"),
+            _directory_entry("cal-2", "出游计划"),
+        ],
+    )
+
+    rows = _directory_rows(sessions)
+    assert set(rows) == {"cal-1"}
+    assert rows["cal-1"].title == "演出"
+    assert rows["cal-1"].retired_at is None
+
+
+def test_a_calendar_named_again_comes_back(sessions) -> None:
+    """Retirement is not a tombstone: the phone re-adding a calendar is the
+    same testimony as any other, and the row returns to the directory. A
+    transient empty read on the phone must not be permanent."""
+    _ingest(sessions, [_timed()], calendars=[_directory_entry("cal-1", "日常安排")])
+    _ingest(sessions, [_timed()], calendars=[])
+    assert _resolved(sessions, "日常安排")["status"] == "directory_empty"
+
+    _ingest(sessions, [_timed()], calendars=[_directory_entry("cal-1", "日常安排")])
+    rows = _directory_rows(sessions)
+    assert rows["cal-1"].retired_at is None
+    assert _resolved(sessions, "日常安排")["status"] == "resolved"
+
+
+def test_re_uploading_one_statement_twice_changes_nothing(sessions) -> None:
+    """Idempotence, end to end: the same directory in two batches leaves one
+    row per calendar, neither retired."""
+    entry = _directory_entry("cal-1", "日常安排")
+    _ingest(sessions, [_timed()], calendars=[entry])
+    _ingest(sessions, [_timed()], calendars=[entry])
+
+    rows = _directory_rows(sessions)
+    assert set(rows) == {"cal-1"}
+    assert rows["cal-1"].retired_at is None
+    assert rows["cal-1"].title == "日常安排"
+
+
+def test_a_retired_calendar_still_names_the_events_it_already_mirrored(
+    sessions,
+) -> None:
+    """Retirement removes a calendar from *choice*, not from the record. An
+    event mirrored while it was live keeps the name its owner knows it by --
+    the mirror is a history, and a list card that forgot where an event lives
+    the moment the calendar was deleted would be the worse answer."""
+    _ingest(
+        sessions,
+        [_timed()],
+        calendars=[
+            _directory_entry("cal-1", "日常安排"),
+            _directory_entry("cal-2", "出游计划"),
+        ],
+    )
+    _ingest(
+        sessions,
+        [_timed("ev-2", calendar_identifier="cal-2")],
+        calendars=[_directory_entry("cal-1", "日常安排")],
+    )
+
+    page = _query(sessions)
+    by_id = {item["event_identifier"]: item for item in page["events"]}
+    assert by_id["ev-2"]["calendar_title"] == "出游计划"
+    assert _resolved(sessions, "出游计划")["status"] == "not_found"
 
 
 # --- the contract the server actually ships ----------------------------------

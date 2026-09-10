@@ -1887,6 +1887,11 @@ private struct ReceiptVectors {
         /// contract, and the client must decode that exact value: the 人工核对
         /// card's wording is chosen by it.
         let domain: String?
+        /// What the phone reported, when the case declares it (v8). Present only
+        /// on the calendar-write cases, and `nil` on the one that predates the
+        /// server emitting the field -- which is itself the case that matters:
+        /// history must render without it, as `unstated`.
+        let deviceEvidence: String?
     }
 
     let contract: String
@@ -1894,6 +1899,7 @@ private struct ReceiptVectors {
     let recordEvidenceTools: [String]
     let queryEvidenceTools: [String]
     let calendarQueryEvidenceTools: [String]
+    let deviceExecutedTools: [String]
     let expenseCategories: [String]
     let cases: [Case]
 
@@ -1933,7 +1939,8 @@ private struct ReceiptVectors {
                 expectedSettled: settled,
                 expectedReleasesPending: releasesPending,
                 expectedCancellation: cancellation,
-                domain: (chatReceipt as? [String: Any])?["domain"] as? String
+                domain: (chatReceipt as? [String: Any])?["domain"] as? String,
+                deviceEvidence: entry["expected_device_evidence"] as? String
             )
         }
         return ReceiptVectors(
@@ -1943,6 +1950,7 @@ private struct ReceiptVectors {
             queryEvidenceTools: root["query_evidence_tools"] as? [String] ?? [],
             calendarQueryEvidenceTools: root["calendar_query_evidence_tools"]
                 as? [String] ?? [],
+            deviceExecutedTools: root["device_executed_tools"] as? [String] ?? [],
             expenseCategories: root["expense_categories"] as? [String] ?? [],
             cases: cases
         )
@@ -1956,6 +1964,7 @@ private func label(_ outcome: OperationOutcome) -> String {
     case .needsClarification: return "needs_clarification"
     case .needsDuplicateDecision: return "needs_duplicate_decision"
     case .recorded: return "recorded"
+    case .calendarEventWritten: return "calendar_event_written"
     case .answered: return "answered"
     case .answeredWithQuery, .answeredWithCalendarQuery:
         // One wire name for "a succeeded governed read with a structured card":
@@ -1985,7 +1994,7 @@ struct ReceiptContractTests {
     @Test("the vector file is the one this build was written against")
     func contractVersion() throws {
         let vectors = try #require(vectors)
-        #expect(vectors.contract == "chat_receipt_projection_v7")
+        #expect(vectors.contract == "chat_receipt_projection_v8")
         #expect(!vectors.cases.isEmpty)
     }
 
@@ -2113,6 +2122,73 @@ struct ReceiptContractTests {
         #expect(
             OperationReceipt.queryEvidenceTools
                 .isDisjoint(with: OperationReceipt.calendarQueryEvidenceTools)
+        )
+    }
+
+    @Test("the device-executed tool set matches the server's")
+    func deviceExecutedToolsMatch() throws {
+        // The server's set is IR-derived; the client's is hard-coded, and it is
+        // what decides whether a success draws the calendar card or the ledger
+        // receipt. The vector holds them equal, so a second device tool cannot
+        // ship a receipt this build renders as a ledger row.
+        let vectors = try #require(vectors)
+        #expect(Set(vectors.deviceExecutedTools) == OperationReceipt.deviceExecutedTools)
+        // A device tool is still an R2 write whose receipt must carry evidence;
+        // the sets overlap by design and neither is a subset of the other's
+        // complement. What they must not do is disagree about `record_id`.
+        #expect(
+            OperationReceipt.deviceExecutedTools
+                .isSubset(of: OperationReceipt.recordEvidenceTools)
+        )
+    }
+
+    @Test("a calendar receipt reports what the phone decided, or says it does not know")
+    func calendarEvidenceIsDecodedAsDeclared() throws {
+        // The three-way distinction the 2026-09-10 review found missing: a
+        // `created` and a `duplicate` are both successes, and a receipt that
+        // predates the field is neither. Reading the third as one of the first
+        // two is how a card ends up offering a button it must not.
+        let vectors = try #require(vectors)
+        var seen = Set<String>()
+        for vectorCase in vectors.cases {
+            guard vectorCase.expectedOutcome == "calendar_event_written" else {
+                continue
+            }
+            let receipt = try JSONDecoder().decode(
+                OperationReceipt.self, from: vectorCase.chatReceipt
+            )
+            let declared = try #require(vectorCase.deviceEvidence)
+            seen.insert(declared)
+            guard
+                case .calendarEventWritten(let eventID, _, let evidence) =
+                    receipt.outcome
+            else {
+                Issue.record("\(vectorCase.name): not the calendar card")
+                continue
+            }
+            // The event id is the evidence the write happened, and it is the
+            // same field the ledger receipt would have shown.
+            #expect(eventID == receipt.recordID)
+            #expect(evidence.terminalLabel == CalendarDeviceResult(wire: declared).terminalLabel)
+        }
+        // All three must be covered by the file, or the distinction is asserted
+        // only where it is easy.
+        #expect(seen == ["created", "duplicate", "unstated"])
+    }
+
+    @Test("a calendar receipt never names the ledger")
+    func calendarReceiptCopyNeverSaysLedger() {
+        // The defect, stated as the assertion that would have caught it. The
+        // 2026-09-10 review found a created calendar event rendering
+        // 「账本已存在此记录」 beside a 打开飞书账本 link.
+        for evidence in [CalendarDeviceResult.created, .duplicate, .unstated] {
+            #expect(!evidence.terminalLabel.contains("账本"))
+            #expect(!evidence.terminalLabel.isEmpty)
+        }
+        #expect(
+            Set([CalendarDeviceResult.created, .duplicate, .unstated].map(\.terminalLabel))
+                .count == 3,
+            "two outcomes share a label, so the card would not distinguish them"
         )
     }
 
