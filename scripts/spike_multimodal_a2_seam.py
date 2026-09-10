@@ -433,8 +433,191 @@ async def case_pdf_fails_closed() -> str:
     return f"no outbound request; error={error}"
 
 
+# --------------------------------------------------------------------------
+# The production composition, mirrored
+# --------------------------------------------------------------------------
+#
+# `glm_gateway.generate_with_adk` (:872-897) builds the LiteLlm kwargs and the
+# LlmRequest below. Mirrored here so the harness can say whether the image
+# survives **the shape the product actually sends** — system instruction,
+# temperature, output budget, function declarations and a tool config — rather
+# than a bare two-part request. The one thing deliberately NOT mirrored is the
+# content mapping: the product flattens every message to `Part(text=...)`, so
+# there is nothing to mirror it *from*.
+#
+# `extra_body` is `{}` for this deployment: `_thinking_request_params` returns
+# a value only for providers in `_PROVIDERS_ACCEPTING_THINKING_PARAM`, which is
+# `{"zhipu"}`.
+
+DECLARATIONS = [
+    {
+        "function": {
+            "name": "record_expense",
+            "description": "Record one expense line.",
+            "parameters": {
+                "type": "object",
+                "properties": {"amount": {"type": "number"}},
+                "required": ["amount"],
+            },
+        }
+    }
+]
+SYSTEM = "You are a personal finance agent."
+TOOL_CALL_JSON = json.dumps(
+    {
+        "id": "spike-cmpl-2",
+        "object": "chat.completion",
+        "created": 0,
+        "model": MODEL.split("/", 1)[1],
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_spike_1",
+                            "type": "function",
+                            "function": {
+                                "name": "record_expense",
+                                "arguments": '{"amount": 1}',
+                            },
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": USAGE_OK,
+    }
+).encode()
+
+
+async def run_real_composition(
+    *,
+    parts: list[Any],
+    handler: Callable[[httpx.Request], httpx.Response],
+    allowed_function_names: list[str] | None = None,
+) -> tuple[A2Witness, int | None, str | None]:
+    """Mirror `generate_with_adk`'s composition, including the A2 seam."""
+    from google.adk.models.lite_llm import LiteLlm
+    from google.adk.models.llm_request import LlmRequest
+    from google.genai import types
+    from openai import AsyncOpenAI
+
+    functions = [
+        types.FunctionDeclaration(
+            name=item["function"]["name"],
+            description=item["function"]["description"],
+            parameters_json_schema=item["function"]["parameters"],
+        )
+        for item in DECLARATIONS
+    ]
+    tool_config = None
+    if allowed_function_names is not None:
+        tool_config = types.ToolConfig(
+            function_calling_config=types.FunctionCallingConfig(
+                mode=types.FunctionCallingConfigMode.ANY,
+                allowed_function_names=allowed_function_names,
+            )
+        )
+
+    witness = A2Witness()
+    http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        event_hooks={"request": [witness]},
+        follow_redirects=False,
+        timeout=httpx.Timeout(10.0),
+    )
+    openai_client = AsyncOpenAI(
+        api_key=FAKE_API_KEY, base_url=PINNED_BASE_URL, http_client=http_client
+    )
+    llm = LiteLlm(
+        model=MODEL,
+        api_key=FAKE_API_KEY,
+        api_base=PINNED_BASE_URL,
+        timeout=30.0,
+        num_retries=0,
+        extra_body={},  # see the note above
+        client=openai_client,
+    )
+    request = LlmRequest(
+        contents=[types.Content(role="user", parts=parts)],
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM,
+            temperature=0.0,
+            max_output_tokens=256,
+            tools=[types.Tool(function_declarations=functions)],
+            tool_config=tool_config,
+        ),
+    )
+
+    prompt_tokens: int | None = None
+    error: str | None = None
+    try:
+        async for response in llm.generate_content_async(request, stream=False):
+            metadata = response.usage_metadata
+            if metadata is not None:
+                prompt_tokens = metadata.prompt_token_count
+    except Exception as exc:  # noqa: BLE001 - the case records it, does not hide it
+        error = f"{type(exc).__name__}"
+    finally:
+        await http_client.aclose()
+    return witness, prompt_tokens, error
+
+
+async def case_real_composition() -> str:
+    witness, prompt_tokens, _error = await run_real_composition(
+        parts=[_part_text(TEXT), _part_image(EXPECTED_IMAGE)],
+        handler=_ok_response,
+    )
+    verify(witness.records, expect_image=True, prompt_tokens=prompt_tokens)
+    body = json.loads(witness.records[0]["body"])
+    assert body.get("tool_choice") in ("auto", None), f"unexpected tool_choice {body.get('tool_choice')!r}"
+    assert body.get("tools"), "declarations did not reach the body"
+    assert any(SYSTEM in str(m) for m in body["messages"]), "system instruction missing"
+    assert body.get("max_tokens") or body.get("max_completion_tokens"), "output budget missing"
+    return "image survives with system + tools + temperature + output budget; declarations present"
+
+
+async def case_real_composition_any() -> str:
+    """Measure what the product's ANY tool constraint becomes on the wire.
+
+    `glm_gateway._required_function_names` (:921-960) builds
+    `FunctionCallingConfig(mode=ANY, allowed_function_names=[...])` for Finance
+    turns, and `tests/unit/test_glm_gateway.py:1252-1254` asserts it arrived --
+    at the `LlmRequest`, i.e. the A3 boundary. The assertion is true there and
+    says nothing about the transport. This case asks A2 the same question.
+
+    Deliberately **measured, not asserted**: the product's expectation is not
+    what this harness is entitled to enforce, and a failing assertion here
+    would misreport a product finding as a broken spike.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=TOOL_CALL_JSON)
+
+    witness, prompt_tokens, _error = await run_real_composition(
+        parts=[_part_text(TEXT), _part_image(EXPECTED_IMAGE)],
+        handler=handler,
+        allowed_function_names=["record_expense"],
+    )
+    # The image claim is this round's subject and is still asserted.
+    verify(witness.records, expect_image=True, prompt_tokens=prompt_tokens)
+    body = json.loads(witness.records[0]["body"])
+    return (
+        f"image survives the full composition; tool_choice on the wire is "
+        f"{json.dumps(body.get('tool_choice'))} and the body keys are "
+        f"{json.dumps(sorted(body.keys()))} — the declared "
+        f"mode=ANY allowed_function_names=['record_expense'] is not transported"
+    )
+
+
 CASES: list[tuple[str, Callable[[], Any]]] = [
     ("A2-EXACT", case_a2_exact),
+    ("REAL-COMPOSITION", case_real_composition),
+    ("REAL-COMPOSITION-ANY", case_real_composition_any),
     ("REDIRECT-NOT-FOLLOWED", case_redirect_not_followed),
     ("BASEURL-AUTHORITY", case_base_url_authority),
     ("N1-TEXT-ONLY", case_n1_text_only),
