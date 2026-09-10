@@ -29,11 +29,7 @@ from personal_agent.context.builder import ContextEnvelope
 from personal_agent.context.continuation import MAX_CLARIFICATION_QUESTION_CHARS
 from personal_agent.diagnostics import transcript
 from personal_agent.diagnostics.transcript import NullRecorder, Recorder
-from personal_agent.runtime.model_providers import (
-    PROVIDERS,
-    ToolNameMapper,
-    provider_for_api_base,
-)
+from personal_agent.runtime.a2_witness import A2Violation, A2Witness, verify
 from personal_agent.runtime.model_gateway import (
     ModelGatewayError,
     ModelProposal,
@@ -41,6 +37,16 @@ from personal_agent.runtime.model_gateway import (
     ProposedClarification,
     ProposedFailure,
     ProposedToolCall,
+)
+from personal_agent.runtime.model_input import (
+    InputPart,
+    TextInputPart,
+    image_parts,
+)
+from personal_agent.runtime.model_providers import (
+    PROVIDERS,
+    ToolNameMapper,
+    provider_for_api_base,
 )
 from personal_agent_core.errors import ErrorCode, ModelFailureReason
 from personal_agent_core.finance_tools import FINANCE_WRITE_TOOLS
@@ -828,6 +834,7 @@ def generate_with_adk(
     max_tokens: int,
     timeout: float,
     allowed_function_names: list[str] | None = None,
+    input_parts: tuple[InputPart, ...] = (),
 ) -> Any:
     """Generate one non-streaming turn through Google ADK's model contract.
 
@@ -836,6 +843,12 @@ def generate_with_adk(
     that subset is transported as ADK ``ANY``. Finance turns use this to
     require one explicitly scoped business or safe internal function instead
     of allowing a prose-only response.
+
+    `input_parts` are the current user turn's parts, in order (§8). They replace
+    the trailing text-only user message; every other message keeps the plain
+    string form it has always had, so a turn with no parts produces exactly the
+    request it produced before media existed. When any part carries an image,
+    the whole turn runs under the A2 witness -- see `_witnessed_client`.
     """
 
     # Lazy imports keep the base package importable when the optional runtime is
@@ -869,6 +882,14 @@ def generate_with_adk(
                 allowed_function_names=allowed_function_names,
             )
         )
+    contents = _contents(messages, input_parts, types)
+    expected_images = image_parts(input_parts)
+    witness, http_client, llm_kwargs = _witnessed_client(
+        api_key=api_key,
+        api_base=api_base,
+        timeout=timeout,
+        witness_required=bool(expected_images),
+    )
     llm = LiteLlm(
         model=model,
         api_key=api_key,
@@ -878,15 +899,10 @@ def generate_with_adk(
         extra_body=_thinking_request_params(
             model, provider_for_api_base(api_base)
         ),
+        **llm_kwargs,
     )
     request = LlmRequest(
-        contents=[
-            types.Content(
-                role=message["role"],
-                parts=[types.Part(text=message["content"])],
-            )
-            for message in messages
-        ],
+        contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=system,
             temperature=temperature,
@@ -897,25 +913,198 @@ def generate_with_adk(
     )
 
     async def one_response() -> Any:
-        responses = [
-            response
-            async for response in llm.generate_content_async(request, stream=False)
-        ]
-        if len(responses) != 1:
-            raise _invalid_model_response(
-                f"ADK returned {len(responses)} non-streaming responses",
-                reason=(
-                    ModelFailureReason.RESPONSE_EMPTY
-                    if not responses
-                    else ModelFailureReason.RESPONSE_AMBIGUOUS
-                ),
-                response_shape=(
-                    "zero_responses" if not responses else "multiple_responses"
-                ),
-            )
-        return responses[0]
+        try:
+            responses = [
+                response
+                async for response in llm.generate_content_async(request, stream=False)
+            ]
+            if len(responses) != 1:
+                raise _invalid_model_response(
+                    f"ADK returned {len(responses)} non-streaming responses",
+                    reason=(
+                        ModelFailureReason.RESPONSE_EMPTY
+                        if not responses
+                        else ModelFailureReason.RESPONSE_AMBIGUOUS
+                    ),
+                    response_shape=(
+                        "zero_responses" if not responses else "multiple_responses"
+                    ),
+                )
+            response = responses[0]
+            if witness is not None:
+                # §8.1: the evidence check happens before this function returns,
+                # so a turn whose image did not leave intact can never reach the
+                # caller's response parser, and therefore never reaches policy,
+                # dispatch or the user as a success.
+                verify(
+                    witness,
+                    expected_images=expected_images,
+                    prompt_tokens=_prompt_tokens(response),
+                )
+            return response
+        except A2Violation as violation:
+            raise _a2_refusal(str(violation)) from None
+        except Exception as exc:
+            # §8.1(1): a hook that refuses during the send can only be observed
+            # through the SDK's own exception, which reports it as a connection
+            # error. The violations the witness recorded before raising are what
+            # separate "the endpoint refused us" from "the network is down", so
+            # they are checked before the failure is handed on.
+            if witness is not None and witness.violations:
+                raise _a2_refusal(
+                    witness.violations[0], exception_type=type(exc).__name__
+                ) from None
+            raise exc
+        finally:
+            if http_client is not None:
+                await http_client.aclose()
 
     return asyncio.run(one_response())
+
+
+def _contents(
+    messages: list[dict[str, str]], input_parts: tuple[InputPart, ...], types: Any
+) -> list[Any]:
+    """The ADK message list, with the current turn's parts attached.
+
+    `_messages` guarantees the current user turn is last. Only that message uses
+    the structured form: giving every historical message a one-element list
+    would change the request shape of every text turn for no gain, and §8's
+    order requirement is about the message that actually carries an image.
+    """
+    if not input_parts:
+        return [
+            types.Content(
+                role=message["role"],
+                parts=[types.Part(text=message["content"])],
+            )
+            for message in messages
+        ]
+    if not messages:
+        raise ModelGatewayError("an image turn must carry its user message")
+
+    contents = [
+        types.Content(
+            role=message["role"],
+            parts=[types.Part(text=message["content"])],
+        )
+        for message in messages[:-1]
+    ]
+    contents.append(
+        types.Content(
+            role=messages[-1]["role"],
+            parts=[
+                (
+                    types.Part(text=part.text)
+                    if isinstance(part, TextInputPart)
+                    else types.Part(
+                        inline_data=types.Blob(
+                            mime_type=part.mime_type, data=part.data
+                        )
+                    )
+                )
+                for part in input_parts
+            ],
+        )
+    )
+    return contents
+
+
+def _pinned_host(api_base: str) -> str:
+    """The declared host this endpoint belongs to, or a refusal.
+
+    Failing closed matters more than the message: without a declared provider
+    there is no pinned host to check against, and a witness that recorded bytes
+    leaving for an unverified destination would be evidence for the wrong claim.
+    """
+    name = provider_for_api_base(api_base)
+    if name is None:
+        raise ModelGatewayError(
+            "an image turn requires the pinned endpoint of a declared provider"
+        )
+    return PROVIDERS[name].host
+
+
+def _a2_refusal(detail: str, *, exception_type: str | None = None) -> ModelGatewayError:
+    """Translate an A2 refusal into the gateway failure the caller already handles.
+
+    The refusal must arrive as this type rather than as the bare ``A2Violation``.
+    A photo turn that fails the §8 evidence check is a model-turn failure like any
+    other: the orchestrator already records a ``ModelFailureReason``, closes the
+    operation and audits it, and a ``RuntimeError`` that no caller names would
+    escape that path -- fail-closed, but with no durable record of why.
+
+    The reason is the umbrella ``UNAVAILABLE`` rather than a new enum value.
+    None of the existing reasons describes "the request that left was not the
+    request that was authorized", and adding one is a contract change that
+    belongs to Henson, not to this file (§5.1: do not invent a plausible rule).
+    ``response_shape`` is what an operator reads to tell the two apart, and
+    ``exception_type`` carries what the SDK called the refusal when the witness
+    raised during the send -- §8.1(1) records that name as misleading, so it is
+    kept beside the real reason rather than instead of it.
+    """
+    return ModelGatewayError(
+        detail,
+        reason=ModelFailureReason.UNAVAILABLE,
+        exception_type=exception_type,
+        response_shape="a2_evidence",
+    )
+
+
+def _witnessed_client(
+    *,
+    api_key: str,
+    api_base: str,
+    timeout: float,
+    witness_required: bool,
+) -> tuple[A2Witness | None, Any, dict[str, Any]]:
+    """Build the pinned client the witness rides on, when a turn carries an image.
+
+    §8.1(4): supplying ``client=`` moves URL authority from ``api_base`` to the
+    client's own ``base_url``, so a decoy ``api_base`` would be ignored and the
+    host pin would become a claim rather than a mechanism. The witness therefore
+    checks scheme and host itself and refuses before the send.
+
+    A turn with no image returns no client and no witness. That is deliberate:
+    §8's A2 obligation is about vouching for a photo, and routing every text
+    turn through a newly constructed HTTP client would change the production
+    text path to buy evidence about nothing. The two remaining constraints from
+    §8.1 are already properties of this composition for every turn --
+    ``num_retries=0`` is set above, and the witness is never given the chance to
+    rewrite what it records.
+    """
+    if not witness_required:
+        return None, None, {}
+
+    import httpx
+    from openai import AsyncOpenAI
+
+    witness = A2Witness(pinned_host=_pinned_host(api_base))
+    http_client = httpx.AsyncClient(
+        event_hooks={"request": [witness]},
+        # A redirect would carry the credential and the image to a host the
+        # witness never inspected. Refusing to follow one keeps every attempt
+        # inside the check above.
+        follow_redirects=False,
+        timeout=httpx.Timeout(timeout),
+    )
+    openai_client = AsyncOpenAI(
+        api_key=api_key,
+        base_url=api_base,
+        http_client=http_client,
+    )
+    return witness, http_client, {"client": openai_client}
+
+
+def _prompt_tokens(response: Any) -> int | None:
+    """The prompt token count ADK reports, as a value rather than a presence.
+
+    §8 makes this a numeric rule because a response carrying no ``usage`` field
+    at all still yields ``0`` here rather than ``None``: the two are not
+    distinguishable at this layer, so the rule has to be about the number.
+    """
+    metadata = getattr(response, "usage_metadata", None)
+    return getattr(metadata, "prompt_token_count", None)
 
 
 def _required_function_names(
