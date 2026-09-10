@@ -474,6 +474,14 @@ public struct AgentClient: Sendable {
         // first real-device chat send "failed" at 20.6s while the write
         // completed server-side (2026-08-01). Nginx allows 75s upstream.
         request.timeoutInterval = 45
+        // What this build can implement, on every request it sends (design
+        // §2.5). The calendar issuance and delivery gates read it per request,
+        // never from anything persisted, which is what makes a downgraded or
+        // restored device safe the moment it comes back. Set before the
+        // caller's own headers so a test can still override it deliberately.
+        request.setValue(
+            ClientWireVersion.value, forHTTPHeaderField: ClientWireVersion.header
+        )
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }

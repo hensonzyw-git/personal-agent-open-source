@@ -18,18 +18,41 @@ private final class StubProtocol: URLProtocol {
 
     nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> Route)?
     nonisolated(unsafe) static var requests: [String] = []
+    /// Every header set the wire actually carried, per request, in arrival
+    /// order. Recorded separately from `requests` so a test can ask what a
+    /// request *declared* and not only where it went.
+    nonisolated(unsafe) static var headers: [[String: String]] = []
     private static let lock = NSLock()
 
     static func record(_ path: String) {
         lock.withLock { requests.append(path) }
     }
 
+    static func record(_ request: URLRequest) {
+        lock.withLock { headers.append(request.allHTTPHeaderFields ?? [:]) }
+    }
+
     static func count(_ path: String) -> Int {
         lock.withLock { requests.filter { $0 == path }.count }
     }
 
+    /// The value a named header carried on **every** request this stub saw.
+    /// Returns nil when any request omitted it, or when none was made — a
+    /// declaration that holds on some requests and not others is exactly the
+    /// drift this is here to catch.
+    static func unanimousHeader(_ name: String) -> String? {
+        let seen = lock.withLock { headers }
+        guard !seen.isEmpty else { return nil }
+        let values = seen.map { $0[name] }
+        guard let first = values.first, first != nil else { return nil }
+        return values.allSatisfy { $0 == first } ? first : nil
+    }
+
     static func reset() {
-        lock.withLock { requests = [] }
+        lock.withLock {
+            requests = []
+            headers = []
+        }
         handler = nil
     }
 
@@ -39,6 +62,7 @@ private final class StubProtocol: URLProtocol {
     override func startLoading() {
         let path = request.url?.path ?? ""
         StubProtocol.record(path)
+        StubProtocol.record(request)
         let route = StubProtocol.handler?(request) ?? Route(status: 500, body: Data())
         let response = HTTPURLResponse(
             url: request.url!,
@@ -503,5 +527,67 @@ struct DeviceSessionTests {
         let summary = try await session.revokeSelf()
         #expect(summary.status == "revoked")
         #expect(await session.state == .rejected(deviceID: deviceID))
+    }
+}
+
+// --- the declared wire version ------------------------------------------------
+
+/// The header the server's calendar issuance and delivery gates read (design
+/// §2.5, R1-F1).
+///
+/// What is defended here is not "a header is set" but "**every** request
+/// declares it". A client that declared its capability only on the calls it
+/// remembered to mark would be read as v1 on the one it forgot — and v1 is not
+/// a degraded experience at this boundary: it is a refusal to issue, or an
+/// action withheld after the operation was already parked.
+@Suite("The declared client wire version", .serialized)
+struct ClientWireVersionTests {
+    @Test("this build declares the version it actually implements")
+    func versionIsTheImplementedOne() {
+        // v2 is the plural `device_actions` list plus the calendar identity,
+        // timezone and all-day date fields. Raising this without implementing
+        // them would be a claim to execute actions this build would mis-read.
+        #expect(ClientWireVersion.version == 2)
+        #expect(ClientWireVersion.value == "2")
+        #expect(ClientWireVersion.header == "X-Client-Wire-Version")
+    }
+
+    @Test("every request this build sends declares it, without exception")
+    func everyRequestDeclaresIt() async throws {
+        StubProtocol.reset()
+        // The answers are deliberately unusable. The header is set before the
+        // request leaves, so what the server replies cannot change what this
+        // test reads — and a test that needed five valid bodies would be
+        // checking only the calls someone remembered to give a body to, which
+        // is the same omission it is meant to catch.
+        StubProtocol.handler = { _ in .init(status: 500, body: Data()) }
+        let client = try stubbedClient()
+        let key = "018f0000-0000-7000-8000-0000000000ff"
+
+        _ = try? await client.requestChallenge(deviceID: deviceID)
+        _ = try? await client.sendChatMessage(
+            conversationID: "tl_1", text: "hi", idempotencyKey: key, token: "t"
+        )
+        _ = try? await client.operation(operationID: "op_1", token: "t")
+        _ = try? await client.reportDeviceActionResult(
+            actionID: key, body: .failed(detail: nil), token: "t"
+        )
+        _ = try? await client.uploadCalendarSync(
+            windowStart: Date(timeIntervalSince1970: 0),
+            windowEnd: Date(timeIntervalSince1970: 86_400),
+            events: [],
+            windowComplete: true,
+            snapshotAsOf: Date(timeIntervalSince1970: 0),
+            token: "t"
+        )
+
+        // The requests really went out; a stub that recorded nothing would
+        // make the assertion below pass for the wrong reason.
+        #expect(StubProtocol.count("/v1/chat/messages") == 1)
+        #expect(StubProtocol.count("/v1/calendar/sync") == 1)
+        #expect(
+            StubProtocol.unanimousHeader(ClientWireVersion.header)
+                == ClientWireVersion.value
+        )
     }
 }
