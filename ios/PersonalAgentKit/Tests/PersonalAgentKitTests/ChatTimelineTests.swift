@@ -1881,6 +1881,7 @@ private struct ReceiptVectors {
     let operationStates: [String]
     let recordEvidenceTools: [String]
     let queryEvidenceTools: [String]
+    let calendarQueryEvidenceTools: [String]
     let expenseCategories: [String]
     let cases: [Case]
 
@@ -1927,6 +1928,8 @@ private struct ReceiptVectors {
             operationStates: root["operation_states"] as? [String] ?? [],
             recordEvidenceTools: root["record_evidence_tools"] as? [String] ?? [],
             queryEvidenceTools: root["query_evidence_tools"] as? [String] ?? [],
+            calendarQueryEvidenceTools: root["calendar_query_evidence_tools"]
+                as? [String] ?? [],
             expenseCategories: root["expense_categories"] as? [String] ?? [],
             cases: cases
         )
@@ -1941,7 +1944,11 @@ private func label(_ outcome: OperationOutcome) -> String {
     case .needsDuplicateDecision: return "needs_duplicate_decision"
     case .recorded: return "recorded"
     case .answered: return "answered"
-    case .answeredWithQuery: return "answered_with_query"
+    case .answeredWithQuery, .answeredWithCalendarQuery:
+        // One wire name for "a succeeded governed read with a structured card":
+        // which card is the client's own business, and the server states only
+        // that the read produced a projectable result.
+        return "answered_with_query"
     case .failedSafe: return "failed_safe"
     case .needsManualReview: return "needs_manual_review"
     case .cancelledBeforeSubmit: return "cancelled_before_submit"
@@ -2079,6 +2086,83 @@ struct ReceiptContractTests {
         // here before it reaches a user.
         let vectors = try #require(vectors)
         #expect(Set(vectors.queryEvidenceTools) == OperationReceipt.queryEvidenceTools)
+    }
+
+    @Test("the calendar query-evidence tool set matches the server's")
+    func calendarQueryEvidenceToolsMatch() throws {
+        let vectors = try #require(vectors)
+        #expect(
+            Set(vectors.calendarQueryEvidenceTools)
+                == OperationReceipt.calendarQueryEvidenceTools
+        )
+        // Two sets, and never one tool in both: a result decoded as the wrong
+        // domain's card is the failure this separation exists to prevent.
+        #expect(
+            OperationReceipt.queryEvidenceTools
+                .isDisjoint(with: OperationReceipt.calendarQueryEvidenceTools)
+        )
+    }
+
+    @Test("the list card renders the rows the server's own summary renders")
+    func calendarCardMatchesTheServersSummary() throws {
+        // The two sides render from the same fields by hand-kept rules (design
+        // §13 step 6), so the vector's `answer` -- which the *server* produced
+        // from those fields -- is the only thing here that can catch a drift.
+        // The summary shows three lines and a total; the card shows all of the
+        // page. Those three must be character-identical.
+        let vectors = try #require(vectors)
+        let entry = try #require(
+            vectors.cases.first { $0.name == "calendar_query_list_card" }
+        )
+        let receipt = try JSONDecoder().decode(
+            OperationReceipt.self, from: entry.chatReceipt
+        )
+        guard case .answeredWithCalendarQuery(let result, let tool) = receipt.outcome
+        else {
+            Issue.record("expected the calendar list card, got \(receipt.outcome)")
+            return
+        }
+        #expect(tool == "calendar.query_events")
+        #expect(result.recordCount == 4)
+        #expect(result.nextCursor == nil)
+        #expect(!result.mirrorStale)
+        #expect(result.sourceSystem == "apple_calendar_mirror")
+        let answer = try #require(receipt.answer)
+        #expect(answer.hasSuffix("数据截至 \(result.dataAsOf)"))
+        for row in result.events.prefix(3) {
+            #expect(
+                answer.contains(row.line),
+                "the server summarised “\(row.line)” differently: \(answer)"
+            )
+        }
+        // The fourth row is past the summary's three lines and is on the card
+        // anyway -- that is what the card is for. Its calendar has no name the
+        // device knows, and the row shows none rather than the raw identifier.
+        #expect(result.events.count == 4)
+        #expect(result.events[3].calendarTitle == nil)
+        #expect(result.events[3].displayTitle == "体检")
+        // `created_by_agent` reaches the row, which is what draws 已创建.
+        #expect(result.events[0].createdByAgent)
+        #expect(!result.events[1].createdByAgent)
+        #expect(result.events[1].calendarTitle == "出游计划")
+    }
+
+    @Test("a calendar query page with a cursor says there is more")
+    func calendarPageWithACursor() throws {
+        // `next_cursor` is what drives 「看更多」, and the case that carries one
+        // is the only place the server's own page contract is exercised.
+        let page = """
+        {"status":"ok","events":[],"record_count":9,"next_cursor":"cur-2",\
+        "data_as_of":"2026-10-06T07:30:00+08:00","mirror_stale":false,\
+        "source_system":"apple_calendar_mirror"}
+        """
+        let result = try JSONDecoder().decode(
+            CalendarQueryResult.self, from: Data(page.utf8)
+        )
+        #expect(result.nextCursor == "cur-2")
+        // A page carries at most what the total says exists, which is what the
+        // 「另有 N 条未列出」 line counts against.
+        #expect(result.recordCount == 9)
     }
 
     @Test("every server chatReceipt projects to the outcome both sides agreed on")

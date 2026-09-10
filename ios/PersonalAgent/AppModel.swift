@@ -425,6 +425,16 @@ final class AppModel {
                 // it re-enters the app's.
                 await self?.calendarDidChange()
             }
+            // §9.1's query gate: the query card states 「本地日历有未同步的
+            // 变更」 from the device's own sequence comparison, never from the
+            // server's `mirror_stale` — the two are different facts about
+            // different sources and the server is never told this one. A
+            // build with no engine yet reports clean, which is what a device
+            // that has never uploaded has to say.
+            chat?.onReadCalendarUnsynced = { [weak self] in
+                guard let engine = self?.mirrorSyncEngine else { return false }
+                return (try? await engine.knownUnsynced) ?? false
+            }
             await chat?.open(conversationID: conversationID)
         } else if await chatTimeline.boundConversationID != conversationID {
             // The server named a different Timeline. Adopting it is the client's

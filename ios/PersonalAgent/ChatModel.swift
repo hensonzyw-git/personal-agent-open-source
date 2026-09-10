@@ -115,6 +115,23 @@ final class ChatModel {
     /// upload must never stop an unrelated 记账 message).
     var onSyncMirror: (() -> MirrorSyncHandle)?
 
+    /// The client-local calendar query gate (design §9.1), owned by the
+    /// composition and optional so tests compose without one. Absent ⇒ the gate
+    /// reports clean, which is the honest reading of a device with no mirror
+    /// engine: there is nothing it has changed and failed to upload.
+    var onReadCalendarUnsynced: (@MainActor () async -> Bool)?
+
+    /// The last answer from `onReadCalendarUnsynced`.
+    ///
+    /// A read-only mirror of a client-local fact, never a server projection:
+    /// the server's `mirror_stale` is a different statement about a different
+    /// source, and neither substitutes for the other (design §9.1). It is
+    /// re-read on every `mirror()`, which is the one funnel every path that can
+    /// change the screen — open, refresh, pagination, a settled send — goes
+    /// through, so a card drawn from history is drawn against the flag as it is
+    /// now rather than as it was when the card arrived.
+    private(set) var calendarUnsynced = false
+
     init(timeline: ChatTimeline, describe: @escaping @MainActor (Error) -> String) {
         self.timeline = timeline
         self.describe = describe
@@ -469,7 +486,7 @@ final class ChatModel {
         case .running:
             return "服务端仍在处理"
         case .needsClarification, .needsDuplicateDecision, .answered,
-             .answeredWithQuery, .recorded:
+             .answeredWithQuery, .answeredWithCalendarQuery, .recorded:
             // None of these are reachable for this route — it dispatches one
             // governed update and never a model turn — but the switch stays
             // exhaustive so a new outcome fails to compile here rather than
@@ -557,6 +574,10 @@ final class ChatModel {
     private func mirror() async {
         events = await timeline.events
         hasOlder = await timeline.hasOlder
+        // The query gate is read here rather than at the card, for the same
+        // reason everything else on screen is re-derived here: one funnel, one
+        // statement of what this screen currently knows.
+        calendarUnsynced = await onReadCalendarUnsynced?() ?? false
         // Merge, never replace. `decideDuplicate` records its own choice as soon
         // as the server accepts it, but the permanent marker is only projected
         // here once it is inside the loaded window. Rebuilding this map from

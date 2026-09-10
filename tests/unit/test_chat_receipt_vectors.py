@@ -39,6 +39,9 @@ from personal_agent.api.app import (
     _operation_projection,
 )
 from personal_agent.api.finance_dispatcher import (
+    _CALENDAR_QUERY_RESULT_TOOLS as DISPATCHER_CALENDAR_QUERY_RESULT_TOOLS,
+)
+from personal_agent.api.finance_dispatcher import (
     _QUERY_RESULT_TOOLS as DISPATCHER_QUERY_RESULT_TOOLS,
 )
 from personal_agent.api.finance_record_projection import (
@@ -157,6 +160,44 @@ def test_record_evidence_tools_match_the_server() -> None:
 def test_query_evidence_tools_match_the_server() -> None:
     """The client holds its hard-coded query check against this set."""
     assert V["query_evidence_tools"] == sorted(_QUERY_RESULT_TOOLS)
+
+
+def test_calendar_query_evidence_tools_match_the_server() -> None:
+    """`step 6`'s second pinned set, on the same terms as the first.
+
+    The client holds its own `calendarQueryEvidenceTools` against this, and that
+    set is what decides which of the two projections a `query_result` body is
+    even decoded as. Two hand-maintained lists agreeing proves only that they
+    agree; the derivation is asserted separately below.
+    """
+    assert V["calendar_query_evidence_tools"] == sorted(_CALENDAR_QUERY_RESULT_TOOLS)
+
+
+def test_the_calendar_query_projection_tool_set_is_derived_from_the_ir() -> None:
+    """Every enabled governed read of the mirror, and only those.
+
+    `finance_query_projection` and `calendar_query_projection` are separate
+    modules precisely so neither can decode the other's result, and the sets
+    that select them are what keep that true: the fork keys on the output
+    schema's own const, so a renamed field or a newly enabled mirror read fails
+    here rather than being rendered through the wrong card.
+    """
+    ir_derived = {
+        contract.name
+        for contract in TOOL_CONTRACTS
+        if contract.effect == "read"
+        and contract.enabled
+        and contract.output_schema.get("properties", {})
+        .get("source_system", {})
+        .get("const")
+        == "apple_calendar_mirror"
+    }
+    assert _CALENDAR_QUERY_RESULT_TOOLS == ir_derived
+    assert DISPATCHER_CALENDAR_QUERY_RESULT_TOOLS == ir_derived
+    assert "calendar.query_events" in ir_derived
+    # Disjoint from the ledger's set, or one result could be decoded as the
+    # other domain's card.
+    assert not (ir_derived & _QUERY_RESULT_TOOLS)
 
 
 def test_the_evidence_set_is_derived_from_the_ir_not_hand_listed() -> None:

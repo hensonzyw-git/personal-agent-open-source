@@ -388,6 +388,13 @@ public enum OperationOutcome: Sendable, Equatable {
     /// A structured Finance query result, read-only, rendered as a card rather
     /// than as prose. `tool` is the recorded query tool, shown on the card.
     case answeredWithQuery(result: FinanceQueryResult, tool: String?)
+    /// A structured calendar mirror query result, read-only, rendered as the
+    /// list card (design §9.2). A separate case from `answeredWithQuery`
+    /// because the two cards read different fields and render by different
+    /// rules -- folding them into one case would mean one card type that has
+    /// to know which domain it is holding, which is the shape that renders a
+    /// calendar row through ledger presentation.
+    case answeredWithCalendarQuery(result: CalendarQueryResult, tool: String?)
     /// Nothing was written.
     case failedSafe(reason: String?)
     /// Something may have been written and could not be verified. Never shown as
@@ -417,7 +424,8 @@ public enum OperationOutcome: Sendable, Equatable {
         case .running, .needsManualReview, .indeterminate:
             return false
         case .needsClarification, .needsDuplicateDecision, .recorded, .answered,
-             .answeredWithQuery, .failedSafe, .cancelledBeforeSubmit:
+             .answeredWithQuery, .answeredWithCalendarQuery, .failedSafe,
+             .cancelledBeforeSubmit:
             return true
         }
     }
@@ -459,6 +467,10 @@ public struct OperationReceipt: Sendable, Equatable {
     /// The structured `finance.query_expenses` projection, when the tool was a
     /// query and the result decoded. `nil` for every other tool.
     public let queryResult: FinanceQueryResult?
+    /// The structured `calendar.query_events` projection, on the same terms as
+    /// `queryResult` and never both: `query_result` is one field carrying one
+    /// of the two projections, and the recorded tool is what says which.
+    public let calendarQuery: CalendarQueryResult?
     /// The written ledger row, when this was a governed write the server could
     /// project (`G1`). `nil` for every other tool and for a replay.
     public let record: FinanceExpenseRecord?
@@ -485,6 +497,7 @@ public struct OperationReceipt: Sendable, Equatable {
         duplicateExisting: String?,
         answer: String?,
         queryResult: FinanceQueryResult? = nil,
+        calendarQuery: CalendarQueryResult? = nil,
         record: FinanceExpenseRecord? = nil,
         deviceActions: [DeviceActionEnvelope] = []
     ) {
@@ -500,6 +513,7 @@ public struct OperationReceipt: Sendable, Equatable {
         self.duplicateExisting = duplicateExisting
         self.answer = answer
         self.queryResult = queryResult
+        self.calendarQuery = calendarQuery
         self.record = record
         self.deviceActions = deviceActions
     }
@@ -543,6 +557,15 @@ public struct OperationReceipt: Sendable, Equatable {
         "finance.query_expenses",
     ]
 
+    /// The calendar mirror's governed read, on the same terms as
+    /// `queryEvidenceTools` and held equal to the server by the vector's
+    /// `calendar_query_evidence_tools`. Two sets rather than one because the
+    /// two projections are different types: this is what tells the decoder
+    /// which of them `query_result` is even attempted as.
+    public static let calendarQueryEvidenceTools: Set<String> = [
+        "calendar.query_events",
+    ]
+
     public var outcome: OperationOutcome {
         Self.project(
             state: state,
@@ -554,6 +577,7 @@ public struct OperationReceipt: Sendable, Equatable {
             duplicateExisting: duplicateExisting,
             answer: answer,
             queryResult: queryResult,
+            calendarQuery: calendarQuery,
             record: record
         )
     }
@@ -584,6 +608,7 @@ public struct OperationReceipt: Sendable, Equatable {
         duplicateExisting: String?,
         answer: String?,
         queryResult: FinanceQueryResult? = nil,
+        calendarQuery: CalendarQueryResult? = nil,
         record: FinanceExpenseRecord? = nil
     ) -> OperationOutcome {
         let tool: String?
@@ -617,6 +642,20 @@ public struct OperationReceipt: Sendable, Equatable {
                 }
                 // A query that succeeded without a projectable result is not a
                 // success this client can present.
+                return .indeterminate(state: state.wire)
+            }
+            if let tool, Self.calendarQueryEvidenceTools.contains(tool) {
+                if let calendarQuery {
+                    return .answeredWithCalendarQuery(
+                        result: calendarQuery, tool: tool
+                    )
+                }
+                // A governed calendar read that came back with a result this
+                // build cannot draw -- the wrong domain's projection, or one
+                // whose rows break the all-day/timed invariants -- is not an
+                // answer. It is also deliberately *not* `.answered(answer)`:
+                // the server's deterministic summary would read as a clean
+                // reply for a body this client refused to trust.
                 return .indeterminate(state: state.wire)
             }
             // Without tool evidence an `answer` cannot be trusted as a clean
@@ -670,7 +709,8 @@ extension OperationReceipt: Decodable {
         state = OperationState(wire: try container.decode(String.self, forKey: .state))
         cancelRequested = try container.decode(Bool.self, forKey: .cancelRequested)
         clientDetached = try container.decode(Bool.self, forKey: .clientDetached)
-        tool = try container.decodeIfPresent(String.self, forKey: .tool)
+        let recordedTool = try container.decodeIfPresent(String.self, forKey: .tool)
+        tool = recordedTool
         recordID = try container.decodeIfPresent(String.self, forKey: .recordID)
         failureReason = try container.decodeIfPresent(
             String.self, forKey: .failureReason
@@ -688,9 +728,22 @@ extension OperationReceipt: Decodable {
         // A malformed `query_result` is a query this build cannot render, not a
         // reason to lose the whole receipt: it decodes to `nil` and the screen
         // fails closed on the query card while everything else still works.
-        queryResult = try? container.decodeIfPresent(
-            FinanceQueryResult.self, forKey: .queryResult
-        )
+        //
+        // Which of the two projections it is, is the *recorded tool's* answer
+        // and never the body's shape -- the server forks on the same
+        // IR-derived pair, so neither side can be talked into rendering a
+        // Finance result as a calendar row by a field that happens to line up.
+        if let recordedTool, Self.calendarQueryEvidenceTools.contains(recordedTool) {
+            calendarQuery = try? container.decodeIfPresent(
+                CalendarQueryResult.self, forKey: .queryResult
+            )
+            queryResult = nil
+        } else {
+            queryResult = try? container.decodeIfPresent(
+                FinanceQueryResult.self, forKey: .queryResult
+            )
+            calendarQuery = nil
+        }
         // Same fail-closed shape as `query_result`, and for a stronger reason: a
         // malformed record is a card this build cannot draw, never a reason to
         // lose the receipt that proves the write. It decodes to `nil` and the
@@ -1012,17 +1065,26 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
             } else {
                 toolEvidence = .unknown
             }
-            // A structured Finance query projection, when the event carried one.
+            let tool: String?
+            if case .known(let value) = toolEvidence { tool = value } else { tool = nil }
+            // A structured query projection, when the event carried one.
             // Decoded from the nested object so history renders the same card as
-            // the live receipt.
+            // the live receipt -- and, as on the receipt, through the same
+            // tool-decides-which-projection fork. An event recorded before tool
+            // recording carries no tool and stays `.unknown`, which is not the
+            // same fact as "a calendar query" and never decodes as one.
             let queryResult: FinanceQueryResult?
-            if let object = content["query_result"]?.objectValue,
-               let data = try? JSONEncoder().encode(object) {
-                queryResult = try? JSONDecoder().decode(
-                    FinanceQueryResult.self, from: data
+            let calendarQuery: CalendarQueryResult?
+            if let tool, OperationReceipt.calendarQueryEvidenceTools.contains(tool) {
+                calendarQuery = decodeProjection(
+                    CalendarQueryResult.self, from: content["query_result"]
                 )
-            } else {
                 queryResult = nil
+            } else {
+                queryResult = decodeProjection(
+                    FinanceQueryResult.self, from: content["query_result"]
+                )
+                calendarQuery = nil
             }
             // `G1`'s business fields, read the same way and for the same
             // reason: scrolling back must draw the same card the live receipt
@@ -1047,6 +1109,7 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                     duplicateExisting: content["duplicate_existing"]?.stringValue,
                     answer: content["answer"]?.stringValue,
                     queryResult: queryResult,
+                    calendarQuery: calendarQuery,
                     record: record
                 ),
                 state: state,
@@ -1175,4 +1238,19 @@ public struct TimelinePageResponse: Sendable, Equatable, Decodable {
 public enum TimelineDirection: String, Sendable {
     case older
     case newer
+}
+
+/// Decode a nested Timeline content object as a projection.
+///
+/// A Timeline `query_result` arrives as `JSONValue`, so it is re-encoded into
+/// the bytes the projection types already know how to read. A body that will
+/// not decode returns `nil` and the caller fails closed -- history never gets
+/// a second, more permissive reader than the live receipt.
+private func decodeProjection<T: Decodable>(
+    _ type: T.Type, from value: JSONValue?
+) -> T? {
+    guard let object = value?.objectValue,
+          let data = try? JSONEncoder().encode(object)
+    else { return nil }
+    return try? JSONDecoder().decode(T.self, from: data)
 }

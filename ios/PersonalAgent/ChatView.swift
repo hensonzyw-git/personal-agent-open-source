@@ -764,6 +764,8 @@ struct ChatView: View {
             )
         } else if case .answeredWithQuery(let result, let tool) = outcome {
             queryReceiptCard(result: result, tool: tool, operationID: operationID)
+        } else if case .answeredWithCalendarQuery(let result, let tool) = outcome {
+            calendarQueryReceiptCard(result: result, tool: tool, operationID: operationID)
         } else {
             plainReceiptCard(
                 outcome: outcome,
@@ -1390,6 +1392,127 @@ struct ChatView: View {
         }
     }
 
+    // --- the calendar list card (design §9.2) --------------------------------
+
+    /// A row per event: 标题 · 日期时间（或全天日期区间）· 日历名 · [已创建].
+    ///
+    /// Every string on this card comes from a row field of the projection, by
+    /// the same rules the server's own summary renders by (`§5.2`/`§5.3`): an
+    /// all-day event from its dates (end exclusive), a timed event in its own
+    /// zone with the zone named, and the truncation and uncertainty notes
+    /// spelled out. The rules live in `CalendarQueryResult.EventRow`; this view
+    /// only lays them out.
+    private func calendarQueryReceiptCard(
+        result: CalendarQueryResult, tool: String?, operationID: String?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("查询结果").font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                if let tool {
+                    Text(tool).font(.caption.monospaced()).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.top, Metric.cardHeaderTop)
+            .padding(.bottom, Metric.cardHeaderBottom)
+
+            VStack(spacing: 0) {
+                // The two warnings are different facts and can both be true
+                // (design §9.1): this one is about what *this device* has
+                // changed and not yet uploaded, and it never waits on the
+                // server's mirror state to say so.
+                if model.calendarUnsynced {
+                    calendarNote("本地日历有未同步的变更，结果可能不含最新日程")
+                }
+                if result.mirrorStale {
+                    calendarNote("日历镜像已陈旧或未覆盖该时间段，结果可能不全")
+                }
+                ForEach(Array(result.events.enumerated()), id: \.offset) { _, row in
+                    calendarEventRow(row)
+                }
+                if result.events.isEmpty {
+                    calendarNote(
+                        result.mirrorStale
+                            ? "日历镜像尚未同步，暂时无法给出安排"
+                            : "这个时间段没有日程"
+                    )
+                } else if result.nextCursor != nil {
+                    calendarNote("已显示部分日程，查询结果还有更多。")
+                    Button("继续查看上一条日程查询的更多结果") {
+                        model.draft = "继续查看上一条日程查询的更多结果"
+                    }
+                    .font(.footnote)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Metric.fieldRowPadding)
+                    .overlay(alignment: .top) { hairline }
+                } else {
+                    fieldRow("日程数", "已全部显示（共 \(result.recordCount) 条）")
+                }
+                // The freshness line is the server's own words, stated only
+                // when the mirror is fresh enough to have a 截至 time worth
+                // showing. A stale mirror already said so above.
+                if !result.mirrorStale, !result.dataAsOf.isEmpty {
+                    fieldRow("数据截至", result.dataAsOf)
+                }
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.bottom, Metric.cardInset)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(Color.cardBorder, lineWidth: Metric.hairline)
+        )
+        // The same long-press menu as the other receipt cards: a query has no
+        // `record_id` of its own, but its `operation_id` is what the evidence
+        // would be checked against.
+        .modifier(evidenceMenu(recordID: nil, operationID: operationID, explicit: false))
+    }
+
+    private func calendarEventRow(_ row: CalendarQueryResult.EventRow) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(row.displayTitle).font(.callout)
+                if row.createdByAgent {
+                    Text("已创建")
+                        .font(.caption2)
+                        .foregroundStyle(Color.accentText)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.surface, in: Capsule())
+                }
+            }
+            HStack(spacing: 8) {
+                Text(row.when).font(.caption).foregroundStyle(.secondary)
+                // A calendar with no name the device knows shows no name here.
+                // The EventKit identifier is not a substitute for one.
+                if let calendarTitle = row.calendarTitle {
+                    Text(calendarTitle).font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(row.annotations, id: \.self) { note in
+                    Text(note).font(.caption2).foregroundStyle(Color.pending)
+                }
+            }
+        }
+        .padding(.vertical, Metric.fieldRowPadding)
+        .overlay(alignment: .top) { hairline }
+    }
+
+    private func calendarNote(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption2)
+            Text(text).font(.caption)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(Color.pending)
+        .padding(.vertical, Metric.fieldRowPadding)
+        .overlay(alignment: .top) { hairline }
+    }
+
     @ViewBuilder
     private func plainReceiptCard(
         outcome: OperationOutcome,
@@ -1414,7 +1537,7 @@ struct ChatView: View {
             // Handled by `recordedReceipt` and `queryReceiptCard` above;
             // listed only to keep the switch exhaustive, so a new outcome still
             // fails to compile here.
-            case .recorded, .answeredWithQuery:
+            case .recorded, .answeredWithQuery, .answeredWithCalendarQuery:
                 EmptyView()
 
             case .answered(let text):
@@ -1601,7 +1724,7 @@ struct ChatView: View {
             case .unknown:
                 return TerminalBadge(text: "工具事实不可用", color: .secondary)
             }
-        case .answeredWithQuery:
+        case .answeredWithQuery, .answeredWithCalendarQuery:
             // The query card carries its own header; a badge here would compete
             // with the structured rows it renders.
             return nil
