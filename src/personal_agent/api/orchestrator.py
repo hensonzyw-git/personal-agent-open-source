@@ -192,18 +192,26 @@ class DeviceActionIssued:
     `action_id` is the operation's own idempotency key, so one message can
     produce at most one device side effect and the device's report PATCHes the
     same operation the response came from. `event_fields` is the
-    schema-validated model input, echoed verbatim: the phone builds the
-    EKEvent from exactly what was authorised, not from anything re-derived.
+    schema-validated model input, carried alongside the routing decision the
+    server made: the phone builds the EKEvent from exactly what was authorised,
+    not from anything re-derived.
+
+    `wire_version` travels with the action so the phone and the Host agree on
+    what its fields mean, rather than each assuming the other's reading. A
+    client that does not implement it is never handed the action at all
+    (design 2.5).
     """
 
     action_id: str
     tool: str
+    wire_version: int
     event_fields: dict[str, Any]
 
     def response_payload(self) -> dict[str, Any]:
         return {
             "action_id": self.action_id,
             "tool": self.tool,
+            "wire_version": self.wire_version,
             "event": self.event_fields,
         }
 

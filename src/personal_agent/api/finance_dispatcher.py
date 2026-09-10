@@ -55,7 +55,13 @@ from personal_agent.api.calendar_query_projection import (
     decode_calendar_query_projection,
     summarise_calendar_projection,
 )
+from personal_agent.api.calendar_issue import (
+    action_fields,
+    issuance_policy,
+    routing_question,
+)
 from personal_agent.api.control_client import (
+    CalendarResolved,
     ControlPlaneError,
     FinanceControlClient,
 )
@@ -79,6 +85,7 @@ from personal_agent.api.orchestrator import (
     CommitOutcome,
     CommitUnknown,
     DeviceActionIssued,
+    NeedsClarification,
     ReadCompleted,
     Resolved,
     ResolveFailedSafe,
@@ -99,7 +106,7 @@ from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.finance_tools import FINANCE_READ_TOOLS
 from personal_agent_core.host_context import HostContext, ServiceKeyRing
 from personal_agent_core.manifest import canonical_json
-from personal_agent_core.tool_ir import TOOL_CONTRACTS
+from personal_agent_core.tool_ir import TOOL_CONTRACTS, ToolContract
 
 
 _log = logging.getLogger(__name__)
@@ -149,17 +156,18 @@ _CALENDAR_QUERY_RESULT_TOOLS: frozenset[str] = frozenset(
 )
 
 
-#: Whether a tool's executor is the user's device, derived from the IR. A
+#: A tool whose executor is the user's device, derived from the IR. A
 #: device-executed write never crosses the MCP bridge; the dispatcher
-#: authorises it and issues a device action instead. Derived, never
-#: hand-listed: a second device tool ships into the fork automatically, and
-#: flipping `calendar.create_event` back to `mcp` leaves the fork empty —
-#: which the orchestrator's exhaustiveness assertion then surfaces.
-def _is_device_executed(remote_name: str) -> bool:
-    return any(
-        contract.name == remote_name and contract.executor == "device"
-        for contract in TOOL_CONTRACTS
-    )
+#: authorises it, resolves what it targets, and issues a device action
+#: instead. Derived, never hand-listed: a second device tool ships into the
+#: fork automatically, and flipping `calendar.create_event` back to `mcp`
+#: leaves the fork empty — which the orchestrator's exhaustiveness assertion
+#: then surfaces.
+def _device_contract(remote_name: str) -> ToolContract | None:
+    for contract in TOOL_CONTRACTS:
+        if contract.name == remote_name and contract.executor == "device":
+            return contract
+    return None
 
 
 
@@ -251,14 +259,15 @@ class McpFinanceDispatcher:
             remote = self._remote_name(tool)
         except AppError as error:
             return ResolveFailedSafe(reason=_reason(error))
-        if _is_device_executed(remote):
+        contract = _device_contract(remote)
+        if contract is not None:
             # Device-executed write: authorise exactly like any governed
             # write (scope, allowlist, write switch, schema — the bridge
-            # refuses before anything can be issued), then stop. No MCP call
-            # exists for this tool; the executor is the phone, reached by the
-            # chat response itself. The action id *is* the operation's
-            # idempotency key, so one message can produce at most one device
-            # side effect.
+            # refuses before anything can be issued), then resolve what it
+            # targets and stop. No MCP call exists for this tool; the executor
+            # is the phone, reached by the chat response itself. The action id
+            # *is* the operation's idempotency key, so one message can produce
+            # at most one device side effect.
             try:
                 # The cleaned arguments are the *attested* ones: host-only
                 # fields the model tried to smuggle in are gone, and a field
@@ -271,14 +280,57 @@ class McpFinanceDispatcher:
             except AppError as error:
                 # Nothing was issued, so this is provably zero-write.
                 return ResolveFailedSafe(reason=_reason(error))
+            try:
+                # The server, not the model and not the phone, decides which
+                # *calendar* the name meant: this is the one step a device
+                # action needs that has no MCP call behind it. A shape the
+                # service never accepts is refused here, before anything is
+                # issued, and the model can recompute it.
+                request = issuance_policy(remote)(attested)
+            except AppError as error:
+                return ResolveFailedSafe(reason=_reason(error))
             if idempotency_key is None:
                 return ResolveFailedSafe(
                     reason="device action requires the operation idempotency key"
                 )
+            try:
+                resolution = self._run(
+                    self._control.resolve_calendar(
+                        device_id=self._context.device.device_id,
+                        title=request.calendar_title,
+                    )
+                )
+            except ControlPlaneError as error:
+                # The directory could not be read, so no action is issued and
+                # none is claimed. Not a clarification: there is no question a
+                # user could answer to make an unreachable service reachable.
+                _log.warning(
+                    "calendar routing unreadable tool=%s trace_id=%s: %s",
+                    tool,
+                    self._context.conversation_trace_id,
+                    error,
+                )
+                return ResolveFailedSafe(reason=ErrorCode.SOURCE_UNAVAILABLE.value)
+            if not isinstance(resolution, CalendarResolved):
+                # The world does not currently allow this write — the name
+                # matches nothing, matches two accounts, or matches only a
+                # calendar that cannot be written to. That is not an invalid
+                # argument: the user asked for something reasonable, and only
+                # they can say which calendar they meant. So it becomes a
+                # question, and no action, no operation seal and no write
+                # results from it.
+                return NeedsClarification(
+                    reason=routing_question(
+                        resolution, title=request.calendar_title
+                    )
+                )
             return DeviceActionIssued(
                 action_id=idempotency_key,
                 tool=tool,
-                event_fields=attested,
+                wire_version=contract.wire_version,
+                event_fields=action_fields(
+                    request, resolution, attested=attested
+                ),
             )
         if remote not in READ_TOOLS:
             # A write tool has exactly one MCP call and it belongs to `commit`.
@@ -334,7 +386,7 @@ class McpFinanceDispatcher:
         idempotency_key: str,
         duplicate_override: str | None,
     ) -> CommitOutcome:
-        if _is_device_executed(intent.tool):
+        if _device_contract(intent.tool) is not None:
             # The two-phase protocol has no phase 2 for a device tool: the
             # write was issued in `resolve` and the phone reports back through
             # its own endpoint. Reaching `commit` means the dispatch fork

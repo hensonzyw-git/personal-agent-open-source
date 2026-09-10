@@ -24,8 +24,15 @@ from personal_agent.api.finance_dispatcher import (
     DispatcherContext,
     McpFinanceDispatcher,
 )
+from personal_agent.api.control_client import (
+    CalendarCandidate,
+    CalendarResolved,
+    CalendarUnresolved,
+    ControlPlaneError,
+)
 from personal_agent.api.orchestrator import (
     DeviceActionIssued,
+    NeedsClarification,
     ResolveFailedSafe,
 )
 from personal_agent.policy.bridge import DeviceAuthorization
@@ -82,10 +89,34 @@ class SpyBridge:
         raise AssertionError("device-executed tool must never reach bridge.execute")
 
 
-def cal_dispatcher(bridge: SpyBridge) -> McpFinanceDispatcher:
+class FakeControl:
+    """The control plane's calendar lookup, as the dispatcher sees it.
+
+    The device path reads no Finance execution and signs no Host Context, but
+    it does ask *which calendar this name is*: the directory is in the MCP
+    database and the model must not be able to choose an identifier itself.
+    """
+
+    def __init__(self, resolution=None, *, error: Exception | None = None) -> None:
+        self._resolution = resolution or CalendarResolved(
+            calendar_identifier="uuid-ri-chang", calendar_title="日常安排"
+        )
+        self._error = error
+        self.lookups: list[tuple[str, str]] = []
+
+    async def resolve_calendar(self, *, device_id: str, title: str):
+        self.lookups.append((device_id, title))
+        if self._error is not None:
+            raise self._error
+        return self._resolution
+
+
+def cal_dispatcher(
+    bridge: SpyBridge, control: FakeControl | None = None
+) -> McpFinanceDispatcher:
     return McpFinanceDispatcher(
         bridge=bridge,
-        control=None,  # device path never reads the control plane on resolve
+        control=control or FakeControl(),
         signing_ring=None,  # no Host Context is signed when nothing is sent
         context=DispatcherContext(
             device=CAL_DEVICE,
@@ -93,6 +124,15 @@ def cal_dispatcher(bridge: SpyBridge) -> McpFinanceDispatcher:
             agent_id="agent-1",
             conversation_trace_id="trace-1",
         ),
+    )
+
+
+def _issued(attested: dict, resolution) -> dict:
+    """What the phone receives for one attested request, as it receives it."""
+    from personal_agent.api.calendar_issue import action_fields, parse_request
+
+    return action_fields(
+        parse_request(attested), resolution, attested=attested
     )
 
 
@@ -108,7 +148,19 @@ def test_calendar_create_event_authorizes_and_issues_a_device_action() -> None:
     )
     assert isinstance(outcome, DeviceActionIssued)
     assert outcome.tool == "calendar.create_event"
-    assert outcome.event_fields == CAL_ARGS
+    # The action carries the attested request plus the routing the server did:
+    # the phone never picks a calendar, so the identifier can only come from
+    # here. Both date fields are written out as null rather than omitted, so
+    # the client can tell "not applicable" from "did not arrive".
+    assert outcome.event_fields == {
+        **CAL_ARGS,
+        "calendar_identifier": "uuid-ri-chang",
+        "calendar_title": "日常安排",
+        "timezone": None,
+        "start_date": None,
+        "end_date": None,
+    }
+    assert outcome.wire_version == 2
     # Authorisation genuinely ran — scope, allowlist and schema are still the
     # governed path even though no connector is behind this tool.
     assert bridge.authorized == ["calendar.create_event"]
@@ -138,7 +190,14 @@ def test_the_issued_action_carries_the_attested_arguments_not_the_raw_output() -
         idempotency_key="action-key-1",
     )
     assert isinstance(outcome, DeviceActionIssued)
-    assert outcome.event_fields == CAL_ARGS
+    assert outcome.event_fields == {
+        **CAL_ARGS,
+        "calendar_identifier": "uuid-ri-chang",
+        "calendar_title": "日常安排",
+        "timezone": None,
+        "start_date": None,
+        "end_date": None,
+    }
     assert "device_id" not in outcome.event_fields
 
 
@@ -271,6 +330,7 @@ def test_apply_resolve_moves_device_action_to_source_in_progress(op_session) -> 
         outcome = DeviceActionIssued(
             action_id="action-key-1",
             tool="calendar.create_event",
+            wire_version=2,
             event_fields=dict(CAL_ARGS),
         )
         result = _apply_resolve(
@@ -292,6 +352,7 @@ def test_apply_resolve_moves_device_action_to_source_in_progress(op_session) -> 
         assert result.device_action == {
             "action_id": "action-key-1",
             "tool": "calendar.create_event",
+            "wire_version": 2,
             "event": dict(CAL_ARGS),
         }
         # And it is sealed on the row in the same transition, so the poll can
@@ -579,6 +640,7 @@ def test_the_issued_action_is_sealed_on_the_operation_in_the_same_transition(
         outcome = DeviceActionIssued(
             action_id="action-key-1",
             tool="calendar.create_event",
+            wire_version=2,
             event_fields=dict(CAL_ARGS),
         )
         result = _apply_resolve(
@@ -618,6 +680,7 @@ def test_the_projection_hands_the_action_over_while_parked(op_session) -> None:
             DeviceActionIssued(
                 action_id="action-key-1",
                 tool="calendar.create_event",
+                wire_version=2,
                 event_fields=dict(CAL_ARGS),
             ),
             dispatcher=None,
@@ -632,6 +695,7 @@ def test_the_projection_hands_the_action_over_while_parked(op_session) -> None:
         assert projection["device_action"] == {
             "action_id": "action-key-1",
             "tool": "calendar.create_event",
+            "wire_version": 2,
             "event": dict(CAL_ARGS),
         }
 
@@ -655,6 +719,7 @@ def test_a_settled_operation_refuses_to_hand_the_action_over(op_session) -> None
             DeviceActionIssued(
                 action_id="action-key-1",
                 tool="calendar.create_event",
+                wire_version=2,
                 event_fields=dict(CAL_ARGS),
             ),
             dispatcher=None,
@@ -703,6 +768,7 @@ def test_an_unopenable_action_envelope_fails_closed(op_session) -> None:
             DeviceActionIssued(
                 action_id="action-key-1",
                 tool="calendar.create_event",
+                wire_version=2,
                 event_fields=dict(CAL_ARGS),
             ),
             dispatcher=None,
@@ -757,6 +823,7 @@ def test_a_finance_operation_never_carries_a_device_action(op_session) -> None:
             DeviceActionIssued(
                 action_id="action-key-1",
                 tool="calendar.create_event",
+                wire_version=2,
                 event_fields=dict(CAL_ARGS),
             ),
             dispatcher=None,
@@ -773,3 +840,355 @@ def test_a_finance_operation_never_carries_a_device_action(op_session) -> None:
 
         projection = _operation_projection(keyring, operation)
         assert "device_action" not in projection
+
+
+@pytest.mark.parametrize(
+    "wire_version",
+    [
+        pytest.param("absent", id="missing"),
+        pytest.param("2", id="string"),
+        pytest.param(True, id="bool"),
+        pytest.param(0, id="below-one"),
+    ],
+)
+def test_a_sealed_action_with_an_unreadable_wire_version_does_not_open(
+    op_session, wire_version
+) -> None:
+    """The delivery gate compares the action's `wire_version` against the
+    client's own, so an action whose version is missing or nonsense must not
+    open at all. Reading it as "no requirement" would hand the v2 action --
+    routing identifier, zone, all-day dates -- to the v1 client this field
+    exists to keep it away from, and the seal would be testifying to a write
+    the client performs differently than the one that was authorised."""
+    from personal_agent.api.app import _operation_projection
+    from personal_agent.api.device_action_projection import seal_device_action
+    from personal_agent.api.orchestrator import _apply_resolve
+
+    factory, now = op_session
+    keyring = _action_keyring()
+    with factory() as session:
+        operation = _make_operation(session)
+        _apply_resolve(
+            session,
+            operation,
+            DeviceActionIssued(
+                action_id="action-key-1",
+                tool="calendar.create_event",
+                wire_version=2,
+                event_fields=dict(CAL_ARGS),
+            ),
+            dispatcher=None,
+            keyring=None,
+            now=now,
+            action_keyring=keyring,
+        )
+        session.commit()
+        session.refresh(operation)
+
+        # A crafted seal under the *right* key: the envelope opens cleanly, so
+        # only the shape check can refuse it.
+        crafted = {
+            "action_id": "action-key-1",
+            "tool": "calendar.create_event",
+            "event": dict(CAL_ARGS),
+        }
+        if wire_version != "absent":
+            crafted["wire_version"] = wire_version
+        operation.encrypted_device_action = seal_device_action(
+            keyring, operation_id=operation.operation_id, action=crafted
+        )
+        session.commit()
+        session.refresh(operation)
+
+        assert "device_action" not in _operation_projection(keyring, operation)
+
+
+# --- pre-issuance policy: shapes the service never accepts -------------------
+
+ALL_DAY_ARGS = {
+    "title": "西班牙之旅",
+    "start": "2026-10-01T00:00:00+08:00",
+    "end": "2026-10-04T00:00:00+08:00",
+    "all_day": True,
+    "calendar": "出游计划",
+    "start_date": "2026-10-01",
+    "end_date": "2026-10-04",
+}
+
+
+def _refusal_with(model_args: dict, resolution):
+    """Resolve one create request against a chosen routing answer."""
+    bridge = SpyBridge()
+    control = FakeControl(resolution)
+    return (
+        cal_dispatcher(bridge, control).resolve(
+            tool="calendar.create_event",
+            model_args=model_args,
+            idempotency_key="action-key-1",
+        ),
+        bridge,
+        control,
+    )
+
+
+def _refusal(model_args: dict):
+    return _refusal_with(
+        model_args, CalendarResolved("uuid-ri-chang", "日常安排")
+    )
+
+
+def test_the_flight_plan_calendar_is_refused_by_the_service() -> None:
+    """【飞行计划】 is in the enum so that choosing it produces a refusal rather
+    than the model inventing a calendar or funnelling a flight into
+    【日常安排】. The service is the single refusal point, and the refusal
+    precedes routing: the phone's directory is never even consulted about a
+    calendar nothing may write to."""
+    outcome, bridge, control = _refusal({**CAL_ARGS, "calendar": "飞行计划"})
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "INVALID_ARGUMENT"
+    assert control.lookups == []
+    assert bridge.executed == []
+
+
+def test_an_unknown_timezone_is_refused() -> None:
+    """`ZoneInfo` is the authority on whether a zone exists; a model that
+    invents `Asia/Shangai` must be told to recompute, not have its typo
+    silently resolved to Shanghai."""
+    outcome, bridge, _ = _refusal({**CAL_ARGS, "timezone": "Asia/Shangai"})
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "INVALID_ARGUMENT"
+    assert bridge.executed == []
+
+
+def test_an_all_day_event_carrying_a_zone_is_refused() -> None:
+    """The EventKit probe froze this: an all-day event is a floating date with
+    no owning zone, so a zone on one has no meaning to store and no meaning to
+    execute."""
+    outcome, _, _ = _refusal({**ALL_DAY_ARGS, "timezone": "Europe/Madrid"})
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "INVALID_ARGUMENT"
+
+
+def test_an_all_day_instant_that_is_not_local_midnight_is_refused() -> None:
+    """The dates are the source of truth for an all-day event, and the model's
+    own midnight arithmetic is not trusted: an instant that disagrees with the
+    date it claims to be would make the action mean two things at once, and
+    the phone would have to pick one. This is a recomputation, not a question
+    for the user."""
+    outcome, _, _ = _refusal(
+        {**ALL_DAY_ARGS, "start": "2026-10-01T09:00:00+08:00"}
+    )
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "INVALID_ARGUMENT"
+
+
+def test_an_all_day_end_that_is_not_midnight_of_its_exclusive_date_is_refused() -> None:
+    """The end is the day *after* the last one. A model that hands back the
+    last day's midnight has misread the exclusive rule, and executing it would
+    silently shorten the trip by a day."""
+    outcome, _, _ = _refusal({**ALL_DAY_ARGS, "end": "2026-10-03T00:00:00+08:00"})
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "INVALID_ARGUMENT"
+
+
+def test_an_all_day_event_with_no_days_in_it_is_refused() -> None:
+    outcome, _, _ = _refusal(
+        {
+            **ALL_DAY_ARGS,
+            "end": "2026-10-01T00:00:00+08:00",
+            "end_date": "2026-10-01",
+        }
+    )
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "INVALID_ARGUMENT"
+
+
+def test_a_timed_event_carrying_all_day_dates_is_refused() -> None:
+    outcome, _, _ = _refusal(
+        {**CAL_ARGS, "start_date": "2026-09-12", "end_date": "2026-09-13"}
+    )
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "INVALID_ARGUMENT"
+
+
+def test_an_interval_that_ends_before_it_starts_is_refused() -> None:
+    outcome, _, _ = _refusal({**CAL_ARGS, "end": "2026-09-12T14:00:00+08:00"})
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "INVALID_ARGUMENT"
+
+
+# --- routing: the world does not allow it, so it becomes a question ----------
+
+
+def test_an_unroutable_calendar_name_becomes_a_question_not_a_failure() -> None:
+    """A name the phone does not have is not a malformed request: the user
+    asked for something reasonable and only they can say what they meant. No
+    action is issued, so the operation parks on a question instead of failing
+    as though the model had erred."""
+    outcome, bridge, _ = _refusal_with(
+        CAL_ARGS, CalendarUnresolved(reason="not_found")
+    )
+
+    assert isinstance(outcome, NeedsClarification)
+    assert "日常安排" in outcome.reason
+    assert "找不到" in outcome.reason
+    assert bridge.executed == []
+
+
+def test_a_name_on_two_accounts_is_asked_about_by_source() -> None:
+    """Picking either would write to a calendar the user did not choose, so
+    both are offered -- and offered by *source*, because "two calendars called
+    日常安排" is only answerable if the user can tell them apart."""
+    outcome, _, _ = _refusal_with(
+        CAL_ARGS,
+        CalendarUnresolved(
+            reason="ambiguous",
+            candidates=(
+                CalendarCandidate(title="日常安排", source_title="iCloud"),
+                CalendarCandidate(title="日常安排", source_title="Gmail"),
+            ),
+        ),
+    )
+
+    assert isinstance(outcome, NeedsClarification)
+    assert "iCloud" in outcome.reason and "Gmail" in outcome.reason
+
+
+def test_a_read_only_match_is_refused_with_its_reason() -> None:
+    outcome, _, _ = _refusal_with(
+        CAL_ARGS,
+        CalendarUnresolved(
+            reason="read_only",
+            candidates=(CalendarCandidate(title="球赛", source_title="订阅"),),
+        ),
+    )
+
+    assert isinstance(outcome, NeedsClarification)
+    assert "只读" in outcome.reason
+
+
+def test_a_device_that_never_synced_its_directory_gets_a_different_answer() -> None:
+    """`directory_empty` is the one miss with a remedy the user controls, and
+    it must not be reported as "no such calendar": that would send them
+    looking for a calendar that may well exist."""
+    outcome, _, _ = _refusal_with(
+        CAL_ARGS, CalendarUnresolved(reason="directory_empty")
+    )
+
+    assert isinstance(outcome, NeedsClarification)
+    assert "同步" in outcome.reason
+
+
+def test_the_lookup_is_bound_to_the_device_that_is_acting() -> None:
+    """The directory is per-device (design 2.1). Resolving against another
+    device's calendars would seal an identifier the acting phone cannot write
+    to, and the failure would surface on the phone, not here."""
+    _, _, control = _refusal(CAL_ARGS)
+
+    assert control.lookups == [("device-1", "日常安排")]
+
+
+def test_an_unreadable_directory_is_a_safe_failure_not_a_question() -> None:
+    """No question a user can answer makes an unreachable service reachable,
+    and no action may be issued from a routing decision that was never made."""
+    bridge = SpyBridge()
+    control = FakeControl(error=ControlPlaneError("the control plane is down"))
+
+    outcome = cal_dispatcher(bridge, control).resolve(
+        tool="calendar.create_event",
+        model_args=dict(CAL_ARGS),
+        idempotency_key="action-key-1",
+    )
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "SOURCE_UNAVAILABLE"
+    assert bridge.executed == []
+
+
+# --- the action the phone receives -------------------------------------------
+
+
+def test_an_all_day_action_carries_dates_and_never_a_zone() -> None:
+    outcome, _, _ = _refusal_with(
+        ALL_DAY_ARGS, CalendarResolved("uuid-chu-you", "出游计划")
+    )
+
+    assert isinstance(outcome, DeviceActionIssued)
+    assert outcome.event_fields["calendar_identifier"] == "uuid-chu-you"
+    assert outcome.event_fields["calendar_title"] == "出游计划"
+    assert outcome.event_fields["timezone"] is None
+    assert outcome.event_fields["start_date"] == "2026-10-01"
+    assert outcome.event_fields["end_date"] == "2026-10-04"
+
+
+def test_a_timed_action_keeps_the_zone_the_model_resolved() -> None:
+    """A Tokyo departure is a Tokyo instant; recording it as Shanghai would
+    move it by an hour, which is the defect the zone field exists to close."""
+    outcome, _, _ = _refusal_with(
+        {**CAL_ARGS, "timezone": "Asia/Tokyo", "calendar": "出游计划"},
+        CalendarResolved("uuid-chu-you", "出游计划"),
+    )
+
+    assert isinstance(outcome, DeviceActionIssued)
+    assert outcome.event_fields["timezone"] == "Asia/Tokyo"
+    assert outcome.event_fields["start_date"] is None
+    assert outcome.event_fields["end_date"] is None
+
+
+def test_the_resolved_identifier_wins_over_anything_the_request_carried() -> None:
+    """The identifier is the routing decision, and the routing decision is the
+    server's. A request that arrives carrying one -- however it got there --
+    must not be able to name the calendar the phone writes to."""
+    forged = {**CAL_ARGS, "calendar_identifier": "uuid-attacker", "calendar_title": "x"}
+
+    class ForgingBridge(SpyBridge):
+        def authorize(self, alias, arguments, device):
+            self.authorized.append(alias)
+            return self.registry.resolve(alias), forged
+
+    outcome = cal_dispatcher(ForgingBridge()).resolve(
+        tool="calendar.create_event",
+        model_args=dict(CAL_ARGS),
+        idempotency_key="action-key-1",
+    )
+
+    assert isinstance(outcome, DeviceActionIssued)
+    assert outcome.event_fields["calendar_identifier"] == "uuid-ri-chang"
+    assert outcome.event_fields["calendar_title"] == "日常安排"
+
+
+def test_the_action_wire_version_is_the_contracts_not_the_requesters() -> None:
+    """The version says what the action's fields mean, so it is a property of
+    the tool the Host is issuing -- never of the client, and never of anything
+    a caller can supply."""
+    from personal_agent_core.tool_ir import TOOL_CONTRACTS
+
+    contract = next(c for c in TOOL_CONTRACTS if c.name == "calendar.create_event")
+    outcome, _, _ = _refusal(CAL_ARGS)
+
+    assert isinstance(outcome, DeviceActionIssued)
+    assert outcome.wire_version == contract.wire_version
+
+
+def test_every_device_tool_has_an_issuance_policy() -> None:
+    """The dispatch fork is derived from the IR, so a second device tool ships
+    into it automatically -- and would otherwise be issued with nothing having
+    checked it. A missing policy must fail loudly instead."""
+    from personal_agent.api.calendar_issue import issuance_policy
+    from personal_agent_core.tool_ir import TOOL_CONTRACTS
+
+    for contract in TOOL_CONTRACTS:
+        if contract.executor == "device":
+            assert callable(issuance_policy(contract.name))
+
+    with pytest.raises(AppError) as excinfo:
+        issuance_policy("calendar.no_such_tool")
+    assert excinfo.value.code == ErrorCode.INTERNAL_ERROR

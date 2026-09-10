@@ -1704,6 +1704,42 @@ def test_periodic_recovery_never_adopts_an_operation_a_worker_still_owns(
     assert operation.failure_reason is None
 
 
+def _seed_calendar_directory(database: Path, rows: list[dict]) -> None:
+    """Write the phone's reported calendars, as a sync batch would have.
+
+    The device is `DEVICE_ID`, the same identity the composition authenticates
+    as, because the directory is per-device by construction: a row under any
+    other device would make the lookup answer `directory_empty` and the test
+    would be exercising a different failure than the one it names.
+    """
+    from personal_data_mcp.storage.engine import (
+        create_all as finance_create_all,
+        create_database_engine as finance_engine,
+        session_factory as finance_sessions,
+    )
+    from personal_data_mcp.storage.models import CalendarDirectory
+
+    engine = finance_engine(database)
+    finance_create_all(engine)
+    with finance_sessions(engine)() as session:
+        for row in rows:
+            session.add(
+                CalendarDirectory(
+                    device_id=DEVICE_ID,
+                    calendar_identifier=row["calendar_identifier"],
+                    title=row["title"],
+                    source_title=row.get("source_title", "iCloud"),
+                    allows_content_modifications=row.get(
+                        "allows_content_modifications", True
+                    ),
+                    is_subscribed=row.get("is_subscribed", False),
+                    updated_at=utc_now(),
+                )
+            )
+        session.commit()
+    engine.dispose()
+
+
 def _seed_finance_success(database: Path, key: str) -> None:
     from personal_data_mcp.storage.engine import (
         create_all as finance_create_all,
@@ -2055,8 +2091,20 @@ def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
     from personal_agent_core.tool_ir import SCOPE_CALENDAR_WRITE
 
     finance_db = tmp_path / "finance-device-action.sqlite"
-    # Calendar mode is enough: the device fork stops before any MCP call, so
-    # the Finance database is never written on this path.
+    # The phone's calendar directory, as a previous sync would have left it:
+    # the dispatcher resolves the model's calendar *name* against it before it
+    # may issue anything, and the model is never allowed to name an identifier.
+    _seed_calendar_directory(
+        finance_db,
+        [
+            {
+                "calendar_identifier": "uuid-ri-chang",
+                "title": "日常安排",
+            }
+        ],
+    )
+    # Calendar mode, and the device fork stops before any MCP *tool* call: the
+    # only thing it asks the Finance service is the directory read above.
     service = LoopbackFinanceService(
         {
             MCP_KID_ENV: "svc-test",
@@ -2148,6 +2196,7 @@ def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
     assert body["device_action"] == {
         "action_id": key,
         "tool": "calendar.create_event",
+        "wire_version": 2,
         "event": {
             "title": "网球",
             "start": "2026-09-12T15:00:00+08:00",
@@ -2155,6 +2204,14 @@ def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
             "all_day": False,
             "calendar": "日常安排",
             "timezone": "Asia/Tokyo",
+            # The routing the server did, not anything the model said: the
+            # identifier comes from the directory and the title is the name the
+            # directory matched on. A client that picks its own calendar is the
+            # failure this field exists to prevent.
+            "calendar_identifier": "uuid-ri-chang",
+            "calendar_title": "日常安排",
+            "start_date": None,
+            "end_date": None,
         },
     }
 

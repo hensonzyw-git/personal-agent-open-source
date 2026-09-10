@@ -86,7 +86,7 @@ def _well_formed(action: object) -> bool:
     """
     if not isinstance(action, dict):
         return False
-    if set(action) != {"action_id", "tool", "event"}:
+    if set(action) != {"action_id", "tool", "wire_version", "event"}:
         return False
     event = action["event"]
     if not isinstance(event, dict):
@@ -95,4 +95,13 @@ def _well_formed(action: object) -> bool:
         return False
     if not isinstance(action["tool"], str) or not action["tool"]:
         return False
-    return True
+    # `wire_version` says what the action's *fields* mean, so an unreadable one
+    # is not a degraded hand-off, it is an unreadable action: the delivery gate
+    # compares it against the client's own version, and a missing or nonsense
+    # value would compare as "no requirement" and hand a v2 action to a v1
+    # client -- the write-wrong-calendar path this field exists to close.
+    if not isinstance(action["wire_version"], int) or isinstance(
+        action["wire_version"], bool
+    ):
+        return False
+    return action["wire_version"] >= 1
