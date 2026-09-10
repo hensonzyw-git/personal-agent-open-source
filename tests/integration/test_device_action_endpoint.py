@@ -210,6 +210,134 @@ def _auth_headers(token_ring, key=ACTION_KEY) -> dict:
     }
 
 
+#: The one Session a message's turn is written into.
+CONTEXT_SESSION = "ses-1"
+
+
+def _timeline(engine) -> str:
+    """The canonical Timeline and its one open Session, as a chat turn makes them.
+
+    Created through `canonical_timeline_id` rather than by hand, so the row is
+    the one the app itself would have resolved -- a hand-built stand-in could
+    differ in exactly the way that makes an append land somewhere else.
+    """
+    from personal_agent.api import events
+    from personal_agent.storage.models import ContextSession
+
+    with session_factory(engine)() as session:
+        conversation_id = events.canonical_timeline_id(session, now=NOW)
+        session.add(
+            ContextSession(
+                session_id=CONTEXT_SESSION,
+                conversation_id=conversation_id,
+                status="open",
+                relation_kind="new_topic",
+                opened_at=NOW,
+            )
+        )
+        session.commit()
+        return conversation_id
+
+
+def _seed_two_item_plan(engine, keyring) -> tuple[str, str, str]:
+    """A frozen two-item plan in the state the phone's second report finds.
+
+    Built out of the same two primitives the orchestrator uses (`open_operation`
+    then `join_action_plan`, `open_plan_item`), so item 0 really is the message's
+    own operation and item 1 really is a sibling -- not two rows hand-written to
+    look like a plan. Item 0's result event is the one `_run_chat_turn` appends
+    when it issues the list: the sibling is the item that has none, which is the
+    defect this section pins.
+
+    Returns `(head_operation_id, sibling_action_id, turn_id)`.
+    """
+    from personal_agent.api import events
+    from personal_agent.api.operation_store import (
+        join_action_plan,
+        open_operation,
+        open_plan_item,
+        transition_operation,
+    )
+
+    conversation_id = _timeline(engine)
+    turn_id = events.new_turn_id()
+    with session_factory(engine)() as session:
+        head = open_operation(
+            session,
+            device_id="device-1",
+            client_request_id=ACTION_KEY,
+            request_fingerprint="fp-head",
+            now=NOW,
+        ).operation
+        session.flush()
+        join_action_plan(
+            session, operation_id=head.operation_id, plan_key=ACTION_KEY, now=NOW
+        )
+        sibling = open_plan_item(
+            session,
+            device_id="device-1",
+            plan_key=ACTION_KEY,
+            plan_index=1,
+            request_fingerprint="fp-sibling",
+            now=NOW,
+        ).operation
+        session.flush()
+        # Item 0 is born `accepted` (it is the user's message) and item 1 is
+        # born `dispatching` (its call was already decided when the plan was
+        # frozen), so the two reach the parked state by different routes -- the
+        # real ones.
+        for row, path in ((head, ("interpreting", "dispatching")), (sibling, ())):
+            for state in path:
+                transition_operation(
+                    session,
+                    operation_id=row.operation_id,
+                    current_state=row.state,
+                    current_version=row.state_version,
+                    target_state=state,
+                    now=NOW,
+                )
+                session.refresh(row)
+            transition_operation(
+                session,
+                operation_id=row.operation_id,
+                current_state=row.state,
+                current_version=row.state_version,
+                target_state="source_in_progress",
+                tool="calendar.create_event",
+                now=NOW,
+            )
+            session.refresh(row)
+        events.append_event(
+            session,
+            keyring,
+            conversation_id=conversation_id,
+            session_id=CONTEXT_SESSION,
+            turn_id=turn_id,
+            event_type=events.OPERATION_RESULT,
+            content={"state": "source_in_progress", "tool": "calendar.create_event"},
+            operation_id=head.operation_id,
+            now=NOW,
+        )
+        sibling_action_id = sibling.idempotency_key
+        session.commit()
+        return head.operation_id, sibling_action_id, turn_id
+
+
+def _result_events(engine, keyring) -> list:
+    """Every `operation_result` on the Timeline, oldest first, decrypted."""
+    from personal_agent.api import events
+
+    with session_factory(engine)() as session:
+        conversation_id = events.canonical_timeline_id(session, now=NOW)
+        return [
+            entry
+            for entry in events.list_timeline(
+                session, keyring, conversation_id=conversation_id
+            )
+            if entry.event_type == events.OPERATION_RESULT
+        ]
+
+
 _SYNC_CALLS: list[tuple[str, dict]] = []
 
 
@@ -515,6 +643,128 @@ def test_two_concurrent_reports_race_and_exactly_one_settles(
     # the loser re-projects the winner's state rather than inventing its own.
     assert ids == {EVENT_ID} or len(ids) == 1
     assert _result(engine, operation_id).safe_result in {"EK-A", "EK-B"}
+
+
+# --- a plan's later items get their own receipt --------------------------------
+#
+# One message with N actions is one plan (design 4.1) and its items are separate
+# operations, each settling through its own report. The design says so in one
+# line -- 各 operation 由各自的回报独立结算，**回执各一行** -- and a receipt line
+# is a Timeline event. The message's own item had one written by the turn that
+# issued it; the siblings had none, so a sibling that settled perfectly left the
+# user nothing to look at: no card on the Timeline, no line in history after a
+# restart, only the server's own row. These pin that each sibling's settlement
+# writes its own line, in the same turn as the message it came from.
+
+
+def test_a_settled_sibling_appends_its_own_result_event(
+    engine, token_ring, keyring
+) -> None:
+    head_id, sibling_action, turn_id = _seed_two_item_plan(engine, keyring)
+    client = _client(engine, token_ring, keyring)
+
+    response = client.post(
+        f"/v1/device-actions/{sibling_action}/result",
+        json={"result": "created", "event_id": EVENT_ID},
+        headers=_auth_headers(token_ring, key=sibling_action),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "succeeded"
+    events = _result_events(engine, keyring)
+    assert [event.operation_id for event in events] == [
+        head_id,
+        response.json()["operation_id"],
+    ]
+    receipt = events[-1]
+    # The sibling's line joins the message's own turn rather than inventing
+    # one: it is the same user request, continued.
+    assert (receipt.session_id, receipt.turn_id) == (CONTEXT_SESSION, turn_id)
+    assert receipt.content["state"] == "succeeded"
+    assert receipt.content["record_id"] == EVENT_ID
+
+
+def test_a_replayed_sibling_report_appends_nothing(
+    engine, token_ring, keyring
+) -> None:
+    """The one-event-per-operation guard. The endpoint's CAS already makes a
+    replay settle nothing; this is the same rule applied to the record of it,
+    which is what keeps a flaky-network retry from stacking duplicate cards."""
+    _, sibling_action, _ = _seed_two_item_plan(engine, keyring)
+    client = _client(engine, token_ring, keyring)
+    for _ in range(2):
+        response = client.post(
+            f"/v1/device-actions/{sibling_action}/result",
+            json={"result": "created", "event_id": EVENT_ID},
+            headers=_auth_headers(token_ring, key=sibling_action),
+        )
+        assert response.status_code == 200, response.text
+
+    assert len(_result_events(engine, keyring)) == 2
+
+
+def test_a_refused_sibling_also_gets_its_own_line(
+    engine, token_ring, keyring
+) -> None:
+    """A sibling the phone refused is the item the user most needs to see: the
+    message said "下周一10点牙医，下午3点理发" and only one of them happened."""
+    _, sibling_action, _ = _seed_two_item_plan(engine, keyring)
+    client = _client(engine, token_ring, keyring)
+
+    response = client.post(
+        f"/v1/device-actions/{sibling_action}/result",
+        json={"result": "denied", "detail": "用户拒绝了"},
+        headers=_auth_headers(token_ring, key=sibling_action),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "failed_safe"
+    receipt = _result_events(engine, keyring)[-1]
+    assert receipt.operation_id == response.json()["operation_id"]
+    assert receipt.content["state"] == "failed_safe"
+
+
+def test_the_messages_own_item_keeps_the_single_line_the_turn_wrote(
+    engine, token_ring, keyring
+) -> None:
+    """Item 0's result event belongs to the turn that issued it. Reporting it
+    settles the operation; it must not add a second line saying the same thing,
+    or every ordinary single-action message would grow a duplicate card."""
+    head_id, _, _ = _seed_two_item_plan(engine, keyring)
+    client = _client(engine, token_ring, keyring)
+
+    response = client.post(
+        f"/v1/device-actions/{ACTION_KEY}/result",
+        json={"result": "created", "event_id": EVENT_ID},
+        headers=_auth_headers(token_ring),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["operation_id"] == head_id
+    events = _result_events(engine, keyring)
+    assert [event.operation_id for event in events] == [head_id]
+    # The line still says what the turn wrote; it is not rewritten in place.
+    assert events[0].content["state"] == "source_in_progress"
+
+
+def test_an_operation_with_no_turn_still_gets_no_fabricated_one(
+    engine, token_ring, keyring
+) -> None:
+    """Not every settled device action is a conversation turn. This one was
+    opened by a card-driven path, so it has no anchor -- and the honest answer
+    is no Timeline line, not a made-up turn id."""
+    operation_id = _seed_source_in_progress(engine)
+    client = _client(engine, token_ring, keyring)
+
+    response = client.post(
+        f"/v1/device-actions/{ACTION_KEY}/result",
+        json={"result": "created", "event_id": EVENT_ID},
+        headers=_auth_headers(token_ring),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["operation_id"] == operation_id
+    assert _result_events(engine, keyring) == []
 
 
 # --- the timeout sweep wiring ---------------------------------------------------

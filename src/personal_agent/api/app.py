@@ -2198,6 +2198,87 @@ def _anchor_event_or_none(session, operation_id: str) -> _Anchor | None:
     )
 
 
+def _message_operation(session, operation: Operation) -> Operation:
+    """The operation the user's message became, for any operation downstream of it.
+
+    `_plan_rows` answers the *delivery* question -- which actions may this reply
+    hand over -- and so returns the whole plan for item 0 and the row alone for
+    a sibling. This answers the *authorship* question, and it has one answer for
+    every row the same sentence produced:
+
+    - an item of a frozen plan belongs to item 0, the message itself;
+    - a row an override derived belongs to the operation it names as its parent
+      (`_process_device_action_override` states exactly that when it labels the
+      derived run with the source's turn), so a chain of deliberate re-issues
+      still points at the one message that asked for the event;
+    - anything else is its own message.
+
+    The walk is bounded rather than trusting the lineage to be acyclic: a cycle
+    would otherwise be an unbounded loop inside a request, and the honest answer
+    for a lineage this code cannot read is the row itself.
+    """
+    seen: set[str] = set()
+    while True:
+        if operation.plan_key is not None:
+            return plan_operations(session, operation.plan_key)[0]
+        parent_id = operation.parent_operation_id
+        if parent_id is None or operation.operation_id in seen:
+            return operation
+        seen.add(operation.operation_id)
+        parent = session.get(Operation, parent_id)
+        if parent is None:
+            return operation
+        operation = parent
+
+
+def _append_plan_item_result_event(
+    session, keyring: KeyRing, *, operation: Operation, now: datetime
+) -> None:
+    """Write this operation's own result line, unless it already has one.
+
+    One message with N actions is one plan and N operations (design 4.1), and
+    each settles through its own report and gets its own receipt (design 4.2:
+    各 operation 由各自的回报独立结算，回执各一行). A receipt line is a Timeline
+    event, and the message's *own* item already has the one the issuing turn
+    wrote -- so the guard is the event itself, which covers a replay and the
+    loser of a CAS race in the same test as it covers item 0. Without this the
+    siblings settled into rows no client ever saw: no card when it happened, and
+    nothing to find in history after a restart.
+
+    A row with no anchor is not a conversation turn at all (a card-driven
+    action, say). It gets no line, because the alternative is a fabricated turn
+    id in a permanently retained archive.
+    """
+    existing = session.execute(
+        text_clause(
+            "SELECT 1 FROM conversation_events "
+            "WHERE operation_id = :oid AND event_type = :kind LIMIT 1"
+        ),
+        {"oid": operation.operation_id, "kind": events.OPERATION_RESULT},
+    ).one_or_none()
+    if existing is not None:
+        return
+    anchor = _anchor_event_or_none(
+        session, _message_operation(session, operation).operation_id
+    )
+    if anchor is None:
+        return
+    # The CAS above wrote the row directly, so the identity map still holds the
+    # state this request read; the projection has to describe what was stored.
+    session.refresh(operation)
+    events.append_event(
+        session,
+        keyring,
+        conversation_id=anchor.conversation_id,
+        session_id=anchor.session_id,
+        turn_id=anchor.turn_id,
+        event_type=events.OPERATION_RESULT,
+        content=_operation_event_content(keyring, operation),
+        operation_id=operation.operation_id,
+        now=now,
+    )
+
+
 def _anchor_event(session, operation_id: str) -> _Anchor:
     """The Session, turn and event the operation's user message was written into."""
     anchor = _anchor_event_or_none(session, operation_id)
@@ -2635,6 +2716,12 @@ def _process_device_action_result(
                         device_result=result,
                     )
                 session.refresh(operation)
+            # Every item of a plan gets its own receipt line (design 4.2). Item
+            # 0's is the one the issuing turn wrote; a sibling's is written here
+            # or nowhere, and nowhere is a settled write nobody is ever shown.
+            _append_plan_item_result_event(
+                session, deps.keyring, operation=operation, now=deps.now()
+            )
             # A settled operation (including one this request did not move --
             # the loser of a CAS race, or a replay) answers its current state.
             return _operation_response(

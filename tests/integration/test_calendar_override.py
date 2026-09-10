@@ -248,6 +248,63 @@ def _settle_duplicate(client, token_ring) -> None:
     assert response.status_code == 200, response.text
 
 
+#: The one Session a message's turn is written into.
+CONTEXT_SESSION = "ses-1"
+
+
+def _anchor_source(engine, keyring) -> str:
+    """The message's own result line, as the issuing turn would have written it.
+
+    Every device action this endpoint can override came from a chat turn, and
+    that turn wrote the message's receipt line. Seeding it is what makes the
+    derived write's line a question about *where it lands* rather than whether
+    any line exists at all. The Timeline comes from `canonical_timeline_id`
+    rather than a hand-built row, so it is the one the app would have resolved.
+    """
+    from personal_agent.api import events
+    from personal_agent.storage.models import ContextSession
+
+    turn_id = events.new_turn_id()
+    with session_factory(engine)() as session:
+        conversation_id = events.canonical_timeline_id(session, now=NOW)
+        session.add(
+            ContextSession(
+                session_id=CONTEXT_SESSION,
+                conversation_id=conversation_id,
+                status="open",
+                relation_kind="new_topic",
+                opened_at=NOW,
+            )
+        )
+        events.append_event(
+            session,
+            keyring,
+            conversation_id=conversation_id,
+            session_id=CONTEXT_SESSION,
+            turn_id=turn_id,
+            event_type=events.OPERATION_RESULT,
+            content={"state": "source_in_progress", "tool": "calendar.create_event"},
+            operation_id="op_1",
+            now=NOW,
+        )
+        session.commit()
+    return turn_id
+
+
+def _result_entries(engine, keyring) -> list:
+    from personal_agent.api import events
+
+    with session_factory(engine)() as session:
+        conversation_id = events.canonical_timeline_id(session, now=NOW)
+        return [
+            entry
+            for entry in events.list_timeline(
+                session, keyring, conversation_id=conversation_id
+            )
+            if entry.event_type == events.OPERATION_RESULT
+        ]
+
+
 def _operations(engine) -> list[Operation]:
     with session_factory(engine)() as session:
         return session.query(Operation).order_by(Operation.created_at).all()
@@ -417,6 +474,46 @@ def test_a_replay_after_settlement_returns_the_current_projection(
     assert replay.json()["record_id"] == "EK-2"
     assert "device_actions" not in replay.json()
     assert len(dispatcher.calls) == 1
+
+
+# --- the derived write's own receipt line -------------------------------------
+
+
+def test_the_overridden_write_lands_on_the_messages_own_turn(
+    engine, token_ring, keyring
+) -> None:
+    """「仍要创建」 is the same user request continued, not a new conversation.
+
+    The derived operation is a second row with its own key, and the phone
+    reports on it exactly like any other action -- so it needs its own receipt
+    line (design 4.2), and that line belongs on the turn the user's sentence
+    opened. Lineage is what says so: the endpoint already labels the derived
+    run with the *source's* turn, and the receipt follows the same rule. A
+    story that showed the second write anywhere else would read as an event the
+    user never asked for.
+    """
+    _seed_issued(engine, keyring)
+    turn_id = _anchor_source(engine, keyring)
+    dispatcher = RecordingDispatcher()
+    client = _client(engine, token_ring, keyring, dispatcher)
+    _settle_duplicate(client, token_ring)
+    issued = _override(client, token_ring).json()
+    action = issued["device_actions"][0]["action_id"]
+
+    report = client.post(
+        f"/v1/device-actions/{action}/result",
+        json={"result": "created", "event_id": "EK-2"},
+        headers=_headers(token_ring),
+    )
+
+    assert report.status_code == 200, report.text
+    entries = _result_entries(engine, keyring)
+    assert [entry.operation_id for entry in entries] == [
+        "op_1",
+        issued["operation_id"],
+    ]
+    assert {entry.turn_id for entry in entries} == {turn_id}
+    assert entries[-1].content["record_id"] == "EK-2"
 
 
 # --- who may be overridden ----------------------------------------------------

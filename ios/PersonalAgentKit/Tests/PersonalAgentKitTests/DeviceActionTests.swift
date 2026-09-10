@@ -1554,6 +1554,164 @@ struct DeviceActionListTests {
     }
 }
 
+// --- every operation of the plan on the durable slot --------------------------
+//
+// A receipt line is a Timeline event the server writes per operation (design
+// §4.2: 各 operation 由各自的回报独立结算，回执各一行). What the *slot* has to hold is
+// the identity of every operation the message produced, because "this message
+// is finished" is a claim about all of them: item 0 settling says nothing
+// about the sibling whose write may or may not exist. Releasing on item 0
+// alone would let the user re-ask for an event a parked sibling may already
+// have created -- the exact duplicate the slot exists to prevent.
+
+@Suite("The plan's operations on the pending slot", .serialized)
+struct PendingSendOperationListTests {
+
+    private static let firstID = "018f0000-0000-7000-8000-000000000001"
+    private static let secondID = "018f0000-0000-7000-8000-000000000002"
+    /// Item 0 is the message's own operation, so the chat receipt and the
+    /// answer to its report name the same row -- as the real server does.
+    private static let firstOperation = "op-1"
+    private static let secondOperation = "op-2"
+
+    private static func action(_ id: String, title: String) -> [String: Any] {
+        [
+            "action_id": id,
+            "tool": "calendar.create_event",
+            "event": [
+                "title": title,
+                "start": "2026-09-12T15:00:00Z",
+                "end": "2026-09-12T16:30:00Z",
+                "all_day": false,
+            ],
+        ]
+    }
+
+    private static func pair() -> [[String: Any]] {
+        [
+            action(firstID, title: "网球"),
+            action(secondID, title: "体检"),
+        ]
+    }
+
+    private static func actionID(from path: String) -> String {
+        path.replacingOccurrences(of: "/v1/device-actions/", with: "")
+            .replacingOccurrences(of: "/result", with: "")
+    }
+
+    /// One reply per action, each settling *its own* operation -- the server's
+    /// shape, since a sibling's report answers about the sibling. The sibling's
+    /// state is configurable so a test can leave it parked.
+    private func service(siblingState: String) -> Service {
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                var receipt = chatReceipt(
+                    "source_in_progress", tool: "calendar.create_event"
+                )
+                receipt["device_actions"] = Self.pair()
+                return .ok(receipt)
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                let id = Self.actionID(from: path)
+                if id == Self.secondID, siblingState != "succeeded" {
+                    return .ok(chatReceipt(
+                        siblingState,
+                        operation: Self.secondOperation,
+                        tool: "calendar.create_event"
+                    ))
+                }
+                return .ok(chatReceipt(
+                    "succeeded",
+                    operation: id == Self.firstID
+                        ? Self.firstOperation : Self.secondOperation,
+                    tool: "calendar.create_event",
+                    recordID: "EK-\(id)"
+                ))
+            case ("GET", "/v1/operations/op-1"):
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event", recordID: "EK-1"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        return service
+    }
+
+    @Test("the slot holds every operation the message produced")
+    func everyOperationIsRemembered() async throws {
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service(siblingState: "source_in_progress"),
+            deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        let final = try await chat.send(text: "周六网球，周一上午体检")
+
+        // The message's own item settled...
+        #expect(final.state == .succeeded)
+        // ...and the sibling did not, so the message is not finished and the
+        // slot still names both operations, item 0 first.
+        let slot = try #require(try await chat.pendingSend())
+        #expect(slot.operationIDs == [Self.firstOperation, Self.secondOperation])
+        #expect(slot.deliveredActionIDs == [Self.firstID, Self.secondID])
+    }
+
+    @Test("a settled sibling alone does not finish a message whose own item is parked")
+    func oneSettledSiblingDoesNotRelease() async throws {
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service(siblingState: "succeeded"),
+            deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        _ = try await chat.send(text: "周六网球，周一上午体检")
+
+        // Both released, so nothing is left to protect and the slot is gone.
+        #expect(try await chat.pendingSend() == nil)
+    }
+
+    @Test("every item of a plan is written, even when the message's own item settles first")
+    func theWholeListRunsBeforeAnySlotClears() async throws {
+        let executor = StubDeviceActionExecutor()
+        let stub = service(siblingState: "succeeded")
+        let (chat, session, _) = try await makeChat(
+            service: stub, deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        _ = try await chat.send(text: "周六网球，周一上午体检")
+
+        // Both writes happened. Item 0's release is earned *before* item 1 has
+        // run — it is the first action of the list — and a slot cleared at that
+        // moment would take the delivery marker with it, leaving item 1 to read
+        // an empty slot as "not mine to run" and never write at all.
+        #expect(stub.calls("POST", "/v1/device-actions/\(Self.firstID)/result").count == 1)
+        #expect(stub.calls("POST", "/v1/device-actions/\(Self.secondID)/result").count == 1)
+    }
+
+    @Test("a sibling kept parked by the sweep is still the message's business")
+    func aParkedSiblingIsNeverSilentlyForgotten() async throws {
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service(siblingState: "needs_manual_review"),
+            deviceActionExecutor: executor
+        )
+        executor.backend = session
+
+        _ = try await chat.send(text: "周六网球，周一上午体检")
+
+        // `needs_manual_review` is settled-for-polling but does *not* release
+        // a slot: it may hold a write nobody has checked. On a plan it is the
+        // sibling's verdict, and the message waits with it.
+        let slot = try #require(try await chat.pendingSend())
+        #expect(slot.operationIDs.contains(Self.secondOperation))
+    }
+}
+
 // --- the pending slot's delivery marker across the list change ---------------
 
 @Suite("The pending slot's delivery marker")
@@ -1627,6 +1785,56 @@ struct PendingSendMarkerTests {
     func aFreshSlotHasNoClaims() throws {
         let decoded = try slot(base())
         #expect(decoded.deliveredActionIDs.isEmpty)
+    }
+
+    // --- the operations the message owns (design §4.2) ------------------------
+
+    /// The singular field is what every build before the plan wrote, and it
+    /// names the message's *own* operation. Read as a list of one -- not
+    /// dropped, or an upgraded app would forget which operation it is waiting
+    /// on and could be handed a second key for the same message.
+    @Test("a single operation id is read into the list")
+    func legacyOperationIsRead() throws {
+        let decoded = try slot(base())
+        #expect(decoded.operationIDs == ["op-1"])
+        #expect(decoded.operationID == "op-1")
+    }
+
+    @Test("the encoder still writes the message's own operation as the legacy field")
+    func theLegacyOperationFieldIsStillWritten() throws {
+        let encoded = try JSONEncoder().encode(
+            ChatTimeline.PendingSend(
+                idempotencyKey: "018f0000-0000-4000-8000-0000000000aa",
+                conversationID: chatTimelineID,
+                text: "周六网球，周一上午体检",
+                clarificationOf: nil,
+                operationIDs: ["op-1", "op-2"]
+            )
+        )
+        let json = try #require(
+            try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        #expect(json["operationID"] as? String == "op-1")
+        #expect(json["operationIDs"] as? [String] == ["op-1", "op-2"])
+    }
+
+    /// A response carrying both must not double-count, for the same reason the
+    /// delivery marker must not: the list would stop describing the plan.
+    @Test("an operation named by both fields is listed once")
+    func bothOperationFieldsDoNotDoubleCount() throws {
+        var json = base()
+        json["operationID"] = "op-1"
+        json["operationIDs"] = ["op-1", "op-2"]
+        let decoded = try slot(json)
+        #expect(decoded.operationIDs == ["op-1", "op-2"])
+    }
+
+    @Test("a slot with no operation at all reads as an empty list")
+    func aSlotWithNoOperationIsEmpty() throws {
+        var json = base()
+        json["operationID"] = NSNull()
+        let decoded = try slot(json)
+        #expect(decoded.operationIDs.isEmpty)
     }
 }
 

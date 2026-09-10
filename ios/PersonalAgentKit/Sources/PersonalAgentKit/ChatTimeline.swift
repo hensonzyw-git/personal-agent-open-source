@@ -66,8 +66,26 @@ public actor ChatTimeline {
         public let clarificationOf: String?
         /// Nil preserves decoding of pending sends written by older app builds.
         public let startNewSession: Bool?
-        /// Known only once the server has answered at least once.
-        public var operationID: String?
+        /// Every operation this message produced, in plan order — item 0 first.
+        /// Known only as the server answers: the anchor merge names the
+        /// message's own operation, and each device report names the plan item
+        /// it settled.
+        ///
+        /// A list rather than one id because one message may be several
+        /// operations (design §4.1/§4.2: 每项独立持有 operationID), and because
+        /// the slot's question is about all of them. "This message is finished"
+        /// is the claim the slot exists to make safe, and the message's own item
+        /// settling says nothing about a sibling whose write may or may not
+        /// exist — releasing on item 0 alone is how the user comes to ask for an
+        /// event that a parked sibling already created.
+        public var operationIDs: [String]
+        /// The message's own operation: item 0 of its plan, or the operation
+        /// itself when the plan is one item. What every path that speaks about
+        /// *this message* means — the card the user is watching.
+        public var operationID: String? { operationIDs.first }
+        /// The operations whose outcome released the slot. A release is earned
+        /// per operation, and the slot clears only once the whole set has one.
+        public var releasedOperationIDs: [String]
         /// The device actions this device has already executed or refused for
         /// the pending operation, persisted *before* the executor runs (review
         /// R6). A poll, a resume or a replay can hand the same action over
@@ -91,21 +109,29 @@ public actor ChatTimeline {
             text: String,
             clarificationOf: String?,
             startNewSession: Bool? = nil,
-            operationID: String?,
-            deliveredActionIDs: [String] = []
+            operationID: String? = nil,
+            operationIDs: [String] = [],
+            deliveredActionIDs: [String] = [],
+            releasedOperationIDs: [String] = []
         ) {
             self.idempotencyKey = idempotencyKey
             self.conversationID = conversationID
             self.text = text
             self.clarificationOf = clarificationOf
             self.startNewSession = startNewSession
-            self.operationID = operationID
+            // A caller that knows the message's own operation (the anchor merge,
+            // and every test written before plans were tracked) still says one
+            // id; the list is that id plus whatever reports add later.
+            self.operationIDs = operationIDs.isEmpty
+                ? (operationID.map { [$0] } ?? []) : operationIDs
             self.deliveredActionIDs = deliveredActionIDs
+            self.releasedOperationIDs = releasedOperationIDs
         }
 
         private enum CodingKeys: String, CodingKey {
             case idempotencyKey, conversationID, text, clarificationOf
-            case startNewSession, operationID, deliveredActionIDs
+            case startNewSession, operationID, operationIDs, deliveredActionIDs
+            case releasedOperationIDs
             /// The one-action marker builds before design §4.2 wrote. Read as
             /// a fact about what already ran; also written, so that a build
             /// rolled back to one of those does not read an empty marker and
@@ -124,7 +150,20 @@ public actor ChatTimeline {
             startNewSession = try container.decodeIfPresent(
                 Bool.self, forKey: .startNewSession
             )
-            operationID = try container.decodeIfPresent(String.self, forKey: .operationID)
+            var tracked =
+                try container.decodeIfPresent([String].self, forKey: .operationIDs) ?? []
+            // The singular field is what builds before §4.2 wrote, and it is
+            // also what this build keeps writing for them (see `encode`); a
+            // slot written by either shape reads back as one list.
+            if let legacy = try container.decodeIfPresent(
+                String.self, forKey: .operationID
+            ), !tracked.contains(legacy) {
+                tracked.append(legacy)
+            }
+            operationIDs = tracked
+            releasedOperationIDs = try container.decodeIfPresent(
+                [String].self, forKey: .releasedOperationIDs
+            ) ?? []
             var claimed =
                 try container.decodeIfPresent([String].self, forKey: .deliveredActionIDs)
                 ?? []
@@ -146,6 +185,13 @@ public actor ChatTimeline {
             try container.encode(text, forKey: .text)
             try container.encodeIfPresent(clarificationOf, forKey: .clarificationOf)
             try container.encodeIfPresent(startNewSession, forKey: .startNewSession)
+            try container.encode(operationIDs, forKey: .operationIDs)
+            try container.encode(releasedOperationIDs, forKey: .releasedOperationIDs)
+            // The message's own operation, written under the name a build that
+            // predates the list reads. Same reasoning as `deliveredActionID`
+            // below: the older build then tracks the message's own item, which
+            // is the only one it knows how to speak about. It cannot see the
+            // siblings, which is exactly the gap this batch closes.
             try container.encodeIfPresent(operationID, forKey: .operationID)
             try container.encode(deliveredActionIDs, forKey: .deliveredActionIDs)
             // The first claim is the message's own action (design §4.1: item 0
@@ -542,9 +588,15 @@ public actor ChatTimeline {
     /// G1: the merge carries the requesting message's idempotency key and
     /// verifies it against the stored record — a late reply whose message was
     /// discarded and replaced mid-flight must not anchor into the new
-    /// message's slot or execute the old message's action). The only field
-    /// this call owns is `operationID`; every other field — above all
-    /// `deliveredActionID` — survives from disk.
+    /// message's slot or execute the old message's action). The only fields
+    /// this call owns are the tracked operation ids; every other field — above
+    /// all `deliveredActionIDs` — survives from disk.
+    ///
+    /// The anchor is the message's own operation, so it goes to the head of
+    /// the list; a mismatch against a head already on disk means a different
+    /// message now owns this key. It never *shortens* the list: a sibling
+    /// recorded by an earlier report is a fact about this message, and the
+    /// anchor arriving late must not erase it.
     private func mergeAnchoredOperation(
         _ operationID: String, forKey idempotencyKey: String
     ) throws -> PendingSend? {
@@ -553,7 +605,9 @@ public actor ChatTimeline {
         guard stored.operationID == nil || stored.operationID == operationID else {
             return nil
         }
-        stored.operationID = operationID
+        if stored.operationIDs.first != operationID {
+            stored.operationIDs.insert(operationID, at: 0)
+        }
         try savePending(stored)
         return stored
     }
@@ -566,8 +620,10 @@ public actor ChatTimeline {
         if receipt.outcome.releasesPendingSlot {
             // The cancel reply can land after the slot was discarded and
             // replaced (fourth review H1): release only what this call owns.
+            // Membership in the message's operations, not headship — a plan's
+            // later item is cancellable from its own card.
             if let pending = try loadPending(),
-               pending.operationID == receipt.operationID {
+               pending.operationIDs.contains(receipt.operationID) {
                 try releaseSlotIfStillOwned(
                     key: pending.idempotencyKey, operationID: receipt.operationID
                 )
@@ -721,8 +777,13 @@ public actor ChatTimeline {
         // same ownership rule as every other post-wait release; a resolution
         // landing after a discard-and-replace must not delete the
         // replacement's slot).
+        //
+        // Membership, not headship: the card the user resolved may be a plan's
+        // *later* item, whose write is exactly as unknown as the message's own.
+        // Comparing against the head alone is how a resolved sibling left the
+        // message blocked forever with nothing left to resolve.
         if let pending = try loadPending(),
-           pending.operationID == receipt.operationID {
+           pending.operationIDs.contains(receipt.operationID) {
             try releaseSlotIfStillOwned(
                 key: pending.idempotencyKey, operationID: receipt.operationID
             )
@@ -905,9 +966,14 @@ public actor ChatTimeline {
     ///
     /// The return value is item 0's because that is the operation this turn is
     /// about: its projection is the card the user is watching and the one the
-    /// pending slot belongs to. Siblings' receipts are dropped here — they
-    /// settled their own operations, and the Timeline's existing operation-poll
-    /// picks their cards up. Nothing is inferred from a dropped receipt.
+    /// pending slot belongs to. A sibling's receipt is not returned, but it is
+    /// *read*: it answers about the sibling's own operation, and that answer is
+    /// the only place this device ever learns a sibling's operation id — the
+    /// delivered action names its action id, which the server refuses as a
+    /// lookup key for a derived item, and the whole list arrives on item 0's
+    /// projection. The id is written to the slot, which is what lets the
+    /// message know how much of itself is still outstanding (design §4.2:
+    /// 每项独立持有 operationID).
     ///
     /// `nil` is *no action*, never a lost report: `handleDeliveredAction`
     /// always answers with a receipt, degrading to the parked one it was given
@@ -917,14 +983,54 @@ public actor ChatTimeline {
     ) async throws -> OperationReceipt? {
         guard !receipt.deviceActions.isEmpty else { return nil }
         var primary: OperationReceipt?
+        var releasing: [String] = []
         for (index, envelope) in receipt.deviceActions.enumerated() {
             let reported = try await handleDeliveredAction(
                 envelope, claim: claim, pollReceipt: receipt
             )
+            // Bookkeeping, not safety: losing this write costs a slot that
+            // cannot release, while *throwing* here would abandon the actions
+            // after this one and skip writes the server is waiting on. So it
+            // is best-effort, unlike the delivery marker it sits beside.
+            try? recordDeliveredOperation(reported.operationID, claim: claim)
+            if reported.outcome.releasesPendingSlot {
+                releasing.append(reported.operationID)
+            }
             if index == 0 { primary = reported }
+        }
+        // Releases are applied only once the whole list has run. Clearing in
+        // the middle would take the delivery marker with it, and the next
+        // item would read an empty slot as "not mine to run" — skipping a
+        // write the server is still waiting on.
+        if case .message(let pending) = claim {
+            for operationID in releasing {
+                try? releaseSlotIfStillOwned(
+                    key: pending.idempotencyKey, operationID: operationID
+                )
+            }
         }
         // Non-empty list ⇒ set: item 0's branch always returns a receipt.
         return primary ?? receipt
+    }
+
+    /// Write one operation this message produced onto the durable slot.
+    ///
+    /// The list grows as the server answers: the anchor merge names the
+    /// message's own item, and each action's report names the item that action
+    /// belongs to. Appending is idempotent, and the ownership rule is the
+    /// delivery marker's — a report that lands after the user discarded and
+    /// replaced the message must not write into the replacement's slot.
+    private func recordDeliveredOperation(
+        _ operationID: String, claim: DeliveryClaim
+    ) throws {
+        guard case .message(let pending) = claim else { return }
+        guard var stored = try loadPending(),
+              stored.idempotencyKey == pending.idempotencyKey,
+              stored.operationID == pending.operationID
+        else { return }
+        guard !stored.operationIDs.contains(operationID) else { return }
+        stored.operationIDs.append(operationID)
+        try savePending(stored)
     }
 
     /// Execute (or skip, if already executed) a delivered device action and
@@ -1098,15 +1204,43 @@ public actor ChatTimeline {
     /// names the message, the operation names the server-side work this
     /// release speaks for. A slot with a `nil` operation matches by key alone
     /// (the discard-and-replace window before any reply anchors).
+    ///
+    /// A release is earned **per operation**, and the slot clears only once
+    /// every operation the message produced has earned one. One message may be
+    /// several operations (design §4.1), and its own item settling says
+    /// nothing about a sibling whose write may or may not exist — releasing on
+    /// item 0 alone is how the user comes to ask for an event a parked sibling
+    /// already created. A message with nothing tracked yet keeps the old
+    /// key-only rule: there is no operation to disagree with.
     private func releaseSlotIfStillOwned(
         key: String, operationID: String?
     ) throws {
-        guard let stored = try loadPending() else { return }
+        guard var stored = try loadPending() else { return }
         guard stored.idempotencyKey == key else { return }
-        if let operationID, let storedOperation = stored.operationID,
-           storedOperation != operationID {
+        guard let operationID, !stored.operationIDs.isEmpty else {
+            // No operation to attribute: a refusal that never anchored
+            // anything, a give-up with no reply ever seen. The key named by
+            // the caller is the only owner there is to check.
+            try clearPending()
             return
         }
+        guard stored.operationIDs.contains(operationID) else {
+            // This release speaks for an operation that is not this message's.
+            // Clearing would strand the replacement's write.
+            return
+        }
+        if !stored.releasedOperationIDs.contains(operationID) {
+            stored.releasedOperationIDs.append(operationID)
+            try savePending(stored)
+        }
+        // Something is still outstanding: an item that has not settled, or one
+        // that settled into a state the client may not treat as safe to forget
+        // (`needs_manual_review` above all). The slot stays, and stays as the
+        // one thing blocking the next send, until a person resolves it.
+        let outstanding = stored.operationIDs.filter {
+            !stored.releasedOperationIDs.contains($0)
+        }
+        guard outstanding.isEmpty else { return }
         try clearPending()
     }
 
