@@ -32,6 +32,12 @@ from personal_agent.media.locking import (
     stripe_of,
     verify_lock_installation,
 )
+from personal_agent.media.probe import (
+    PROBE_BYTES,
+    ProbeError,
+    probe_header,
+    sniff_mime,
+)
 from personal_agent.media.store import (
     FinalOutcome,
     MediaIntegrityError,
@@ -49,6 +55,7 @@ __all__ = [
     "DEFAULT_MAX_CONTENT_BYTES",
     "DEFAULT_MEDIA_ROLE",
     "MAX_CHUNK_BYTES",
+    "PROBE_BYTES",
     "STRIPE_COUNT",
     "ChunkHasher",
     "ContainerError",
@@ -58,13 +65,16 @@ __all__ = [
     "MediaRoots",
     "MediaStore",
     "MediaStoreError",
+    "ProbeError",
     "SealRecord",
     "StagingWriter",
     "ensure_lock_files",
     "media_locks",
     "open_container",
+    "probe_header",
     "probe_non_overwriting_publish",
     "read_container",
+    "sniff_mime",
     "stripe_of",
     "verify_lock_installation",
     "verify_media_installation",
