@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import pytest
 
+from personal_agent.api.calendar_issue import CLIENT_UPGRADE_QUESTION
 from personal_agent.api.finance_dispatcher import (
     DispatcherContext,
     McpFinanceDispatcher,
@@ -37,6 +38,7 @@ from personal_agent.api.orchestrator import (
 )
 from personal_agent.policy.bridge import DeviceAuthorization
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.tool_ir import DEFAULT_CLIENT_WIRE_VERSION
 
 CAL_ARGS = {
     "title": "网球",
@@ -53,6 +55,13 @@ CAL_DEVICE = DeviceAuthorization(
     allowed_tools={"calendar.create_event"},
     allowed_tools_version="atv-1",
 )
+
+#: The version `calendar.create_event` declares, i.e. the one a client must
+#: implement before an action may be issued to it (design 2.5). Tests that are
+#: not about the capability gate say it explicitly so the gate is never what
+#: decides them, and the capability-gate tests say the other one.
+CLIENT_WIRE_V2 = 2
+CLIENT_WIRE_V1 = DEFAULT_CLIENT_WIRE_VERSION
 
 
 class FakeEntry:
@@ -112,7 +121,10 @@ class FakeControl:
 
 
 def cal_dispatcher(
-    bridge: SpyBridge, control: FakeControl | None = None
+    bridge: SpyBridge,
+    control: FakeControl | None = None,
+    *,
+    client_wire_version: int = CLIENT_WIRE_V2,
 ) -> McpFinanceDispatcher:
     return McpFinanceDispatcher(
         bridge=bridge,
@@ -123,6 +135,7 @@ def cal_dispatcher(
             user_id="henson",
             agent_id="agent-1",
             conversation_trace_id="trace-1",
+            client_wire_version=client_wire_version,
         ),
     )
 
@@ -691,13 +704,20 @@ def test_the_projection_hands_the_action_over_while_parked(op_session) -> None:
         session.commit()
         session.refresh(operation)
 
-        projection = _operation_projection(keyring, operation)
-        assert projection["device_action"] == {
-            "action_id": "action-key-1",
-            "tool": "calendar.create_event",
-            "wire_version": 2,
-            "event": dict(CAL_ARGS),
-        }
+        projection = _operation_projection(
+            keyring, operation, client_wire_version=CLIENT_WIRE_V2
+        )
+        # A list even for the single action a v1-shaped request issues: a
+        # client that switched on the field name would need two decode paths
+        # for one contract (design 2.5.4).
+        assert projection["device_actions"] == [
+            {
+                "action_id": "action-key-1",
+                "tool": "calendar.create_event",
+                "wire_version": 2,
+                "event": dict(CAL_ARGS),
+            }
+        ]
 
 
 def test_a_settled_operation_refuses_to_hand_the_action_over(op_session) -> None:
@@ -741,8 +761,8 @@ def test_a_settled_operation_refuses_to_hand_the_action_over(op_session) -> None
         session.commit()
         session.refresh(operation)
 
-        projection = _operation_projection(keyring, operation)
-        assert "device_action" not in projection
+        projection = _operation_projection(keyring, operation, client_wire_version=CLIENT_WIRE_V2)
+        assert "device_actions" not in projection
         # Settlement closes the delivery window centrally: leaving
         # `source_in_progress` clears the seal, so no future settlement path
         # can forget to, and the schema CHECK backstops the mechanism.
@@ -779,8 +799,8 @@ def test_an_unopenable_action_envelope_fails_closed(op_session) -> None:
         session.commit()
         session.refresh(operation)
 
-        projection = _operation_projection(keyring, operation)
-        assert "device_action" not in projection
+        projection = _operation_projection(keyring, operation, client_wire_version=CLIENT_WIRE_V2)
+        assert "device_actions" not in projection
 
 
 def test_the_transient_channel_no_longer_carries_the_action(op_session) -> None:
@@ -838,8 +858,8 @@ def test_a_finance_operation_never_carries_a_device_action(op_session) -> None:
         session.commit()
         session.refresh(operation)
 
-        projection = _operation_projection(keyring, operation)
-        assert "device_action" not in projection
+        projection = _operation_projection(keyring, operation, client_wire_version=CLIENT_WIRE_V2)
+        assert "device_actions" not in projection
 
 
 @pytest.mark.parametrize(
@@ -900,7 +920,7 @@ def test_a_sealed_action_with_an_unreadable_wire_version_does_not_open(
         session.commit()
         session.refresh(operation)
 
-        assert "device_action" not in _operation_projection(keyring, operation)
+        assert "device_actions" not in _operation_projection(keyring, operation, client_wire_version=CLIENT_WIRE_V2)
 
 
 # --- pre-issuance policy: shapes the service never accepts -------------------
@@ -1192,3 +1212,218 @@ def test_every_device_tool_has_an_issuance_policy() -> None:
     with pytest.raises(AppError) as excinfo:
         issuance_policy("calendar.no_such_tool")
     assert excinfo.value.code == ErrorCode.INTERNAL_ERROR
+
+
+# --- design 2.5: the client capability gate ----------------------------------
+#
+# A v1 client ignores the fields that say *which* calendar an action targets and
+# falls back to its default writable one, so "an old client ignores unknown
+# fields" is not a safe compatibility story here -- it is the write-the-wrong-
+# calendar path. Two gates close it: the issuance gate refuses to create the
+# action, and the delivery gate refuses to hand over one that somehow exists.
+
+
+def test_an_old_client_is_told_to_upgrade_rather_than_issued_an_action() -> None:
+    """The issuance gate. A client that cannot implement this action is given
+    no action at all -- and the refusal is a question, not a failure: nothing
+    was written, the model did nothing wrong, and only the user can clear it."""
+    outcome = cal_dispatcher(
+        SpyBridge(), client_wire_version=CLIENT_WIRE_V1
+    ).resolve(
+        tool="calendar.create_event",
+        model_args=dict(CAL_ARGS),
+        idempotency_key="action-key-1",
+    )
+
+    assert isinstance(outcome, NeedsClarification)
+    assert outcome.reason == CLIENT_UPGRADE_QUESTION
+
+
+def test_the_issuance_gate_refuses_before_anything_is_validated_or_routed() -> None:
+    """Design 2.5.2 puts this check *before* `authorize`. Order is the safety
+    property here: authorising first would mean the refusal travelled through
+    the governed path, and routing first would mean the service had already
+    read the user's calendar directory on behalf of a client that can never
+    receive the answer. Neither may happen."""
+    bridge = SpyBridge()
+    control = FakeControl()
+    cal_dispatcher(bridge, control, client_wire_version=CLIENT_WIRE_V1).resolve(
+        tool="calendar.create_event",
+        model_args=dict(CAL_ARGS),
+        idempotency_key="action-key-1",
+    )
+
+    assert bridge.authorized == []
+    assert bridge.executed == []
+    assert control.lookups == []
+
+
+def test_the_gate_is_about_the_device_fork_and_not_about_the_caller() -> None:
+    """A version header is a claim about *action semantics*, and only a
+    device-executed tool has any. So the gate must not quietly become a general
+    version requirement that would stop a v1 client from logging an expense."""
+    from personal_agent_core.tool_ir import TOOL_CONTRACTS
+
+    device_tools = {
+        contract.name for contract in TOOL_CONTRACTS if contract.executor == "device"
+    }
+
+    assert "finance.log_expense" not in device_tools
+    # Its contract declares the oldest version, so no client can ever be too old
+    # for it -- which is what makes the gate a no-op outside the device fork.
+    expense = next(c for c in TOOL_CONTRACTS if c.name == "finance.log_expense")
+    assert expense.wire_version <= CLIENT_WIRE_V1
+
+
+def test_a_client_exactly_at_the_required_version_is_served() -> None:
+    """The comparison is inclusive. An off-by-one here would lock out every
+    correctly-upgraded client, and the failure would look like the server
+    ignoring the user."""
+    from personal_agent_core.tool_ir import TOOL_CONTRACTS
+
+    contract = next(c for c in TOOL_CONTRACTS if c.name == "calendar.create_event")
+    outcome = cal_dispatcher(
+        SpyBridge(), client_wire_version=contract.wire_version
+    ).resolve(
+        tool="calendar.create_event",
+        model_args=dict(CAL_ARGS),
+        idempotency_key="action-key-1",
+    )
+
+    assert isinstance(outcome, DeviceActionIssued)
+
+
+def test_the_delivery_gate_withholds_a_v2_action_from_a_v1_caller(op_session) -> None:
+    """The delivery gate (design 2.5.3), and the reason it is not redundant with
+    the issuance gate: the two read the version of *different* requests. Between
+    issuing and delivering, the same phone can be restored or downgraded. The
+    action is withheld rather than degraded, and the operation stays parked so
+    the timeout sweep -- not a claim of no-write -- owns the outcome."""
+    from personal_agent.api.app import _operation_projection
+    from personal_agent.api.orchestrator import _apply_resolve
+
+    factory, now = op_session
+    keyring = _action_keyring()
+    with factory() as session:
+        operation = _make_operation(session)
+        _apply_resolve(
+            session,
+            operation,
+            DeviceActionIssued(
+                action_id="action-key-1",
+                tool="calendar.create_event",
+                wire_version=2,
+                event_fields=dict(CAL_ARGS),
+            ),
+            dispatcher=None,
+            keyring=None,
+            now=now,
+            action_keyring=keyring,
+        )
+        session.commit()
+        session.refresh(operation)
+
+        withheld = _operation_projection(
+            keyring, operation, client_wire_version=CLIENT_WIRE_V1
+        )
+        # Absent entirely -- not empty, not null: a client that cannot execute
+        # the action must not be told there is one.
+        assert "device_actions" not in withheld
+        # The same row, one request later, from a client that can read it.
+        assert "device_actions" in _operation_projection(
+            keyring, operation, client_wire_version=CLIENT_WIRE_V2
+        )
+        # Withholding is not settling: the write may exist, and the operation
+        # keeps saying so rather than claiming otherwise.
+        assert operation.state == "source_in_progress"
+
+
+def test_the_delivery_gate_reads_the_action_not_the_contract(op_session) -> None:
+    """The comparison uses the *sealed* action's `wire_version`. That is the
+    version of the fields actually in the envelope; the contract's is whatever
+    the IR says today, so a later IR bump would raise it past an action sealed
+    under the older semantics -- and the gate would then deliver fields the
+    client was never compared against."""
+    from personal_agent.api.app import _operation_projection
+    from personal_agent.api.device_action_projection import seal_device_action
+    from personal_agent.api.orchestrator import _apply_resolve
+
+    factory, now = op_session
+    keyring = _action_keyring()
+    with factory() as session:
+        operation = _make_operation(session)
+        _apply_resolve(
+            session,
+            operation,
+            DeviceActionIssued(
+                action_id="action-key-1",
+                tool="calendar.create_event",
+                wire_version=2,
+                event_fields=dict(CAL_ARGS),
+            ),
+            dispatcher=None,
+            keyring=None,
+            now=now,
+            action_keyring=keyring,
+        )
+        session.commit()
+        session.refresh(operation)
+
+        # A seal at a version no client in this build implements.
+        operation.encrypted_device_action = seal_device_action(
+            keyring,
+            operation_id=operation.operation_id,
+            action={
+                "action_id": "action-key-1",
+                "tool": "calendar.create_event",
+                "wire_version": 3,
+                "event": dict(CAL_ARGS),
+            },
+        )
+        assert "device_actions" not in _operation_projection(
+            keyring, operation, client_wire_version=CLIENT_WIRE_V2
+        )
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        pytest.param(None, 1, id="absent"),
+        pytest.param("", 1, id="empty"),
+        pytest.param("two", 1, id="not-a-number"),
+        pytest.param("2.0", 1, id="not-an-integer"),
+        pytest.param("0", 1, id="zero"),
+        pytest.param("-3", 1, id="negative"),
+        pytest.param("2", 2, id="plain"),
+        pytest.param(" 2 ", 2, id="padded"),
+        pytest.param("3", 3, id="newer-than-this-build"),
+    ],
+)
+def test_a_capability_header_is_read_strictly(raw, expected) -> None:
+    """Every unreadable value is version 1 -- never an error, never a guess. A
+    client that predates the header must keep working on the endpoints that
+    carry no action, and a mangled value must not be promoted into a contract
+    the client does not implement. A version *newer* than this build passes
+    through unchanged: it is the client's claim, and what to do about it is the
+    comparison's job, not the parser's."""
+    from personal_agent_core.tool_ir import parse_client_wire_version
+
+    assert parse_client_wire_version(raw) == expected
+
+
+def test_the_version_comparison_is_the_one_both_gates_use() -> None:
+    """One predicate, so the two gates cannot drift into one of them failing
+    open -- which would hand a v2 action to a client that writes it into the
+    wrong calendar."""
+    from personal_agent_core.tool_ir import (
+        client_supports_wire_version,
+        parse_client_wire_version,
+    )
+
+    assert client_supports_wire_version(client=2, required=2)
+    assert client_supports_wire_version(client=3, required=2)
+    assert not client_supports_wire_version(client=1, required=2)
+    # An unreadable header flows through both gates as the oldest contract.
+    assert not client_supports_wire_version(
+        client=parse_client_wire_version("nonsense"), required=2
+    )

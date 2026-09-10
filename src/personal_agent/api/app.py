@@ -143,7 +143,14 @@ from personal_agent_core.errors import (
 )
 from personal_agent_core.manifest import canonical_json
 from personal_agent_core.sqlite import run_write_transaction
-from personal_agent_core.tool_ir import TOOL_CONTRACTS, SCOPE_CALENDAR_READ
+from personal_agent_core.tool_ir import (
+    CLIENT_WIRE_VERSION_HEADER,
+    DEFAULT_CLIENT_WIRE_VERSION,
+    TOOL_CONTRACTS,
+    SCOPE_CALENDAR_READ,
+    client_supports_wire_version,
+    parse_client_wire_version,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -165,6 +172,11 @@ class AuthContext:
     device_id: str
     scopes: tuple[str, ...]
     allowed_tools_version: str
+    #: The action semantics this caller says it implements (design 2.5.1).
+    #: Read from the request header and never persisted: reading it per request
+    #: is what covers all three delivery doors at once, because the 200 reply,
+    #: the by-id poll and a replay are each a device-authenticated request.
+    client_wire_version: int
 
 
 class EnvelopeFactory(Protocol):
@@ -542,6 +554,9 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             # must take effect immediately and the capability projection must
             # describe the same current database row enforced by dispatch.
             allowed_tools_version=device.allowed_tools_version,
+            client_wire_version=parse_client_wire_version(
+                request.headers.get(CLIENT_WIRE_VERSION_HEADER)
+            ),
         )
 
     def idempotency_key(request: Request) -> str:
@@ -699,8 +714,8 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             response = await asyncio.to_thread(
                 _load_operation_response,
                 deps,
+                auth,
                 anchored.operation_id,
-                auth.device_id,
             )
             return await asyncio.to_thread(
                 _record_operation_http_response,
@@ -792,8 +807,8 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             response = await asyncio.to_thread(
                 _load_operation_response,
                 deps,
+                auth,
                 anchored.operation_id,
-                auth.device_id,
             )
             return await asyncio.to_thread(
                 _record_operation_http_response,
@@ -815,7 +830,11 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 operation = _owned_operation(
                     session, operation_id, device_id=auth.device_id
                 )
-                return _operation_response(deps.keyring, operation)
+                return _operation_response(
+                    deps.keyring,
+                    operation,
+                    client_wire_version=auth.client_wire_version,
+                )
 
             response = _commit(session, work)
         return _record_operation_http_response(
@@ -878,7 +897,11 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                         ),
                     )
                 anchored_operation_id = operation.operation_id
-                return _operation_response(deps.keyring, operation)
+                return _operation_response(
+                    deps.keyring,
+                    operation,
+                    client_wire_version=auth.client_wire_version,
+                )
 
             response = _commit(session, work)
         if anchored_operation_id is not None:
@@ -902,7 +925,11 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 _owned_operation(session, operation_id, device_id=auth.device_id)
                 request_cancel(session, operation_id=operation_id, now=deps.now())
                 operation = get_operation(session, operation_id)
-                return _operation_response(deps.keyring, operation)
+                return _operation_response(
+                    deps.keyring,
+                    operation,
+                    client_wire_version=auth.client_wire_version,
+                )
 
             response = _commit(session, work)
         return _record_operation_http_response(
@@ -1769,7 +1796,13 @@ def _process_chat(
                 session, operation_id, device_id=auth.device_id
             )
             if operation.state != "accepted":
-                return _ProcessedChat(_operation_response(deps.keyring, operation))
+                return _ProcessedChat(
+                    _operation_response(
+                        deps.keyring,
+                        operation,
+                        client_wire_version=auth.client_wire_version,
+                    )
+                )
             payload = open_chat_request(
                 deps.keyring,
                 request_id=operation.request_id,
@@ -1788,7 +1821,13 @@ def _process_chat(
             operation = _owned_operation(
                 session, operation_id, device_id=auth.device_id
             )
-            return _ProcessedChat(_operation_response(deps.keyring, operation))
+            return _ProcessedChat(
+                _operation_response(
+                    deps.keyring,
+                    operation,
+                    client_wire_version=auth.client_wire_version,
+                )
+            )
         except Exception:
             session.rollback()
             raise
@@ -1881,7 +1920,12 @@ def _run_chat_turn(
         else None
     )
     processed = _ProcessedChat(
-        _operation_response(deps.keyring, operation, extra=_transient(result)),
+        _operation_response(
+            deps.keyring,
+            operation,
+            client_wire_version=auth.client_wire_version,
+            extra=_transient(result),
+        ),
         compact_session_id=compact_session_id,
     )
     return processed
@@ -2316,11 +2360,17 @@ def _session_of_operation(session, operation_id: str) -> str | None:
 
 
 def _load_operation_response(
-    deps: AgentApiDeps, operation_id: str, device_id: str
+    deps: AgentApiDeps, auth: AuthContext, operation_id: str
 ) -> JSONResponse:
     with deps.session_factory() as session:
-        operation = _owned_operation(session, operation_id, device_id=device_id)
-        return _operation_response(deps.keyring, operation)
+        operation = _owned_operation(
+            session, operation_id, device_id=auth.device_id
+        )
+        return _operation_response(
+            deps.keyring,
+            operation,
+            client_wire_version=auth.client_wire_version,
+        )
 
 
 def _process_manual_resolution(
@@ -2478,7 +2528,11 @@ def _process_device_action_result(
                 session.refresh(operation)
             # A settled operation (including one this request did not move --
             # the loser of a CAS race, or a replay) answers its current state.
-            return _operation_response(deps.keyring, operation)
+            return _operation_response(
+                deps.keyring,
+                operation,
+                client_wire_version=auth.client_wire_version,
+            )
 
         return _commit(session, work)
 
@@ -2646,7 +2700,11 @@ def _process_category_correction(
                     operation.operation_id,
                     exc_info=True,
                 )
-            return _operation_response(deps.keyring, operation)
+            return _operation_response(
+                deps.keyring,
+                operation,
+                client_wire_version=auth.client_wire_version,
+            )
 
         return _commit(session, work, retry=False)
 
@@ -2713,7 +2771,11 @@ def _process_duplicate_decision(
                 decision=decision,
                 now=deps.now(),
             )
-            return _operation_response(deps.keyring, target)
+            return _operation_response(
+                deps.keyring,
+                target,
+                client_wire_version=auth.client_wire_version,
+            )
 
         # `write anyway` dispatches a real Finance write inside `work`.
         return _commit(session, work, retry=False)
@@ -2943,7 +3005,13 @@ def _operation_event_content(
     only for a `finance.query_expenses` result that decoded; anything else fails
     closed to an absent field rather than a raw dump.
     """
-    projection = _operation_projection(keyring, operation)
+    # A Timeline event is history, not a hand-off, and it deliberately never
+    # carried the action: `device_actions` is not among the names copied below.
+    # So the version passed here decides nothing -- it is version 1 to say so,
+    # rather than to claim this call site speaks for a client it does not have.
+    projection = _operation_projection(
+        keyring, operation, client_wire_version=DEFAULT_CLIENT_WIRE_VERSION
+    )
     content: dict[str, Any] = {
         "state": projection["state"],
         "tool": projection["tool"],
@@ -3023,6 +3091,7 @@ def _operation_response(
     keyring: KeyRing,
     operation: Operation,
     *,
+    client_wire_version: int,
     extra: dict[str, Any] | None = None,
 ) -> JSONResponse:
     # A parked or in-flight operation is 202; a resolved one is 200. The client
@@ -3031,7 +3100,9 @@ def _operation_response(
     # duplicate record), returned on the immediate reply only.
     from personal_agent.api.operation_state import is_terminal
 
-    projection = _operation_projection(keyring, operation)
+    projection = _operation_projection(
+        keyring, operation, client_wire_version=client_wire_version
+    )
     if extra:
         projection.update(extra)
     return JSONResponse(
@@ -3058,7 +3129,7 @@ def _transient(result) -> dict[str, Any]:
 
 
 def _operation_projection(
-    keyring: KeyRing, operation: Operation
+    keyring: KeyRing, operation: Operation, *, client_wire_version: int
 ) -> dict[str, Any]:
     projection = {
         "operation_id": operation.operation_id,
@@ -3089,8 +3160,25 @@ def _operation_projection(
             operation_id=operation.operation_id,
             envelope=operation.encrypted_device_action,
         )
-        if action is not None:
-            projection["device_action"] = action
+        # The delivery gate (design 2.5.3). The issuance gate already refused a
+        # client that cannot implement this action, but it reads the version of
+        # a *different* request: the one that issued. Between issuing and
+        # delivering, the same phone can be restored, downgraded or replaced by
+        # an older build, and this call is the last moment anyone can tell. So
+        # the sealed action's own `wire_version` -- not the contract's, which a
+        # later IR change could raise past what was actually sealed -- is
+        # compared against the caller's claim, and a shortfall withholds the
+        # action rather than degrading it. The operation stays parked and the
+        # 15-minute sweep settles it into needs_manual_review, which is the
+        # honest terminal state: the phone may or may not have written, and no
+        # client was told otherwise.
+        if action is not None and client_supports_wire_version(
+            client=client_wire_version, required=action["wire_version"]
+        ):
+            # Always a list, even for the single action a v1-shaped request
+            # issues: a client that switched on length would otherwise need two
+            # decode paths for one contract (design 2.5.4).
+            projection["device_actions"] = [action]
     if operation.safe_result is not None:
         if operation.state == "waiting_for_clarification":
             projection["clarification"] = operation.safe_result

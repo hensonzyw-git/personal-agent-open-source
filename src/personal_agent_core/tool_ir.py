@@ -50,6 +50,45 @@ CLIENT_WIRE_VERSION_HEADER: Final[str] = "X-Client-Wire-Version"
 #: Every client that predates the calendar work implements version 1.
 DEFAULT_CLIENT_WIRE_VERSION: Final[int] = 1
 
+
+def parse_client_wire_version(raw: str | None) -> int:
+    """The action semantics a client claims, from its header value.
+
+    Absent or unparseable means version 1. That is deliberately not an error:
+    every client that predates this header implements version 1, and failing the
+    request would break those clients on endpoints that never carry an action
+    at all. The claim can only ever *narrow* what is delivered, because it is
+    compared against what the action requires -- a client cannot talk its way
+    into a newer contract, and it cannot talk its way into an older one either.
+    """
+    if not isinstance(raw, str):
+        return DEFAULT_CLIENT_WIRE_VERSION
+    try:
+        # `int` already tolerates the surrounding whitespace a header value may
+        # arrive with, so a padded "2" is a client that implements version 2 --
+        # reading it as unreadable would lock out a correctly-upgraded phone.
+        version = int(raw)
+    except ValueError:
+        return DEFAULT_CLIENT_WIRE_VERSION
+    # A version below 1 names no contract this codebase ever shipped, so it is
+    # an unreadable value rather than a client that implements less than
+    # nothing.
+    return version if version >= 1 else DEFAULT_CLIENT_WIRE_VERSION
+
+
+def client_supports_wire_version(*, client: int, required: int) -> bool:
+    """Whether a client at `client` may be handed an action requiring `required`.
+
+    One predicate for both capability gates (design §2.5): the issuance gate
+    asks it of the tool contract, the delivery gate of the sealed action's own
+    `wire_version`. Two copies of this comparison could drift into one of them
+    failing open, and failing open here is not a degraded hand-off -- it hands a
+    v2 action to a client that ignores `calendar_identifier` and writes the
+    event into its default calendar instead.
+    """
+    return client >= required
+
+
 #: The four calendars routing may target. 【飞行计划】 is managed by another app
 #: and is read-only; it stays in the enum so a flight request receives the
 #: honest refusal from the server instead of the model inventing a calendar or

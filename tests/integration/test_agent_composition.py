@@ -1310,6 +1310,8 @@ def test_an_unknown_device_dispatches_nothing(keys, agent_db) -> None:
     The bridge and control plane are `None` on purpose -- touching either would
     raise rather than quietly fail safe, so this proves nothing is attempted.
     """
+    from personal_agent_core.tool_ir import DEFAULT_CLIENT_WIRE_VERSION
+
     dispatcher = DeviceBoundDispatcher(
         device_id="dev-does-not-exist",
         sessions=session_factory(create_database_engine(agent_db)),
@@ -1321,6 +1323,7 @@ def test_an_unknown_device_dispatches_nothing(keys, agent_db) -> None:
         trace_id="00-trace-span-01",
         enabled_tools=frozenset({"meta.capabilities"}),
         manifest_version=MANIFEST_VERSION,
+        client_wire_version=DEFAULT_CLIENT_WIRE_VERSION,
     )
 
     resolved = dispatcher.resolve(tool="meta.capabilities", model_args={})
@@ -2088,7 +2091,10 @@ def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
     the projection must hand over the same authorised action the response
     would have carried.
     """
-    from personal_agent_core.tool_ir import SCOPE_CALENDAR_WRITE
+    from personal_agent_core.tool_ir import (
+        CLIENT_WIRE_VERSION_HEADER,
+        SCOPE_CALENDAR_WRITE,
+    )
 
     finance_db = tmp_path / "finance-device-action.sqlite"
     # The phone's calendar directory, as a previous sync would have left it:
@@ -2158,6 +2164,12 @@ def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
                         "Authorization": f"Bearer {token}",
                         "Idempotency-Key": key,
                         "Content-Type": "application/json",
+                        # The capability the client claims, on every request
+                        # (design 2.5.1). Without it the issuance gate refuses
+                        # this write outright rather than letting a client that
+                        # cannot read `calendar_identifier` fall back to its
+                        # default calendar.
+                        CLIENT_WIRE_VERSION_HEADER: "2",
                     }
                     detached = await client.post(
                         "/v1/chat/messages",
@@ -2175,15 +2187,35 @@ def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
                     # The worker finished its turn by the time the drain
                     # returns; the poll then reads the parked operation.
                     await app.state.drain_background_tasks()
-                    polled = await client.get(
+                    # Polled twice, by the same device, on the same parked
+                    # operation -- once as a client that cannot read the action
+                    # and once as one that can. This is the delivery gate over
+                    # real HTTP: the version is read from each request, so a
+                    # phone downgraded between issuing and delivering is
+                    # refused the action, while the operation stays parked for
+                    # the timeout sweep to settle honestly (design 2.5.3).
+                    downgraded = await client.get(
                         f"/v1/operations/{operation_id}",
                         headers={"Authorization": f"Bearer {token}"},
                     )
-                    return detached, polled
+                    polled = await client.get(
+                        f"/v1/operations/{operation_id}",
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            CLIENT_WIRE_VERSION_HEADER: "2",
+                        },
+                    )
+                    return detached, downgraded, polled
 
-        detached, polled = asyncio.run(scenario())
+        detached, downgraded, polled = asyncio.run(scenario())
     finally:
         service.stop()
+
+    # The v1 caller gets the parked state and nothing to execute -- the field
+    # is absent, not empty.
+    assert downgraded.status_code == 202, downgraded.text
+    assert downgraded.json()["state"] == "source_in_progress"
+    assert "device_actions" not in downgraded.json()
 
     body = polled.json()
     # Parked is still 202: the client settles by reaching a terminal state on
@@ -2193,27 +2225,32 @@ def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
     # The parked operation hands the action over — the attested arguments the
     # bridge authorised, nothing re-derived and nothing the model invented.
     assert body["state"] == "source_in_progress"
-    assert body["device_action"] == {
-        "action_id": key,
-        "tool": "calendar.create_event",
-        "wire_version": 2,
-        "event": {
-            "title": "网球",
-            "start": "2026-09-12T15:00:00+08:00",
-            "end": "2026-09-12T16:30:00+08:00",
-            "all_day": False,
-            "calendar": "日常安排",
-            "timezone": "Asia/Tokyo",
-            # The routing the server did, not anything the model said: the
-            # identifier comes from the directory and the title is the name the
-            # directory matched on. A client that picks its own calendar is the
-            # failure this field exists to prevent.
-            "calendar_identifier": "uuid-ri-chang",
-            "calendar_title": "日常安排",
-            "start_date": None,
-            "end_date": None,
-        },
-    }
+    # A list, always — one action here, and the same field name would carry N
+    # of them. The client that received this request claimed version 2, so the
+    # delivery gate let it through.
+    assert body["device_actions"] == [
+        {
+            "action_id": key,
+            "tool": "calendar.create_event",
+            "wire_version": 2,
+            "event": {
+                "title": "网球",
+                "start": "2026-09-12T15:00:00+08:00",
+                "end": "2026-09-12T16:30:00+08:00",
+                "all_day": False,
+                "calendar": "日常安排",
+                "timezone": "Asia/Tokyo",
+                # The routing the server did, not anything the model said: the
+                # identifier comes from the directory and the title is the name
+                # the directory matched on. A client that picks its own calendar
+                # is the failure this field exists to prevent.
+                "calendar_identifier": "uuid-ri-chang",
+                "calendar_title": "日常安排",
+                "start_date": None,
+                "end_date": None,
+            },
+        }
+    ]
 
     # The seal is on the row, in the database, sealed with the composition's
     # keyring — not a test-side reconstruction.

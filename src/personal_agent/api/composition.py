@@ -272,6 +272,7 @@ class DeviceBoundDispatcher:
         trace_id: str,
         enabled_tools: frozenset[str],
         manifest_version: str,
+        client_wire_version: int,
         run: Callable[[Any], Any] = asyncio.run,
     ) -> None:
         self._device_id = device_id
@@ -284,6 +285,7 @@ class DeviceBoundDispatcher:
         self._trace_id = trace_id
         self._enabled_tools = enabled_tools
         self._manifest_version = manifest_version
+        self._client_wire_version = client_wire_version
         self._run = run
 
     def _dispatcher(self) -> McpFinanceDispatcher | None:
@@ -305,6 +307,7 @@ class DeviceBoundDispatcher:
                 user_id=self._user_id,
                 agent_id=self._agent_id,
                 conversation_trace_id=self._trace_id,
+                client_wire_version=self._client_wire_version,
                 timezone=LEDGER_TIMEZONE,
             ),
             run=self._run,
@@ -813,6 +816,7 @@ async def agent_service(
                     trace_id=trace_id,
                     enabled_tools=enabled_tools,
                     manifest_version=manifest_version,
+                    client_wire_version=auth.client_wire_version,
                 )
                 # Always wrapped, on every composition. A recorder that is
                 # disabled records nothing; a conditional wrap would be one more

@@ -47,12 +47,22 @@ from personal_agent.api.finance_record_projection import (
 from personal_agent.api.operation_state import is_terminal
 from personal_agent.storage.models import OPERATION_STATES, Operation
 from personal_agent_core.crypto import KeyRing, generate_key
-from personal_agent_core.tool_ir import ALLOWED_EXPENSE_CATEGORIES, TOOL_CONTRACTS
+from personal_agent_core.tool_ir import (
+    ALLOWED_EXPENSE_CATEGORIES,
+    DEFAULT_CLIENT_WIRE_VERSION,
+    TOOL_CONTRACTS,
+)
 
 #: One ring for the whole module. These vectors never leave the process, and
 #: the projection has to open what the write path sealed -- the point of the
 #: file is that both halves are the server's own code.
 RING = KeyRing([generate_key("receipt-vectors")], service="personal-agent-api")
+
+#: Every vector in this file is a receipt for a *settled* operation, so the
+#: client capability gate cannot be what decides any of them -- a settled
+#: operation carries no device action to withhold. Version 1 is passed to
+#: say exactly that: these bodies are the shape every client sees.
+_WIRE = DEFAULT_CLIENT_WIRE_VERSION
 
 VECTORS_PATH = (
     Path(__file__).parents[2]
@@ -206,12 +216,12 @@ def test_manual_review_preserves_a_known_record_id() -> None:
             "duplicate_check_id": None,
         }
     }
-    assert _operation_projection(RING, _operation_for(case))["record_id"] == "rec123"
+    assert _operation_projection(RING, _operation_for(case), client_wire_version=_WIRE)["record_id"] == "rec123"
 
 
 @pytest.mark.parametrize("case", V["cases"], ids=lambda case: case["name"])
 def test_each_receipt_is_what_the_projection_emits(case: dict) -> None:
-    assert _operation_projection(RING, _operation_for(case)) == case["receipt"]
+    assert _operation_projection(RING, _operation_for(case), client_wire_version=_WIRE) == case["receipt"]
 
 
 @pytest.mark.parametrize("case", V["cases"], ids=lambda case: case["name"])
@@ -364,7 +374,7 @@ def test_query_receipt_and_timeline_event_carry_the_same_facts() -> None:
     """The immediate projection and the Timeline event must never disagree."""
     for name in ("query_total", "query_by_category", "query_records"):
         operation = _operation_for(_case(name))
-        receipt = _operation_projection(RING, operation)
+        receipt = _operation_projection(RING, operation, client_wire_version=_WIRE)
         event = _operation_event_content(RING, operation)
         assert event["tool"] == receipt["tool"] == "finance.query_expenses"
         assert event["query_result"] == receipt["query_result"]
@@ -387,7 +397,7 @@ def test_a_query_safe_result_that_does_not_decode_fails_closed() -> None:
         }
     )
     operation.safe_result = "not a query projection"
-    receipt = _operation_projection(RING, operation)
+    receipt = _operation_projection(RING, operation, client_wire_version=_WIRE)
     # A result that cannot be projected is never shown as an answer and never
     # becomes a card; it stays silently unknown until recovery.
     assert "query_result" not in receipt
@@ -402,7 +412,7 @@ def test_query_result_is_only_projected_for_the_query_tool() -> None:
     for case in V["cases"]:
         operation = _operation_for(case)
         if case["receipt"]["tool"] != "finance.query_expenses":
-            assert "query_result" not in _operation_projection(RING, operation)
+            assert "query_result" not in _operation_projection(RING, operation, client_wire_version=_WIRE)
 
 
 def test_new_events_carry_tool_explicitly_even_when_null() -> None:

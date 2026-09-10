@@ -56,6 +56,7 @@ from personal_agent.api.calendar_query_projection import (
     summarise_calendar_projection,
 )
 from personal_agent.api.calendar_issue import (
+    CLIENT_UPGRADE_QUESTION,
     action_fields,
     issuance_policy,
     routing_question,
@@ -106,7 +107,12 @@ from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.finance_tools import FINANCE_READ_TOOLS
 from personal_agent_core.host_context import HostContext, ServiceKeyRing
 from personal_agent_core.manifest import canonical_json
-from personal_agent_core.tool_ir import TOOL_CONTRACTS, ToolContract
+from personal_agent_core.tool_ir import (
+    DEFAULT_CLIENT_WIRE_VERSION,
+    TOOL_CONTRACTS,
+    ToolContract,
+    client_supports_wire_version,
+)
 
 
 _log = logging.getLogger(__name__)
@@ -207,6 +213,11 @@ class DispatcherContext:
     agent_id: str
     conversation_trace_id: str
     timezone: str = "Asia/Shanghai"
+    #: The action semantics the client that made this request implements
+    #: (design 2.5.2). Defaults to the oldest contract in existence, so a
+    #: caller that never states a version is treated as a client that cannot
+    #: implement anything new -- which is what an absent header means.
+    client_wire_version: int = DEFAULT_CLIENT_WIRE_VERSION
 
 
 class McpFinanceDispatcher:
@@ -268,6 +279,22 @@ class McpFinanceDispatcher:
             # is the phone, reached by the chat response itself. The action id
             # *is* the operation's idempotency key, so one message can produce
             # at most one device side effect.
+            if not client_supports_wire_version(
+                client=self._context.client_wire_version,
+                required=contract.wire_version,
+            ):
+                # The issuance gate, and it has to come before `authorize`
+                # (design 2.5.2): a client that does not implement this
+                # action's semantics ignores the fields that say *which*
+                # calendar to use and would fall back to its default writable
+                # one -- so it is not given a degraded action, it is given
+                # none. Nothing is validated, nothing is issued, nothing is
+                # sealed, and the operation is not parked at
+                # `source_in_progress`, which is the state that means "a write
+                # may exist". A clarification is the right ending rather than
+                # `failed_safe`: nothing was written, the model did nothing
+                # wrong, and the user is the only one who can clear it.
+                return NeedsClarification(reason=CLIENT_UPGRADE_QUESTION)
             try:
                 # The cleaned arguments are the *attested* ones: host-only
                 # fields the model tried to smuggle in are gone, and a field

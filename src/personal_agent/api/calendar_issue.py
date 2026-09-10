@@ -43,6 +43,16 @@ from personal_agent_core.tool_ir import CALENDAR_FLIGHT_PLAN
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
+#: What a client too old to implement an action's semantics is told (design
+#: 2.5.2). It is a clarification rather than a failure because it is neither the
+#: model's mistake nor something the service can work around: only the user can
+#: update the App, and the same request succeeds once they have. The text names
+#: no store, because this App is installed by hand rather than through one.
+CLIENT_UPGRADE_QUESTION: Final[str] = (
+    "iPhone 上的 App 需要升级后才能记录日程。请把 App 更新到最新版本，然后再说一次。"
+)
+
+
 @dataclass(frozen=True)
 class CalendarRequest:
     """One attested create request, validated and normalised.
@@ -278,6 +288,7 @@ def _require_local_midnight(moment: datetime, day: date, which: str) -> None:
 
 
 __all__ = [
+    "CLIENT_UPGRADE_QUESTION",
     "CalendarRequest",
     "action_fields",
     "issuance_policy",
