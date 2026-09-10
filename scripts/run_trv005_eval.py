@@ -40,9 +40,10 @@ def _load_credential() -> None:
 
 def main() -> int:
     _load_credential()
-    # DeepSeek composition, matching the ECS production env (2026-09-05).
+    # DeepSeek composition, matching the ECS production env (2026-09-05;
+    # id updated 2026-09-10 when V4.1 Flash renamed deepseek-flash).
     os.environ["MODEL_PROVIDER"] = "deepseek"
-    os.environ["GLM_MODEL"] = "deepseek-v4-flash-vision-exp"
+    os.environ["GLM_MODEL"] = "deepseek-flash"
     # A stale Zhipu credential or base URL must not leak into this run.
     for stale in ("ZAI_API_KEY", "GLM_OPENAI_BASE_URL", "GLM_CLASSIFIER_MODEL"):
         os.environ.pop(stale, None)

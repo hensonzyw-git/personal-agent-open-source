@@ -70,7 +70,7 @@ PROVIDERS: dict[str, ModelProvider] = {
             host=_DEEPSEEK_HOST,
             path=_DEEPSEEK_PATH,
             credential_env="DEEPSEEK_API_KEY",
-            default_model="deepseek-v4-flash",
+            default_model="deepseek-flash",
             illegal_tool_name_chars=r"[^A-Za-z0-9_-]",
         ),
     )

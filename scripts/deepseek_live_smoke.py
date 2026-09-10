@@ -122,7 +122,7 @@ def _envelope(tmp: Path, *, user_text: str, tools: list) -> object:
         )
 
 
-_MAIN = {"MODEL_PROVIDER": "deepseek", "GLM_MODEL": "deepseek-v4-flash-vision-exp"}
+_MAIN = {"MODEL_PROVIDER": "deepseek", "GLM_MODEL": "deepseek-flash"}
 
 results: list[tuple[str, str]] = []
 

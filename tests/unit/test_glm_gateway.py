@@ -1511,7 +1511,7 @@ def test_chat_gateway_round_trips_dotted_names_through_deepseek(
     )
     # Point the gateway at the DeepSeek endpoint so the mapper sanitizes.
     gateway._api_base = "https://api.deepseek.com/"
-    gateway._model = "openai/deepseek-v4-flash"
+    gateway._model = "openai/deepseek-flash"
     mapper_chars = PROVIDERS["deepseek"].illegal_tool_name_chars
     assert mapper_chars is not None
 
@@ -1557,7 +1557,7 @@ def test_structured_client_maps_expected_name_on_deepseek(monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     monkeypatch.delenv("GLM_OPENAI_BASE_URL", raising=False)
     client = StructuredModelClient(
-        model="openai/deepseek-v4-flash",
+        model="openai/deepseek-flash",
         api_key="sk-test",
         input_budget_tokens=32_768,
         api_base="https://api.deepseek.com/",
