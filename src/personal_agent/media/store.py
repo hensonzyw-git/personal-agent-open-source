@@ -150,8 +150,24 @@ def probe_non_overwriting_publish(root: Path) -> None:
     probe performs a real link against a real existing target in a scratch
     directory and requires the refusal, so a host whose `os.link` overwrites is
     rejected at startup instead of silently replacing a user's image later.
+
+    The scratch directory is under the staging area rather than directly under
+    the storage root, and that placement is load-bearing rather than tidy. The
+    lock set lives at ``root/locks``, so replacing it is a rename of a directory
+    entry in ``root`` -- which means ``root`` has to be unwritable by the
+    service for the lock check to pass. A probe that created its scratch
+    directory in ``root`` needed exactly the opposite, and the two checks could
+    never both be satisfied. Staging is the area the service already writes, and
+    it is on the same filesystem as the published files, so `os.link` behaves
+    here exactly as it does at the publish destination.
     """
-    probe_root = Path(root) / ".publish-probe"
+    staging = Path(root) / STAGING_DIRNAME
+    if not staging.is_dir():
+        raise MediaStoreError(
+            f"cannot run the publish probe: {staging} does not exist, so the "
+            "installation is incomplete"
+        )
+    probe_root = staging / ".publish-probe"
     try:
         probe_root.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -160,8 +176,8 @@ def probe_non_overwriting_publish(root: Path) -> None:
         # so an unanticipated OSError here must become one of those reasons
         # rather than propagating out of the check that was meant to state it.
         raise MediaStoreError(
-            f"cannot run the publish probe: {root} is not writable by this "
-            f"identity ({exc})"
+            f"cannot run the publish probe: {probe_root} is not writable by "
+            f"this identity ({exc})"
         ) from exc
     try:
         with tempfile.TemporaryDirectory(dir=probe_root) as scratch:

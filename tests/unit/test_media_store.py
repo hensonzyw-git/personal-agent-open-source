@@ -64,8 +64,9 @@ def test_the_publish_probe_passes_on_a_real_filesystem(tmp_path) -> None:
     # §5.3 requires the non-overwriting install to be environment-verified. On
     # a filesystem where this raised, publishing could clobber an image, and no
     # amount of application logic would notice.
+    (tmp_path / "staging").mkdir()
     probe_non_overwriting_publish(tmp_path)
-    assert not (tmp_path / ".publish-probe").exists()
+    assert not (tmp_path / "staging" / ".publish-probe").exists()
 
 
 def test_the_probe_leaves_no_residue_even_when_it_fails(tmp_path, monkeypatch) -> None:
@@ -73,9 +74,10 @@ def test_the_probe_leaves_no_residue_even_when_it_fails(tmp_path, monkeypatch) -
         raise OSError("pretend this host has no link")
 
     monkeypatch.setattr(os, "link", clobbering_link)
+    (tmp_path / "staging").mkdir()
     with pytest.raises(MediaStoreError):
         probe_non_overwriting_publish(tmp_path)
-    assert not (tmp_path / ".publish-probe").exists()
+    assert not (tmp_path / "staging" / ".publish-probe").exists()
 
 
 def test_installation_verification_names_the_missing_lock_set(tmp_path) -> None:
@@ -94,6 +96,7 @@ def _install(root, monkeypatch) -> None:
     a foreign one, which is the same lever the check uses.
     """
     ensure_lock_files(root)
+    (root / "staging").mkdir(exist_ok=True)
     os.chmod(root / "locks", 0o555)
     os.chmod(root, 0o555)
     monkeypatch.setattr(os, "geteuid", lambda: os.stat(root).st_uid + 1)
@@ -193,29 +196,40 @@ def test_a_read_only_root_is_reported_by_the_publish_probe_not_raised(
         os.chmod(root, 0o755)
 
 
-def test_the_publish_probe_and_the_lock_check_disagree_about_a_writable_root(
+def test_the_whole_installation_verifies_once_the_probe_runs_in_staging(
     tmp_path, monkeypatch
 ) -> None:
-    """An open conflict, pinned so it cannot be forgotten.
+    """Both halves agree, which they could not while the probe used the root.
 
-    Replacing the lock set needs `root` to be unwritable by the service, because
-    renaming `locks/` is a write on `root`. The publish probe needs `root` to be
-    writable, because it creates its scratch directory there. Both cannot hold
-    of the same directory, so `verify_media_installation` cannot currently
-    return an empty list on any host -- one half or the other always objects.
-
-    This test states the disagreement rather than resolving it. Resolving it
-    means deciding where the probe runs or where the locks live, and that is an
-    amendment to §4.1 and §5.3, not a bug fix.
+    Renaming `locks/` is a write on `root`, so the lock check needs `root`
+    unwritable; the probe needs a writable directory of its own. Moving the
+    probe into the staging area -- which the service writes anyway, and which is
+    on the same filesystem as the published files -- lets a correctly installed
+    root satisfy both. This is the case that was impossible before.
     """
     root = tmp_path / "storage"
     root.mkdir()
-    ensure_lock_files(root)
-    os.chmod(root / "locks", 0o555)
-    monkeypatch.setattr(os, "geteuid", lambda: os.stat(root).st_uid + 1)
+    _install(root, monkeypatch)
+    try:
+        assert verify_media_installation(root, boundary=tmp_path) == []
+    finally:
+        os.chmod(root, 0o755)
 
-    probe_non_overwriting_publish(root)  # needs a writable root: passes
-    assert verify_lock_installation(root, boundary=tmp_path)  # needs the opposite
+
+def test_the_probe_reports_a_missing_staging_area_rather_than_creating_it(
+    tmp_path,
+) -> None:
+    """Installation owns the layout; the verifier only reports on it.
+
+    Creating the staging directory here would make the check pass by mutating
+    the thing it is checking, and it would need exactly the write permission on
+    `root` that the lock check forbids.
+    """
+    root = tmp_path / "storage"
+    root.mkdir()
+
+    with pytest.raises(MediaStoreError, match="does not exist"):
+        probe_non_overwriting_publish(root)
 
 
 def test_verify_installation_fails_closed(tmp_path, keyring) -> None:
