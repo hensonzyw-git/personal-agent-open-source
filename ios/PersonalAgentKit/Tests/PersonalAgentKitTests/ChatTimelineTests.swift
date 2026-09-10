@@ -1965,7 +1965,7 @@ struct ReceiptContractTests {
     @Test("the vector file is the one this build was written against")
     func contractVersion() throws {
         let vectors = try #require(vectors)
-        #expect(vectors.contract == "chat_receipt_projection_v6")
+        #expect(vectors.contract == "chat_receipt_projection_v7")
         #expect(!vectors.cases.isEmpty)
     }
 

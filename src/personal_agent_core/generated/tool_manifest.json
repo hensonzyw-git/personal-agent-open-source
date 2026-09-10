@@ -87,7 +87,7 @@
     "calendar.create_event",
     "calendar.query_events"
   ],
-  "allowed_tools_version": "71d96ddc23f965c4fa12a3ed112bee653d7ddb16c2e85c0c519e2652bee56e1a",
+  "allowed_tools_version": "b948448ddb35634eb052819796f60c8986aad19ded7f1dbbe10bb343fe495d75",
   "tools": [
     {
       "name": "finance.log_expense",
@@ -1990,6 +1990,7 @@
               "required": [
                 "event_identifier",
                 "calendar_identifier",
+                "calendar_title",
                 "title",
                 "start",
                 "end",
@@ -2012,6 +2013,14 @@
                   "type": "string",
                   "minLength": 1,
                   "description": "该事件所在日历的标识。"
+                },
+                "calendar_title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 200,
+                  "description": "该事件所在日历的名字（设备名录里的 title），列表卡片显示用；identifier 是 EventKit 的 UUID，对人没有意义。设备名录里没有这个标识时（名录未上载过、或该日历已被删除）为 null——「不知道名字」是事实，不要用 identifier 顶替。"
                 },
                 "title": {
                   "type": [
@@ -2203,7 +2212,7 @@
         "SOURCE_UNAVAILABLE"
       ],
       "input_schema_hash": "c2312dca5342a0b9cb5995055531ff310c42fe2fc9f9fdc999963ecd708d8817",
-      "contract_hash": "87c93f9be7291c30603e55d30dc1fb4fdd310b825fa037926900f4ee358fcf8a"
+      "contract_hash": "13a801822faf0f9422bb809cd27391a6e5574581b614792e7ac65a58002ba3c6"
     },
     {
       "name": "calendar.ingest_events",

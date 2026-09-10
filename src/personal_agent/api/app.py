@@ -382,6 +382,14 @@ _CALENDAR_QUERY_RESULT_TOOLS = frozenset(
 #: automatically.
 _DEVICE_EXECUTED_TOOLS = DEVICE_EXECUTED_TOOL_NAMES
 
+#: Which domain each tool belongs to, read from the IR contract (design §10,
+#: gap 4). A client picks the manual-review card by domain — a calendar write
+#: cannot be checked in the ledger — so the domain has to be a fact the server
+#: states, derived from the tool's own contract like every other executor and
+#: risk split in this file. A tool with no contract is absent from the map and
+#: projects as null rather than falling into a default domain.
+_TOOL_DOMAINS = {contract.name: contract.domain for contract in TOOL_CONTRACTS}
+
 
 class _Unauthenticated(Exception):
     """A request could not be tied to an active device."""
@@ -3288,6 +3296,11 @@ def _operation_event_content(
         "tool": projection["tool"],
     }
     for name in (
+        # The domain travels with the history too: a card re-rendered from the
+        # Timeline after a restart must still know that its 人工核对 asks about
+        # the calendar rather than the ledger. Absent exactly when no tool was
+        # recorded, which is the same case the card cannot word either way.
+        "domain",
         "record_id",
         # `G1`. History and the live receipt draw the same card, so the fields
         # travel on the event too -- otherwise scrolling back would silently
@@ -3479,6 +3492,14 @@ def _operation_projection(
         "cancel_requested": operation.cancel_requested,
         "client_detached": operation.client_detached,
         "tool": operation.tool,
+        # Which domain the operation belongs to, so a card can be chosen by
+        # domain instead of by guessing from a tool name (design §10, gap 4:
+        # a `needs_manual_review` calendar write asks the user to look in the
+        # calendar, not in the ledger). Derived from the tool's own IR
+        # contract, never a list beside the IR — the same rule the record and
+        # query evidence sets follow. Null when no tool was recorded: an old
+        # event's domain is unknown, and unknown is not a default.
+        "domain": _TOOL_DOMAINS.get(operation.tool) if operation.tool else None,
         "record_id": None,
         "failure_reason": operation.failure_reason,
         "duplicate_check_id": operation.duplicate_check_id,

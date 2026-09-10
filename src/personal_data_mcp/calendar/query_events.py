@@ -29,7 +29,11 @@ from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.manifest import canonical_json
 from personal_agent_core.timeutil import parse_rfc3339, to_rfc3339
-from personal_data_mcp.storage.models import CalendarDeviceSync, CalendarEvent
+from personal_data_mcp.storage.models import (
+    CalendarDeviceSync,
+    CalendarDirectory,
+    CalendarEvent,
+)
 
 
 PAGE_SIZE: Final[int] = 50
@@ -223,8 +227,14 @@ def query_events(
         page = rows[offset : offset + page_size]
         next_offset = offset + len(page)
 
+        names = _calendar_names(session, page)
         events: list[dict[str, Any]] = [
-            _render(keyring, row) for row in page
+            _render(
+                keyring,
+                row,
+                calendar_title=names.get((row.device_id, row.calendar_identifier)),
+            )
+            for row in page
         ]
 
         next_cursor = (
@@ -266,7 +276,41 @@ def query_events(
         }
 
 
-def _render(keyring: KeyRing, row: CalendarEvent) -> dict[str, Any]:
+def _calendar_names(session, page: list[CalendarEvent]) -> dict[tuple[str, str], str]:
+    """The device's own names for the calendars this page's rows are on.
+
+    A row carries the calendar's EventKit identifier, which is what a create
+    is routed by, but an identifier is a UUID and a list card has to name the
+    calendar the way its owner does. The name is only ever the *device's*
+    testimony about its own calendar — the directory is uploaded by the phone
+    — so a missing name stays missing rather than being filled in from
+    anything else. Keyed by `(device_id, calendar_identifier)`: two devices
+    can name the same string differently, and the row knows which device
+    reported it.
+    """
+    wanted = {(row.device_id, row.calendar_identifier) for row in page}
+    if not wanted:
+        return {}
+    names: dict[tuple[str, str], str] = {}
+    # One device's directory is capped at 200 entries by its own contract, so
+    # reading the devices involved costs less than a matching IN clause over
+    # every identifier, and it cannot overrun SQLite's parameter limit.
+    for device_id, identifier, title in session.execute(
+        select(
+            CalendarDirectory.device_id,
+            CalendarDirectory.calendar_identifier,
+            CalendarDirectory.title,
+        ).where(CalendarDirectory.device_id.in_({device for device, _ in wanted}))
+    ).all():
+        key = (device_id, identifier)
+        if key in wanted:
+            names[key] = title
+    return names
+
+
+def _render(
+    keyring: KeyRing, row: CalendarEvent, *, calendar_title: str | None
+) -> dict[str, Any]:
     """One mirror row as the model sees it.
 
     The epoch instants stay in the payload -- the window filter and the sweep
@@ -284,6 +328,9 @@ def _render(keyring: KeyRing, row: CalendarEvent) -> dict[str, Any]:
     return {
         "event_identifier": row.event_identifier,
         "calendar_identifier": row.calendar_identifier,
+        # Null is「这个日历没有名字可报告」, never a fallback to the
+        # identifier: a UUID rendered where a name belongs reads as a name.
+        "calendar_title": calendar_title,
         "title": _open(keyring, row, "title"),
         "start": to_rfc3339(datetime.fromtimestamp(row.start_ts, tz=timezone.utc)),
         "end": to_rfc3339(datetime.fromtimestamp(row.end_ts, tz=timezone.utc)),

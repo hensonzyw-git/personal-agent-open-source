@@ -483,6 +483,23 @@ def test_ir_version_is_the_calendar_contract_revision() -> None:
     assert load_manifest()["ir_version"] == "0.3.0"
 
 
+def test_calendar_query_declares_the_calendar_name_for_the_card() -> None:
+    """The list card reads 「标题 · 日期时间 · 日历名」 (design §9.2), and the
+    only place a name exists is the device's directory. The field is required
+    on the row — always present, null when the device has no name for that
+    identifier — because a missing key and「没有名字」are different facts, and
+    only one of them is true.
+    """
+    items = tool("calendar.query_events")["output_schema"]["properties"]["events"][
+        "items"
+    ]
+    assert "calendar_title" in items["required"]
+    assert items["properties"]["calendar_title"]["type"] == ["string", "null"]
+    # An identifier is not a name: the contract states the null case rather
+    # than inviting a renderer to substitute the EventKit UUID.
+    assert "UUID" in items["properties"]["calendar_title"]["description"]
+
+
 def test_calendar_create_routes_by_business_calendar() -> None:
     """Routing is a required model decision, never a default.
 

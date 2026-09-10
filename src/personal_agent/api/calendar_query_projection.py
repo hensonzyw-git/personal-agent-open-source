@@ -24,11 +24,16 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
-from typing import Any
+from datetime import date, datetime, timedelta
+from typing import Any, Final
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from personal_agent_core.manifest import canonical_json
-from personal_agent_core.timeutil import LEDGER_TIMEZONE, parse_rfc3339
+from personal_agent_core.timeutil import (
+    LEDGER_TIMEZONE,
+    LEDGER_TIMEZONE_NAME,
+    parse_rfc3339,
+)
 
 
 #: The stable failure reason a non-projectable query result receives. Shared
@@ -63,6 +68,7 @@ _EVENT_FIELDS = frozenset(
     {
         "event_identifier",
         "calendar_identifier",
+        "calendar_title",
         "title",
         "start",
         "end",
@@ -169,6 +175,34 @@ def decode_calendar_query_projection(
     }
 
 
+#: The Chinese short names the summary and the list card use for the zones
+#: Henson's calendar actually holds (design §5.3). A zone outside this map is
+#: still named — as its UTC offset at that event's instant, which is exact —
+#: rather than silently rendered as if it were local time.
+_ZONE_LABELS: Final[dict[str, str]] = {
+    "Asia/Tokyo": "日本时间",
+    "Asia/Seoul": "韩国时间",
+    "Asia/Singapore": "新加坡时间",
+    "Asia/Hong_Kong": "香港时间",
+    "Asia/Bangkok": "泰国时间",
+    "Asia/Kolkata": "印度时间",
+    "Asia/Dubai": "迪拜时间",
+    "Europe/London": "英国时间",
+    "Europe/Paris": "法国时间",
+    "Europe/Berlin": "德国时间",
+    "Europe/Moscow": "莫斯科时间",
+    "America/New_York": "纽约时间",
+    "America/Chicago": "芝加哥时间",
+    "America/Denver": "丹佛时间",
+    "America/Los_Angeles": "洛杉矶时间",
+    "America/Sao_Paulo": "圣保罗时间",
+    "Australia/Sydney": "悉尼时间",
+    "Pacific/Auckland": "奥克兰时间",
+    "UTC": "UTC",
+    "Etc/UTC": "UTC",
+}
+
+
 def summarise_calendar_projection(projection: dict[str, Any]) -> str:
     """Deterministic text fallback for clients that predate ``query_result``.
 
@@ -181,6 +215,14 @@ def summarise_calendar_projection(projection: dict[str, Any]) -> str:
     共 N 条日程 answers none of the question the user asked. A never-synced
     mirror (the placeholder `data_as_of` shape) says so in words rather than
     presenting the query instant as an observation.
+
+    Each line is rendered by `_event_line`, which is where this side's
+    presentation rules live: an all-day event from its dates, a timed event in
+    its own zone with the zone named, and the honesty annotations
+    (§5.2/§5.3/§6). The iOS list card renders the same rules from the same
+    fields rather than this string — the two are kept in step by the row
+    fields the projection carries, not by sharing code, so a rule changed
+    here has to be changed there too (design §13 step 6).
     """
     count = projection["record_count"]
     more = "，还有更多" if projection["next_cursor"] else ""
@@ -194,19 +236,7 @@ def summarise_calendar_projection(projection: dict[str, Any]) -> str:
         lines.append("这个时间段没有日程")
     else:
         for event in projection["events"][:displayed]:
-            title = event.get("title") or "（无标题日程）"
-            # The wall-clock time the user lives in, not the wire's UTC: the
-            # calendar contract is Asia/Shanghai absolute time, and the
-            # summary that renders 07:00 for a 15:00 appointment answers a
-            # different question than the one asked. The structured card
-            # carries the full instant; this is only the human line.
-            start_text = event.get("start") or ""
-            try:
-                local = parse_rfc3339(start_text).astimezone(LEDGER_TIMEZONE)
-                readable = local.strftime("%m-%d %H:%M")
-            except ValueError:
-                readable = start_text[:16].replace("T", " ")
-            lines.append(f"{title}（{readable} 开始）")
+            lines.append(_event_line(event))
         if count > displayed:
             lines.append(f"另有 {count - displayed} 条未列出")
     summary = "；".join(lines)
@@ -224,6 +254,103 @@ def summarise_calendar_projection(projection: dict[str, Any]) -> str:
 def canonical_calendar_projection_json(projection: dict[str, Any]) -> str:
     """The durable carrier: canonical JSON of the whitelisted projection."""
     return canonical_json(projection)
+
+
+def _event_line(event: dict[str, Any]) -> str:
+    """One event as a human line, by the rules the design fixed.
+
+    - **all-day events come from their dates** (§5.2, R1-F2). An all-day
+      event's content is a day or a range of days, and converting its epoch
+      instant is how a Tokyo 10-01 became a 09-30 in the summary. The stored
+      `end_date` is exclusive (EventKit's own convention), so the last day is
+      one before it.
+    - **timed events are rendered in their own zone and the zone is named**
+      (§5.3/Q12). Folding 19:00 Tokyo into 18:00 Shanghai answers a question
+      nobody asked; `timezone` null means the upload predates the v2 shape
+      and Asia/Shanghai is the honest reading, byte-identical to before.
+    - **the uncertainty and the truncation are stated, never hidden**: a date
+      whose anchor the device could not confirm, and a field the mirror had to
+      drop for length (§6 — 不静默). A dropped title is named as such rather
+      than shown as 「无标题」, which is a different fact about the same null.
+    """
+    title = event.get("title")
+    if title is None:
+        title = "标题过长未同步" if event.get("title_over_limit") else "（无标题日程）"
+
+    notes: list[str] = []
+    if event["all_day"]:
+        when = _all_day_span(event.get("start_date"), event.get("end_date"))
+        if event["date_anchor_unknown"]:
+            notes.append("日期归属未确认")
+    else:
+        when = _start_moment(event)
+    if event["location_over_limit"]:
+        notes.append("地点过长未同步")
+    if event["notes_over_limit"]:
+        notes.append("备注过长未同步")
+    suffix = f"，{'、'.join(notes)}" if notes else ""
+    return f"{title}（{when}{suffix}）"
+
+
+def _all_day_span(start_date: Any, end_date: Any) -> str:
+    """`10-02 全天`, or `10-01 至 10-03 全天` for a range.
+
+    The decoder has already proved both dates are `YYYY-MM-DD` on an all-day
+    row, so a date that will not parse here is impossible rather than
+    unlikely; the raw text is returned instead of raising, because a summary
+    is not a place to discover a contract violation that was already checked.
+    """
+    try:
+        first = date.fromisoformat(start_date)
+        # Exclusive end: 10-04 ends the range that covers 10-01..10-03.
+        last = date.fromisoformat(end_date) - timedelta(days=1)
+    except (TypeError, ValueError):
+        return f"{start_date} 至 {end_date} 全天"
+    if last <= first:
+        return f"{first.isoformat()[5:]} 全天"
+    return f"{first.isoformat()[5:]} 至 {last.isoformat()[5:]} 全天"
+
+
+def _start_moment(event: dict[str, Any]) -> str:
+    """`09-13 10:00 开始`, with the zone named when it is not the reference."""
+    start_text = event.get("start") or ""
+    identifier = event.get("timezone")
+    try:
+        start = parse_rfc3339(start_text)
+    except ValueError:
+        return f"{start_text[:16].replace('T', ' ')} 开始"
+    if identifier is None or identifier == LEDGER_TIMEZONE_NAME:
+        zone = LEDGER_TIMEZONE
+        label = None
+    else:
+        try:
+            zone = ZoneInfo(identifier)
+        except (ZoneInfoNotFoundError, ValueError):
+            # A zone the server cannot construct is still a fact the device
+            # reported; naming it is more honest than showing Shanghai time.
+            return f"{start.astimezone(LEDGER_TIMEZONE).strftime('%m-%d %H:%M')} {identifier} 开始"
+        label = _zone_label(identifier, start)
+    clock = start.astimezone(zone).strftime("%m-%d %H:%M")
+    return f"{clock} {label} 开始" if label else f"{clock} 开始"
+
+
+def _zone_label(identifier: str, at: datetime) -> str:
+    """The Chinese short name for a zone, or its offset at that instant."""
+    label = _ZONE_LABELS.get(identifier)
+    if label is not None:
+        return label
+    try:
+        offset = at.astimezone(ZoneInfo(identifier)).utcoffset()
+    except (ZoneInfoNotFoundError, ValueError):  # pragma: no cover - see above
+        return identifier
+    if offset is None:  # pragma: no cover - a zone always has an offset
+        return identifier
+    seconds = int(offset.total_seconds())
+    sign = "+" if seconds >= 0 else "-"
+    hours, minutes = divmod(abs(seconds) // 60, 60)
+    if not hours and not minutes:
+        return "UTC"
+    return f"UTC{sign}{hours:02d}:{minutes:02d}"
 
 
 def _decode_event(raw: Any) -> dict[str, Any]:
@@ -249,6 +376,15 @@ def _decode_event(raw: Any) -> dict[str, Any]:
     title = raw.get("title")
     if title is not None and not isinstance(title, str):
         raise CalendarQueryProjectionError("events item title is not a string or null")
+    # The list card's 日历名 (design 9.2). Null is a fact -- the device has no
+    # name for that identifier -- and never a reason to fall back to the
+    # EventKit UUID, which would put an identifier where a person's own name
+    # for the calendar belongs.
+    calendar_title = raw.get("calendar_title")
+    if calendar_title is not None and not isinstance(calendar_title, str):
+        raise CalendarQueryProjectionError(
+            "events item calendar_title is not a string or null"
+        )
     all_day = raw.get("all_day")
     if not isinstance(all_day, bool):
         raise CalendarQueryProjectionError("events item all_day is not a boolean")

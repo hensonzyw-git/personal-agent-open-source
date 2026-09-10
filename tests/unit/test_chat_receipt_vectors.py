@@ -32,6 +32,7 @@ from pathlib import Path
 import pytest
 
 from personal_agent.api.app import (
+    _CALENDAR_QUERY_RESULT_TOOLS,
     _QUERY_RESULT_TOOLS,
     _RECORD_ID_RESULT_TOOLS,
     _operation_event_content,
@@ -138,7 +139,7 @@ def _operation_for(case: dict) -> Operation:
 
 
 def test_contract_version_is_pinned() -> None:
-    assert V["contract"] == "chat_receipt_projection_v6"
+    assert V["contract"] == "chat_receipt_projection_v7"
     assert V["cases"], "an empty vector file would pass every check vacuously"
 
 
@@ -234,6 +235,10 @@ def test_receipt_fields_are_closed(case: dict) -> None:
         "cancel_requested",
         "client_detached",
         "tool",
+        # Which domain the tool belongs to (v7, design §10). The client picks
+        # the 人工核对 card by this: a calendar write is checked in the
+        # calendar, not in the ledger.
+        "domain",
         "record_id",
         "failure_reason",
         "duplicate_check_id",
@@ -308,6 +313,40 @@ def test_a_receipt_record_carries_only_ledger_fields(case: dict) -> None:
         assert record["category"] in ALLOWED_EXPENSE_CATEGORIES
 
 
+def test_the_calendar_list_card_case_carries_what_the_card_draws() -> None:
+    """The row fields of §9.2, pinned in the one file both languages read.
+
+    The iOS list card itself is design step 6; what lands here is the shape it
+    will read, so the server cannot quietly drop the calendar's name, the
+    all-day dates, or the null that means「这个日历没有名字」.
+    """
+    events = _case("calendar_query_list_card")["receipt"]["query_result"]["events"]
+
+    timed = next(event for event in events if event["timezone"] == "Asia/Tokyo")
+    assert timed["calendar_title"] == "演出&活动"
+    assert timed["all_day"] is False
+
+    all_day = next(event for event in events if event["event_identifier"] == "evt-trip")
+    assert all_day["calendar_title"] == "出游计划"
+    # The exclusive end date, straight from EventKit's own convention.
+    assert (all_day["start_date"], all_day["end_date"]) == ("2026-10-01", "2026-10-04")
+    assert all_day["timezone"] is None, "an all-day event has no anchor zone"
+
+    unconfirmed = next(
+        event for event in events if event["calendar_identifier"] == "uuid-flight"
+    )
+    assert unconfirmed["date_anchor_unknown"] is True
+
+    unnamed = next(
+        event for event in events if event["calendar_identifier"] == "uuid-gone"
+    )
+    assert "calendar_title" in unnamed
+    assert unnamed["calendar_title"] is None, (
+        "a calendar the device never listed has no name, and the identifier "
+        "is not a substitute for one"
+    )
+
+
 def test_the_editable_category_set_is_the_ledgers_own_options() -> None:
     """What the client may offer in the 分类 picker.
 
@@ -371,14 +410,28 @@ def _case(name: str) -> dict:
 
 
 def test_query_receipt_and_timeline_event_carry_the_same_facts() -> None:
-    """The immediate projection and the Timeline event must never disagree."""
-    for name in ("query_total", "query_by_category", "query_records"):
+    """The immediate projection and the Timeline event must never disagree.
+
+    Checked for both governed queries — Finance's and the calendar mirror's —
+    because a second query is exactly when a hand-listed comparison would
+    quietly stop covering the new one.
+    """
+    for name in (
+        "query_total",
+        "query_by_category",
+        "query_records",
+        "calendar_query_list_card",
+    ):
         operation = _operation_for(_case(name))
         receipt = _operation_projection(RING, operation, client_wire_version=_WIRE)
         event = _operation_event_content(RING, operation)
-        assert event["tool"] == receipt["tool"] == "finance.query_expenses"
+        # The tool is compared to itself rather than to a literal: which tool
+        # a case is about is the case's own business, and hard-coding one is
+        # how this assertion would have stopped covering the calendar read.
+        assert event["tool"] == receipt["tool"]
         assert event["query_result"] == receipt["query_result"]
         assert event["answer"] == receipt["answer"]
+        assert event["domain"] == receipt["domain"]
 
 
 def test_a_query_safe_result_that_does_not_decode_fails_closed() -> None:
@@ -407,12 +460,45 @@ def test_a_query_safe_result_that_does_not_decode_fails_closed() -> None:
     assert "answer" not in event
 
 
-def test_query_result_is_only_projected_for_the_query_tool() -> None:
-    """A write card must never regress into a query card."""
+def test_query_result_is_only_projected_for_a_governed_query() -> None:
+    """A write card must never regress into a query card.
+
+    The set of tools allowed a `query_result` is the IR-derived pair of
+    projections, not one tool's name: the literal `finance.query_expenses`
+    this assertion used to compare against would have called the calendar
+    mirror's own governed read a regression.
+    """
     for case in V["cases"]:
         operation = _operation_for(case)
-        if case["receipt"]["tool"] != "finance.query_expenses":
-            assert "query_result" not in _operation_projection(RING, operation, client_wire_version=_WIRE)
+        projection = _operation_projection(RING, operation, client_wire_version=_WIRE)
+        if case["receipt"]["tool"] not in (
+            _QUERY_RESULT_TOOLS | _CALENDAR_QUERY_RESULT_TOOLS
+        ):
+            assert "query_result" not in projection
+        else:
+            assert "query_result" in projection
+
+
+def test_every_receipt_states_the_domain_of_its_tool() -> None:
+    """The client picks the 人工核对 card by domain, so the domain is a fact
+    the server states — and it is the tool contract's own domain, not a second
+    mapping beside the IR. Null means no tool was recorded: an operation whose
+    tool is unknown has no domain to report, and the card says that rather
+    than defaulting to the ledger.
+    """
+    domains = {contract.name: contract.domain for contract in TOOL_CONTRACTS}
+    for case in V["cases"]:
+        receipt = case["receipt"]
+        assert "domain" in receipt, "the field is always present, like `tool`"
+        tool = receipt["tool"]
+        assert receipt["domain"] == (domains.get(tool) if tool else None)
+    # The two domains the card splits on are both exercised by a case, or the
+    # split would be untested on the side that matters.
+    assert {
+        case["receipt"]["domain"]
+        for case in V["cases"]
+        if case["receipt"]["state"] == "needs_manual_review"
+    } == {"calendar", "finance"}
 
 
 def test_new_events_carry_tool_explicitly_even_when_null() -> None:

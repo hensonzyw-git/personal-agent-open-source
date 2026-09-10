@@ -1151,6 +1151,7 @@ _CALENDAR_EVENT_FIELDS: Final[dict[str, Any]] = {
     "required": [
         "event_identifier",
         "calendar_identifier",
+        "calendar_title",
         "title",
         "start",
         "end",
@@ -1176,6 +1177,16 @@ _CALENDAR_EVENT_FIELDS: Final[dict[str, Any]] = {
             "type": "string",
             "minLength": 1,
             "description": "该事件所在日历的标识。",
+        },
+        "calendar_title": {
+            "type": ["string", "null"],
+            "maxLength": 200,
+            "description": (
+                "该事件所在日历的名字（设备名录里的 title），列表卡片显示用；"
+                "identifier 是 EventKit 的 UUID，对人没有意义。设备名录里没有"
+                "这个标识时（名录未上载过、或该日历已被删除）为 null——「不知道"
+                "名字」是事实，不要用 identifier 顶替。"
+            ),
         },
         "title": {
             "type": ["string", "null"],
