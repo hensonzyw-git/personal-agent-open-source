@@ -1814,6 +1814,17 @@ FINANCE_TOOL_NAMES: Final[tuple[str, ...]] = tuple(
     contract.name for contract in TOOL_CONTRACTS if contract.domain == "finance"
 )
 
+#: The tools whose effect happens in the calling device rather than behind the
+#: governed MCP bridge. Derived once, here, because three layers need the same
+#: answer and a second expression of it is a second thing to keep in step: the
+#: projection decides whether a parked row has an action to deliver, recovery
+#: decides whether a quiet row is waiting on a phone or on a connector, and the
+#: orchestrator decides whether a multi-call model turn may be frozen as a plan.
+#: Two of those three are safety properties, and they must not disagree.
+DEVICE_EXECUTED_TOOL_NAMES: Final[frozenset[str]] = frozenset(
+    contract.name for contract in TOOL_CONTRACTS if contract.executor == "device"
+)
+
 
 def contract_by_name(name: str) -> ToolContract:
     """Look up one contract, raising rather than returning a permissive default."""

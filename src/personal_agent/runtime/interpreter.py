@@ -1,8 +1,8 @@
 """Adapt a model proposal to the orchestrator's interpretation seam.
 
 `DEV-027`. The orchestrator's `Interpreter` protocol preserves direct answers,
-one tool call, structured clarification and fixed fail-closed outcomes. This
-binds a `ModelGateway` into that protocol.
+one tool call, several tool calls from one turn, structured clarification and
+fixed fail-closed outcomes. This binds a `ModelGateway` into that protocol.
 
 Since `CAP-001` it carries no per-request state at all: the system instruction
 and the device's effective tool declarations arrive inside the turn's
@@ -24,6 +24,7 @@ from personal_agent.api.orchestrator import (
     Interpretation,
     InterpreterError,
     ToolCall,
+    ToolCalls,
 )
 from personal_agent.context.builder import ContextEnvelope
 from personal_agent.runtime.model_gateway import (
@@ -33,6 +34,7 @@ from personal_agent.runtime.model_gateway import (
     ProposedClarification,
     ProposedFailure,
     ProposedToolCall,
+    ProposedToolCalls,
 )
 from personal_agent_core.errors import ModelFailureReason
 
@@ -61,6 +63,23 @@ class ModelInterpreter:
             return ToolCall(
                 tool=proposal.tool,
                 model_args=dict(proposal.arguments),
+                suppressed_untrusted_text=proposal.suppressed_untrusted_text,
+            )
+        if isinstance(proposal, ProposedToolCalls):
+            # Also passed through unchanged, and in the order the model made
+            # them: the order is carried to the frozen list, where it decides
+            # each item's derived key. The orchestrator decides whether a list
+            # may run at all; an interpreter that dropped the ones it disliked
+            # would be policy in the wrong place.
+            return ToolCalls(
+                calls=tuple(
+                    ToolCall(
+                        tool=call.tool,
+                        model_args=dict(call.arguments),
+                        suppressed_untrusted_text=call.suppressed_untrusted_text,
+                    )
+                    for call in proposal.calls
+                ),
                 suppressed_untrusted_text=proposal.suppressed_untrusted_text,
             )
         if isinstance(proposal, ProposedClarification):

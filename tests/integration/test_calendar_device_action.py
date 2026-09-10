@@ -396,13 +396,17 @@ def test_apply_resolve_moves_device_action_to_source_in_progress(op_session) -> 
         session.refresh(operation)
         assert operation.state == "source_in_progress"
         assert operation.tool == "calendar.create_event"
-        # The issued action rides the run result as the response payload.
-        assert result.device_action == {
-            "action_id": "action-key-1",
-            "tool": "calendar.create_event",
-            "wire_version": 2,
-            "event": dict(CAL_ARGS),
-        }
+        # The issued action rides the run result, always as a list of one: a
+        # client that switched on length would otherwise need two decode paths
+        # for one contract (design 2.5.4).
+        assert result.device_actions == (
+            {
+                "action_id": "action-key-1",
+                "tool": "calendar.create_event",
+                "wire_version": 2,
+                "event": dict(CAL_ARGS),
+            },
+        )
         # And it is sealed on the row in the same transition, so the poll can
         # hand it over when the response did not (review R6).
         assert operation.encrypted_device_action is not None
@@ -422,11 +426,13 @@ def test_device_action_no_longer_rides_the_chat_response_as_transient() -> None:
         answer=None,
         clarification=None,
         duplicate_existing=None,
-        device_action={
-            "action_id": "action-key-1",
-            "tool": "calendar.create_event",
-            "event": dict(CAL_ARGS),
-        },
+        device_actions=(
+            {
+                "action_id": "action-key-1",
+                "tool": "calendar.create_event",
+                "event": dict(CAL_ARGS),
+            },
+        ),
     )
     assert _transient(result) == {}
     # A plain turn (no device action) carries nothing new.
@@ -434,7 +440,7 @@ def test_device_action_no_longer_rides_the_chat_response_as_transient() -> None:
         answer="好的",
         clarification=None,
         duplicate_existing=None,
-        device_action=None,
+        device_actions=(),
     )
     assert _transient(plain) == {"answer": "好的"}
     # An object predating the field (getattr default) keeps working.
@@ -599,18 +605,19 @@ def test_sweep_never_touches_finance_operations(op_session) -> None:
 
 
 def test_a_device_operation_crashed_in_dispatching_fails_safe(op_session) -> None:
-    """Review R8, reproduced: `dispatching` means the action was never handed
-    to the response, so the phone never received it — zero-write evidence by
-    construction. Recovery must resolve it to `failed_safe`, not LEAVE it in a
-    recoverable state forever, re-scanned and never settled."""
+    """Review R8, reproduced: `dispatching` means no action was written for this
+    row — the seal is set by the transition that leaves it — so nothing was ever
+    handed to the phone. That is zero-write evidence by construction, and
+    recovery must resolve it to `failed_safe` rather than LEAVE it re-scanned
+    and never settled."""
     from personal_agent.api.recovery import RecoveryAction, plan_recovery
 
     _ = op_session
     plan = plan_recovery("dispatching", None, quiet=True, executor="device")
     assert plan.action is RecoveryAction.RESOLVE
     assert plan.target_state == "failed_safe"
-    # The reason states the evidence: the response is the only channel that
-    # carries a device action, and it never left.
+    # The reason states the evidence: no action was sealed, so no client was
+    # ever told about a write.
     assert "dispatch" in plan.reason
 
 

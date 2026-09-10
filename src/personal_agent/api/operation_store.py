@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Final
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from personal_agent.api.operation_state import (
@@ -41,7 +41,7 @@ from personal_agent.api.operation_state import (
 from personal_agent.storage.models import ApiRequest, Operation
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.manifest import canonical_json
-from personal_agent_core.tool_ir import TOOL_CONTRACTS
+from personal_agent_core.tool_ir import DEVICE_EXECUTED_TOOL_NAMES
 
 
 def chat_request_fingerprint(
@@ -62,6 +62,52 @@ def chat_request_fingerprint(
         "text": text,
         "clarification_of": clarification_of,
         "start_new_session": start_new_session,
+    }
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+#: The namespace every frozen plan item's key is derived in. Fixed and
+#: published for the same reason the override's is: the derivation *is* the
+#: idempotency mechanism, so it cannot depend on anything that varies between
+#: the first attempt and a retry.
+_PLAN_NAMESPACE: Final[uuid.UUID] = uuid.UUID("0f3c2b6a-1d2e-5f47-9a8b-6c5d4e3f2a10")
+
+
+def plan_item_key(plan_key: str, index: int) -> str:
+    """The one key a later item of this plan may ever be created under.
+
+    Derived from the message's own idempotency key and the item's position in
+    the frozen list, never from the model's call order in some later turn --
+    which is exactly the drift design 4.1 exists to prevent. The client never
+    supplies it and cannot guess it: `plan_key` is the message's opaque request
+    id, which no other device can read. `require_uuid4` guards the
+    client-facing channel; this key never travels through it.
+
+    The first item needs no derivation and is deliberately not given one: it is
+    the message's own operation, whose `idempotency_key` is already that
+    message's stable, unique request id. Deriving a second name for it would
+    mean a plan whose first action the client could not match to the message it
+    came from -- and, for the single-action message that is the common case, a
+    new key where production already has one. So `index` here is >= 1, and the
+    chain is: the message key anchors the plan, the later items hang off it.
+    """
+    return str(uuid.uuid5(_PLAN_NAMESPACE, f"{plan_key}:{index}"))
+
+
+def plan_item_fingerprint(*, plan_key: str, index: int, tool: str, args: dict) -> str:
+    """A canonical fingerprint of one frozen item's meaning.
+
+    The plan's last line of defence (design 4.1 item 4): if a key ever collides
+    with an item that described something else, `open_operation` refuses rather
+    than silently re-binding the key to new arguments. Carrying the position and
+    the plan as well as the arguments is what makes a collision between two
+    different plans visible instead of merely improbable.
+    """
+    payload = {
+        "plan_key": plan_key,
+        "plan_index": index,
+        "tool": tool,
+        "args": args,
     }
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
@@ -93,6 +139,34 @@ def open_operation(
     reuse). A concurrent duplicate loses the unique-constraint race and is read
     back rather than raising.
     """
+    return _open_operation(
+        session,
+        device_id=device_id,
+        client_request_id=client_request_id,
+        request_fingerprint=request_fingerprint,
+        now=now,
+        state="accepted",
+        encrypted_request_payload=encrypted_request_payload,
+        trace_id=trace_id,
+        parent_operation_id=parent_operation_id,
+    )
+
+
+def _open_operation(
+    session,
+    *,
+    device_id: str,
+    client_request_id: str,
+    request_fingerprint: str,
+    now: datetime,
+    state: str,
+    encrypted_request_payload: dict[str, Any] | None,
+    trace_id: str | None,
+    parent_operation_id: str | None = None,
+    plan_key: str | None = None,
+    plan_index: int | None = None,
+) -> OpenedOperation:
+    """Create, or read back, the one operation this key may ever name."""
     existing = _existing_operation(session, device_id, client_request_id)
     if existing is not None:
         return _reuse(existing, request_fingerprint, client_request_id)
@@ -117,7 +191,9 @@ def open_operation(
                 trace_id=trace_id or new_traceparent(),
                 idempotency_key=client_request_id,
                 parent_operation_id=parent_operation_id,
-                state="accepted",
+                plan_key=plan_key,
+                plan_index=plan_index,
+                state=state,
                 state_version=1,
                 created_at=now,
                 updated_at=now,
@@ -148,6 +224,102 @@ def open_operation(
                 ),
             ) from None
         raise  # pragma: no cover - a constraint this code does not know about
+
+
+def join_action_plan(
+    session, *, operation_id: str, plan_key: str, now: datetime
+) -> None:
+    """Mark this operation as item 0 of the plan it anchors (design 4.1).
+
+    The message's own operation is the plan's first item rather than a separate
+    anchor row. It already exists by the time the list is frozen -- it is the
+    request the user is talking to -- so deriving a second key for it would mean
+    a plan whose first action the client cannot match to the message it came
+    from, and, for the single-action message that is the common case, a new key
+    where production already has one. What it gains here is *membership*, so
+    `plan_operations` returns the whole turn in order including its first item.
+
+    Written once. A second join is the same fact arriving twice, and a different
+    plan key on one operation is a wiring error the row cannot express; both are
+    answered by the read-back rather than by a silent rebind.
+    """
+    result = session.execute(
+        update(Operation)
+        .where(Operation.operation_id == operation_id, Operation.plan_key.is_(None))
+        .values(plan_key=plan_key, plan_index=0, updated_at=now)
+    )
+    if result.rowcount == 1:
+        return
+    # A raw read, not `Session.get`: the identity map would answer with the
+    # row as this session loaded it, before the UPDATE above.
+    joined = session.execute(
+        select(Operation.plan_key).where(Operation.operation_id == operation_id)
+    ).scalar_one_or_none()
+    if joined != plan_key:
+        raise AppError(
+            ErrorCode.INTERNAL_ERROR,
+            internal_detail=(
+                f"operation {operation_id} belongs to plan {joined!r}, "
+                f"not {plan_key!r}"
+            ),
+        )
+
+
+def open_plan_item(
+    session,
+    *,
+    device_id: str,
+    plan_key: str,
+    plan_index: int,
+    request_fingerprint: str,
+    now: datetime,
+    trace_id: str | None = None,
+) -> OpenedOperation:
+    """Create one already-interpreted item of a frozen action plan (design 4.1).
+
+    This is the one operation that is born at `dispatching` rather than
+    `accepted`, and deliberately so. `accepted` means "the user's request is
+    recorded and nothing has been decided"; for a plan item the decision is
+    already made -- the model proposed it and the Host attested it, and the
+    whole point of freezing is that the answer will never be re-derived. Walking
+    the row through `interpreting` would claim a model turn that this row never
+    has: the turn belongs to the message it was frozen from, and that message
+    owns the operation the user is talking to.
+
+    Its attested arguments are sealed onto the row by the caller, in the same
+    transaction that creates it (the seal is bound to the row's own
+    `operation_id`, which does not exist until this returns). It is what resume
+    reads: a crash between two items must continue from the list that was
+    written down, not from a second model turn that could come back with a
+    different list.
+
+    The derived key is `plan_item_key(plan_key, index)`, so it can only ever
+    name this one position of this one message, and the fingerprint is the
+    last-line guard that refuses a collision instead of re-binding a key to
+    different arguments.
+    """
+    return _open_operation(
+        session,
+        device_id=device_id,
+        client_request_id=plan_item_key(plan_key, plan_index),
+        request_fingerprint=request_fingerprint,
+        now=now,
+        state="dispatching",
+        encrypted_request_payload=None,
+        trace_id=trace_id,
+        plan_key=plan_key,
+        plan_index=plan_index,
+    )
+
+
+def plan_operations(session, plan_key: str) -> list[Operation]:
+    """Every item of one frozen plan, in the order the model proposed them."""
+    return (
+        session.query(Operation)
+        .filter(Operation.plan_key == plan_key)
+        .order_by(Operation.plan_index)
+        .all()
+    )
 
 
 def new_traceparent() -> str:
@@ -381,9 +553,7 @@ def get_operation(session, operation_id: str) -> Operation | None:
 DEVICE_REPORT_TIMEOUT: Final[timedelta] = timedelta(minutes=15)
 
 #: Device-executed tools, derived from the IR — never hand-listed.
-_DEVICE_EXECUTED_TOOLS: Final[frozenset[str]] = frozenset(
-    contract.name for contract in TOOL_CONTRACTS if contract.executor == "device"
-)
+_DEVICE_EXECUTED_TOOLS: Final[frozenset[str]] = DEVICE_EXECUTED_TOOL_NAMES
 
 
 def sweep_timed_out_device_actions(

@@ -671,6 +671,20 @@ class Operation(Base):
     #: `duplicate` may be overridden, and both success reports otherwise look
     #: identical on this row (state `succeeded`, EventKit id in `safe_result`).
     device_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Which frozen action plan this operation belongs to, and where in it
+    #: (design 4.1). One message that asks for several events is interpreted
+    #: once, and the whole list is written down before any of it is issued, so a
+    #: crash halfway through cannot re-ask the model and get a different list.
+    #: The key is the message's own idempotency key, and the items are read back
+    #: in index order.
+    #:
+    #: Both halves are written together or not at all: an index without its plan
+    #: would be a position in a list nobody can find, and a plan without its
+    #: index could not be ordered. The pair is unique because the derived item
+    #: key is `uuid5(plan, index)` -- a promise the derivation keeps today and
+    #: which the constraint keeps if the derivation ever changes.
+    plan_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    plan_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: What a human concluded after looking at the ledger, for an operation that
     #: ended at `needs_manual_review`. A *flag*, not a state, for the same reason
     #: `cancel_requested` is one: the accounting outcome belongs to the state
@@ -741,6 +755,15 @@ class Operation(Base):
             + " OR device_result IS NULL",
             name="device_result",
         ),
+        # A plan membership is one fact in two columns: an index with no plan
+        # names a position in a list nobody can find, and a plan with no index
+        # cannot be ordered. A negative index is not a position at all.
+        CheckConstraint(
+            "(plan_key IS NULL) = (plan_index IS NULL)"
+            " AND (plan_index IS NULL OR plan_index >= 0)",
+            name="plan_membership_is_whole",
+        ),
+        UniqueConstraint("plan_key", "plan_index", name="plan_item_once"),
         CheckConstraint(
             _in_set("manual_resolution", MANUAL_RESOLUTIONS)
             + " OR manual_resolution IS NULL",

@@ -233,17 +233,26 @@ def plan_recovery(
 
     if executor == "device":
         # Quiet, pre-submit, device-executed: the crash happened before the
-        # response could carry the action anywhere. The chat response is the
-        # only delivery channel a device action has, so this is zero-write
-        # evidence by construction — the same rule as Finance's own
+        # action could be issued anywhere. Delivery is not what makes this
+        # zero-write — an action is handed over from the seal on its own row,
+        # and reaching `dispatching` writes none (the seal is written by the
+        # same transition that parks it at `source_in_progress`). So a row
+        # still at `dispatching` is one no client was ever told about, which is
+        # zero-write evidence by construction — the same rule as Finance's own
         # no-execution pre-submit branch below. (Review R8, 2026-09-08.)
+        #
+        # This deliberately also covers an item of a frozen action plan
+        # (design 4.1): a plan item still at `dispatching` was never issued. It
+        # may have been *resumable* from its own retained arguments, but
+        # resuming is a client's retry of the message, and a retry that never
+        # comes cannot leave a row in flight forever. Its siblings are separate
+        # rows with actions already sealed on them, and they are untouched.
         return RecoveryPlan(
             RecoveryAction.RESOLVE,
             target_state="failed_safe",
             reason=(
-                "device action crashed in dispatching: the response is the only "
-                "delivery channel and it never left, so nothing was handed to "
-                "the phone"
+                "device action crashed in dispatching: no action was ever "
+                "sealed for it, so nothing was handed to the phone"
             ),
         )
 

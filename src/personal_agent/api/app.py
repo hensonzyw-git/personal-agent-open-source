@@ -40,6 +40,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 from sqlalchemy import text as text_clause
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import object_session
 
 from personal_agent.api import events
 from personal_agent.api.calendar_issue import (
@@ -84,6 +85,7 @@ from personal_agent.api.operation_store import (
     chat_request_fingerprint,
     get_operation,
     open_operation,
+    plan_operations,
     request_cancel,
     transition_operation,
 )
@@ -97,6 +99,7 @@ from personal_agent.api.orchestrator import (
     Authorizer,
     Dispatcher,
     Interpreter,
+    resume_action_plan,
     run_operation,
 )
 from personal_agent.api.review_view import (
@@ -157,6 +160,7 @@ from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.tool_ir import (
     CLIENT_WIRE_VERSION_HEADER,
     DEFAULT_CLIENT_WIRE_VERSION,
+    DEVICE_EXECUTED_TOOL_NAMES,
     TOOL_CONTRACTS,
     SCOPE_CALENDAR_READ,
     client_supports_wire_version,
@@ -376,9 +380,7 @@ _CALENDAR_QUERY_RESULT_TOOLS = frozenset(
 #: the IR's `executor` field like every other executor split, never
 #: hand-listed, so a second device tool is delivered by the same branch
 #: automatically.
-_DEVICE_EXECUTED_TOOLS = frozenset(
-    contract.name for contract in TOOL_CONTRACTS if contract.executor == "device"
-)
+_DEVICE_EXECUTED_TOOLS = DEVICE_EXECUTED_TOOL_NAMES
 
 
 class _Unauthenticated(Exception):
@@ -1842,6 +1844,16 @@ def _process_chat(
                 session, operation_id, device_id=auth.device_id
             )
             if operation.state != "accepted":
+                # A replay of a frozen action plan finishes issuing it (design
+                # 4.1). This is the one non-`accepted` state that still has work
+                # to do: the freeze wrote the list down, and a crash between two
+                # items left the rest waiting for an action that only this
+                # re-entry can give them. Every other shape is answered by its
+                # projection, exactly as before -- `resume_action_plan` returns
+                # `None` unless there is something to finish.
+                resumed = _resume_action_plan(deps, auth, session, operation)
+                if resumed is not None:
+                    return resumed
                 return _ProcessedChat(
                     _operation_response(
                         deps.keyring,
@@ -1877,6 +1889,53 @@ def _process_chat(
         except Exception:
             session.rollback()
             raise
+
+
+def _resume_action_plan(
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    session,
+    operation: Operation,
+) -> _ProcessedChat | None:
+    """Finish a frozen plan this session's replay found unfinished.
+
+    The turn is recorded under the same correlation identity as the message that
+    created the plan -- the anchor already exists, because the plan's first item
+    is that very operation -- so the resumed issuing reads as the same
+    conversation turn rather than as a second one.
+    """
+    if operation.plan_key is None:
+        # Not a member of any frozen list, so there is nothing to finish and no
+        # reason to build a dispatcher for it.
+        return None
+    identity = _turn_identity(
+        operation, _anchor_event_or_none(session, operation.operation_id)
+    )
+    with deps.recorder.turn(identity):
+        result = resume_action_plan(
+            session,
+            operation,
+            dispatcher=deps.build_dispatcher(auth, operation.trace_id),
+            authorize=deps.build_authorizer(auth),
+            keyring=deps.keyring,
+            action_keyring=deps.action_keyring,
+            now=deps.now,
+        )
+        if result is None:
+            return None
+        deps.recorder.record(
+            transcript.TURN_RESULT, {"state": result.state, "result": result}
+        )
+    session.commit()
+    session.refresh(operation)
+    return _ProcessedChat(
+        _operation_response(
+            deps.keyring,
+            operation,
+            client_wire_version=auth.client_wire_version,
+            extra=_transient(result),
+        )
+    )
 
 
 def _run_chat_turn(
@@ -3340,6 +3399,77 @@ def _transient(result) -> dict[str, Any]:
     return fields
 
 
+def _parked_plan_actions(
+    keyring: KeyRing, operation: Operation, *, client_wire_version: int
+) -> list[dict[str, Any]]:
+    """Every device action this turn still owes the phone, in plan order.
+
+    A message that asked for several things is one frozen plan (design 4.1), and
+    its items are separate operations. The user's message is the row being
+    polled, so this is where the whole list has to appear: an item the projection
+    did not reach would be issued to nobody. A single-action message is a plan of
+    one and carries no plan key, so both shapes read the same way here.
+
+    Each item answers for itself. An envelope that will not open (wrong key,
+    tampering) is omitted rather than guessed: that item stays parked and the
+    timeout sweep is its witness, exactly as if nothing had been sealed -- and
+    its siblings are unaffected, because they are different rows.
+
+    The delivery gate (design 2.5.3) is applied per action. The issuance gate
+    already refused a client that cannot implement this action, but it reads the
+    version of a *different* request: the one that issued. Between issuing and
+    delivering, the same phone can be restored, downgraded or replaced by an
+    older build, and this call is the last moment anyone can tell. So the sealed
+    action's own `wire_version` -- not the contract's, which a later IR change
+    could raise past what was actually sealed -- is compared against the caller's
+    claim, and a shortfall withholds the action rather than degrading it. The
+    operation stays parked and the 15-minute sweep settles it into
+    needs_manual_review, which is the honest terminal state: the phone may or may
+    not have written, and no client was told otherwise.
+    """
+    handed: list[dict[str, Any]] = []
+    for row in _plan_rows(operation):
+        if (
+            row.state != "source_in_progress"
+            or row.tool not in _DEVICE_EXECUTED_TOOLS
+            or row.encrypted_device_action is None
+        ):
+            continue
+        action = open_device_action(
+            keyring,
+            operation_id=row.operation_id,
+            envelope=row.encrypted_device_action,
+        )
+        if action is None:
+            continue
+        if client_supports_wire_version(
+            client=client_wire_version, required=action["wire_version"]
+        ):
+            handed.append(action)
+    return handed
+
+
+def _plan_rows(operation: Operation) -> list[Operation]:
+    """This operation's frozen plan in order, or the operation on its own.
+
+    A message with several actions is one plan and its items are separate rows,
+    and the whole list is delivered through the plan's *first* item -- the
+    message the user is polling. A later item answers only for itself: the
+    phone reaches it to report a result, and having it recite its siblings'
+    actions back would be handing over what was already handed over. Every
+    other operation is a plan of one, so a caller never needs two shapes.
+    """
+    if operation.plan_key is None or operation.plan_index != 0:
+        return [operation]
+    session = object_session(operation)
+    if session is None:  # pragma: no cover - every caller reads inside a session
+        raise AppError(
+            ErrorCode.INTERNAL_ERROR,
+            internal_detail="a frozen action plan was projected outside its session",
+        )
+    return plan_operations(session, operation.plan_key)
+
+
 def _operation_projection(
     keyring: KeyRing, operation: Operation, *, client_wire_version: int
 ) -> dict[str, Any]:
@@ -3353,44 +3483,20 @@ def _operation_projection(
         "failure_reason": operation.failure_reason,
         "duplicate_check_id": operation.duplicate_check_id,
     }
-    if (
-        operation.state == "source_in_progress"
-        and operation.tool in _DEVICE_EXECUTED_TOOLS
-        and operation.encrypted_device_action is not None
-    ):
-        # Delivery-or-refusal (review R6, 2026-09-08). The issued action is
-        # sealed on the row, and this is its one delivery door: while the
-        # operation is parked, the 200 reply, the by-id poll and a replay all
-        # hand the same authorised action to the phone. The schema CHECK
-        # (`device_action_only_while_parked`) makes a settled state unable to
-        # carry a seal, so a read-back can never re-arm a finished write.
-        # An envelope that will not open (wrong key, tampering) omits the
-        # field instead of guessing: the operation stays parked and the
-        # timeout sweep is the witness, exactly as if nothing had been sealed.
-        action = open_device_action(
-            keyring,
-            operation_id=operation.operation_id,
-            envelope=operation.encrypted_device_action,
-        )
-        # The delivery gate (design 2.5.3). The issuance gate already refused a
-        # client that cannot implement this action, but it reads the version of
-        # a *different* request: the one that issued. Between issuing and
-        # delivering, the same phone can be restored, downgraded or replaced by
-        # an older build, and this call is the last moment anyone can tell. So
-        # the sealed action's own `wire_version` -- not the contract's, which a
-        # later IR change could raise past what was actually sealed -- is
-        # compared against the caller's claim, and a shortfall withholds the
-        # action rather than degrading it. The operation stays parked and the
-        # 15-minute sweep settles it into needs_manual_review, which is the
-        # honest terminal state: the phone may or may not have written, and no
-        # client was told otherwise.
-        if action is not None and client_supports_wire_version(
-            client=client_wire_version, required=action["wire_version"]
-        ):
-            # Always a list, even for the single action a v1-shaped request
-            # issues: a client that switched on length would otherwise need two
-            # decode paths for one contract (design 2.5.4).
-            projection["device_actions"] = [action]
+    # Delivery-or-refusal (review R6, 2026-09-08). An issued action is sealed on
+    # its own row, and this is its one delivery door: the 200 reply, the by-id
+    # poll and a replay all hand over the same authorised action. Each row
+    # answers for itself -- a settled one has already had its seal cleared
+    # (`device_action_only_while_parked`), so it drops out without a second
+    # rule, and the read-back can never re-arm a finished write.
+    handed = _parked_plan_actions(
+        keyring, operation, client_wire_version=client_wire_version
+    )
+    if handed:
+        # Always a list, even for the single action a v1-shaped request issues:
+        # a client that switched on length would otherwise need two decode paths
+        # for one contract (design 2.5.4).
+        projection["device_actions"] = handed
     if operation.safe_result is not None:
         if operation.state == "waiting_for_clarification":
             projection["clarification"] = operation.safe_result
