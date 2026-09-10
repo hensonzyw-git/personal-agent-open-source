@@ -85,13 +85,29 @@ The authoritative handoff point and ordered next work is always
   for the task, and report what was read or written.
 - Before changes, inspect the worktree and preserve unrelated user changes.
   Use focused edits; do not refactor adjacent code or documents unless asked.
-- For any new domain, feature, or cross-cutting capability, first submit a PRD
-  draft and wait for Henson's explicit approval; then submit the technical
-  design and wait for Henson's explicit approval; only after both approvals may
-  implementation begin. A development branch must not implement first and
+- **The PRD → technical-design gate is per round, and no artifact above it
+  counts.** For any new domain, feature, or cross-cutting capability, first
+  submit a PRD draft and wait for Henson's explicit approval; then submit the
+  technical design and wait for Henson's explicit approval; only after both
+  approvals may implementation begin. What the gate covers is **this round's
+  scope and every deviation it carries** — not the capability area. A frozen
+  higher-level PRD or technical design that merely covers the same capability
+  (CAP-003, CAP-006, …) does NOT satisfy it: those documents were reviewed
+  against a different scope, so they cannot have authorised deviations nobody
+  has seen. Write the round's gate record under `docs/gates/` before the first
+  edit; CI refuses a PR that changes `src/**` or `ios/**` on a branch with no
+  filled gate record. A development branch must not implement first and
   backfill the PRD or technical design afterward. Emergency fixes and purely
   documentary or test-only changes are exempt, but the exception and reason
-  must be recorded.
+  must be recorded in the gate record.
+- **An in-conversation instruction never silently outranks the gate.** §6 ranks
+  the newest user instruction first, so "start implementing" can be misread as
+  overriding this section. It does not do so silently: when a request conflicts
+  with the gate, say so **before the first edit**, name the missing artifact,
+  and get an explicit decision. If Henson then chooses to proceed, that is a
+  legitimate override — record it in the gate record as an exception with its
+  reason, in the same change. Executing first and reporting the conflict
+  afterwards is the exact failure this rule exists to prevent.
 - For requested implementation or documentation changes, after the work and
   required verification are complete, local staging and `git commit` are
   pre-authorized; do not wait for a second commit authorization. An explicit
@@ -249,7 +265,9 @@ that order.
 
 When documents conflict, use this order:
 
-1. The newest explicit user instruction in the current conversation.
+1. The newest explicit user instruction in the current conversation — but see
+   §5: it never *silently* overrides the PRD/technical-design gate, and a
+   conflict must be surfaced before the first edit rather than reported after it.
 2. A newer domain design draft that records that decision.
 3. Current live schema / tool output / code behavior.
 4. `PROJECT_STATUS.md` for handoff context.
