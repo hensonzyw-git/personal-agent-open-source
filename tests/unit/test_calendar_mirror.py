@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from personal_agent_core.crypto import KeyEntry, KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
@@ -112,45 +113,49 @@ def _ingest(sessions, events, *, window_complete=True, device_id="dev-1",
 # --- migration -------------------------------------------------------------
 
 
-def test_calendar_table_exists_with_composite_primary_key(sessions) -> None:
+def _raw_row(row_key: str, **overrides) -> CalendarEvent:
+    fields = {
+        "calendar_identifier": "cal-1",
+        "event_identifier": "ev-1",
+        "start_ts": 0,
+        "end_ts": 0,
+        "all_day": False,
+        "title": None,
+        "notes": None,
+        "location": None,
+        "is_deleted": False,
+        "last_modified_ts": 0,
+        "snapshot_ts": 0,
+        "synced_at": NOW,
+        "created_by_agent": False,
+        "device_id": "dev-1",
+        "row_key": row_key,
+    }
+    fields.update(overrides)
+    return CalendarEvent(**fields)
+
+
+def test_occurrences_of_one_series_are_separate_rows(sessions) -> None:
+    """The identity is the triple, not the `(calendar, event)` pair: EventKit
+    hands every occurrence of a recurring event the same identifier, so a
+    pair-keyed table could only ever keep one of them."""
     with sessions() as session:
-        session.add(
-            CalendarEvent(
-                calendar_identifier="cal-1",
-                event_identifier="ev-1",
-                start_ts=0,
-                end_ts=0,
-                all_day=False,
-                title=None,
-                notes=None,
-                location=None,
-                is_deleted=False,
-                last_modified_ts=0,
-                snapshot_ts=0,
-                synced_at=NOW,
-                created_by_agent=False,
-                device_id="dev-1",
-            )
-        )
-        session.add(
-            CalendarEvent(
-                calendar_identifier="cal-1",
-                event_identifier="ev-1",
-                start_ts=1,
-                end_ts=1,
-                all_day=False,
-                title=None,
-                notes=None,
-                location=None,
-                is_deleted=False,
-                last_modified_ts=0,
-                snapshot_ts=0,
-                synced_at=NOW,
-                created_by_agent=False,
-                device_id="dev-1",
-            )
-        )
-        with pytest.raises(Exception):
+        session.add(_raw_row("rk-1", start_ts=0, end_ts=0))
+        session.add(_raw_row("rk-2", start_ts=1, end_ts=1))
+        session.commit()
+
+    with sessions() as session:
+        assert len(session.execute(select(CalendarEvent)).scalars().all()) == 2
+
+
+def test_a_repeated_triple_is_refused(sessions) -> None:
+    """Same calendar, same event, same instant twice is one event uploaded
+    twice — a device bug, and the primary key refuses it rather than letting
+    the two rows shadow each other."""
+    with sessions() as session:
+        session.add(_raw_row("rk-1", start_ts=0, end_ts=0))
+        session.add(_raw_row("rk-2", start_ts=0, end_ts=0))
+        with pytest.raises(IntegrityError):
             session.commit()
 
 

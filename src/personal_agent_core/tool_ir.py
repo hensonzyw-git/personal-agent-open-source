@@ -1116,12 +1116,22 @@ _CALENDAR_EVENT_FIELDS: Final[dict[str, Any]] = {
         "start",
         "end",
         "all_day",
+        "timezone",
+        "start_date",
+        "end_date",
+        "date_anchor_unknown",
+        "title_over_limit",
+        "location_over_limit",
+        "notes_over_limit",
     ],
     "properties": {
         "event_identifier": {
             "type": "string",
             "minLength": 1,
-            "description": "设备端 EventKit 的事件标识（EKEvent.eventIdentifier）。",
+            "description": (
+                "设备端 EventKit 的事件标识（EKEvent.eventIdentifier）。重复日程的"
+                "每次实例共享同一标识，靠 start 区分。"
+            ),
         },
         "calendar_identifier": {
             "type": "string",
@@ -1130,27 +1140,92 @@ _CALENDAR_EVENT_FIELDS: Final[dict[str, Any]] = {
         },
         "title": {
             "type": ["string", "null"],
-            "maxLength": 80,
-            "description": "EventKit 允许无标题事件，null 是事实而非缺字段。",
+            "maxLength": 200,
+            "description": (
+                "EventKit 允许无标题事件，null 是事实而非缺字段；title_over_limit "
+                "为 true 时 null 的含义是「过长未同步」，不是「没有标题」。"
+            ),
         },
         "start": {
             "type": "string",
             "format": "date-time",
-            "description": "开始时刻（UTC 瞬间）；all_day 事件为当日（Asia/Shanghai）零点。",
+            "description": (
+                "开始时刻（UTC 瞬间）。全天事件的展示日期一律取 start_date/"
+                "end_date，**不要**用本字段换算——它可能落在当地日期的前一天。"
+            ),
         },
         "end": {
             "type": "string",
             "format": "date-time",
-            "description": "结束时刻（UTC 瞬间）；all_day 事件为次日凌晨零点（排他）。",
+            "description": "结束时刻（UTC 瞬间）；全天事件同样以 end_date 为准。",
         },
         "all_day": {"type": "boolean"},
-        "location": {"type": ["string", "null"], "maxLength": 200},
-        "notes": {"type": ["string", "null"], "maxLength": 500},
+        "timezone": {
+            "type": ["string", "null"],
+            "description": (
+                "timed 事件自身的 IANA 时区，按其当地时间 + 时区标注呈现，**不**"
+                "折算成上海时间；null 表示上载早于 v2 形状，按 Asia/Shanghai "
+                "呈现。全天事件恒为 null（全天只有日期语义，无归属时区）。"
+            ),
+        },
+        "start_date": {
+            "type": ["string", "null"],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "全天事件的开始日期；timed 事件为 null。",
+        },
+        "end_date": {
+            "type": ["string", "null"],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "全天事件的排他结束日期（最后一天 + 1）；timed 事件为 null。",
+        },
+        "date_anchor_unknown": {
+            "type": "boolean",
+            "description": (
+                "true 表示该全天事件的日期归属未经确认（外部 App 创建、或来自 "
+                "v1 形状的推导）：日期照常显示，但呈现时必须标注「日期归属未确认」。"
+            ),
+        },
+        "location": {"type": ["string", "null"], "maxLength": 500},
+        "notes": {"type": ["string", "null"], "maxLength": 4096},
+        "title_over_limit": {
+            "type": "boolean",
+            "description": "为 true 时 title 因超长未同步（其值为 null），呈现时须说明。",
+        },
+        "location_over_limit": {"type": "boolean"},
+        "notes_over_limit": {
+            "type": "boolean",
+            "description": "为 true 时 notes 因超长未同步（其值为 null），呈现时须说明。",
+        },
         "created_by_agent": {
             "type": "boolean",
             "description": "该事件是否由本 Agent 的设备动作创建。",
         },
     },
+    # The whole point of the date columns (design 5.2, R1-F2): an all-day
+    # event's content is a date range, and a timed event never carries one.
+    # Pinned in the contract rather than left to the renderer's discipline.
+    "allOf": [
+        {
+            "if": {
+                "properties": {"all_day": {"const": True}},
+                "required": ["all_day"],
+            },
+            "then": {
+                "properties": {
+                    "start_date": {"type": "string"},
+                    "end_date": {"type": "string"},
+                    "timezone": {"type": "null"},
+                }
+            },
+            "else": {
+                "properties": {
+                    "start_date": {"type": "null"},
+                    "end_date": {"type": "null"},
+                    "date_anchor_unknown": {"const": False},
+                }
+            },
+        }
+    ],
 }
 
 _CALENDAR_CREATE_INPUT: Final[dict[str, Any]] = {
@@ -1394,6 +1469,33 @@ _CALENDAR_INGEST_INPUT: Final[dict[str, Any]] = {
                 "就是设备能提供的全部版本证据。"
             ),
         },
+        "calendars": {
+            "type": ["array", "null"],
+            "default": None,
+            "maxItems": 200,
+            "description": (
+                "本设备的日历名录（含订阅日历的元数据）：签发创建动作时服务端要用"
+                "它在名字与 EventKit identifier 之间解析，解析不了就转为追问，绝不"
+                "猜。幂等重复无害。旧版 App 不携带该字段，其名录保持上次所见。"
+            ),
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "calendar_identifier",
+                    "title",
+                    "allows_content_modifications",
+                    "is_subscribed",
+                ],
+                "properties": {
+                    "calendar_identifier": {"type": "string", "minLength": 1},
+                    "title": {"type": "string", "minLength": 1},
+                    "source_title": {"type": ["string", "null"]},
+                    "allows_content_modifications": {"type": "boolean"},
+                    "is_subscribed": {"type": "boolean"},
+                },
+            },
+        },
         "events": {
             "type": "array",
             "maxItems": 200,
@@ -1411,17 +1513,68 @@ _CALENDAR_INGEST_INPUT: Final[dict[str, Any]] = {
                 "properties": {
                     "event_identifier": {"type": "string", "minLength": 1},
                     "calendar_identifier": {"type": "string", "minLength": 1},
-                    "title": {"type": ["string", "null"], "maxLength": 80},
                     "start": {"type": "string", "format": "date-time"},
                     "end": {"type": "string", "format": "date-time"},
                     "all_day": {"type": "boolean"},
-                    "location": {"type": ["string", "null"], "maxLength": 200},
-                    "notes": {"type": ["string", "null"], "maxLength": 500},
                     "last_modified": {
                         "type": "string",
                         "format": "date-time",
                         "description": "设备端该事件最后修改时间，乱序上载的仲裁依据。",
                     },
+                    "created_by_agent": {
+                        "type": "boolean",
+                        "description": (
+                            "该事件是否由本 Agent 的设备动作创建（设备按自己持久化的"
+                            "自建事件集合判定）。缺省为 false——换机后集合丢失时如实"
+                            "退化为「无法证明」。"
+                        ),
+                    },
+                    "timezone": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "timed 事件的 IANA 时区。v2 形状下 timed 必填非 null；"
+                            "全天事件必须为 null（全天无归属时区）。"
+                        ),
+                    },
+                    "start_date": {
+                        "type": ["string", "null"],
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                        "description": (
+                            "全天事件的开始日期（设备冻结后的读回算法得出：自建事件"
+                            "= 动作日期；外部事件 = 设备日历投影）。"
+                        ),
+                    },
+                    "end_date": {
+                        "type": ["string", "null"],
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                        "description": "全天事件的排他结束日期（最后一天 + 1）。",
+                    },
+                    "date_anchor_unknown": {
+                        "type": "boolean",
+                        "description": (
+                            "设备能否确认该全天事件的日期归属（自建事件＝true 为否，"
+                            "外部事件＝无法确认）。该标记由证据决定，不由 wire 版本"
+                            "决定；省略视为未确认。"
+                        ),
+                    },
+                    "title": {
+                        "type": ["string", "null"],
+                        "maxLength": 200,
+                        "description": "超过 200 码点必须置 null 并令 title_over_limit=true。",
+                    },
+                    "location": {
+                        "type": ["string", "null"],
+                        "maxLength": 500,
+                        "description": "超过 500 码点必须置 null 并令 location_over_limit=true。",
+                    },
+                    "notes": {
+                        "type": ["string", "null"],
+                        "maxLength": 4096,
+                        "description": "超过 4096 码点必须置 null 并令 notes_over_limit=true。",
+                    },
+                    "title_over_limit": {"type": "boolean"},
+                    "location_over_limit": {"type": "boolean"},
+                    "notes_over_limit": {"type": "boolean"},
                 },
             },
         },

@@ -338,6 +338,16 @@ CALENDAR_QUERY = {
             "start": "2026-09-07T15:00:00+08:00",
             "end": "2026-09-07T16:30:00+08:00",
             "all_day": False,
+            # A v1-shaped row: the mirror holds no zone and no dates for it,
+            # which is a state the contract expresses explicitly rather than
+            # by omission (IR 0.3.0).
+            "timezone": None,
+            "start_date": None,
+            "end_date": None,
+            "date_anchor_unknown": False,
+            "title_over_limit": False,
+            "location_over_limit": False,
+            "notes_over_limit": False,
             "location": None,
             "notes": None,
             "created_by_agent": False,

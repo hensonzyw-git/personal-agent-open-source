@@ -660,6 +660,75 @@ def test_sync_refuses_a_batch_with_one_malformed_event_whole(
     assert _SYNC_CALLS == []
 
 
+def _bulk_batch(count: int) -> dict:
+    """A window of `count` legal events, each carrying a full-length note.
+
+    Legal on every axis the mirror checks: the note is exactly at its 4096
+    threshold, and the event count is under the 200-per-batch budget. Only the
+    *bytes* are large, which is the point.
+    """
+    one = {
+        "event_identifier": "ev-{}",
+        "calendar_identifier": "cal-1",
+        "start": "2026-09-07T15:00:00+08:00",
+        "end": "2026-09-07T16:30:00+08:00",
+        "all_day": False,
+        "last_modified": "2026-09-06T20:00:00+08:00",
+        "notes": "n" * 4096,
+    }
+    return {
+        "window_start": "2026-08-09T00:00:00+08:00",
+        "window_end": "2026-09-07T00:00:00+08:00",
+        "window_complete": True,
+        "snapshot_as_of": "2026-09-07T07:30:00+00:00",
+        "events": [dict(one, event_identifier=f"ev-{i}") for i in range(count)],
+    }
+
+
+def test_sync_accepts_a_batch_above_the_global_body_cap(
+    engine, token_ring, keyring
+) -> None:
+    """The device is *required* to send up to 128 KiB per chunk (design 6).
+    The service's global 64 KiB body cap would have refused a batch the phone
+    cannot legally shrink -- and refused it before any scope or schema check,
+    so the mirror would simply never have filled past ~16 events.
+    """
+    client = _client(engine, token_ring, keyring)
+    batch = _bulk_batch(20)  # ~84 KiB
+    encoded = len(json.dumps(batch).encode())
+    assert 64 * 1024 < encoded < 128 * 1024, encoded
+
+    response = client.post(
+        "/v1/calendar/sync",
+        json=batch,
+        headers=_auth_headers(token_ring, key=str(uuid.uuid4())),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["upserted"] == 20
+    assert len(_SYNC_CALLS) == 1
+
+
+def test_sync_refuses_a_batch_beyond_its_own_hard_cap(
+    engine, token_ring, keyring
+) -> None:
+    """512 KiB is the route's own ceiling, not a device budget: a request past
+    it is refused before the seam, so nothing reaches the mirror. The event
+    count here is legal, so the byte cap is the only thing refusing it."""
+    client = _client(engine, token_ring, keyring)
+    batch = _bulk_batch(128)  # ~537 KiB, still under the 200-event budget
+    assert len(json.dumps(batch).encode()) > 512 * 1024
+
+    response = client.post(
+        "/v1/calendar/sync",
+        json=batch,
+        headers=_auth_headers(token_ring, key=str(uuid.uuid4())),
+    )
+
+    assert response.status_code == 400, response.text
+    assert _SYNC_CALLS == []
+
+
 def test_sync_rejects_a_batch_beyond_the_size_cap(
     engine, token_ring, keyring
 ) -> None:

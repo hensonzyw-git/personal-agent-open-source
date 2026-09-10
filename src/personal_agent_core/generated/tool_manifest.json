@@ -87,7 +87,7 @@
     "calendar.create_event",
     "calendar.query_events"
   ],
-  "allowed_tools_version": "8a7ee7ff298221f51cafaba32296f10f3ad3e6870ac798d43f6d715a29660262",
+  "allowed_tools_version": "71d96ddc23f965c4fa12a3ed112bee653d7ddb16c2e85c0c519e2652bee56e1a",
   "tools": [
     {
       "name": "finance.log_expense",
@@ -1993,13 +1993,20 @@
                 "title",
                 "start",
                 "end",
-                "all_day"
+                "all_day",
+                "timezone",
+                "start_date",
+                "end_date",
+                "date_anchor_unknown",
+                "title_over_limit",
+                "location_over_limit",
+                "notes_over_limit"
               ],
               "properties": {
                 "event_identifier": {
                   "type": "string",
                   "minLength": 1,
-                  "description": "设备端 EventKit 的事件标识（EKEvent.eventIdentifier）。"
+                  "description": "设备端 EventKit 的事件标识（EKEvent.eventIdentifier）。重复日程的每次实例共享同一标识，靠 start 区分。"
                 },
                 "calendar_identifier": {
                   "type": "string",
@@ -2011,41 +2018,119 @@
                     "string",
                     "null"
                   ],
-                  "maxLength": 80,
-                  "description": "EventKit 允许无标题事件，null 是事实而非缺字段。"
+                  "maxLength": 200,
+                  "description": "EventKit 允许无标题事件，null 是事实而非缺字段；title_over_limit 为 true 时 null 的含义是「过长未同步」，不是「没有标题」。"
                 },
                 "start": {
                   "type": "string",
                   "format": "date-time",
-                  "description": "开始时刻（UTC 瞬间）；all_day 事件为当日（Asia/Shanghai）零点。"
+                  "description": "开始时刻（UTC 瞬间）。全天事件的展示日期一律取 start_date/end_date，**不要**用本字段换算——它可能落在当地日期的前一天。"
                 },
                 "end": {
                   "type": "string",
                   "format": "date-time",
-                  "description": "结束时刻（UTC 瞬间）；all_day 事件为次日凌晨零点（排他）。"
+                  "description": "结束时刻（UTC 瞬间）；全天事件同样以 end_date 为准。"
                 },
                 "all_day": {
                   "type": "boolean"
+                },
+                "timezone": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "timed 事件自身的 IANA 时区，按其当地时间 + 时区标注呈现，**不**折算成上海时间；null 表示上载早于 v2 形状，按 Asia/Shanghai 呈现。全天事件恒为 null（全天只有日期语义，无归属时区）。"
+                },
+                "start_date": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                  "description": "全天事件的开始日期；timed 事件为 null。"
+                },
+                "end_date": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                  "description": "全天事件的排他结束日期（最后一天 + 1）；timed 事件为 null。"
+                },
+                "date_anchor_unknown": {
+                  "type": "boolean",
+                  "description": "true 表示该全天事件的日期归属未经确认（外部 App 创建、或来自 v1 形状的推导）：日期照常显示，但呈现时必须标注「日期归属未确认」。"
                 },
                 "location": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "maxLength": 200
+                  "maxLength": 500
                 },
                 "notes": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "maxLength": 500
+                  "maxLength": 4096
+                },
+                "title_over_limit": {
+                  "type": "boolean",
+                  "description": "为 true 时 title 因超长未同步（其值为 null），呈现时须说明。"
+                },
+                "location_over_limit": {
+                  "type": "boolean"
+                },
+                "notes_over_limit": {
+                  "type": "boolean",
+                  "description": "为 true 时 notes 因超长未同步（其值为 null），呈现时须说明。"
                 },
                 "created_by_agent": {
                   "type": "boolean",
                   "description": "该事件是否由本 Agent 的设备动作创建。"
                 }
-              }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "all_day": {
+                        "const": true
+                      }
+                    },
+                    "required": [
+                      "all_day"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "start_date": {
+                        "type": "string"
+                      },
+                      "end_date": {
+                        "type": "string"
+                      },
+                      "timezone": {
+                        "type": "null"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "start_date": {
+                        "type": "null"
+                      },
+                      "end_date": {
+                        "type": "null"
+                      },
+                      "date_anchor_unknown": {
+                        "const": false
+                      }
+                    }
+                  }
+                }
+              ]
             }
           },
           "record_count": {
@@ -2118,7 +2203,7 @@
         "SOURCE_UNAVAILABLE"
       ],
       "input_schema_hash": "c2312dca5342a0b9cb5995055531ff310c42fe2fc9f9fdc999963ecd708d8817",
-      "contract_hash": "1f13f09d13b7d44452f99065ccb9a87405bf84bb77c607d7f3da36bfc5c704ee"
+      "contract_hash": "87c93f9be7291c30603e55d30dc1fb4fdd310b825fa037926900f4ee358fcf8a"
     },
     {
       "name": "calendar.ingest_events",
@@ -2160,6 +2245,47 @@
             "format": "date-time",
             "description": "本次快照的拍摄瞬间（UTC）。同一窗口的每个分批必须携带同一值：它是镜像的唯一版本号——EventKit 没有逐事件修改时间，快照瞬间就是设备能提供的全部版本证据。"
           },
+          "calendars": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "default": null,
+            "maxItems": 200,
+            "description": "本设备的日历名录（含订阅日历的元数据）：签发创建动作时服务端要用它在名字与 EventKit identifier 之间解析，解析不了就转为追问，绝不猜。幂等重复无害。旧版 App 不携带该字段，其名录保持上次所见。",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "calendar_identifier",
+                "title",
+                "allows_content_modifications",
+                "is_subscribed"
+              ],
+              "properties": {
+                "calendar_identifier": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "source_title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "allows_content_modifications": {
+                  "type": "boolean"
+                },
+                "is_subscribed": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
           "events": {
             "type": "array",
             "maxItems": 200,
@@ -2183,13 +2309,6 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "title": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "maxLength": 80
-                },
                 "start": {
                   "type": "string",
                   "format": "date-time"
@@ -2201,24 +2320,74 @@
                 "all_day": {
                   "type": "boolean"
                 },
+                "last_modified": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "设备端该事件最后修改时间，乱序上载的仲裁依据。"
+                },
+                "created_by_agent": {
+                  "type": "boolean",
+                  "description": "该事件是否由本 Agent 的设备动作创建（设备按自己持久化的自建事件集合判定）。缺省为 false——换机后集合丢失时如实退化为「无法证明」。"
+                },
+                "timezone": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "timed 事件的 IANA 时区。v2 形状下 timed 必填非 null；全天事件必须为 null（全天无归属时区）。"
+                },
+                "start_date": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                  "description": "全天事件的开始日期（设备冻结后的读回算法得出：自建事件= 动作日期；外部事件 = 设备日历投影）。"
+                },
+                "end_date": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                  "description": "全天事件的排他结束日期（最后一天 + 1）。"
+                },
+                "date_anchor_unknown": {
+                  "type": "boolean",
+                  "description": "设备能否确认该全天事件的日期归属（自建事件＝true 为否，外部事件＝无法确认）。该标记由证据决定，不由 wire 版本决定；省略视为未确认。"
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "maxLength": 200,
+                  "description": "超过 200 码点必须置 null 并令 title_over_limit=true。"
+                },
                 "location": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "maxLength": 200
+                  "maxLength": 500,
+                  "description": "超过 500 码点必须置 null 并令 location_over_limit=true。"
                 },
                 "notes": {
                   "type": [
                     "string",
                     "null"
                   ],
-                  "maxLength": 500
+                  "maxLength": 4096,
+                  "description": "超过 4096 码点必须置 null 并令 notes_over_limit=true。"
                 },
-                "last_modified": {
-                  "type": "string",
-                  "format": "date-time",
-                  "description": "设备端该事件最后修改时间，乱序上载的仲裁依据。"
+                "title_over_limit": {
+                  "type": "boolean"
+                },
+                "location_over_limit": {
+                  "type": "boolean"
+                },
+                "notes_over_limit": {
+                  "type": "boolean"
                 }
               }
             }
@@ -2294,8 +2463,8 @@
         "INVALID_ARGUMENT",
         "SCOPE_DENIED"
       ],
-      "input_schema_hash": "b8ab33a00bfc47e43359e0d90819ed9d7e71ed09d4a2102c198d90deb24ad25e",
-      "contract_hash": "db20a37ff523f66d4d09e0500ca6c916c56397b26b7e39ef6740ec398e765c7c"
+      "input_schema_hash": "6964d536abb770b76083c76abc6a5a1cd5f8a2208a0c42c220e9023469027ee0",
+      "contract_hash": "736f22685f1339ab931aa1af54c9616d2819bed744fb85c782044ecbd34dc1e2"
     }
   ]
 }

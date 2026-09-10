@@ -291,6 +291,11 @@ _STATUS_BY_CODE = {
 }
 
 _MAX_JSON_BODY_BYTES = 64 * 1024
+#: The calendar sync route carries a whole window of events, and its own
+#: batching budget is 128 KiB (design 6): the global 64 KiB cap would refuse a
+#: batch the device is *required* to send. Raised only for this route -- every
+#: other body stays on the global limit.
+_MAX_SYNC_BODY_BYTES = 512 * 1024
 
 # Only a governed write may project `safe_result` as an external record id.
 # Unknown and read-only tools fail toward `answer`, never toward evidence that a
@@ -1176,7 +1181,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 ErrorCode.SCOPE_DENIED,
                 internal_detail="calendar sync requires calendar.event.read",
             )
-        body = await _json_body(request)
+        body = await _json_body(request, max_bytes=_MAX_SYNC_BODY_BYTES)
         _validate_sync_body(body)
         result = await asyncio.to_thread(deps.sync_ingest, auth, body)
         return JSONResponse(result)
@@ -2771,7 +2776,9 @@ def _owned_operation(
     return operation
 
 
-async def _json_body(request: Request) -> dict[str, Any]:
+async def _json_body(
+    request: Request, *, max_bytes: int = _MAX_JSON_BODY_BYTES
+) -> dict[str, Any]:
     """Read one bounded JSON object after authentication."""
     content_type = request.headers.get("content-type", "")
     media_type = content_type.split(";", 1)[0].strip().lower()
@@ -2790,17 +2797,17 @@ async def _json_body(request: Request) -> dict[str, Any]:
                 ErrorCode.INVALID_ARGUMENT,
                 internal_detail="Content-Length must be an integer",
             ) from exc
-        if declared_length < 0 or declared_length > _MAX_JSON_BODY_BYTES:
+        if declared_length < 0 or declared_length > max_bytes:
             raise AppError(
                 ErrorCode.INVALID_ARGUMENT,
-                internal_detail=f"JSON body exceeds {_MAX_JSON_BODY_BYTES} bytes",
+                internal_detail=f"JSON body exceeds {max_bytes} bytes",
             )
 
     raw = await request.body()
-    if len(raw) > _MAX_JSON_BODY_BYTES:
+    if len(raw) > max_bytes:
         raise AppError(
             ErrorCode.INVALID_ARGUMENT,
-            internal_detail=f"JSON body exceeds {_MAX_JSON_BODY_BYTES} bytes",
+            internal_detail=f"JSON body exceeds {max_bytes} bytes",
         )
     try:
         body = json.loads(raw)

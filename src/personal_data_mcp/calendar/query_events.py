@@ -223,24 +223,9 @@ def query_events(
         page = rows[offset : offset + page_size]
         next_offset = offset + len(page)
 
-        events: list[dict[str, Any]] = []
-        for row in page:
-            event: dict[str, Any] = {
-                "event_identifier": row.event_identifier,
-                "calendar_identifier": row.calendar_identifier,
-                "title": _open(keyring, row, "title"),
-                "start": to_rfc3339(
-                    datetime.fromtimestamp(row.start_ts, tz=timezone.utc)
-                ),
-                "end": to_rfc3339(
-                    datetime.fromtimestamp(row.end_ts, tz=timezone.utc)
-                ),
-                "all_day": row.all_day,
-                "location": _open(keyring, row, "location"),
-                "notes": _open(keyring, row, "notes"),
-                "created_by_agent": row.created_by_agent,
-            }
-            events.append(event)
+        events: list[dict[str, Any]] = [
+            _render(keyring, row) for row in page
+        ]
 
         next_cursor = (
             _encode_cursor(
@@ -279,6 +264,44 @@ def query_events(
             ),
             "source_system": "apple_calendar_mirror",
         }
+
+
+def _render(keyring: KeyRing, row: CalendarEvent) -> dict[str, Any]:
+    """One mirror row as the model sees it.
+
+    The epoch instants stay in the payload -- the window filter and the sweep
+    are built on them -- but they are **not** how an all-day event is meant to
+    be read. `start_date`/`end_date` are that event's actual content, and a
+    model that converts the epoch instead will turn a Tokyo all-day event into
+    the previous Shanghai day, which is the defect this pair of columns
+    exists to remove. `date_anchor_unknown` says when even those dates are a
+    projection rather than the event's own local date, so the summary can
+    state the uncertainty instead of asserting it away.
+
+    The over-limit flags travel with their (null) fields for the same reason:
+    a dropped note and an absent note must not look alike.
+    """
+    return {
+        "event_identifier": row.event_identifier,
+        "calendar_identifier": row.calendar_identifier,
+        "title": _open(keyring, row, "title"),
+        "start": to_rfc3339(datetime.fromtimestamp(row.start_ts, tz=timezone.utc)),
+        "end": to_rfc3339(datetime.fromtimestamp(row.end_ts, tz=timezone.utc)),
+        "all_day": row.all_day,
+        # A timed event's own zone; null means the upload predates the v2
+        # shape, which renders as Asia/Shanghai exactly as v1 did. All-day
+        # rows are always null: a date has no anchor zone.
+        "timezone": row.timezone,
+        "start_date": row.all_day_start_date,
+        "end_date": row.all_day_end_date,
+        "date_anchor_unknown": row.date_anchor_unknown,
+        "location": _open(keyring, row, "location"),
+        "notes": _open(keyring, row, "notes"),
+        "title_over_limit": row.title_over_limit,
+        "location_over_limit": row.location_over_limit,
+        "notes_over_limit": row.notes_over_limit,
+        "created_by_agent": row.created_by_agent,
+    }
 
 
 def _open(keyring: KeyRing, row: CalendarEvent, column: str) -> str | None:

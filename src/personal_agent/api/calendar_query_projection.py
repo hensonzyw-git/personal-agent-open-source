@@ -23,6 +23,7 @@ prompt's own contract requires the staleness to be stated, not implied.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -66,11 +67,20 @@ _EVENT_FIELDS = frozenset(
         "start",
         "end",
         "all_day",
+        "timezone",
+        "start_date",
+        "end_date",
+        "date_anchor_unknown",
+        "title_over_limit",
+        "location_over_limit",
+        "notes_over_limit",
         "location",
         "notes",
         "created_by_agent",
     }
 )
+
+_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 _SOURCE_SYSTEM = "apple_calendar_mirror"
 
@@ -253,4 +263,62 @@ def _decode_event(raw: Any) -> dict[str, Any]:
         raise CalendarQueryProjectionError(
             "events item created_by_agent is not a boolean"
         )
+    timezone = raw.get("timezone")
+    if timezone is not None and (not isinstance(timezone, str) or not timezone):
+        raise CalendarQueryProjectionError(
+            "events item timezone is not a non-empty string or null"
+        )
+    for field in ("start_date", "end_date"):
+        value = raw.get(field)
+        if value is not None and (
+            not isinstance(value, str) or not _DATE_PATTERN.match(value)
+        ):
+            raise CalendarQueryProjectionError(
+                f"events item {field} is not a YYYY-MM-DD date or null"
+            )
+    date_anchor_unknown = raw.get("date_anchor_unknown")
+    if not isinstance(date_anchor_unknown, bool):
+        raise CalendarQueryProjectionError(
+            "events item date_anchor_unknown is not a boolean"
+        )
+    # The date columns and the epoch instants must agree about which kind of
+    # event this is. An all-day event with no dates cannot be displayed the
+    # way the contract requires (its content *is* the dates), and a timed
+    # event carrying them would invite a renderer to use a date the mirror
+    # never claimed. Checked here, at the display boundary, so no client has
+    # to be defensive about it.
+    if all_day:
+        if not isinstance(raw.get("start_date"), str) or not isinstance(
+            raw.get("end_date"), str
+        ):
+            raise CalendarQueryProjectionError(
+                "an all-day event must carry start_date and end_date"
+            )
+        if timezone is not None:
+            raise CalendarQueryProjectionError(
+                "an all-day event must not carry a timezone"
+            )
+    else:
+        if raw.get("start_date") is not None or raw.get("end_date") is not None:
+            raise CalendarQueryProjectionError(
+                "a timed event must not carry all-day dates"
+            )
+        if date_anchor_unknown:
+            raise CalendarQueryProjectionError(
+                "a timed event has no date attribution to be unknown"
+            )
+    for field in ("title_over_limit", "location_over_limit", "notes_over_limit"):
+        flag = raw.get(field)
+        if not isinstance(flag, bool):
+            raise CalendarQueryProjectionError(
+                f"events item {field} is not a boolean"
+            )
+        # The flag is the only surviving evidence of content the mirror could
+        # not keep. If it is set and the text is still there, one of the two
+        # is lying, and a card that showed the flag would be describing a
+        # state the mirror is not in.
+        if flag and raw.get(field[: -len("_over_limit")]) is not None:
+            raise CalendarQueryProjectionError(
+                f"events item {field} is set but the field it describes is present"
+            )
     return dict(raw)

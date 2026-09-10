@@ -367,29 +367,61 @@ class CalendarEvent(Base):
 
     The iPhone owns the calendar; this row is what the phone last reported, so
     the table is named after that relationship: a mirror, not a second fact
-    source. `(calendar_identifier, event_identifier)` is the composite
-    identity because EventKit scopes `eventIdentifier` per calendar store
-    source, and the pair is what an upsert arbitrates on.
+    source. `(calendar_identifier, event_identifier, start_ts)` is the
+    identity: EventKit scopes `eventIdentifier` per calendar store source, and
+    it expands each occurrence of a recurring event into its own `EKEvent` --
+    same identifier, different `startDate`. Two columns therefore cannot name
+    one occurrence, and the triple is what an upsert arbitrates on.
 
     Sensitivity split: timestamps and identifiers are plaintext because the
     window filter needs a real index over them; title/notes/location are
     personal text and travel through restic backups, so they are sealed
     envelopes like every other business content in this database.
+
+    Dates versus instants (design 5.2): `all_day_start_date`/`all_day_end_date`
+    are the authority for what an all-day event *says* -- a day, not an
+    instant -- and the epoch columns stay the implementation detail the window
+    filter and the sweep are built on. Rendering an all-day event by converting
+    its epoch to a local date is how a Tokyo all-day event turns into the
+    previous day in Shanghai, so the query never does it.
+    `date_anchor_unknown` is the honesty flag for rows whose local-date
+    attribution the device could not confirm (external all-day events, and
+    every row inherited from the v1 upload shape).
     """
 
     __tablename__ = "calendar_events"
 
     #: The AAD row identity for the three sealed columns. The composite
-    #: business key is fine for lookups but two columns cannot name one AAD
+    #: business key is fine for lookups but three columns cannot name one AAD
     #: string, so the row carries a surrogate for sealing.
     row_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     calendar_identifier: Mapped[str] = mapped_column(Text, primary_key=True)
     event_identifier: Mapped[str] = mapped_column(Text, primary_key=True)
     #: Epoch seconds, UTC. Plaintext and indexed: the window filter and the
-    #: sort order are the query's whole shape.
-    start_ts: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: sort order are the query's whole shape. Part of the primary key because
+    #: one recurring series is many occurrences.
+    start_ts: Mapped[int] = mapped_column(Integer, primary_key=True)
     end_ts: Mapped[int] = mapped_column(Integer, nullable=False)
     all_day: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    #: The event's own IANA zone, for timed events only. All-day rows are
+    #: always null: an all-day event has a date, not an instant, so it has no
+    #: anchor zone to record (Henson 2026-09-10). Null on a *timed* row means
+    #: the upload predates the v2 shape, which renders as Asia/Shanghai --
+    #: byte-identical to the v1 behaviour.
+    timezone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: `YYYY-MM-DD`. Non-null exactly when `all_day`, and the authority for
+    #: the rendered date. `all_day_end_date` is exclusive (the day after the
+    #: last day), matching EventKit and the create contract.
+    all_day_start_date: Mapped[str | None] = mapped_column(Text, nullable=True)
+    all_day_end_date: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: True when the stored dates are a faithful projection of the device's
+    #: calendar but *not* evidence of the event's own local date: the device
+    #: could not confirm the anchor (an external app's all-day event, or a row
+    #: derived from the v1 shape). Rendered as 「日期归属未确认」 rather than
+    #: hidden or silently trusted.
+    date_anchor_unknown: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
     title: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedEnvelope, nullable=True
     )
@@ -398,6 +430,20 @@ class CalendarEvent(Base):
     )
     location: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedEnvelope, nullable=True
+    )
+    #: Over-limit flags (design 6). EventKit lets any other app put a whole
+    #: document in a note; the mirror is not a document store, so the device
+    #: uploads the field as null and raises the flag. Without the flag a
+    #: dropped note would be indistinguishable from an event that has none,
+    #: and the summary would report "no notes" about an event that has them.
+    title_over_limit: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    location_over_limit: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    notes_over_limit: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
     )
     #: Tombstone. The row is kept so a late stale chunk cannot be mistaken for
     #: a new event, and queries exclude it by default.
@@ -419,9 +465,54 @@ class CalendarEvent(Base):
 
     __table_args__ = (
         CheckConstraint("start_ts <= end_ts", name="start_before_or_equal_end"),
+        # An all-day row without dates could not be rendered at all (5.2:
+        # dates are the authority), and an all-day row carrying a zone would
+        # claim an anchor the probe proved does not exist. Both are states the
+        # ingest refuses; the constraints keep them out of the table even if a
+        # future writer forgets.
+        CheckConstraint(
+            "all_day = 0 OR (all_day_start_date IS NOT NULL "
+            "AND all_day_end_date IS NOT NULL AND timezone IS NULL)",
+            name="all_day_rows_carry_dates_and_no_zone",
+        ),
         Index("ix_calendar_events_start_ts", "start_ts"),
         Index("ix_calendar_events_end_ts", "end_ts"),
     )
+
+
+class CalendarDirectory(Base):
+    """The device's own list of calendars, per design 2.1.
+
+    Routing a create to the right calendar happens on the server, so the
+    server needs the device's calendar names and identifiers. The device
+    uploads every regular event calendar in each sync batch (subscribed
+    calendars included -- the server has to be able to *refuse* one, which it
+    cannot do if it cannot see it); the events themselves never leave the
+    device for a subscribed calendar.
+
+    `title` is plaintext, unlike every other business string in this database,
+    and deliberately so: the routing rule is an exact-title lookup
+    (`WHERE title = ?`), which a sealed column cannot answer, and the value is
+    a calendar name the user chose -- not event content. The alternative
+    (sealing it and comparing in Python) would decrypt every calendar row on
+    every create to match one string.
+    """
+
+    __tablename__ = "calendar_directory"
+
+    device_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    calendar_identifier: Mapped[str] = mapped_column(Text, primary_key=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    #: The account/source the calendar belongs to, for the "same name across
+    #: accounts" case the routing rule has to disambiguate.
+    source_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: False for a read-only calendar (a subscribed one, or a birthday
+    #: container): a create must never be routed to one.
+    allows_content_modifications: Mapped[bool] = mapped_column(
+        Boolean, nullable=False
+    )
+    is_subscribed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
 
 
 class CalendarDeviceSync(Base):
@@ -458,5 +549,16 @@ class CalendarDeviceSync(Base):
     #: covering nothing.
     window_start_ts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     window_end_ts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: The mirror-rebuild epoch this device's uploads belong to (design 14.2).
+    #: A rollback to the barrier version resets the mirror's data and bumps
+    #: this; a v2 batch stamped with an older epoch is refused, so a window
+    #: captured before the reset can never write into the rebuilt mirror.
+    #: Stored here (schema 0007) so the barrier version can read it; the
+    #: comparison itself lands with that version's ingest (design 14.2), and
+    #: v1 uploads — which carry no epoch at all — are handled by the protocol
+    #: ratchet, not by this column.
+    sync_epoch: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     #: When this device last completed a snapshot (upload wall clock).
     updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
