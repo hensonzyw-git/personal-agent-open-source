@@ -145,6 +145,30 @@ def test_a_refused_second_write_does_not_destroy_the_first(store) -> None:
     assert store.read_staging(MEDIA, 1, record) == b"first" * 4
 
 
+def test_the_store_drives_an_incremental_upload(store) -> None:
+    # The path the PUT endpoint takes: open, append per batch, seal, publish.
+    payload = b"streamed in three batches" * 4
+    writer = store.staging_writer(MEDIA, 1)
+    writer.open()
+    for index in range(0, len(payload), CHUNK):
+        writer.append(payload[index : index + CHUNK])
+    record = writer.seal()
+
+    assert store.read_staging(MEDIA, 1, record) == payload
+    store.publish(MEDIA, 1)
+    assert store.read_final(MEDIA, 1, record) == payload
+
+
+def test_the_store_hands_back_an_unopened_writer(store) -> None:
+    # Opening is the caller's act, done only after the attempt has been
+    # re-checked inside the lock. A writer that had already created the file
+    # would have written before anyone established that it may.
+    writer = store.staging_writer(MEDIA, 1)
+    assert not store.staging_path(MEDIA, 1).exists()
+    with pytest.raises(ContainerError):
+        writer.append(b"x")
+
+
 def test_a_later_attempt_gets_its_own_staging_file(store) -> None:
     # §4.2's retry: a failed attempt does not block the next one, and the two
     # do not share bytes.

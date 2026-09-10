@@ -24,6 +24,7 @@ from personal_agent.media.container import (
     CONTAINER_VERSION,
     MAX_CHUNK_BYTES,
     ChunkHasher,
+    StagingWriter,
     open_container,
     read_container,
     write_container,
@@ -576,6 +577,194 @@ def test_the_writer_refuses_a_chunk_that_exceeds_the_declared_chunk_size(
             attempt_number=ATTEMPT,
             chunk_bytes=CHUNK,
         )
+
+
+# --- the incremental writer the upload path uses ---------------------------
+#
+# §4.2 requires the upload to re-take the lock between write batches, so the
+# writer has to be callable one chunk at a time. These tests pin the states a
+# single-pass writer never had: opened-but-empty, partially appended, sealed,
+# and aborted, and that the result is identical to the one-shot form.
+
+
+def open_writer(tmp_path, keyring, *, name="inc.part", chunk_bytes=CHUNK):
+    writer = StagingWriter(
+        tmp_path / name,
+        keyring=keyring,
+        media_id=MEDIA,
+        attempt_number=ATTEMPT,
+        chunk_bytes=chunk_bytes,
+    )
+    writer.open()
+    return writer
+
+
+def test_an_incrementally_written_container_reads_back(tmp_path, keyring) -> None:
+    payload = bytes(range(256)) * 2
+    writer = open_writer(tmp_path, keyring)
+    for index in range(0, len(payload), CHUNK):
+        writer.append(payload[index : index + CHUNK])
+    seal = writer.seal()
+
+    assert read_container(
+        tmp_path / "inc.part",
+        seal,
+        keyring=keyring,
+        media_id=MEDIA,
+        attempt_number=ATTEMPT,
+    ) == payload
+
+
+def test_incremental_and_one_shot_writers_agree(tmp_path, keyring) -> None:
+    # The seal record is what recovery and publication compare against, so the
+    # two writers must produce the same commitment for the same bytes.
+    payload = b"same bytes either way" * 5
+    one_shot = write_container(
+        tmp_path / "one.part",
+        [payload[i : i + CHUNK] for i in range(0, len(payload), CHUNK)],
+        keyring=keyring,
+        media_id=MEDIA,
+        attempt_number=ATTEMPT,
+        chunk_bytes=CHUNK,
+    )
+
+    writer = open_writer(tmp_path, keyring, name="inc.part")
+    for index in range(0, len(payload), CHUNK):
+        writer.append(payload[index : index + CHUNK])
+    incremental = writer.seal()
+
+    assert incremental.sha256 == one_shot.sha256
+    assert incremental.total_bytes == one_shot.total_bytes
+    assert incremental.chunk_count == one_shot.chunk_count
+
+
+def test_a_partially_appended_writer_is_not_readable(tmp_path, keyring) -> None:
+    # Half an upload must never look like an image. Nothing has sealed it, so
+    # a reader has no record to check it against and must refuse outright.
+    writer = open_writer(tmp_path, keyring)
+    writer.append(b"x" * CHUNK)
+
+    with pytest.raises(ContainerError):
+        read_container(
+            tmp_path / "inc.part",
+            None,
+            keyring=keyring,
+            media_id=MEDIA,
+            attempt_number=ATTEMPT,
+        )
+    writer.abort()
+
+
+def test_an_empty_incremental_stream_seals_one_empty_chunk(tmp_path, keyring) -> None:
+    writer = open_writer(tmp_path, keyring)
+    seal = writer.seal()
+
+    assert seal.chunk_count == 1
+    assert seal.total_bytes == 0
+    assert (
+        read_container(
+            tmp_path / "inc.part",
+            seal,
+            keyring=keyring,
+            media_id=MEDIA,
+            attempt_number=ATTEMPT,
+        )
+        == b""
+    )
+
+
+def test_appending_before_opening_is_refused(tmp_path, keyring) -> None:
+    writer = StagingWriter(
+        tmp_path / "closed.part",
+        keyring=keyring,
+        media_id=MEDIA,
+        attempt_number=ATTEMPT,
+        chunk_bytes=CHUNK,
+    )
+    with pytest.raises(ContainerError):
+        writer.append(b"x")
+
+
+def test_opening_twice_is_refused(tmp_path, keyring) -> None:
+    writer = open_writer(tmp_path, keyring)
+    try:
+        with pytest.raises(ContainerError):
+            writer.open()
+    finally:
+        writer.abort()
+
+
+def test_appending_after_sealing_is_refused(tmp_path, keyring) -> None:
+    writer = open_writer(tmp_path, keyring)
+    writer.seal()
+    with pytest.raises(ContainerError):
+        writer.append(b"x")
+
+
+def test_sealing_twice_is_refused(tmp_path, keyring) -> None:
+    writer = open_writer(tmp_path, keyring)
+    writer.seal()
+    with pytest.raises(ContainerError):
+        writer.seal()
+
+
+def test_an_over_long_batch_is_refused_and_leaves_nothing(tmp_path, keyring) -> None:
+    writer = open_writer(tmp_path, keyring)
+    with pytest.raises(ContainerError):
+        writer.append(b"x" * (CHUNK + 1))
+    assert not (tmp_path / "inc.part").exists()
+
+
+def test_aborting_removes_the_partial_file(tmp_path, keyring) -> None:
+    writer = open_writer(tmp_path, keyring)
+    writer.append(b"x" * CHUNK)
+    writer.abort()
+
+    assert not (tmp_path / "inc.part").exists()
+    # Repeated abort is how a caller cleans up on an error path it may reach
+    # more than once.
+    writer.abort()
+
+
+def test_aborting_after_sealing_keeps_the_finished_upload(tmp_path, keyring) -> None:
+    # A sealed staging file is a complete upload the caller already holds a
+    # seal record for. Cleanup on an error path must not destroy it; removing
+    # sealed staging is a deliberate, separate operation.
+    writer = open_writer(tmp_path, keyring)
+    writer.append(b"x" * CHUNK)
+    seal = writer.seal()
+    writer.abort()
+
+    assert (tmp_path / "inc.part").exists()
+    assert read_container(
+        tmp_path / "inc.part",
+        seal,
+        keyring=keyring,
+        media_id=MEDIA,
+        attempt_number=ATTEMPT,
+    ) == b"x" * CHUNK
+
+
+def test_the_writer_reports_its_own_batch_size(tmp_path, keyring) -> None:
+    # The caller sizes its receive batches from this so one received batch is
+    # exactly one sealed chunk; a mismatch is what would vary chunk boundaries
+    # between a write and its replay.
+    writer = open_writer(tmp_path, keyring, chunk_bytes=CHUNK * 3)
+    try:
+        assert writer.chunk_bytes == CHUNK * 3
+    finally:
+        writer.abort()
+
+
+def test_an_existing_staging_file_is_not_reopened(tmp_path, keyring) -> None:
+    # §4.2: an expired writer must not reopen its staging. O_EXCL is what makes
+    # that a filesystem refusal rather than a convention.
+    first = open_writer(tmp_path, keyring)
+    first.append(b"x" * CHUNK)
+    first.seal()
+
+    with pytest.raises(ContainerError):
+        open_writer(tmp_path, keyring)
 
 
 # --- the running hash the upload path needs --------------------------------

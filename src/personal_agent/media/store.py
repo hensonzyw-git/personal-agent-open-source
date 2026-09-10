@@ -59,6 +59,7 @@ from personal_agent.media.container import (
     DEFAULT_MEDIA_ROLE,
     ContainerError,
     SealRecord,
+    StagingWriter,
     read_container,
     write_container,
 )
@@ -295,6 +296,29 @@ class MediaStore:
             if directory_was_ours:
                 shutil.rmtree(path.parent, ignore_errors=True)
             raise
+
+    def staging_writer(self, media_id: str, attempt_number: int) -> StagingWriter:
+        """An unopened incremental writer for one attempt's staging file.
+
+        Returned unopened on purpose. §4.2 requires the check and the file
+        operation to be inseparable -- "检查与文件写入不分离" -- so the caller
+        opens (or appends) only after re-reading state, owner, attempt and
+        deadline inside the lock. Opening here, where there is no lock, would
+        hand back a file handle that was created without anyone having checked
+        whether this attempt is still allowed to write.
+        """
+        media_id = _require_media_id(media_id)
+        attempt = _require_attempt(attempt_number)
+        path = self.staging_path(media_id, attempt)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return StagingWriter(
+            path,
+            keyring=self._keyring,
+            media_id=media_id,
+            attempt_number=attempt,
+            role=self._role,
+            chunk_bytes=self._chunk_bytes,
+        )
 
     def read_staging(
         self,

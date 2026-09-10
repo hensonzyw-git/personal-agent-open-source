@@ -217,6 +217,191 @@ def _seal_chunk(
     return len(payload).to_bytes(_LENGTH_BYTES, "big") + payload
 
 
+class StagingWriter:
+    """Writes one attempt's staging file, one sealed chunk at a time.
+
+    §4.2 requires the upload's *write batches* to be individually lock-scoped:
+    "PUT 每次写入批次都在锁内重读 state、owner、attempt、期限，才打开/追加自己的
+    staging". A single-pass writer cannot honour that -- the caller would have
+    to hold the storage lock across the whole network receive, which is the one
+    thing §4.2's separation of receive (outside) from write (inside) exists to
+    prevent. So the file is opened once here and each chunk is appended by a
+    separate call, letting the caller re-take the lock and re-check the attempt
+    between calls without ever reopening the file.
+
+    The file handle deliberately survives across lock releases. What the design
+    forbids is an *expired* writer reopening and appending, and that is enforced
+    by the caller's per-append check: a writer whose attempt has been taken over
+    is refused before the next append, and :meth:`abort` then removes the file.
+    Keeping the descriptor open is safe because nothing else writes this path --
+    it was created `O_EXCL` and belongs to this attempt alone.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        keyring: KeyRing,
+        media_id: str,
+        attempt_number: int,
+        role: str = DEFAULT_MEDIA_ROLE,
+        chunk_bytes: int = DEFAULT_CHUNK_BYTES,
+    ) -> None:
+        self._path = path
+        self._keyring = keyring
+        self._media_id = _require_media_id(media_id)
+        self._role = _require_role(role)
+        if attempt_number < 1:
+            raise ContainerError("attempt number must be >= 1")
+        if not 0 < chunk_bytes <= MAX_CHUNK_BYTES:
+            raise ContainerError(
+                f"chunk size {chunk_bytes} outside 1..{MAX_CHUNK_BYTES}"
+            )
+        self._attempt_number = attempt_number
+        self._chunk_bytes = chunk_bytes
+        self._hasher = ChunkHasher()
+        self._handle: Any | None = None
+        self._sealed = False
+
+    @property
+    def chunk_bytes(self) -> int:
+        """The largest batch :meth:`append` accepts.
+
+        The caller sizes its receive batches from this so that one received
+        batch is exactly one sealed chunk.
+        """
+        return self._chunk_bytes
+
+    @property
+    def chunk_count(self) -> int:
+        return self._hasher.chunk_count
+
+    @property
+    def total_bytes(self) -> int:
+        return self._hasher.total_bytes
+
+    def open(self) -> None:
+        """Create the staging file. Refuses if it already exists.
+
+        `O_CREAT | O_EXCL` is what makes "an attempt owns exactly one staging
+        file" a filesystem fact rather than a convention, and it is why a
+        replayed or racing PUT cannot adopt another writer's bytes.
+        """
+        if self._handle is not None:
+            raise ContainerError("staging writer is already open")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
+        try:
+            fd = os.open(self._path, flags, 0o600)
+        except FileExistsError as exc:
+            raise ContainerError(f"staging already exists at {self._path}") from exc
+        except OSError as exc:
+            raise ContainerError(
+                f"cannot create staging at {self._path}: {exc}"
+            ) from exc
+        handle = os.fdopen(fd, "wb", closefd=True)
+        try:
+            handle.write(CONTAINER_MAGIC)
+            handle.write(bytes([CONTAINER_VERSION]))
+        except BaseException:
+            handle.close()
+            self._path.unlink(missing_ok=True)
+            raise
+        self._handle = handle
+
+    def append(self, batch: bytes) -> None:
+        """Seal one batch as the next chunk and append it.
+
+        One batch is one chunk: the AAD binds the chunk index, so chunk
+        boundaries are part of the authenticated content and the caller must
+        not vary them between a write and its replay.
+        """
+        if self._sealed:
+            raise ContainerError("staging writer is already sealed")
+        if self._handle is None:
+            raise ContainerError("staging writer is not open")
+        if len(batch) > self._chunk_bytes:
+            # A batch over the configured chunk size is a caller contract
+            # violation: one batch is one chunk, and the chunk boundaries are
+            # part of the authenticated content. The writer cannot continue
+            # meaningfully, so it fails closed like every other refusal here
+            # rather than leaving a partial file for a caller to reason about.
+            self.abort()
+            raise ContainerError(
+                f"batch is {len(batch)} bytes, over the configured "
+                f"{self._chunk_bytes}"
+            )
+        try:
+            self._handle.write(
+                _seal_chunk(
+                    batch,
+                    keyring=self._keyring,
+                    media_id=self._media_id,
+                    role=self._role,
+                    attempt_number=self._attempt_number,
+                    index=self._hasher.chunk_count,
+                )
+            )
+        except BaseException:
+            self.abort()
+            raise
+        self._hasher.update(batch)
+
+    def seal(self) -> SealRecord:
+        """Flush, sync and close, returning the record that commits to it all.
+
+        `fsync` is here because §5.3 step 1 names seal as the durability point:
+        once this returns the bytes are complete and durable, and the caller's
+        remaining work is the directory sync and the database compare-and-swap.
+        """
+        if self._sealed:
+            raise ContainerError("staging writer is already sealed")
+        if self._handle is None:
+            raise ContainerError("staging writer is not open")
+        if self._hasher.chunk_count == 0:
+            # An empty upload still needs a defined container shape, so that a
+            # reader can refuse it on its own terms rather than as a missing
+            # file, and so "empty" and "never written" stay distinguishable.
+            self.append(b"")
+        try:
+            self._handle.flush()
+            os.fsync(self._handle.fileno())
+        except BaseException:
+            self.abort()
+            raise
+        self._handle.close()
+        self._handle = None
+        self._sealed = True
+        return SealRecord(
+            chunk_count=self._hasher.chunk_count,
+            total_bytes=self._hasher.total_bytes,
+            sha256=self._hasher.hexdigest(),
+        )
+
+    def abort(self) -> None:
+        """Close and remove the file. Safe to call at any point, repeatedly.
+
+        A half-written staging file is never left for anything to adopt; the
+        caller separately records the attempt as abandoned, and the reaper
+        would remove this anyway, but failing closed means removing it now.
+
+        After a successful :meth:`seal` this is a no-op rather than a deletion.
+        Those bytes are complete and committed to by a seal record the caller
+        already holds; removing them here would turn a caller's error-path
+        cleanup into the destruction of a finished upload. Removing *sealed*
+        staging is :meth:`MediaStore.discard_staging`'s job, which the caller
+        reaches deliberately.
+        """
+        if self._sealed:
+            return
+        handle, self._handle = self._handle, None
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+        self._path.unlink(missing_ok=True)
+
+
 def write_container(
     path: Path,
     chunks: Iterable[bytes],
@@ -227,85 +412,29 @@ def write_container(
     role: str = DEFAULT_MEDIA_ROLE,
     chunk_bytes: int = DEFAULT_CHUNK_BYTES,
 ) -> SealRecord:
-    """Seal `chunks` into `path` and return the record that commits to them.
+    """Seal `chunks` into `path` in one pass, returning the record.
 
-    Writes with `O_CREAT | O_EXCL`: the staging path for an attempt is created
-    once and never reopened by a later writer, which is how §4.2's "an expired
-    writer cannot reopen or append its own staging" is enforced at the file
-    layer rather than only in the state machine.
-
-    `fsync` happens here because this is the seal point §5.3 step 1 names: once
-    this returns, the bytes are complete and durable, and the caller's job is
-    the directory sync and the database compare-and-swap that publish them.
+    The one-shot form of :class:`StagingWriter`, for callers that already hold
+    every chunk -- the non-streaming paths and the tests. The upload endpoint
+    uses the incremental writer instead, because §4.2 requires the lock to be
+    re-taken between write batches.
     """
-    media_id = _require_media_id(media_id)
-    role = _require_role(role)
-    if attempt_number < 1:
-        raise ContainerError("attempt number must be >= 1")
-    if not 0 < chunk_bytes <= MAX_CHUNK_BYTES:
-        raise ContainerError(
-            f"chunk size {chunk_bytes} outside 1..{MAX_CHUNK_BYTES}"
-        )
-
-    hasher = ChunkHasher()
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
-    try:
-        fd = os.open(path, flags, 0o600)
-    except FileExistsError as exc:
-        raise ContainerError(f"staging already exists at {path}") from exc
-    except OSError as exc:
-        raise ContainerError(f"cannot create staging at {path}: {exc}") from exc
-
-    try:
-        with os.fdopen(fd, "wb", closefd=True) as handle:
-            handle.write(CONTAINER_MAGIC)
-            handle.write(bytes([CONTAINER_VERSION]))
-            for index, chunk in enumerate(chunks):
-                if len(chunk) > chunk_bytes:
-                    raise ContainerError(
-                        f"chunk {index} is {len(chunk)} bytes, over the "
-                        f"configured {chunk_bytes}"
-                    )
-                handle.write(
-                    _seal_chunk(
-                        chunk,
-                        keyring=keyring,
-                        media_id=media_id,
-                        role=role,
-                        attempt_number=attempt_number,
-                        index=index,
-                    )
-                )
-                hasher.update(chunk)
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        # A half-written staging file is not left behind for anything to adopt;
-        # the caller records the attempt as abandoned, and the reaper would
-        # remove this anyway, but failing closed means removing it now.
-        path.unlink(missing_ok=True)
-        raise
-
-    if hasher.chunk_count == 0:
-        # `chunks` was empty. The container is still well defined: one sealed
-        # empty chunk, so "empty upload" has a shape a reader can reject on its
-        # own terms rather than as a missing file.
-        os.unlink(path)
-        return write_container(
-            path,
-            [b""],
-            keyring=keyring,
-            media_id=media_id,
-            attempt_number=attempt_number,
-            role=role,
-            chunk_bytes=chunk_bytes,
-        )
-
-    return SealRecord(
-        chunk_count=hasher.chunk_count,
-        total_bytes=hasher.total_bytes,
-        sha256=hasher.hexdigest(),
+    writer = StagingWriter(
+        path,
+        keyring=keyring,
+        media_id=media_id,
+        attempt_number=attempt_number,
+        role=role,
+        chunk_bytes=chunk_bytes,
     )
+    writer.open()
+    try:
+        for chunk in chunks:
+            writer.append(chunk)
+        return writer.seal()
+    except BaseException:
+        writer.abort()
+        raise
 
 
 def open_container(
