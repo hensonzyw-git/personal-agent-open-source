@@ -352,6 +352,23 @@ public actor DeviceSession {
         }
     }
 
+    /// Answer 「仍要创建」 for a write the phone reported as a duplicate (design
+    /// §3.3).
+    ///
+    /// Safe under the one-retry policy without any client key: the server
+    /// derives the key from the source operation, so the retry and the original
+    /// tap cannot be two different decisions. What is *not* safe to retry a
+    /// second time is running the re-issued action twice — the device owns that
+    /// marker, in `ChatTimeline`, and the reply being lost is precisely the case
+    /// it exists for.
+    public func overrideDeviceAction(
+        actionID: String
+    ) async throws -> OperationReceipt {
+        try await authorized {
+            try await self.client.overrideDeviceAction(actionID: actionID, token: $0)
+        }
+    }
+
     /// A read-scope upload (`calendar.event.read`): it exists to be read back,
     /// so a retry that re-presents an identical whole batch is safe — the
     /// upsert arbitrates by the snapshot version and identical rows are

@@ -1,3 +1,4 @@
+import EventKit
 import Foundation
 import PersonalAgentKit
 import Observation
@@ -47,6 +48,10 @@ final class AppModel {
     /// The calendar mirror's production driver (review R5). Built with the
     /// session it uploads through; `nil` until a session exists.
     private var mirrorSyncEngine: CalendarMirrorSyncEngine?
+    /// Design §9.1's `EKEventStoreChanged` observer. Held so it can be removed
+    /// when the device is revoked — a revoked device must stop reading the
+    /// calendar, not merely stop uploading it.
+    private var calendarChangeObserver: NSObjectProtocol?
     /// `DEV-040`. Built once a session exists; the app delegate forwards iOS's
     /// remote-notification callbacks into it. Nil until enrollment, because a
     /// token cannot be uploaded without a device id and access token.
@@ -145,7 +150,7 @@ final class AppModel {
             chatTimeline = nil
             review = nil
             reviewCenter = nil
-            mirrorSyncEngine = nil
+            forgetMirrorEngine()
             lastError = "服务端已不再为本设备签发 token（设备被撤销或密钥不匹配）。"
         } catch {
             lastError = describe(error)
@@ -163,7 +168,7 @@ final class AppModel {
             chatTimeline = nil
             review = nil
             reviewCenter = nil
-            mirrorSyncEngine = nil
+            forgetMirrorEngine()
             // A revoked device's stored token is dead weight; forgetting it
             // here means a re-enrollment (new device id) re-registers rather
             // than assuming this token already belongs to the new row.
@@ -189,7 +194,7 @@ final class AppModel {
             chatTimeline = nil
             review = nil
             reviewCenter = nil
-            mirrorSyncEngine = nil
+            forgetMirrorEngine()
             PushCoordinator.forgetConfirmedToken()
             // The previous phase's error described a device that no longer exists
             // here; carrying it onto the enrollment screen would report a failure
@@ -265,25 +270,100 @@ final class AppModel {
     /// screen is not already showing something more important. The marker
     /// moves only when a whole window completed, so a failing sync retries on
     /// the next `refresh()` — there is no separate repair path to forget.
-    private func syncCalendarMirror(session: DeviceSession) async {
+    private func syncCalendarMirror(
+        session: DeviceSession, reason: SyncReason = .gated
+    ) async {
+        guard let engine = mirrorEngine(session: session) else { return }
+        do {
+            _ = try await engine.sync(reason: reason)
+        } catch {
+            degradeMirror(error)
+        }
+    }
+
+    /// The engine, built on first use.
+    ///
+    /// The same EventKit store the device-action executor uses: one permission
+    /// prompt, one calendar access, two consumers. Every entry point goes
+    /// through here so that the `EKEventStoreChanged` observer and the
+    /// device-write trigger cannot outrun the engine's construction.
+    @discardableResult
+    private func mirrorEngine(session: DeviceSession) -> CalendarMirrorSyncEngine? {
         if mirrorSyncEngine == nil {
-            // The same EventKit store the device-action executor uses: one
-            // permission prompt, one calendar access, two consumers.
             mirrorSyncEngine = CalendarMirrorSyncEngine(
                 store: EventKitCalendarStore(), backend: session, storage: store
             )
+            observeCalendarChanges(session: session)
         }
-        guard let engine = mirrorSyncEngine else { return }
-        do {
-            _ = try await engine.syncIfNeeded()
-        } catch {
-            // Degrade, never block: the chat and review surfaces above this
-            // call must open whether or not the mirror synced. The failure is
-            // surfaced without displacing a primary error the user is mid-way
-            // through reading.
-            if lastError == nil {
-                lastError = "日历镜像同步未完成，查询结果可能不是最新（\(describe(error))）"
+        return mirrorSyncEngine
+    }
+
+    /// Drop the engine *and* its observer together. A revoked device must stop
+    /// reading the calendar, not merely stop uploading it, and the two are one
+    /// object's lifetime.
+    private func forgetMirrorEngine() {
+        if let calendarChangeObserver {
+            NotificationCenter.default.removeObserver(calendarChangeObserver)
+        }
+        calendarChangeObserver = nil
+        mirrorSyncEngine = nil
+    }
+
+    /// Design §9.1's first `.forced` trigger: the calendar changed under this
+    /// app — the user wrote 【飞行计划】 elsewhere, or this app's own executor
+    /// did. Observed without naming a store object on purpose:
+    /// `EventKitCalendarStore` holds a private `EKEventStore`, and an observer
+    /// pinned to one instance would miss the other one's changes.
+    ///
+    /// `.forced` and not `.gated`: the change has already happened, so the
+    /// staleness gate's answer ("the marker is seconds old, nothing to do")
+    /// would leave the mirror missing the very event that was just written.
+    private func observeCalendarChanges(session: DeviceSession) {
+        guard calendarChangeObserver == nil else { return }
+        calendarChangeObserver = NotificationCenter.default.addObserver(
+            forName: .EKEventStoreChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.noteCalendarChanged(session: session)
             }
+        }
+    }
+
+    /// The `@Sendable` calendar-write sink's entry point (`ChatTimeline` calls
+    /// it from its own actor, so the hop back into this one is explicit).
+    private func calendarDidChange() async {
+        guard let session else { return }
+        await noteCalendarChanged(session: session)
+    }
+
+    /// Record the change, then run the pass that covers it (design §9.1). The
+    /// engine bumps its sequence **before** it syncs, so a pass that fails
+    /// leaves the query warning up rather than letting a lost upload read as a
+    /// clean mirror.
+    private func noteCalendarChanged(session: DeviceSession) async {
+        guard let engine = mirrorEngine(session: session) else { return }
+        do {
+            _ = try await engine.noteCalendarChanged()
+        } catch {
+            degradeMirror(error)
+        }
+    }
+
+    /// §9.1's budget-exhaustion note. A storage failure here is swallowed on
+    /// purpose: the user is mid-send, and the consequence of losing the note is
+    /// a missing warning line, never a wrong one — the pass itself is unaffected
+    /// and the next trigger re-records the state.
+    private func noteMirrorBudgetIfStillRunning() async {
+        guard let engine = mirrorSyncEngine else { return }
+        try? await engine.noteSyncBudgetExhausted()
+    }
+
+    /// Degrade, never block: the chat and review surfaces must open whether or
+    /// not the mirror synced. The failure is surfaced without displacing a
+    /// primary error the user is mid-way through reading.
+    private func degradeMirror(_ error: Error) {
+        if lastError == nil {
+            lastError = "日历镜像同步未完成，查询结果可能不是最新（\(describe(error))）"
         }
     }
 
@@ -326,7 +406,24 @@ final class AppModel {
                 }
                 return MirrorSyncHandle {
                     await self.syncCalendarMirror(session: session)
+                    // Design §9.1's fourth trigger, recorded *after* the wait
+                    // rather than by the waiter: if the budget expired, this
+                    // task is still inside the pass and the engine records it;
+                    // if the pass finished first, the engine's in-flight flag
+                    // is already down and this is a no-op. One call covers both
+                    // sides of the race without the handle having to report
+                    // which one won.
+                    await self.noteMirrorBudgetIfStillRunning()
                 }
+            }
+            // Design §9.1's second `.forced` trigger, installed next to the
+            // Timeline that raises it: a device-action report that landed means
+            // the calendar was written, and the query the user makes next must
+            // read the mirror that contains it.
+            await chatTimeline.setCalendarWriteSink { [weak self] in
+                // The sink is called from the Timeline's actor; this is where
+                // it re-enters the app's.
+                await self?.calendarDidChange()
             }
             await chat?.open(conversationID: conversationID)
         } else if await chatTimeline.boundConversationID != conversationID {

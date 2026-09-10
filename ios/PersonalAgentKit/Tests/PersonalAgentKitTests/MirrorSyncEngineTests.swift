@@ -57,15 +57,22 @@ private final class StubMirrorBackend: ChatBackend, @unchecked Sendable {
         calendars: [CalendarDirectoryEntry],
         windowComplete: Bool, snapshotAsOf: Date
     ) async throws -> CalendarSyncResponse {
-        let shouldFail = lock.withLock {
+        let (shouldFail, index) = lock.withLock {
             _uploads.append((windowStart, windowEnd, events, calendars, windowComplete))
-            return failAfterBatches > 0 && _uploads.count == failAfterBatches
+            return (failAfterBatches > 0 && _uploads.count == failAfterBatches, _uploads.count)
         }
+        if let onBatch { await onBatch(index) }
         if shouldFail {
             throw AgentClientError.transport("network lost mid-window")
         }
         return CalendarSyncResponse(status: "ok", upserted: events.count, skipped: 0, markedDeleted: 0)
     }
+
+    /// Fired after the Nth batch (1-based) is recorded, *outside* the lock, so a
+    /// test can make something happen in the middle of a pass — a change
+    /// arriving while the upload is in flight (design §9.1) — and can observe
+    /// the engine from a second task while the pass is suspended.
+    var onBatch: (@Sendable (Int) async -> Void)?
 
     // The rest of the protocol is not this engine's business.
     func sendChatMessage(
@@ -82,6 +89,7 @@ private final class StubMirrorBackend: ChatBackend, @unchecked Sendable {
     func resolveManualReview(operationID: String, resolution: ManualResolution) async throws -> ManualResolutionReceipt { throw AgentClientError.transport("unused") }
     func updateExpenseCategory(recordID: String, category: String, expectedCurrentCategory: String?, idempotencyKey: String) async throws -> OperationReceipt { throw AgentClientError.transport("unused") }
     func reportDeviceActionResult(actionID: String, body: DeviceActionResultBody) async throws -> OperationReceipt { throw AgentClientError.transport("unused") }
+    func overrideDeviceAction(actionID: String) async throws -> OperationReceipt { throw AgentClientError.transport("unused") }
 }
 
 private let t0 = Date(timeIntervalSince1970: 1_783_000_000)
@@ -397,5 +405,260 @@ struct MirrorSyncEngineTests {
         await handle.wait()
         let waited = ContinuousClock.now - started
         #expect(waited < .seconds(1), "waited \(waited) for a 20 ms sync")
+    }
+}
+
+// The reason parameter, the rerun flag and the two change sequences (design
+// §9.1, review R3-F13). These are the cases that made the old engine wrong:
+// 「刚同步→创建→触发同步→仍读不到新事件」 (the staleness gate) and 「上传期间发生
+// 的变更丢失」 (the in-flight flag returning without recording that anything was
+// owed). The sequence tests are written as the design states them — including
+// the counterexample, where A's success must **not** clear the flag.
+
+/// A box the test uses to reach an actor that is already mid-pass. The engine
+/// is built after the backend (it takes the stub as a dependency), and the
+/// hook that needs it is installed before, so the engine arrives through this.
+private final class EngineBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: CalendarMirrorSyncEngine?
+    var engine: CalendarMirrorSyncEngine? {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
+}
+
+/// Values recorded from inside a pass, read after the call returns.
+private final class ObservationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Bool] = []
+    func append(_ value: Bool) { lock.withLock { values.append(value) } }
+    var all: [Bool] { lock.withLock { values } }
+}
+
+private func seq(_ storage: CredentialStore, _ key: String) throws -> Int {
+    guard let data = try storage.read(key),
+          let text = String(data: data, encoding: .utf8),
+          let value = Int(text) else { return 0 }
+    return value
+}
+
+private func freshMarker(_ storage: CredentialStore, at date: Date) throws {
+    try storage.write(
+        CredentialKey.calendarMirrorSyncedAt,
+        value: Data(String(date.timeIntervalSince1970).utf8)
+    )
+}
+
+@Suite("Calendar mirror sync reasons and change sequences", .serialized)
+struct MirrorSyncReasonTests {
+
+    /// A second engine over the *same* storage: how "kill the app and relaunch"
+    /// is modelled offline. §9.1 requires the persisted sequence to still say
+    /// dirty after a restart, so the persistence has to be read by something
+    /// other than the actor that wrote it.
+    private func relaunch(
+        store: CalendarStore, backend: ChatBackend, storage: CredentialStore
+    ) -> CalendarMirrorSyncEngine {
+        CalendarMirrorSyncEngine(
+            store: store, backend: backend, storage: storage,
+            uploader: CalendarSyncUploader(batchSize: 200),
+            now: { t0 }, stalenessThreshold: 3600
+        )
+    }
+
+    private func makeEngine(
+        store: CalendarStore, backend: ChatBackend, marker: Date?
+    ) throws -> (CalendarMirrorSyncEngine, InMemoryCredentialStore) {
+        let storage = InMemoryCredentialStore()
+        if let marker { try freshMarker(storage, at: marker) }
+        return (relaunch(store: store, backend: backend, storage: storage), storage)
+    }
+
+    @Test("a forced sync uploads even though the marker is seconds old")
+    func forcedBypassesTheStalenessGate() async throws {
+        let store = StubMirrorCalendarStore(events: [mirrorEvent("EK-1", offset: 0)])
+        let backend = StubMirrorBackend()
+        let (engine, _) = try makeEngine(store: store, backend: backend, marker: t0)
+
+        // The old engine's answer to "just synced, then the user created an
+        // event": skip. That skip is the defect §9.1 was written for.
+        #expect(try await engine.syncIfNeeded() == false)
+        #expect(backend.uploads.isEmpty)
+
+        #expect(try await engine.sync(reason: .forced) == true)
+        #expect(backend.uploads.count == 1)
+    }
+
+    @Test("a forced trigger that lands mid-pass runs one follow-up pass, not two passes at once")
+    func forcedDuringAPassRequestsARerun() async throws {
+        let store = StubMirrorCalendarStore(events: [mirrorEvent("EK-1", offset: 0)])
+        let backend = StubMirrorBackend()
+        let (engine, storage) = try makeEngine(store: store, backend: backend, marker: nil)
+        let box = EngineBox()
+        backend.onBatch = { index in
+            // A change lands while batch 1 is in flight: the pass took its
+            // snapshot before this existed, so it does not cover it.
+            if index == 1, let engine = box.engine {
+                _ = try? await engine.noteCalendarChanged()
+            }
+        }
+        box.engine = engine
+
+        #expect(try await engine.sync(reason: .forced) == true)
+
+        // Two passes: the one that was running, and the owed one. Never two
+        // concurrent windows (§9.1's 「inFlight + 重跑合并为至多两趟」).
+        #expect(backend.uploads.count == 2)
+        #expect(try seq(storage, CredentialKey.calendarChangeSeq) == 1)
+        #expect(try seq(storage, CredentialKey.calendarSyncedChangeSeq) == 1)
+        #expect(try await engine.knownUnsynced == false)
+    }
+
+    @Test("B arriving during A's upload is not confirmed by A's success (R3-F13)")
+    func aSuccessDoesNotConfirmBArrivingMidPass() async throws {
+        let store = StubMirrorCalendarStore(events: [mirrorEvent("EK-1", offset: 0)])
+        let backend = StubMirrorBackend()
+        let (engine, storage) = try makeEngine(store: store, backend: backend, marker: nil)
+        let box = EngineBox()
+        // The relaunched app, already running while the first one syncs.
+        let relaunched = relaunch(store: store, backend: backend, storage: storage)
+        let observed = ObservationBox()
+        backend.onBatch = { index in
+            if index == 1, let engine = box.engine {
+                // B arrives mid-upload.
+                _ = try? await engine.noteCalendarChanged()
+            }
+            if index == 2 {
+                // A has already succeeded and the follow-up pass is uploading.
+                // This is the moment R3-F13 is about: A covered sequence 0,
+                // B is sequence 1, and A's last batch landing must not have
+                // confirmed B. Read from the *other* engine, so the answer is
+                // the persisted one a restarted app would see.
+                observed.append((try? await relaunched.knownUnsynced) ?? false)
+            }
+        }
+        box.engine = engine
+
+        #expect(try await engine.sync(reason: .forced) == true)
+
+        #expect(observed.all == [true], "A's success cleared a sequence it never uploaded")
+        // The follow-up pass captured B, so both engines now agree it is clean.
+        #expect(try await engine.knownUnsynced == false)
+        #expect(try await relaunched.knownUnsynced == false)
+        #expect(try seq(storage, CredentialKey.calendarChangeSeq) == 1)
+        #expect(try seq(storage, CredentialKey.calendarSyncedChangeSeq) == 1)
+    }
+
+    @Test("a failed forced pass drops the marker, keeps the sequence dirty, and re-arms the gate")
+    func forcedFailureDropsTheMarkerAndStaysDirty() async throws {
+        let store = StubMirrorCalendarStore(events: [mirrorEvent("EK-1", offset: 0)])
+        let backend = StubMirrorBackend()
+        let (engine, storage) = try makeEngine(store: store, backend: backend, marker: t0)
+        backend.failAfterBatches = 1
+
+        do {
+            _ = try await engine.sync(reason: .forced)
+            Issue.record("a failed upload must surface, not vanish")
+        } catch {}
+
+        // The marker answers "when may I re-upload?", and it is gone — so the
+        // staleness gate is re-armed and both reasons really do upload next time.
+        #expect(try storage.read(CredentialKey.calendarMirrorSyncedAt) == nil)
+        // Truthfulness is a different question, answered by the sequence: this
+        // pass covered none of it, so the device cannot vouch for the mirror.
+        #expect(try await engine.knownUnsynced == true)
+        #expect(try seq(storage, CredentialKey.calendarChangeSeq) == 1)
+
+        // …and the re-armed gate really does run, even though the marker was
+        // fresh before the failure.
+        backend.failAfterBatches = 0
+        #expect(try await engine.syncIfNeeded() == true)
+        #expect(try await engine.knownUnsynced == false)
+    }
+
+    @Test("the change sequence is monotonic under concurrent sources")
+    func changeSequenceIsMonotonicUnderConcurrency() async throws {
+        let store = StubMirrorCalendarStore(events: [mirrorEvent("EK-1", offset: 0)])
+        let backend = StubMirrorBackend()
+        let (engine, storage) = try makeEngine(store: store, backend: backend, marker: nil)
+
+        // Three sources at once — the N device-action reports of a multi-action
+        // reply are exactly this shape. No increment may be lost: the
+        // read-modify-write happens inside one actor call with no suspension
+        // point in it.
+        async let a = engine.noteCalendarChanged()
+        async let b = engine.noteCalendarChanged()
+        async let c = engine.noteCalendarChanged()
+        _ = try await [a, b, c]
+
+        #expect(try seq(storage, CredentialKey.calendarChangeSeq) == 3)
+        // …and the passes that did run confirmed everything they captured, so
+        // the three don't leave a warning behind.
+        #expect(try seq(storage, CredentialKey.calendarSyncedChangeSeq) == 3)
+        #expect(try await engine.knownUnsynced == false)
+    }
+
+    @Test("an exhausted pre-send budget is recorded, and a pass that catches up clears it")
+    func exhaustedBudgetIsRecordedAndCleared() async throws {
+        let store = StubMirrorCalendarStore(events: [mirrorEvent("EK-1", offset: 0)])
+        let backend = StubMirrorBackend()
+        let (engine, storage) = try makeEngine(store: store, backend: backend, marker: nil)
+        let box = EngineBox()
+        let relaunched = relaunch(store: store, backend: backend, storage: storage)
+        let observed = ObservationBox()
+        backend.onBatch = { index in
+            if index == 1, let engine = box.engine {
+                // The send gave up waiting; the pass is still running.
+                try? await engine.noteSyncBudgetExhausted()
+            }
+            if index == 2 {
+                observed.append((try? await relaunched.knownUnsynced) ?? false)
+            }
+        }
+        box.engine = engine
+
+        #expect(try await engine.syncIfNeeded() == true)
+
+        // The pass that was interrupted by the budget confirmed only the
+        // sequence it captured, so the warning is up until the owed pass runs.
+        #expect(observed.all == [true])
+        #expect(backend.uploads.count == 2)
+        #expect(try seq(storage, CredentialKey.calendarChangeSeq) == 1)
+        #expect(try await engine.knownUnsynced == false)
+    }
+
+    @Test("a budget note with no pass running records nothing")
+    func budgetNoteWithoutAPassIsANoOp() async throws {
+        let store = StubMirrorCalendarStore(events: [mirrorEvent("EK-1", offset: 0)])
+        let backend = StubMirrorBackend()
+        let (engine, storage) = try makeEngine(store: store, backend: backend, marker: t0)
+
+        // The budget only means something as a *wait* that expired. If no pass
+        // is in flight the wait did not expire, and bumping here would raise a
+        // warning about nothing — with no pass left to clear it.
+        try await engine.noteSyncBudgetExhausted()
+
+        #expect(try seq(storage, CredentialKey.calendarChangeSeq) == 0)
+        #expect(try await engine.knownUnsynced == false)
+        #expect(backend.uploads.isEmpty)
+    }
+
+    @Test("a gated trigger during a pass arms nothing: one window, no follow-up")
+    func gatedDuringAPassDoesNotArmARerun() async throws {
+        let store = StubMirrorCalendarStore(events: [mirrorEvent("EK-1", offset: 0)])
+        let backend = StubMirrorBackend()
+        let (engine, _) = try makeEngine(store: store, backend: backend, marker: nil)
+        let box = EngineBox()
+        backend.onBatch = { index in
+            if index == 1, let engine = box.engine {
+                // Same question the running pass is already answering.
+                _ = try? await engine.syncIfNeeded()
+            }
+        }
+        box.engine = engine
+
+        #expect(try await engine.syncIfNeeded() == true)
+
+        #expect(backend.uploads.count == 1)
     }
 }

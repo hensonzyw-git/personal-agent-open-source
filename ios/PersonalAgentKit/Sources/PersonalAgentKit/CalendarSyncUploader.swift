@@ -305,6 +305,23 @@ private final class Gate: @unchecked Sendable {
         }
     }
 }
+
+/// Why a sync is being asked for (design §9.1).
+///
+/// The distinction exists because "is the marker stale?" is the wrong question
+/// for a change the user just made. Asked seconds after a create, it answers
+/// *no* — so the pass is skipped, the mirror still lacks the event, and the
+/// query the user makes next reads it back to them as missing.
+public enum SyncReason: Sendable {
+    /// The standing question: "has the marker gone stale?" — the foreground
+    /// return, pull-to-refresh, and the pre-send budget.
+    case gated
+    /// "Something changed the calendar; upload now." Bypasses the staleness
+    /// gate. The triggers are §9.1's: a successful device-action report, and
+    /// `EKEventStoreChanged`.
+    case forced
+}
+
 /// snapshot the whole window, upload it in batches, and stamp the durable
 /// marker **only** when the last batch — the one carrying
 /// `window_complete` — was accepted. Composed into `AppModel` and triggered
@@ -327,6 +344,14 @@ private final class Gate: @unchecked Sendable {
 ///
 /// Concurrency: the engine is an actor, so overlapping triggers coalesce on
 /// an in-flight flag rather than racing two full windows.
+///
+/// Design §9.1 adds two things on top of that. The first is a **reason**: a
+/// change the user just made cannot wait for the marker to go stale, so
+/// `.forced` bypasses the gate (§9.1's problem statement). The second is the
+/// pair of persisted change sequences — because the marker answers "when may I
+/// re-upload", which is *not* the same question as "is the query result I am
+/// about to show missing something", and the user is owed an answer to the
+/// second one.
 public actor CalendarMirrorSyncEngine {
     private let store: any CalendarStore
     private let backend: any ChatBackend
@@ -335,6 +360,12 @@ public actor CalendarMirrorSyncEngine {
     private let stalenessThreshold: TimeInterval
     private let uploader: CalendarSyncUploader
     private var inFlight = false
+    /// A `.forced` trigger arrived while a pass was running. That trigger is a
+    /// change the running pass did not cover — it took its snapshot before the
+    /// trigger existed — so a further pass is owed. Cleared when that pass
+    /// starts, never after it ends: clearing afterwards would let the pass's own
+    /// completion re-arm it, which is the spin §9.1 rules out.
+    private var rerunRequested = false
 
     public init(
         store: any CalendarStore,
@@ -354,36 +385,119 @@ public actor CalendarMirrorSyncEngine {
         self.stalenessThreshold = stalenessThreshold
     }
 
-    /// Sync when the marker is older than the threshold (or absent). Returns
-    /// whether a sync actually ran; throws what the snapshot or an upload
-    /// threw, for the caller's degrade path.
+    /// Sync, saying *why*. Returns whether a pass actually ran; throws what the
+    /// snapshot or an upload threw, for the caller's degrade path.
+    ///
+    /// Design §9.1. The reason is the whole point: the old engine answered one
+    /// question — "is the marker old enough?" — and that question is wrong for
+    /// the triggers §9 adds. Just after a create the marker is seconds old, so
+    /// the staleness gate would skip the pass and the query the user makes next
+    /// would read a mirror that does not contain what they just wrote.
+    ///
+    /// - `.gated` is the standing behaviour: foreground, refresh, and the
+    ///   pre-send budget all ask "re-upload if the marker has gone stale".
+    /// - `.forced` says "something the user did changed the calendar; upload
+    ///   now". It bypasses the staleness gate, and if a pass is already
+    ///   running it does not start a second one — it records that another is
+    ///   owed, and that pass runs the moment this one finishes.
+    ///
+    /// The rerun flag is consumed **before** the pass it arms starts, never
+    /// after. That is what keeps this from spinning: only a trigger that
+    /// arrives *during* a pass can arm the next one, so every pass corresponds
+    /// to a real change instead of to the flag it just cleared.
     @discardableResult
-    public func syncIfNeeded() async throws -> Bool {
-        if inFlight { return false }
-        guard try Self.isStale(storage: storage, now: now(), threshold: stalenessThreshold) else {
+    public func sync(reason: SyncReason) async throws -> Bool {
+        if inFlight {
+            // A pass is running. `.gated` has nothing to add — it is asking the
+            // same question the running pass is already answering. `.forced` is
+            // a change that arrived after the running pass took its snapshot,
+            // which is exactly what "this pass did not cover it" means.
+            if reason == .forced { rerunRequested = true }
             return false
+        }
+        // An owed pass is taken here, before the gate, and it also overrides
+        // the caller's reason. It exists only because something changed after
+        // the last pass took its snapshot, so letting the staleness gate turn
+        // it away would strand it: the mirror would be missing a change, the
+        // EventKit notification that armed it has already been delivered so no
+        // second one is coming, and `knownUnsynced` would stay true with
+        // nothing left able to clear it.
+        let owed = rerunRequested
+        rerunRequested = false
+        if reason == .gated, !owed {
+            guard try Self.isStale(
+                storage: storage, now: now(), threshold: stalenessThreshold
+            ) else {
+                return false
+            }
         }
         inFlight = true
         defer { inFlight = false }
 
+        try await runPass(reason: owed ? .forced : reason)
+        // One pass now, plus at most one more. §9.1 bounds a trigger storm at
+        // two: the N device-action reports of a multi-action reply, each a
+        // `.forced` trigger, collapse into this single follow-up. If a trigger
+        // arrives during the *follow-up*, its flag is left armed for the next
+        // call rather than looped on here — so a pass can never chase its own
+        // tail, and the change it stands for is still covered.
+        if rerunRequested {
+            rerunRequested = false
+            try await runPass(reason: .forced)
+        }
+        return true
+    }
+
+    /// Sync when the marker is older than the threshold (or absent).
+    ///
+    /// The `.gated` entry point, named for the callers that mean exactly that:
+    /// the foreground return, the refresh control, and the pre-send budget.
+    @discardableResult
+    public func syncIfNeeded() async throws -> Bool {
+        try await sync(reason: .gated)
+    }
+
+    /// One whole window: snapshot, upload every batch, and settle the two
+    /// change sequences. Throws what the snapshot or an upload threw.
+    private func runPass(reason: SyncReason) async throws {
+        // Captured **before** the fetch, and this ordering is the whole
+        // mechanism: the snapshot's content is the world as of this number. A
+        // change that lands after it belongs to the next pass, and a pass that
+        // claimed it would mark uploaded rows it never saw (review R3-F13).
+        let capturedSeq = try lastChangeSeq()
         let instant = now()
-        let events = try await store.snapshot(
-            since: instant.addingTimeInterval(Double(-uploader.lookbackDays) * 86_400),
-            until: instant.addingTimeInterval(Double(uploader.lookaheadDays) * 86_400),
-            asOf: instant
-        )
-        // `asOf` is the device's stamp of vouching: the batch, not the row, is
-        // what the upsert arbitrates on (CalendarStore.snapshot's contract),
-        // and it is the *version* every batch of this window shares — the
-        // server's schema requires it on the wire (second review F1).
-        // The directory is read once and rides on every batch (§2.1): the
-        // server resolves a calendar name to an EventKit identifier against
-        // it before issuing a create, so a batch that carried events but no
-        // directory would leave the issuance gate unable to resolve anything
-        // until the next sync. Failure here fails the window exactly as a
-        // snapshot failure does — an upload without it is a half-truth, and
-        // re-running the whole window is how the engine already recovers.
-        let directory = try await store.calendarDirectory()
+        let events: [CalendarMirrorEvent]
+        let directory: [CalendarDirectoryEntry]
+        do {
+            events = try await store.snapshot(
+                since: instant.addingTimeInterval(Double(-uploader.lookbackDays) * 86_400),
+                until: instant.addingTimeInterval(Double(uploader.lookaheadDays) * 86_400),
+                asOf: instant
+            )
+            // `asOf` is the device's stamp of vouching: the batch, not the row,
+            // is what the upsert arbitrates on (CalendarStore.snapshot's
+            // contract), and it is the *version* every batch of this window
+            // shares — the server's schema requires it on the wire (second
+            // review F1).
+            // The directory is read once and rides on every batch (§2.1): the
+            // server resolves a calendar name to an EventKit identifier against
+            // it before issuing a create, so a batch that carried events but no
+            // directory would leave the issuance gate unable to resolve
+            // anything until the next sync. Failure here fails the window
+            // exactly as a snapshot failure does — an upload without it is a
+            // half-truth, and re-running the whole window is how the engine
+            // already recovers.
+            directory = try await store.calendarDirectory()
+        } catch {
+            // Nothing was uploaded, so a forced pass has nothing to show for
+            // itself and drops the marker for the same reason a failed batch
+            // does below. The sequence is deliberately *not* bumped: a read
+            // failure is not evidence that the calendar changed, and a revoked
+            // calendar permission never stops failing — bumping here would
+            // leave the warning permanently true with no pass able to clear it.
+            if reason == .forced { try? storage.delete(CredentialKey.calendarMirrorSyncedAt) }
+            throw error
+        }
         var lastError: Error?
         for chunk in uploader.chunk(events, now: instant) where lastError == nil {
             do {
@@ -399,11 +513,126 @@ public actor CalendarMirrorSyncEngine {
                 lastError = error
             }
         }
-        if let lastError { throw lastError }
+        if let lastError {
+            if reason == .forced {
+                // §9.1: a forced pass that failed covers none of the sequence it
+                // captured, so the device still cannot vouch for the mirror.
+                try? bumpChangeSeq()
+                // The marker is a different question — "when may I re-upload?"
+                // — and deleting it is what re-arms the staleness gate so that
+                // both `.gated` and `.forced` really do upload next time. The
+                // truthfulness of the query result is `knownUnsynced`'s job,
+                // not the marker's, so the two are set independently.
+                try? storage.delete(CredentialKey.calendarMirrorSyncedAt)
+            }
+            throw lastError
+        }
         // Only here: every batch — including window_complete — was accepted.
         let encoded = String(instant.timeIntervalSince1970).data(using: .utf8)!
         try storage.write(CredentialKey.calendarMirrorSyncedAt, value: encoded)
-        return true
+        // Confirmed up to the captured number, never beyond it: a change that
+        // arrived mid-upload (B during A) was not in this snapshot, so A's
+        // success confirms only what A actually saw. `knownUnsynced` stays true
+        // on the comparison below — that is R3-F13's counterexample, and it is
+        // the *intended* outcome.
+        try writeSeq(
+            max(try syncedChangeSeq(), capturedSeq), CredentialKey.calendarSyncedChangeSeq
+        )
+        // No arming here for a change that arrived mid-pass: both `note…`
+        // methods bump and *then* ask for the pass that will cover it in the
+        // same call, so the owed pass is already armed by the trigger. A bump
+        // with nothing behind it cannot happen, and code for it would be a
+        // mechanism no test could reach.
+    }
+
+    // --- the change sequence (design §9.1, review R3-F13) --------------------
+
+    /// How much the local calendar has moved, as far as this device knows.
+    ///
+    /// Read from storage on every use rather than cached in the actor. "The app
+    /// was killed and restarted" is a first-class case here — R3-F13 requires
+    /// the persisted number to still say dirty — and a fresh engine over the
+    /// same store is exactly how the offline tests model it.
+    private func lastChangeSeq() throws -> Int {
+        try readSeq(CredentialKey.calendarChangeSeq)
+    }
+
+    /// How much of that movement a completed window has confirmed.
+    private func syncedChangeSeq() throws -> Int {
+        try readSeq(CredentialKey.calendarSyncedChangeSeq)
+    }
+
+    /// Design §9.1's increment, available to clients through the `note…`
+    /// methods below. Monotonic: it only ever adds one.
+    private func bumpChangeSeq() throws {
+        try writeSeq(try lastChangeSeq() + 1, CredentialKey.calendarChangeSeq)
+    }
+
+    /// A missing or unreadable sequence reads as 0. Both counters missing is the
+    /// fresh-install shape, where there is nothing unsynced to warn about, and
+    /// that is the same posture this engine had before it kept sequences at all
+    /// — a degraded read falls back to the previous behaviour rather than
+    /// inventing a warning that no pass could clear.
+    private func readSeq(_ key: String) throws -> Int {
+        guard let data = try storage.read(key),
+              let text = String(data: data, encoding: .utf8),
+              let value = Int(text) else { return 0 }
+        return value
+    }
+
+    private func writeSeq(_ value: Int, _ key: String) throws {
+        try storage.write(key, value: Data(String(value).utf8))
+    }
+
+    // --- §9.1's increment triggers -------------------------------------------
+
+    /// The calendar moved: `EKEventStoreChanged`, or a device-action report
+    /// that succeeded (a self-created event is a calendar change too).
+    ///
+    /// Bumps first, then runs a forced pass — the two are one operation on
+    /// purpose, because a caller that bumped without syncing would leave a
+    /// warning that nothing was going to clear.
+    @discardableResult
+    public func noteCalendarChanged() async throws -> Bool {
+        try bumpChangeSeq()
+        return try await sync(reason: .forced)
+    }
+
+    /// The pre-send budget ran out with the sync still running (design §9.1's
+    /// fourth trigger).
+    ///
+    /// The wait was a ceiling, not a cancellation, so the pass is still going —
+    /// but it took its snapshot before this point, so its success will confirm
+    /// only the sequence it captured and the mirror may be missing whatever
+    /// prompted the send. Recording that is the whole job.
+    ///
+    /// Guarded on `inFlight` because the trigger is defined by the *wait* having
+    /// expired: if the pass already finished, the budget was not really
+    /// exhausted, the pass confirmed everything, and a bump here would be a
+    /// warning about nothing.
+    public func noteSyncBudgetExhausted() throws {
+        guard inFlight else { return }
+        try bumpChangeSeq()
+        // The running pass captured the sequence before this bump, so on
+        // success it confirms a number below it. Arming the owed pass is what
+        // makes the warning clearable — without it, no EventKit notification is
+        // coming (nothing changed after this), and `knownUnsynced` would
+        // outlive the truth it describes.
+        rerunRequested = true
+    }
+
+    /// Design §9.1's client-local query gate: `knownUnsynced ≡ lastChangeSeq >
+    /// syncedChangeSeq`, from the persisted numbers.
+    ///
+    /// Deliberately not reported to the server. `mirror_stale` is the server's
+    /// own statement about its own watermark and stays independent; this is the
+    /// device's statement about what it knows it has not uploaded. The two can
+    /// both be true and neither replaces the other.
+    public var knownUnsynced: Bool {
+        get throws {
+            let last = try lastChangeSeq()
+            return last > (try syncedChangeSeq())
+        }
     }
 
     /// Read the durable marker and decide staleness. A missing or unreadable

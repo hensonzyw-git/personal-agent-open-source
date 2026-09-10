@@ -205,6 +205,14 @@ struct CalendarSyncUploaderTests {
 // name its action — each either reported or honestly silent, never repaired.
 
 /// A stub executor that records what it was handed and what it answered.
+/// Counts sink invocations from the mirror hook (design §9.1).
+private final class SinkCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.withLock { count += 1 } }
+    var value: Int { lock.withLock { count } }
+}
+
 final class StubDeviceActionExecutor: DeviceActionExecuting, @unchecked Sendable {
     private let lock = NSLock()
     private var _actions: [DeviceEventAction] = []
@@ -325,6 +333,63 @@ struct DeviceActionFlowTests {
         #expect(service.count("POST", "/v1/device-actions/018f0000-0000-7000-8000-00000000cafe/result") == 1)
         // A settled operation releases the pending slot.
         #expect(try store.read(CredentialKey.pendingChatSend) == nil)
+    }
+
+    /// Design §9.1's second `.forced` trigger: the report landed, so the
+    /// calendar has been written and the mirror must catch up before the next
+    /// query reads the event back as missing.
+    @Test("a landed report fires the calendar-write sink once per action")
+    func landedReportFiresTheCalendarWriteSink() async throws {
+        let service = Service()
+        answerWithAction(service)
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.backend = session
+        let fired = SinkCounter()
+        await chat.setCalendarWriteSink { fired.increment() }
+
+        _ = try await chat.send(text: "周六下午三点网球")
+
+        #expect(executor.actions.count == 1)
+        #expect(fired.value == 1)
+    }
+
+    /// The other side of that seam: a report whose reply never landed returns
+    /// nil, and this sink is "the report landed" — not "the device wrote
+    /// something". The `EKEventStoreChanged` observer is what covers this
+    /// shape, which is why the two triggers both exist.
+    @Test("a report whose reply was lost fires no calendar-write sink")
+    func lostReportFiresNoCalendarWriteSink() async throws {
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                var receipt = chatReceipt("source_in_progress", tool: "calendar.create_event")
+                receipt["device_actions"] = [Self.actionPayload()]
+                return .ok(receipt)
+            case ("GET", let path) where path.hasPrefix("/v1/operations/"):
+                // The server never heard the report, so the operation stays
+                // parked: this is the shape the 15-minute sweep exists for.
+                return .ok(chatReceipt("source_in_progress", tool: "calendar.create_event"))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let executor = StubDeviceActionExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.backend = session
+        executor.reportFails = true
+        let fired = SinkCounter()
+        await chat.setCalendarWriteSink { fired.increment() }
+
+        _ = try await chat.send(text: "周六下午三点网球")
+
+        #expect(executor.actions.count == 1, "the write itself still happened")
+        #expect(fired.value == 0)
     }
 
     @Test("an action with no executor composed is reported failed, not dropped")
@@ -1886,5 +1951,285 @@ struct AgentCreatedRecordTests {
         #expect(calendar.drafts.isEmpty)
         #expect(final.state == .failedSafe)
         #expect(service.count("POST", Self.reportPath) == 1)
+    }
+}
+
+/// Design §3.3's 「仍要创建」, from the button to the event.
+///
+/// The endpoint's own idempotency is the server's (a derived `uuid5` key and an
+/// INSERT-or-get), so these tests are not about two decisions — they are about
+/// the half the server cannot do. The re-issued action says
+/// `skip_local_dedup`, which switches off the duplicate check *and* is the
+/// reason a second run would be a second event rather than a refusal. The
+/// device's claim is the only thing left holding that line, and every case
+/// below is one of the ways it is asked to.
+@Suite("The 「仍要创建」 override", .serialized)
+struct CalendarOverrideTests {
+
+    /// The action the original turn produced — the duplicate the user is
+    /// answering, and the id the card's button carries.
+    private static let refusedActionID = "018f0000-0000-7000-8000-00000000cafe"
+    /// The action the derived operation carries. A different id, because it is
+    /// a different operation's idempotency key: the server derives the whole
+    /// operation, not a flag on the old one.
+    private static let reissuedActionID = "018f0000-0000-7000-8000-00000000beef"
+    private static let overridePath =
+        "/v1/device-actions/\(refusedActionID)/override"
+
+    /// The server's answer: the derived operation, parked, carrying the
+    /// re-issued action. `skip_local_dedup` is on it because that is the whole
+    /// point of the endpoint — the user answered the check that refused them.
+    private static func reissuedPayload() -> [String: Any] {
+        [
+            "action_id": reissuedActionID,
+            "tool": "calendar.create_event",
+            "event": [
+                "title": "网球",
+                "start": "2026-09-12T15:00:00Z",
+                "end": "2026-09-12T16:30:00Z",
+                "all_day": false,
+                "calendar": "出游计划",
+                "calendar_identifier": "CAL-TRIP",
+                "calendar_title": "出游计划",
+                "skip_local_dedup": true,
+            ],
+        ]
+    }
+
+    /// The override route hands the action over; the report route settles it
+    /// the way the real one does. The two are told apart by suffix, because
+    /// both live under `/v1/device-actions/` and a fixture that confused them
+    /// would settle an override the server never issued.
+    private static func answer(_ service: Service, parked: Bool = false) {
+        let box = PayloadBox(reissuedPayload())
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", let path) where path.hasSuffix("/override"):
+                var receipt = chatReceipt(
+                    "source_in_progress", tool: "calendar.create_event"
+                )
+                receipt["device_actions"] = [box.payload]
+                return .ok(receipt)
+            case ("GET", let path) where path.hasPrefix("/v1/operations/"):
+                var receipt = chatReceipt(
+                    "source_in_progress", tool: "calendar.create_event"
+                )
+                receipt["device_actions"] = [box.payload]
+                return .ok(receipt)
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                if call.string("result") == "created" || call.string("result") == "duplicate" {
+                    return .ok(chatReceipt(
+                        "succeeded", tool: "calendar.create_event",
+                        recordID: call.string("event_id") ?? "EK-NEW-1"
+                    ))
+                }
+                return .ok(chatReceipt(
+                    "failed_safe", tool: "calendar.create_event",
+                    failureReason: "DEVICE_EXECUTION_FAILED"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+    }
+
+    /// The real executor over a recording store — the same shape the created-
+    /// record tests use, so what runs is the code that runs on the phone.
+    private func makeOverride(
+        parked: Bool = false, store: CredentialStore = InMemoryCredentialStore()
+    ) async throws -> (
+        chat: ChatTimeline, calendar: RecordingCalendarStore,
+        executor: LateBoundExecutor, service: Service, store: CredentialStore
+    ) {
+        let service = Service()
+        Self.answer(service, parked: parked)
+        let calendar = RecordingCalendarStore()
+        let executor = LateBoundExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service, store: store, deviceActionExecutor: executor
+        )
+        executor.inner = DeviceEventActionExecutor(store: calendar, backend: session)
+        return (chat, calendar, executor, service, store)
+    }
+
+    @Test("the re-issued action runs and its report settles the derived operation")
+    func theOverrideWritesTheEvent() async throws {
+        let (chat, calendar, _, _, _) = try await makeOverride()
+        calendar.outcome = .created(eventID: "EK-TRIP-2")
+
+        let final = try await chat.overrideDeviceAction(actionID: Self.refusedActionID)
+
+        #expect(final.state == .succeeded)
+        #expect(calendar.records.count == 1)
+        // The event landed without the local check, because the action said so
+        // and the action is the authorization: running the check again would
+        // refuse the write the user just pressed a button to authorise.
+        let draft = try #require(calendar.drafts.first)
+        #expect(draft.skipLocalDedup)
+        #expect(draft.calendarIdentifier == "CAL-TRIP")
+    }
+
+    @Test("the request is the closed body the endpoint requires, with no client key")
+    func noClientKeyIsSent() async throws {
+        let (chat, calendar, _, service, _) = try await makeOverride()
+        calendar.outcome = .created(eventID: "EK-TRIP-2")
+
+        _ = try await chat.overrideDeviceAction(actionID: Self.refusedActionID)
+
+        let call = try #require(service.calls("POST", Self.overridePath).first)
+        // The server derives the key from the source operation. A client key
+        // here would be a second idempotency authority for one decision, and
+        // the one that could disagree with the server's derivation.
+        #expect(call.idempotencyKey == nil)
+        // Closed body: `{}` is the only accepted shape, so the empty object is
+        // sent rather than omitted (the real route refuses an absent body).
+        #expect(call.rawJSONBody.isEmpty)
+    }
+
+    @Test("a replay of the same action does not run it a second time")
+    func theClaimHoldsAcrossADoubleTap() async throws {
+        // The dangerous shape is not the tidy replay — it is a second delivery
+        // that arrives while the first report is still unacknowledged, which is
+        // exactly what a lost report reply produces: the operation never
+        // settles, so the second tap and every poll after it hand the same
+        // action over again. Without the claim each of those is another event,
+        // and `skip_local_dedup` means nothing downstream would have refused it.
+        let (chat, _, executor, _, _) = try await makeOverride()
+        let lost = StubDeviceActionExecutor()
+        lost.outcome = .created(eventID: "EK-TRIP-2")
+        lost.reportFails = true
+        executor.inner = lost
+
+        _ = try await chat.overrideDeviceAction(actionID: Self.refusedActionID)
+        _ = try await chat.overrideDeviceAction(actionID: Self.refusedActionID)
+
+        #expect(lost.actions.count == 1)
+    }
+
+    @Test("the claim is on disk, so it survives the process that made it")
+    func theClaimOutlivesTheReport() async throws {
+        let (chat, calendar, _, _, store) = try await makeOverride()
+        calendar.outcome = .created(eventID: "EK-TRIP-2")
+
+        _ = try await chat.overrideDeviceAction(actionID: Self.refusedActionID)
+
+        // Not cleared on success, unlike the pending slot. Deleting the entry
+        // is how the write it guards becomes repeatable, and the tap that has
+        // to be refused is the one that lands after this report.
+        let data = try #require(try store.read(CredentialKey.claimedOverrideActions))
+        let claims = try JSONDecoder().decode([String].self, from: data)
+        #expect(claims == [Self.reissuedActionID])
+    }
+
+    @Test("a second tap on an override that already settled writes nothing")
+    func asettledOverrideIsNotRunAgain() async throws {
+        let service = Service()
+        let box = PayloadBox(Self.reissuedPayload())
+        // The real server answers a replay with the derived operation's
+        // *current* projection, so the second tap of a settled override is a
+        // settled receipt with no action left on it. `seen` is the count of
+        // earlier calls to this same path, which is what makes the first answer
+        // parked and every later one settled.
+        service.answer { call, seen in
+            if call.path.hasSuffix("/override") {
+                var receipt = chatReceipt(
+                    "source_in_progress", tool: "calendar.create_event"
+                )
+                if seen > 0 {
+                    return .ok(chatReceipt(
+                        "succeeded", tool: "calendar.create_event",
+                        recordID: "EK-TRIP-2"
+                    ))
+                }
+                receipt["device_actions"] = [box.payload]
+                return .ok(receipt)
+            }
+            if call.path.hasPrefix("/v1/device-actions/") {
+                return .ok(chatReceipt(
+                    "succeeded", tool: "calendar.create_event",
+                    recordID: call.string("event_id") ?? "EK-NEW-1"
+                ))
+            }
+            return .error(404, "NOT_FOUND")
+        }
+        let calendar = RecordingCalendarStore()
+        calendar.outcome = .created(eventID: "EK-TRIP-2")
+        let executor = LateBoundExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.inner = DeviceEventActionExecutor(store: calendar, backend: session)
+
+        _ = try await chat.overrideDeviceAction(actionID: Self.refusedActionID)
+        let replay = try await chat.overrideDeviceAction(actionID: Self.refusedActionID)
+
+        #expect(replay.state == .succeeded)
+        #expect(calendar.drafts.count == 1)
+        #expect(service.count("POST", Self.overridePath) == 2)
+    }
+
+    @Test("a refused override propagates and runs nothing")
+    func arefusedOverrideRunsNothing() async throws {
+        let service = Service()
+        service.answer { _, _ in .error(400, "INVALID_ARGUMENT") }
+        let calendar = RecordingCalendarStore()
+        let executor = LateBoundExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.inner = DeviceEventActionExecutor(store: calendar, backend: session)
+
+        await #expect(throws: AgentClientError.self) {
+            _ = try await chat.overrideDeviceAction(actionID: Self.refusedActionID)
+        }
+        // `INVALID_ARGUMENT` means the server did not derive an operation: the
+        // action is not a duplicate, or did not succeed, or kept no request to
+        // resume. Nothing was authorised, so nothing may be written.
+        #expect(calendar.drafts.isEmpty)
+        #expect(calendar.records.isEmpty)
+    }
+
+    @Test("an unreadable claim record stops the write rather than repeating it")
+    func amalformedClaimRecordRefusesTheWrite() async throws {
+        // The failure case §5.1 asks for first. Resetting a corrupt record to
+        // an empty set would read as "nothing was ever written" — and the very
+        // next line would write the event again, with the duplicate check
+        // switched off. Refusing leaves the operation parked for the sweep,
+        // which is the honest outcome: nobody knows whether that event exists.
+        let store = InMemoryCredentialStore()
+        try store.write(
+            CredentialKey.claimedOverrideActions, value: Data("not a list".utf8)
+        )
+        let (chat, calendar, _, _, _) = try await makeOverride(store: store)
+
+        await #expect(throws: ChatTimeline.ChatError.self) {
+            _ = try await chat.overrideDeviceAction(actionID: Self.refusedActionID)
+        }
+        #expect(calendar.drafts.isEmpty)
+    }
+
+    @Test("the claim set is bounded, and the entry it drops is the oldest")
+    func theClaimSetIsBounded() async throws {
+        // Unbounded would be a slow leak on the user's keychain; dropping the
+        // wrong end would drop the entry that is still owed. An entry is only
+        // ever needed again while its operation is still parked, so the newest
+        // are the ones that matter and `suffix` keeps exactly those.
+        let seeded = (0..<64).map { "old-\($0)" }
+        let store = InMemoryCredentialStore()
+        try store.write(
+            CredentialKey.claimedOverrideActions,
+            value: try JSONEncoder().encode(seeded)
+        )
+        let (chat, calendar, _, _, _) = try await makeOverride(store: store)
+        calendar.outcome = .created(eventID: "EK-TRIP-2")
+
+        _ = try await chat.overrideDeviceAction(actionID: Self.refusedActionID)
+
+        let data = try #require(try store.read(CredentialKey.claimedOverrideActions))
+        let claims = try JSONDecoder().decode([String].self, from: data)
+        #expect(claims.count == 64)
+        #expect(claims.last == Self.reissuedActionID)
+        #expect(!claims.contains("old-0"))
+        #expect(claims.contains("old-63"))
     }
 }

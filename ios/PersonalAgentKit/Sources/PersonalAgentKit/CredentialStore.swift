@@ -38,11 +38,33 @@ public enum CredentialKey {
     /// outcome instead of starting a second decision, so they belong in the same
     /// durable store as the chat send slot.
     public static let pendingDuplicateDecisions = "pending-duplicate-decisions-v1"
+    /// The device actions a 「仍要创建」 override has already claimed. The server
+    /// derives *one* operation per override, so the second tap of a double tap
+    /// reads the same parked projection back and is handed the same action —
+    /// and an override action carries `skip_local_dedup`, which switches off the
+    /// only other thing that could refuse the second write. This marker is what
+    /// keeps that to one event; it has to outlive the report, because the
+    /// dangerous tap is the one that arrives while the first report is in
+    /// flight.
+    public static let claimedOverrideActions = "claimed-override-actions-v1"
     /// The instant the device last completed a *whole* calendar mirror window
     /// (the review-R5 engine's marker). It decides staleness on the client and
     /// lives in the same durable store so a restart neither re-syncs for
     /// nothing nor believes a sync that never finished.
     public static let calendarMirrorSyncedAt = "calendar-mirror-synced-at-v1"
+    /// Design §9.1's change sequence: how much the local calendar has moved
+    /// since this device last completed a whole mirror window, and how much of
+    /// that movement has been uploaded.
+    ///
+    /// Two monotonic counters rather than the obvious dirty boolean, because a
+    /// boolean has a race the counters do not (review R3-F13): a pass that
+    /// captured the world at sequence 7 and then watched changes 8 and 9 arrive
+    /// mid-upload must not clear a flag on success — it covered 7, and 8 and 9
+    /// are still owed. `lastChangeSeq > syncedChangeSeq` is the same predicate
+    /// with no "when exactly do I clear this" question to get wrong, and it
+    /// survives a restart because both numbers are on disk.
+    public static let calendarChangeSeq = "calendar-change-seq-v1"
+    public static let calendarSyncedChangeSeq = "calendar-synced-change-seq-v1"
     /// Legacy keys from the first DEV-029 simulator build. `DeviceSession`
     /// migrates them on read and deletes them when the user forgets locally.
     public static let deviceKeyBlob = "device-key-blob"

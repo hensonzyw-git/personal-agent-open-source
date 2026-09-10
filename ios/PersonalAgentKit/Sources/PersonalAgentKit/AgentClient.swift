@@ -404,6 +404,41 @@ public struct AgentClient: Sendable {
         )
     }
 
+    /// Answer 「仍要创建」 for a calendar write the device reported as a duplicate
+    /// (design §3.3).
+    ///
+    /// **A closed body and no `Idempotency-Key`, both on purpose.** The decision
+    /// carries no parameters — the server resumes the arguments the original
+    /// turn was already authorised to make — and it derives its own key from the
+    /// source operation (`uuid5(ns, "<operation_id>:calendar-override")`), so
+    /// the idempotency is in the derivation rather than in anything this client
+    /// sends. A second tap, a concurrent tap and a retry after a lost reply all
+    /// present the same endpoint and the same action id, and the server's
+    /// INSERT-or-get answers every one of them with the same derived operation.
+    /// Minting a key here would add a durable local slot with nothing to protect
+    /// and a second way for the client to be wrong.
+    ///
+    /// The reply is that operation's own projection, on the first tap and on
+    /// every replay: parked, it hands the re-issued action over the same
+    /// delivery door every other response uses — and the delivery gate is the
+    /// capability header, so a build too old to run the action is never handed
+    /// it. Settled, it reports what the phone did with it.
+    public func overrideDeviceAction(
+        actionID: String, token: String
+    ) async throws -> OperationReceipt {
+        try await send(
+            method: "POST",
+            path: "/v1/device-actions/\(actionID)/override",
+            // The route is closed: `{}` is the only accepted body, and an empty
+            // one is refused rather than defaulted, so the shape is sent
+            // explicitly rather than omitted.
+            jsonBody: [:],
+            token: token,
+            accepting: [200, 202],
+            as: OperationReceipt.self
+        )
+    }
+
     /// Upload one mirror batch. The reply is the server's ingest summary;
     /// a 400 means the whole batch was refused and the caller should fix its
     /// window, never split the batch to sneak a bad event through.

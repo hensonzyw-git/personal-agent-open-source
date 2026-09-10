@@ -186,6 +186,28 @@ public actor ChatTimeline {
         /// The local pending-decision records could not be decoded. Reported
         /// rather than discarded, for the same reason as `pendingSendMalformed`.
         case pendingDecisionsMalformed
+        /// The local override-claim record could not be decoded. Reported
+        /// rather than discarded or reset: the entries in it are the only
+        /// evidence that an override's write already ran, and starting from an
+        /// empty set would execute it a second time.
+        case overrideClaimsMalformed
+    }
+
+    /// Which exactly-once marker owns the claim on a delivered action.
+    ///
+    /// Two shapes, because the second has no slot to live in. A chat send parks
+    /// a `PendingSend` whose `operationID` names the operation the reply belongs
+    /// to, and the marker rides inside it — so a released or replaced slot
+    /// refuses to run anything, which is one of the ways a duplicate is
+    /// prevented. A 「仍要创建」 override has no slot at all: it is a button on a
+    /// card, not a message, and the operation it settles is derived server-side
+    /// from the original. Its marker therefore stands alone, keyed by action id
+    /// (the action id *is* the operation's idempotency key), and — unlike the
+    /// message marker — it has to outlive the report, because the tap that must
+    /// be refused is the one that arrives while the first report is in flight.
+    private enum DeliveryClaim {
+        case message(PendingSend)
+        case override
     }
 
     private let backend: any ChatBackend
@@ -202,6 +224,20 @@ public actor ChatTimeline {
     /// The progress trail's sink, set by the UI. Stage observations are
     /// delivered in arrival order; the sink decides what to show.
     private var progressSink: (@Sendable (OperationStage) async -> Void)?
+    /// The calendar-mirror sink, set by the app, which owns the mirror engine.
+    /// Fired once per delivered action whose report **landed** — design §9.1's
+    /// second `.forced` trigger.
+    ///
+    /// Not redundant with an `EKEventStoreChanged` observer: one reply can
+    /// carry several actions, and N reports arriving as N triggers is exactly
+    /// the shape the engine collapses into at most two passes. It is also the
+    /// signal the server records as the write's testimony, so it holds even
+    /// when EventKit's own notification is coalesced away.
+    ///
+    /// A report whose reply was lost (the executor returns nil) fires nothing
+    /// here — the device knows it wrote, but this seam is "the report landed",
+    /// and the EventKit observer is what covers that case.
+    private var calendarWriteSink: (@Sendable () async -> Void)?
 
     private var conversationID: String?
     private var seenEventIDs: Set<String> = []
@@ -265,6 +301,13 @@ public actor ChatTimeline {
         _ sink: (@Sendable (OperationStage) async -> Void)?
     ) {
         progressSink = sink
+    }
+
+    /// Install the calendar-mirror sink (design §9.1). The app sets this to
+    /// `CalendarMirrorSyncEngine.noteCalendarChanged`, which records the change
+    /// and runs the forced pass.
+    public func setCalendarWriteSink(_ sink: (@Sendable () async -> Void)?) {
+        calendarWriteSink = sink
     }
 
     /// Project one receipt's state onto the trail. Terminal and parked states
@@ -604,6 +647,48 @@ public actor ChatTimeline {
         try removeDecision(checkID)
     }
 
+    // --- the calendar 「仍要创建」 override (design §3.3) ------------------------
+
+    /// Re-issue a calendar write this device reported as a duplicate, because
+    /// the user pressed 「仍要创建」.
+    ///
+    /// The endpoint is a replayable server-side binding rather than a new
+    /// conversation turn: it resumes the arguments the original turn was
+    /// already authorised to make, derives one operation from the original
+    /// (`uuid5(ns, "<operation_id>:calendar-override")`), and answers every tap
+    /// with that same operation's projection. So the client sends no key and a
+    /// double tap, two concurrent taps and a retry after a lost reply all
+    /// converge there — which is the whole reason a press is not a turn.
+    ///
+    /// What the server cannot do is *write*: the event exists only once this
+    /// device puts it in EventKit, so the reply hands the re-issued action back
+    /// over the ordinary delivery door, and that action carries
+    /// `skip_local_dedup` — the check that produced the refusal is switched off
+    /// because the user answered it. That leaves the claim in `recordDelivery`
+    /// as the only thing between a double tap and two events, and it is why the
+    /// action goes through the same gate everything else does rather than
+    /// straight to the executor.
+    ///
+    /// A refusal (`INVALID_ARGUMENT`: not a duplicate, not `succeeded`, nothing
+    /// retained to resume) propagates: nothing was created, and a receipt
+    /// saying otherwise is a lie the card cannot recover from.
+    ///
+    /// Like the finance override it mirrors, the wait afterwards is bounded and
+    /// carries no slot — the decision is durable on the server, and the write's
+    /// outcome is the server's to show rather than the client's to insist on.
+    @discardableResult
+    public func overrideDeviceAction(
+        actionID: String
+    ) async throws -> OperationReceipt {
+        let first = try await backend.overrideDeviceAction(actionID: actionID)
+        if let reported = try await runDeliveredActions(first, claim: .override) {
+            return reported.outcome.isSettled
+                ? reported
+                : try await settleOverride(reported)
+        }
+        return try await settleOverride(first)
+    }
+
     // --- the manual-review resolution (`DEV-040`) -----------------------------
 
     /// Record what the user found in the ledger for an operation that ended at
@@ -723,6 +808,33 @@ public actor ChatTimeline {
         return receipt
     }
 
+    /// Bounded polling for the operation a 「仍要创建」 override derived.
+    ///
+    /// Slot-free like `settleDecision`, and for the same reason, but it cannot
+    /// borrow that loop: any poll here may hand the re-issued action over again
+    /// — a lost reply, or a `202` — and a poll that read the action and dropped
+    /// it would leave the operation parked until the sweep, with the event the
+    /// user asked for never written. So every poll goes through the delivery
+    /// gate against the override's own claim, which is what makes the second
+    /// read a no-op instead of a second event. The loop shape is `settle`'s for
+    /// the same reason it is `settle`'s: one shape is easier to check than two.
+    private func settleOverride(
+        _ first: OperationReceipt
+    ) async throws -> OperationReceipt {
+        var receipt = first
+        var attempt = 0
+        while !receipt.outcome.isSettled && attempt < pollDelays.count {
+            try await sleep(pollDelays[attempt])
+            attempt += 1
+            receipt = try await backend.operation(operationID: receipt.operationID)
+            if let reported = try await runDeliveredActions(receipt, claim: .override) {
+                receipt = reported
+                if reported.outcome.isSettled { break }
+            }
+        }
+        return receipt
+    }
+
     // --- polling --------------------------------------------------------------
 
     /// Execute a handed device action and settle the operation with the
@@ -755,7 +867,7 @@ public actor ChatTimeline {
         // arrives twice (immediate reply, then a poll), and the second arrival
         // must be a no-op. (Review R6, 2026-09-08.)
         guard let reported = try await runDeliveredActions(
-            receipt, pending: pending
+            receipt, claim: .message(pending)
         ) else {
             return try await settle(receipt, pending: pending)
         }
@@ -801,13 +913,13 @@ public actor ChatTimeline {
     /// always answers with a receipt, degrading to the parked one it was given
     /// when a report's reply is lost, so the two cases cannot be confused.
     private func runDeliveredActions(
-        _ receipt: OperationReceipt, pending: PendingSend
+        _ receipt: OperationReceipt, claim: DeliveryClaim
     ) async throws -> OperationReceipt? {
         guard !receipt.deviceActions.isEmpty else { return nil }
         var primary: OperationReceipt?
         for (index, envelope) in receipt.deviceActions.enumerated() {
             let reported = try await handleDeliveredAction(
-                envelope, pending: pending, pollReceipt: receipt
+                envelope, claim: claim, pollReceipt: receipt
             )
             if index == 0 { primary = reported }
         }
@@ -827,12 +939,12 @@ public actor ChatTimeline {
     /// a duplicate event is the one failure a retry may never produce.
     private func handleDeliveredAction(
         _ envelope: DeviceActionEnvelope,
-        pending: PendingSend,
+        claim: DeliveryClaim,
         pollReceipt: OperationReceipt
     ) async throws -> OperationReceipt {
         switch envelope.resolve() {
         case .execute(let action):
-            guard try recordDelivery(actionID: action.actionID, pending: pending) else {
+            guard try recordDelivery(actionID: action.actionID, claim: claim) else {
                 // Already executed on a previous delivery of this same
                 // action: report nothing and keep polling the server's
                 // state. The silence is the sweep's to interpret.
@@ -842,7 +954,13 @@ public actor ChatTimeline {
                 // A lost report reply degrades to the parked projection this
                 // call was given — the one that names the right operation by
                 // construction. (Review R9, 2026-09-08; design §4.2.)
-                return await executor.executeAndReport(action) ?? pollReceipt
+                let reported = await executor.executeAndReport(action)
+                // The report landed: the calendar has been written, and the
+                // mirror has to catch up before the next query reads it back
+                // as missing (design §9.1). Fired before returning, so the
+                // pass is already armed when the query window opens.
+                if reported != nil { await calendarWriteSink?() }
+                return reported ?? pollReceipt
             } else {
                 return try await reportFailure(
                     actionID: action.actionID,
@@ -855,7 +973,7 @@ public actor ChatTimeline {
                 // polling loop re-reads the real state either way.
                 return pollReceipt
             }
-            guard try recordDelivery(actionID: actionID, pending: pending) else {
+            guard try recordDelivery(actionID: actionID, claim: claim) else {
                 // The refusal was already reported for this action.
                 return pollReceipt
             }
@@ -882,14 +1000,39 @@ public actor ChatTimeline {
     /// failure a retry may never produce. A missing stored record (the slot
     /// was already released) is read as "not mine to run" and also refuses:
     /// executing into a released slot is how a duplicate is born.
-    private func recordDelivery(actionID: String, pending: PendingSend) throws -> Bool {
-        guard var stored = try loadPending(), stored.operationID == pending.operationID else {
-            return false
+    ///
+    /// The override's claim (design §3.3) makes the same promise against a
+    /// marker no slot owns, and it is the one carrying the most weight: the
+    /// re-issued action says `skip_local_dedup`, so the duplicate check is off
+    /// by design and this claim is the *only* thing between a double tap and
+    /// two events. It is taken the same way and at the same point — before the
+    /// executor runs — and read fresh, so a second delivery of the same action
+    /// loses the claim here.
+    private func recordDelivery(
+        actionID: String, claim: DeliveryClaim
+    ) throws -> Bool {
+        switch claim {
+        case .message(let pending):
+            guard var stored = try loadPending(),
+                  stored.operationID == pending.operationID
+            else { return false }
+            guard !stored.deliveredActionIDs.contains(actionID) else { return false }
+            stored.deliveredActionIDs.append(actionID)
+            try savePending(stored)
+            return true
+        case .override:
+            // Never cleared by a successful run, unlike the message marker's
+            // slot: deleting the entry is how the write it guards becomes
+            // repeatable, and there is nothing to delete it for. The set is
+            // capped, and the server stops delivering an action once its
+            // operation settles, so an entry is only ever needed again while
+            // its operation is still parked.
+            var claimed = try loadOverrideClaims()
+            guard !claimed.contains(actionID) else { return false }
+            claimed.append(actionID)
+            try saveOverrideClaims(claimed)
+            return true
         }
-        guard !stored.deliveredActionIDs.contains(actionID) else { return false }
-        stored.deliveredActionIDs.append(actionID)
-        try savePending(stored)
-        return true
     }
 
     /// Report an execution failure against the action's id and return the
@@ -924,7 +1067,7 @@ public actor ChatTimeline {
             // and the loop continues from item 0's answer — the operation this
             // slot and this card belong to.
             if let reported = try await runDeliveredActions(
-                receipt, pending: pending
+                receipt, claim: .message(pending)
             ) {
                 receipt = reported
                 if reported.outcome.isSettled { break }
@@ -1091,6 +1234,40 @@ public actor ChatTimeline {
         )
     }
 
+    /// How many override claims are remembered.
+    ///
+    /// The marker only has to outlive one in-flight tap, and an entry is only
+    /// ever needed again while its operation is still parked — the server stops
+    /// delivering an action once it settles — so a dropped entry has never been
+    /// the one still owed. Sixty-four is far past the number of taps that can
+    /// be in flight inside a single window.
+    private static let overrideClaimLimit = 64
+
+    private func loadOverrideClaims() throws -> [String] {
+        guard let data = try store.read(CredentialKey.claimedOverrideActions) else {
+            return []
+        }
+        do {
+            return try JSONDecoder().decode([String].self, from: data)
+        } catch {
+            // Reported, never reset to empty: an empty set means "nothing was
+            // ever written", and the override would then run its write again.
+            throw ChatError.overrideClaimsMalformed
+        }
+    }
+
+    private func saveOverrideClaims(_ claims: [String]) throws {
+        let bounded = Array(claims.suffix(Self.overrideClaimLimit))
+        if bounded.isEmpty {
+            try store.delete(CredentialKey.claimedOverrideActions)
+            return
+        }
+        try store.write(
+            CredentialKey.claimedOverrideActions,
+            value: try JSONEncoder().encode(bounded)
+        )
+    }
+
     private func removeDecision(_ checkID: String) throws {
         try saveDecisions(try loadDecisions().filter { $0.checkID != checkID })
     }
@@ -1163,6 +1340,12 @@ public protocol ChatBackend: Sendable {
         actionID: String,
         body: DeviceActionResultBody
     ) async throws -> OperationReceipt
+
+    /// Answer 「仍要创建」 for a calendar write this device reported as a
+    /// duplicate (design §3.3). No client key: the server derives it from the
+    /// action's own operation, so every tap and every retry converge on one
+    /// derived operation.
+    func overrideDeviceAction(actionID: String) async throws -> OperationReceipt
 
     /// Upload one calendar mirror batch. `window_complete` on the last batch
     /// authorises the server to mark window events absent from the upload as
