@@ -417,6 +417,7 @@ public struct AgentClient: Sendable {
         windowStart: Date,
         windowEnd: Date,
         events: [CalendarMirrorEvent],
+        calendars: [CalendarDirectoryEntry],
         windowComplete: Bool,
         snapshotAsOf: Date,
         token: String
@@ -427,19 +428,13 @@ public struct AgentClient: Sendable {
             jsonBody: [
                 "window_start": RFC3339.string(from: windowStart) as Any?,
                 "window_end": RFC3339.string(from: windowEnd) as Any?,
-                "events": events.map { event -> [String: Any?] in
-                    [
-                        "event_identifier": event.eventIdentifier,
-                        "calendar_identifier": event.calendarIdentifier,
-                        "title": event.title as Any?,
-                        "start": RFC3339.string(from: event.start),
-                        "end": RFC3339.string(from: event.end),
-                        "all_day": event.allDay,
-                        "location": event.location as Any?,
-                        "notes": event.notes as Any?,
-                        "last_modified": RFC3339.string(from: event.lastModified),
-                    ]
-                },
+                // Always present, even when empty: the field is nullable in
+                // the schema, and an empty array says "this device has no
+                // ordinary event calendars" — a fact — where omitting the key
+                // says "this build does not know about directories" and would
+                // leave a stale one in place.
+                "calendars": calendars.map(CalendarMirrorWire.directoryEntry),
+                "events": events.map(CalendarMirrorWire.event),
                 "window_complete": windowComplete,
                 "snapshot_as_of": RFC3339.string(from: snapshotAsOf),
             ],

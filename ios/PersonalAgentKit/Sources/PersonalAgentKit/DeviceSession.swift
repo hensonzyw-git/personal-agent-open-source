@@ -360,6 +360,7 @@ public actor DeviceSession {
         windowStart: Date,
         windowEnd: Date,
         events: [CalendarMirrorEvent],
+        calendars: [CalendarDirectoryEntry],
         windowComplete: Bool,
         snapshotAsOf: Date
     ) async throws -> CalendarSyncResponse {
@@ -368,6 +369,7 @@ public actor DeviceSession {
                 windowStart: windowStart,
                 windowEnd: windowEnd,
                 events: events,
+                calendars: calendars,
                 windowComplete: windowComplete,
                 snapshotAsOf: snapshotAsOf,
                 token: $0

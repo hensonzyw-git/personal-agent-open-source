@@ -30,9 +30,39 @@ public struct DeviceEventFields: Sendable, Equatable {
     public let location: String?
     public let notes: String?
 
+    // --- the v2 shape (§2.2) ---------------------------------------------
+    //
+    // `action_fields` writes these out explicitly, nulls included, so a client
+    // can tell "absent" from "not applicable". They are optional *here* only
+    // because a v1 action does not carry them at all, and that direction has
+    // to keep working: the delivery gate stops a v2 action from reaching a v1
+    // client, never the reverse, so this build can meet an action from a
+    // server that predates the fields. Absent then means "this action cannot
+    // say", and every consumer below degrades to what the v1 build did rather
+    // than inventing a value.
+
+    /// The EventKit identifier the server resolved the calendar name to — the
+    /// field the write is bound to (§3.2). Absent on a v1 action.
+    public let calendarIdentifier: String?
+    /// The name the routing matched on, carried so the device can detect a
+    /// rename between issuance and execution (§3.2, PRD §8).
+    public let calendarTitle: String?
+    public let timeZoneIdentifier: String?
+    /// The all-day dates, exclusive end. Null (not absent) on a timed event.
+    public let startDate: String?
+    public let endDate: String?
+    /// The 「仍要创建」 override (§3.3). Only the override endpoint can set it;
+    /// absence means "run the local duplicate check", which is the safe
+    /// default for an action that predates overrides.
+    public let skipLocalDedup: Bool
+
     public init(
         title: String, start: String, end: String, allDay: Bool,
-        location: String? = nil, notes: String? = nil
+        location: String? = nil, notes: String? = nil,
+        calendarIdentifier: String? = nil, calendarTitle: String? = nil,
+        timeZoneIdentifier: String? = nil,
+        startDate: String? = nil, endDate: String? = nil,
+        skipLocalDedup: Bool = false
     ) {
         self.title = title
         self.start = start
@@ -40,10 +70,24 @@ public struct DeviceEventFields: Sendable, Equatable {
         self.allDay = allDay
         self.location = location
         self.notes = notes
+        self.calendarIdentifier = calendarIdentifier
+        self.calendarTitle = calendarTitle
+        self.timeZoneIdentifier = timeZoneIdentifier
+        self.startDate = startDate
+        self.endDate = endDate
+        self.skipLocalDedup = skipLocalDedup
     }
 
     /// Convert to the executor's draft. `start`/`end` arrive as RFC 3339
     /// instants; the ISO8601DateFormatter parses them back into `Date`.
+    ///
+    /// Still the pre-v2 construction for an all-day event, and deliberately
+    /// untouched here: §3.2 replaces it with the floating dates built from
+    /// `start_date`/`end_date` in the device calendar, and that change belongs
+    /// with the write binding this action's `calendarIdentifier` exists for
+    /// (§3.1, §3.2). Doing it here would leave the calendar binding behind —
+    /// a write that knows the right dates but still lands in whichever
+    /// calendar the device defaults to.
     public func draft() -> CalendarEventDraft? {
         guard let startDate = RFC3339.parse(start),
               let endDate = RFC3339.parse(end)
@@ -78,7 +122,7 @@ public struct DeviceEventAction: Sendable, Equatable {
     /// an unknown state.
     public static func decode(from payload: [String: Any]) throws -> DeviceEventAction {
         let rawEvent = payload["event"] as? [String: Any]
-        switch Self.validated(
+        switch Self.validated(RawActionFields(
             actionID: payload["action_id"] as? String,
             tool: payload["tool"] as? String,
             title: rawEvent?["title"] as? String,
@@ -86,8 +130,14 @@ public struct DeviceEventAction: Sendable, Equatable {
             end: rawEvent?["end"] as? String,
             allDay: rawEvent?["all_day"] as? Bool,
             location: rawEvent?["location"] as? String,
-            notes: rawEvent?["notes"] as? String
-        ) {
+            notes: rawEvent?["notes"] as? String,
+            calendarIdentifier: rawEvent?["calendar_identifier"] as? String,
+            calendarTitle: rawEvent?["calendar_title"] as? String,
+            timeZoneIdentifier: rawEvent?["timezone"] as? String,
+            startDate: rawEvent?["start_date"] as? String,
+            endDate: rawEvent?["end_date"] as? String,
+            skipLocalDedup: rawEvent?["skip_local_dedup"] as? Bool ?? false
+        )) {
         case .success(let action):
             return action
         case .failure(let error):
@@ -100,29 +150,36 @@ public struct DeviceEventAction: Sendable, Equatable {
     /// that lived twice could drift: the envelope would refuse a payload the
     /// dictionary form accepted, and the executor would depend on which door
     /// the action walked in through.
+    ///
+    /// It takes one parameter object rather than one argument per field. That
+    /// is §5.2's rule applied to its own failure mode: the rule is that
+    /// co-dispatched functions share a signature, and its worked example is a
+    /// dispatch site that *adapted* two mismatched signatures. Fourteen
+    /// positional arguments across two call sites invites exactly that, and a
+    /// swapped pair here is silent — `title` and `startDate` are both strings.
+    /// One struct passed by both callers cannot drift positionally.
     fileprivate static func validated(
-        actionID: String?, tool: String?, title: String?, start: String?,
-        end: String?, allDay: Bool?, location: String?, notes: String?
+        _ raw: RawActionFields
     ) -> Result<DeviceEventAction, DeviceActionError> {
-        guard let actionID, !actionID.isEmpty else {
+        guard let actionID = raw.actionID, !actionID.isEmpty else {
             return .failure(.malformed("device_action is missing action_id"))
         }
-        guard let tool, !tool.isEmpty else {
+        guard let tool = raw.tool, !tool.isEmpty else {
             return .failure(.malformed("device_action is missing tool"))
         }
         guard tool == Self.supportedTool else {
             return .failure(.unsupportedTool(tool))
         }
-        guard let title, !title.isEmpty else {
+        guard let title = raw.title, !title.isEmpty else {
             return .failure(.malformed("device_action event is missing title"))
         }
-        guard let start, !start.isEmpty else {
+        guard let start = raw.start, !start.isEmpty else {
             return .failure(.malformed("device_action event is missing start"))
         }
-        guard let end, !end.isEmpty else {
+        guard let end = raw.end, !end.isEmpty else {
             return .failure(.malformed("device_action event is missing end"))
         }
-        guard let allDay else {
+        guard let allDay = raw.allDay else {
             return .failure(.malformed("device_action event is missing all_day"))
         }
         // Unparseable times are a malformed action, not an event to save at
@@ -132,15 +189,83 @@ public struct DeviceEventAction: Sendable, Equatable {
                 "device_action event start/end are not RFC 3339 instants"
             ))
         }
+        // The v2 dates are optional because a v1 action has none. A date that
+        // *is* present and does not match the schema's `^\d{4}-\d{2}-\d{2}$`
+        // is a different thing: the server authorised a shape it promised to
+        // validate, so a malformed one means the hand-off cannot be trusted,
+        // not that the field was omitted. Refusing is the fail-closed read.
+        for (name, value) in [("start_date", raw.startDate), ("end_date", raw.endDate)] {
+            guard let value else { continue }
+            guard Self.isCalendarDate(value) else {
+                return .failure(.malformed(
+                    "device_action event \(name) is not YYYY-MM-DD"
+                ))
+            }
+        }
+        // An all-day action states both dates or neither; one of a pair is a
+        // half-truth about which day the event is on, and §3.2 constructs the
+        // event from exactly these. (The server writes both as null for a
+        // timed event and both as dates for an all-day one.)
+        guard (raw.startDate == nil) == (raw.endDate == nil) else {
+            return .failure(.malformed(
+                "device_action event carries only one all-day date"
+            ))
+        }
         return .success(DeviceEventAction(
             actionID: actionID,
             tool: tool,
             event: DeviceEventFields(
                 title: title, start: start, end: end, allDay: allDay,
-                location: location, notes: notes
+                location: raw.location, notes: raw.notes,
+                calendarIdentifier: raw.calendarIdentifier,
+                calendarTitle: raw.calendarTitle,
+                timeZoneIdentifier: raw.timeZoneIdentifier,
+                startDate: raw.startDate,
+                endDate: raw.endDate,
+                skipLocalDedup: raw.skipLocalDedup
             )
         ))
     }
+
+    /// `YYYY-MM-DD`, the schema's own pattern for the all-day dates.
+    static func isCalendarDate(_ value: String) -> Bool {
+        let parts = value.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0].count == 4, parts[1].count == 2,
+              parts[2].count == 2
+        else { return false }
+        // Calendar-valid, not merely digit-shaped: `2026-13-99` passes a
+        // length check and would become a silently wrong date.
+        guard let year = Int(parts[0]), let month = Int(parts[1]),
+              let day = Int(parts[2]), year >= 1
+        else { return false }
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = day
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
+        guard let date = calendar.date(from: components) else { return false }
+        let round = calendar.dateComponents([.year, .month, .day], from: date)
+        return round.year == year && round.month == month && round.day == day
+    }
+}
+
+/// One action's raw fields, as whichever door read them. See `validated`.
+struct RawActionFields: Sendable, Equatable {
+    var actionID: String?
+    var tool: String?
+    var title: String?
+    var start: String?
+    var end: String?
+    var allDay: Bool?
+    var location: String?
+    var notes: String?
+    var calendarIdentifier: String?
+    var calendarTitle: String?
+    var timeZoneIdentifier: String?
+    var startDate: String?
+    var endDate: String?
+    var skipLocalDedup: Bool
 }
 
 /// The transient `device_action` field as it travels on the receipt —
@@ -175,11 +300,25 @@ public struct DeviceActionEnvelope: Decodable, Sendable, Equatable {
         let allDay: Bool?
         let location: String?
         let notes: String?
+        // The v2 shape. All optional for the same reason `DeviceEventFields`
+        // makes them optional — this decode reads a v1 action too.
+        let calendarIdentifier: String?
+        let calendarTitle: String?
+        let timeZoneIdentifier: String?
+        let startDate: String?
+        let endDate: String?
+        let skipLocalDedup: Bool?
 
         private enum CodingKeys: String, CodingKey {
             case title, start, end
             case allDay = "all_day"
             case location, notes
+            case calendarIdentifier = "calendar_identifier"
+            case calendarTitle = "calendar_title"
+            case timeZoneIdentifier = "timezone"
+            case startDate = "start_date"
+            case endDate = "end_date"
+            case skipLocalDedup = "skip_local_dedup"
         }
     }
 
@@ -206,17 +345,23 @@ public struct DeviceActionEnvelope: Decodable, Sendable, Equatable {
     }
 
     public func resolve() -> Resolution {
-        let rawEvent = event.map { ($0.title, $0.start, $0.end, $0.allDay, $0.location, $0.notes) }
-        switch DeviceEventAction.validated(
+        let fields = RawActionFields(
             actionID: actionID,
             tool: tool,
-            title: rawEvent?.0,
-            start: rawEvent?.1,
-            end: rawEvent?.2,
-            allDay: rawEvent?.3,
-            location: rawEvent?.4,
-            notes: rawEvent?.5
-        ) {
+            title: event?.title,
+            start: event?.start,
+            end: event?.end,
+            allDay: event?.allDay,
+            location: event?.location,
+            notes: event?.notes,
+            calendarIdentifier: event?.calendarIdentifier,
+            calendarTitle: event?.calendarTitle,
+            timeZoneIdentifier: event?.timeZoneIdentifier,
+            startDate: event?.startDate,
+            endDate: event?.endDate,
+            skipLocalDedup: event?.skipLocalDedup ?? false
+        )
+        switch DeviceEventAction.validated(fields) {
         case .success(let action):
             return .execute(action)
         case .failure(let error):

@@ -35,8 +35,21 @@ public struct DeviceEventActionExecutor: DeviceActionExecuting {
         let body: DeviceActionResultBody
         switch await store.save(draft) {
         case .created(let eventID):
+            // Written before the report, not after: the event exists the
+            // moment `save` returns, and the record is what lets a later
+            // snapshot recognise it as the agent's own (§3.2, §8). A crash
+            // between the two leaves the event recorded and the operation
+            // parked for the server's sweep — the recoverable direction.
+            await store.recordAgentCreated(
+                AgentCreatedEvent(createdBy: action, eventID: eventID)
+            )
             body = .created(eventID: eventID)
         case .duplicate(let existingID):
+            // Deliberately not recorded. A duplicate is a same-title event
+            // within ±5 minutes that this action did not write — it may be
+            // the user's own, and claiming it would tell the mirror to read
+            // an all-day event's dates off this action instead of the device.
+            // The schema's default is the honest answer either way.
             body = .duplicate(eventID: existingID)
         case .denied:
             // The device's own zero-write testimony: the user refused access.

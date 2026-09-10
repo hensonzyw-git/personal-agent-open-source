@@ -30,6 +30,79 @@ public enum RFC3339 {
     }
 }
 
+/// One mirror row, in the server's `calendar.ingest_events` item vocabulary.
+///
+/// The single encoder: the upload body and the batch's byte measurement are
+/// the same bytes, or the budget would be measuring a shape nobody sends.
+///
+/// **Absent is a claim, and it is not the same claim as null.** The server
+/// reads a *missing* `timezone` key as the v1 shape for that aspect and
+/// accepts it (rendered as it always was), while an explicit null on a timed
+/// event is refused. Same for `start_date`/`end_date`, and
+/// `date_anchor_unknown` is documented as "省略视为未确认". So every v2 field
+/// is inserted conditionally: `JSONSerialization` would happily write
+/// `"timezone": null` for a nil, which is the one thing that must not happen.
+///
+/// The three `*_over_limit` flags and `created_by_agent` are booleans with
+/// defined defaults; they go out only when true, so a row that is entirely
+/// v1-shaped still encodes as one.
+public enum CalendarMirrorWire {
+    public static func event(_ event: CalendarMirrorEvent) -> [String: Any] {
+        var fields: [String: Any] = [
+            "event_identifier": event.eventIdentifier,
+            "calendar_identifier": event.calendarIdentifier,
+            "title": event.title as Any?,
+            "start": RFC3339.string(from: event.start),
+            "end": RFC3339.string(from: event.end),
+            "all_day": event.allDay,
+            "location": event.location as Any?,
+            "notes": event.notes as Any?,
+            "last_modified": RFC3339.string(from: event.lastModified),
+        ]
+        if event.createdByAgent { fields["created_by_agent"] = true }
+        if let timeZone = event.timeZoneIdentifier { fields["timezone"] = timeZone }
+        if let startDate = event.allDayStartDate { fields["start_date"] = startDate }
+        if let endDate = event.allDayEndDate { fields["end_date"] = endDate }
+        if event.dateAnchorUnknown { fields["date_anchor_unknown"] = true }
+        if event.titleOverLimit { fields["title_over_limit"] = true }
+        if event.locationOverLimit { fields["location_over_limit"] = true }
+        if event.notesOverLimit { fields["notes_over_limit"] = true }
+        return fields
+    }
+
+    public static func directoryEntry(
+        _ entry: CalendarDirectoryEntry
+    ) -> [String: Any] {
+        var fields: [String: Any] = [
+            "calendar_identifier": entry.calendarIdentifier,
+            "title": entry.title,
+            "allows_content_modifications": entry.allowsContentModifications,
+            "is_subscribed": entry.isSubscribed,
+        ]
+        if let sourceTitle = entry.sourceTitle { fields["source_title"] = sourceTitle }
+        return fields
+    }
+
+    /// Every row this encoder can build is made of strings, booleans and no
+    /// optionals, so serialisation does not fail in practice. If it somehow
+    /// did, the count must not be 0: under-counting is what puts a batch over
+    /// the server's cap, so the fallback over-counts instead, using design
+    /// §6's own bound for one event — title 200 + location 500 + notes 4096
+    /// code points at ~3 bytes each ≈ 14 KiB, rounded up.
+    static let maximumRowBytes = 16 * 1024
+
+    /// The encoded size of one event's row. Measured through the real encoder
+    /// rather than estimated from the text lengths: the row carries six
+    /// timestamps, an id and the JSON punctuation, and an estimate that
+    /// ignores them would under-count exactly when a batch is largest.
+    static func encodedSize(of event: CalendarMirrorEvent) -> Int {
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: Self.event(event)
+        ) else { return maximumRowBytes }
+        return data.count
+    }
+}
+
 /// The device-side half of the calendar mirror (`POST /v1/calendar/sync`).
 ///
 /// The iPhone is the fact source; the server holds a mirror it can query and
@@ -54,15 +127,55 @@ public struct CalendarSyncUploader: Sendable {
     public let lookaheadDays: Int
     /// The server's per-batch limit; the schema refuses more.
     public let batchSize: Int
+    /// The batch's byte budget. Whichever of the two bounds is reached first
+    /// closes the batch (design §6).
+    public let byteBudget: Int
 
-    public init(lookbackDays: Int = 90, lookaheadDays: Int = 180, batchSize: Int = 200) {
+    /// Sizes one event's wire row. Injected so the budget can be tested with
+    /// synthetic rows instead of 16 KiB of real notes.
+    private let measure: @Sendable (CalendarMirrorEvent) -> Int
+
+    public init(
+        lookbackDays: Int = 90,
+        lookaheadDays: Int = 180,
+        batchSize: Int = 200,
+        byteBudget: Int = 128 * 1024
+    ) {
+        self.init(
+            lookbackDays: lookbackDays, lookaheadDays: lookaheadDays,
+            batchSize: batchSize, byteBudget: byteBudget,
+            measure: CalendarMirrorWire.encodedSize
+        )
+    }
+
+    /// The sizing rule is injectable so the budget can be tested by counting
+    /// rows rather than by writing 128 KiB of real notes into a fixture. It is
+    /// not part of the public API: production has exactly one honest answer to
+    /// "how big is this row", and it is the encoder's.
+    init(
+        lookbackDays: Int = 90,
+        lookaheadDays: Int = 180,
+        batchSize: Int = 200,
+        byteBudget: Int = 128 * 1024,
+        measure: @escaping @Sendable (CalendarMirrorEvent) -> Int
+    ) {
         self.lookbackDays = lookbackDays
         self.lookaheadDays = lookaheadDays
         self.batchSize = batchSize
+        self.byteBudget = byteBudget
+        self.measure = measure
     }
 
     /// One window's worth of events, chunked for upload. `last_batch` marks
     /// the chunk that carries `window_complete`.
+    ///
+    /// A batch closes when either bound is reached, checked *before* the next
+    /// event is added, so no batch exceeds either. A single event larger than
+    /// the whole budget still goes out alone rather than being dropped: the
+    /// schema's per-field maximum puts one row near 14 KiB against a 128 KiB
+    /// budget, so this is unreachable in practice, and if it ever were
+    /// reachable the server's refusal is a better answer than a silently
+    /// missing event.
     public func chunk(
         _ events: [CalendarMirrorEvent], now: Date
     ) -> [(windowStart: Date, windowEnd: Date, events: [CalendarMirrorEvent], lastBatch: Bool)] {
@@ -75,14 +188,28 @@ public struct CalendarSyncUploader: Sendable {
             // not an absence of evidence.
             return [(windowStart, windowEnd, [], true)]
         }
-        var chunks: [(Date, Date, [CalendarMirrorEvent], Bool)] = []
-        var index = 0
-        while index < events.count {
-            let end = min(index + batchSize, events.count)
-            chunks.append((windowStart, windowEnd, Array(events[index..<end]), end == events.count))
-            index = end
+        var groups: [[CalendarMirrorEvent]] = []
+        var current: [CalendarMirrorEvent] = []
+        // The separators and brackets of the row array, plus the enclosing
+        // object's four fixed fields and the directory. A few hundred bytes
+        // against a budget with 4× headroom below the endpoint cap — this is
+        // a bound on a batch, not a computation of an HTTP body length.
+        var currentBytes = 64
+        for event in events {
+            let size = measure(event)
+            if !current.isEmpty, current.count >= batchSize || currentBytes + size > byteBudget {
+                groups.append(current)
+                current = []
+                currentBytes = 64
+            }
+            current.append(event)
+            currentBytes += size + 1
         }
-        return chunks
+        if !current.isEmpty { groups.append(current) }
+
+        return groups.enumerated().map { index, group in
+            (windowStart, windowEnd, group, index == groups.count - 1)
+        }
     }
 }
 
@@ -249,6 +376,14 @@ public actor CalendarMirrorSyncEngine {
         // what the upsert arbitrates on (CalendarStore.snapshot's contract),
         // and it is the *version* every batch of this window shares — the
         // server's schema requires it on the wire (second review F1).
+        // The directory is read once and rides on every batch (§2.1): the
+        // server resolves a calendar name to an EventKit identifier against
+        // it before issuing a create, so a batch that carried events but no
+        // directory would leave the issuance gate unable to resolve anything
+        // until the next sync. Failure here fails the window exactly as a
+        // snapshot failure does — an upload without it is a half-truth, and
+        // re-running the whole window is how the engine already recovers.
+        let directory = try await store.calendarDirectory()
         var lastError: Error?
         for chunk in uploader.chunk(events, now: instant) where lastError == nil {
             do {
@@ -256,6 +391,7 @@ public actor CalendarMirrorSyncEngine {
                     windowStart: chunk.windowStart,
                     windowEnd: chunk.windowEnd,
                     events: chunk.events,
+                    calendars: directory,
                     windowComplete: chunk.lastBatch,
                     snapshotAsOf: instant
                 )

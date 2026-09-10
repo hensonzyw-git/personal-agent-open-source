@@ -33,6 +33,14 @@ public struct CalendarEventDraft: Sendable, Equatable {
 ///
 /// `title` stays optional because EventKit's own title can be nil, and the
 /// schema accepts null — guessing `""` would be the device inventing content.
+///
+/// Every v2 field is optional here, and absent means **the absence of a
+/// claim**, not a default: `timeZoneIdentifier` nil uploads no `timezone` key
+/// (the server reads that as the v1 shape), `dateAnchorUnknown` nil uploads no
+/// `date_anchor_unknown` key (the server treats silence as unconfirmed), and
+/// the three `*OverLimit` flags upload only when true. `allDayStartDate` /
+/// `allDayEndDate` are the only v2 fields an all-day event must carry, and
+/// `CalendarMirrorRules.mirrorEvent` refuses to build one that lacks them.
 public struct CalendarMirrorEvent: Sendable, Equatable {
     public let eventIdentifier: String
     public let calendarIdentifier: String
@@ -46,10 +54,33 @@ public struct CalendarMirrorEvent: Sendable, Equatable {
     /// order batches with it.
     public let lastModified: Date
 
+    /// The event's IANA zone, for a timed event EventKit states one for.
+    /// Never a device-local guess.
+    public let timeZoneIdentifier: String?
+    /// All-day events only: the frozen dates the wire carries, and whether the
+    /// device can vouch for their anchor.
+    public let allDayStartDate: String?
+    public let allDayEndDate: String?
+    public let dateAnchorUnknown: Bool
+    /// Whether this device's persisted record says the agent created it.
+    public let createdByAgent: Bool
+    /// A field over its code-point threshold was nulled, per design §6.
+    public let titleOverLimit: Bool
+    public let locationOverLimit: Bool
+    public let notesOverLimit: Bool
+
     public init(
         eventIdentifier: String, calendarIdentifier: String, title: String?,
         start: Date, end: Date, allDay: Bool, location: String?, notes: String?,
-        lastModified: Date
+        lastModified: Date,
+        timeZoneIdentifier: String? = nil,
+        allDayStartDate: String? = nil,
+        allDayEndDate: String? = nil,
+        dateAnchorUnknown: Bool = false,
+        createdByAgent: Bool = false,
+        titleOverLimit: Bool = false,
+        locationOverLimit: Bool = false,
+        notesOverLimit: Bool = false
     ) {
         self.eventIdentifier = eventIdentifier
         self.calendarIdentifier = calendarIdentifier
@@ -60,6 +91,14 @@ public struct CalendarMirrorEvent: Sendable, Equatable {
         self.location = location
         self.notes = notes
         self.lastModified = lastModified
+        self.timeZoneIdentifier = timeZoneIdentifier
+        self.allDayStartDate = allDayStartDate
+        self.allDayEndDate = allDayEndDate
+        self.dateAnchorUnknown = dateAnchorUnknown
+        self.createdByAgent = createdByAgent
+        self.titleOverLimit = titleOverLimit
+        self.locationOverLimit = locationOverLimit
+        self.notesOverLimit = notesOverLimit
     }
 }
 
@@ -86,12 +125,105 @@ public protocol CalendarStore: Sendable {
     /// a `duplicate` rather than a second event.
     func save(_ draft: CalendarEventDraft) async -> CalendarSaveOutcome
 
-    /// Snapshot every event overlapping [since, until), for the mirror upload.
+    /// The device's calendar directory (design §2.1): every ordinary event
+    /// calendar, **including subscribed ones**, because the server needs their
+    /// metadata to recognise and refuse them. Birthday sources are not
+    /// ordinary event calendars and are absent from both the directory and the
+    /// snapshot (§2.4).
+    func calendarDirectory() async throws -> [CalendarDirectoryEntry]
+
+    /// Remember one event this device created for the agent (§8, Q10). The
+    /// record is local and app-scoped: a restored or replaced phone has no
+    /// record, and the event uploads as external — which is the honest
+    /// degradation the schema's default asks for, not a defect to paper over.
+    func recordAgentCreated(_ record: AgentCreatedEvent) async
+
+    /// Snapshot the events overlapping [since, until) that the mirror uploads:
+    /// only the non-subscribed calendars of the directory (§2.4), with §3.2's
+    /// read-back algorithm and §6's thresholds applied per event.
+    ///
     /// `asOf` is the snapshot instant: EventKit exposes no per-event
     /// last-modified, so the snapshot itself is what the upsert arbitrates on
     /// — a later snapshot has a later stamp and wins, which is honest because
     /// the batch, not the row, is what the device vouches for.
+    ///
+    /// Throws rather than omitting an event it cannot describe. A batch that
+    /// leaves an event out and still carries `window_complete` tells the server
+    /// the user deleted it, and the server would tombstone a mirror row for an
+    /// event sitting on the phone. An unrepresentable event fails the window
+    /// instead: nothing is uploaded, nothing is deleted, and the staleness is
+    /// visible in `mirror_stale`.
     func snapshot(since: Date, until: Date, asOf: Date) async throws -> [CalendarMirrorEvent]
+}
+
+/// Where the device keeps its record of agent-created events. A seam so the
+/// snapshot's use of it is testable without a real defaults database.
+public protocol AgentCreatedEventLog: Sendable {
+    func all() async -> [String: AgentCreatedEvent]
+    func record(_ record: AgentCreatedEvent) async
+}
+
+/// The real log: a small array in the app's own defaults, namespaced under one
+/// key. It is not the ledger and carries no calendar content — only the ids
+/// and, for all-day events, the two dates the action carried.
+///
+/// Growth is bounded by `limit`, oldest first. Nothing prunes it by asking the
+/// calendar what still exists: "the event is gone" and "the event is outside
+/// the window the caller happened to snapshot" are indistinguishable from
+/// inside the log, and a record dropped for the second reason would silently
+/// relabel a live agent-created event as external. The bound plus the schema's
+/// documented default is the whole reclamation story.
+public struct UserDefaultsAgentCreatedEventLog: AgentCreatedEventLog {
+    // `UserDefaults` is documented thread-safe and is not `Sendable` only
+    // because it has no Swift-level annotation. The annotation belongs here
+    // rather than on the struct: everything else in it is a value.
+    private nonisolated(unsafe) let defaults: UserDefaults
+    private let key: String
+    private let limit: Int
+
+    public init(
+        defaults: UserDefaults = .standard,
+        key: String = "calendar.agentCreatedEvents",
+        limit: Int = 2_000
+    ) {
+        self.defaults = defaults
+        self.key = key
+        self.limit = limit
+    }
+
+    public func all() async -> [String: AgentCreatedEvent] {
+        Dictionary(rows().map { ($0.eventIdentifier, $0) }, uniquingKeysWith: { _, new in new })
+    }
+
+    public func record(_ record: AgentCreatedEvent) async {
+        var stored = rows().filter { $0.eventIdentifier != record.eventIdentifier }
+        stored.append(record)
+        // Insertion order, trimmed from the front: the array is the store's
+        // real shape, so the eviction is deterministic rather than whatever
+        // order a dictionary happened to hand back.
+        write(Array(stored.suffix(limit)))
+    }
+
+    /// The stored rows, in the order they were written.
+    private func rows() -> [AgentCreatedEvent] {
+        guard let data = defaults.data(forKey: key),
+              let rows = try? JSONDecoder().decode([AgentCreatedEvent].self, from: data)
+        else { return [] }
+        return rows
+    }
+
+    /// A write that fails to encode leaves the previous value in place: the
+    /// log is an optimisation for `created_by_agent`, and losing it degrades
+    /// to the schema's documented default rather than corrupting state. An
+    /// empty log is stored as no key at all.
+    private func write(_ events: [AgentCreatedEvent]) {
+        guard !events.isEmpty else {
+            defaults.removeObject(forKey: key)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(events) else { return }
+        defaults.set(data, forKey: key)
+    }
 }
 
 #if canImport(EventKit)
@@ -105,9 +237,22 @@ public protocol CalendarStore: Sendable {
 /// zero-write evidence the server's `failed_safe` expects.
 public struct EventKitCalendarStore: CalendarStore {
     private let store: EKEventStore
+    private let log: any AgentCreatedEventLog
+    /// The calendar the mirror's date arithmetic runs in. `Calendar.current`
+    /// by design (§3.2): an all-day event's date is a floating calendar date,
+    /// and the device calendar is the only frame that renders it the way the
+    /// user sees it. Not `TimeZone.current` — the two differ in the details
+    /// that matter here, so the frame is passed in rather than re-derived.
+    private let calendar: Calendar
 
-    public init(store: EKEventStore = EKEventStore()) {
+    public init(
+        store: EKEventStore = EKEventStore(),
+        log: any AgentCreatedEventLog = UserDefaultsAgentCreatedEventLog(),
+        calendar: Calendar = .current
+    ) {
         self.store = store
+        self.log = log
+        self.calendar = calendar
     }
 
     // MARK: authorisation
@@ -182,34 +327,97 @@ public struct EventKitCalendarStore: CalendarStore {
         return store.defaultCalendarForNewEvents
     }
 
-    // MARK: snapshot
+    // MARK: directory
 
-    public func snapshot(since: Date, until: Date, asOf: Date) async throws -> [CalendarMirrorEvent] {
+    public func calendarDirectory() async throws -> [CalendarDirectoryEntry] {
         guard await requestAccess() else {
             throw CalendarSnapshotError.accessDenied
         }
-        let predicate = store.predicateForEvents(
-            withStart: since, end: until, calendars: store.calendars(for: .event)
+        // Every ordinary event calendar, subscribed ones included (§2.1). The
+        // birthday source is synthesised from contact data rather than being a
+        // calendar the user keeps, so it is not part of the directory and its
+        // events never leave the device (§2.4).
+        return store.calendars(for: .event)
+            .filter { $0.source?.sourceType != .birthdays }
+            .compactMap { calendar in
+                // A calendar with an empty identifier cannot be named in the
+                // wire (the schema's `calendar_identifier` has minLength 1),
+                // and the server resolves names against this directory — an
+                // entry it cannot be addressed by is not an entry. EventKit
+                // types this non-optional, so emptiness is the only case.
+                let identifier = calendar.calendarIdentifier
+                guard !identifier.isEmpty else { return nil }
+                return CalendarDirectoryEntry(
+                    calendarIdentifier: identifier,
+                    title: calendar.title,
+                    sourceTitle: calendar.source?.title,
+                    allowsContentModifications: calendar.allowsContentModifications,
+                    isSubscribed: calendar.isSubscribed
+                )
+            }
+    }
+
+    // MARK: agent-created record
+
+    public func recordAgentCreated(_ record: AgentCreatedEvent) async {
+        await log.record(record)
+    }
+
+    // MARK: snapshot
+
+    public func snapshot(since: Date, until: Date, asOf: Date) async throws -> [CalendarMirrorEvent] {
+        let directory = try await calendarDirectory()
+        let mirrored = Set(
+            directory.filter { $0.uploadsEvents }.map(\.calendarIdentifier)
         )
-        let events = store.events(matching: predicate)
-        return events.map { event in
-            CalendarMirrorEvent(
-                eventIdentifier: event.eventIdentifier,
-                calendarIdentifier: event.calendar.calendarIdentifier,
+        let calendars = store.calendars(for: .event).filter {
+            mirrored.contains($0.calendarIdentifier)
+        }
+        guard !calendars.isEmpty else { return [] }
+
+        let predicate = store.predicateForEvents(
+            withStart: since, end: until, calendars: calendars
+        )
+        let created = await log.all()
+
+        var rows: [CalendarMirrorEvent] = []
+        rows.reserveCapacity(store.events(matching: predicate).count)
+        for event in store.events(matching: predicate) {
+            // An event EventKit cannot name or place has never been in any
+            // batch, so it has no mirror row to be tombstoned — skipping it
+            // is safe in a way that skipping a describable event would not be.
+            guard let eventIdentifier = event.eventIdentifier,
+                  !eventIdentifier.isEmpty,
+                  let owner = event.calendar?.calendarIdentifier
+            else { continue }
+            let source = CalendarMirrorSource(
+                eventIdentifier: eventIdentifier,
+                calendarIdentifier: owner,
                 title: event.title,
                 start: event.startDate,
                 end: event.endDate,
                 allDay: event.isAllDay,
                 location: event.location,
                 notes: event.notes,
+                timeZoneIdentifier: event.timeZone?.identifier,
                 lastModified: asOf
             )
+            guard let row = CalendarMirrorRules.mirrorEvent(
+                source, agentCreated: created[eventIdentifier], calendar: calendar
+            ) else {
+                throw CalendarSnapshotError.unrepresentable(eventID: eventIdentifier)
+            }
+            rows.append(row)
         }
+        return rows
     }
 }
 
 public enum CalendarSnapshotError: Error, Equatable, Sendable {
     case accessDenied
+    /// An event exists but cannot be described in the mirror wire. Fails the
+    /// window on purpose — see `CalendarStore.snapshot`'s contract.
+    case unrepresentable(eventID: String)
 }
 
 #endif

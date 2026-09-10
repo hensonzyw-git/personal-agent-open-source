@@ -1564,3 +1564,250 @@ struct PendingSendMarkerTests {
         #expect(decoded.deliveredActionIDs.isEmpty)
     }
 }
+
+// --- the device's own record of what it created (design §8, Q10) -------------
+
+/// A calendar store that answers a fixed outcome and remembers everything it
+/// was told, so the *real* executor's decisions are visible without EventKit.
+final class RecordingCalendarStore: CalendarStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _drafts: [CalendarEventDraft] = []
+    private var _records: [AgentCreatedEvent] = []
+    var drafts: [CalendarEventDraft] { lock.withLock { _drafts } }
+    var records: [AgentCreatedEvent] { lock.withLock { _records } }
+    /// What `save` answers; `created` unless a test says otherwise.
+    var outcome: CalendarSaveOutcome = .created(eventID: "EK-NEW-1")
+
+    func save(_ draft: CalendarEventDraft) async -> CalendarSaveOutcome {
+        lock.withLock { _drafts.append(draft) }
+        return outcome
+    }
+
+    func calendarDirectory() async throws -> [CalendarDirectoryEntry] { [] }
+
+    func recordAgentCreated(_ record: AgentCreatedEvent) async {
+        lock.withLock { _records.append(record) }
+    }
+
+    func snapshot(since: Date, until: Date, asOf: Date) async throws -> [CalendarMirrorEvent] { [] }
+}
+
+/// Holds the real executor until the session exists. `DeviceEventActionExecutor`
+/// takes its backend at construction and `makeChat` only *returns* the session,
+/// so the executor goes in through this box — the same late-binding shape
+/// `StubDeviceActionExecutor` uses, except what runs here is the real one.
+final class LateBoundExecutor: DeviceActionExecuting, @unchecked Sendable {
+    var inner: (any DeviceActionExecuting)?
+
+    func executeAndReport(_ action: DeviceEventAction) async -> OperationReceipt? {
+        await inner?.executeAndReport(action)
+    }
+
+    func failedReport(detail: String) -> DeviceActionResultBody { .failed(detail: detail) }
+}
+
+/// Carries the reply's action payload into the `@Sendable` route closure.
+/// `[String: Any]` is not `Sendable` and the closure is; the box is the same
+/// shape the other route stubs use for captured JSON.
+private final class PayloadBox: @unchecked Sendable {
+    let payload: [String: Any]
+    init(_ payload: [String: Any]) { self.payload = payload }
+}
+
+/// The record is what makes `created_by_agent` true later (§8) **and** what
+/// supplies an own all-day event's dates, because §3.2 forbids reading them
+/// back off EventKit. Both halves are decided here, at the write.
+@Suite("The device's own record of what it created", .serialized)
+struct AgentCreatedRecordTests {
+
+    private static let actionID = "018f0000-0000-7000-8000-00000000cafe"
+    private static let reportPath = "/v1/device-actions/\(actionID)/result"
+
+    /// An all-day action in the v2 shape the server seals: the two dates the
+    /// record has to keep, and the calendar binding (unused until §3.1/§3.2
+    /// land, carried here so the payload is the real one).
+    private static func allDayPayload() -> [String: Any] {
+        [
+            "action_id": actionID,
+            "tool": "calendar.create_event",
+            "event": [
+                "title": "西班牙旅行",
+                "start": "2026-10-01T00:00:00+08:00",
+                "end": "2026-10-03T00:00:00+08:00",
+                "all_day": true,
+                "calendar": "出游计划",
+                "calendar_identifier": "CAL-TRIP",
+                "calendar_title": "出游计划",
+                "timezone": NSNull(),
+                "start_date": "2026-10-01",
+                "end_date": "2026-10-03",
+            ],
+        ]
+    }
+
+    /// The reply carries the action; the report endpoint answers the way the
+    /// real one does — success only for a `created`/`duplicate` report.
+    private func answerWithAction(_ service: Service, payload: [String: Any]) {
+        let box = PayloadBox(payload)
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                var receipt = chatReceipt("source_in_progress", tool: "calendar.create_event")
+                receipt["device_actions"] = [box.payload]
+                return .ok(receipt)
+            case ("POST", let path) where path.hasPrefix("/v1/device-actions/"):
+                if call.string("result") == "created" || call.string("result") == "duplicate" {
+                    return .ok(chatReceipt(
+                        "succeeded", tool: "calendar.create_event",
+                        recordID: call.string("event_id") ?? "EK-NEW-1"
+                    ))
+                }
+                return .ok(chatReceipt(
+                    "failed_safe", tool: "calendar.create_event",
+                    failureReason: "DEVICE_EXECUTION_FAILED"
+                ))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+    }
+
+    /// The real executor, wired to the real send path and the recording store.
+    private func run(
+        payload: [String: Any], outcome: CalendarSaveOutcome, text: String
+    ) async throws -> (final: OperationReceipt, calendar: RecordingCalendarStore, service: Service) {
+        let service = Service()
+        answerWithAction(service, payload: payload)
+        let calendar = RecordingCalendarStore()
+        calendar.outcome = outcome
+        let executor = LateBoundExecutor()
+        let (chat, session, _) = try await makeChat(
+            service: service, deviceActionExecutor: executor
+        )
+        executor.inner = DeviceEventActionExecutor(store: calendar, backend: session)
+        let final = try await chat.send(text: text)
+        return (final, calendar, service)
+    }
+
+    @Test("a created event is recorded with the action's own dates")
+    func createdEventIsRecorded() async throws {
+        let (final, calendar, _) = try await run(
+            payload: Self.allDayPayload(),
+            outcome: .created(eventID: "EK-TRIP-1"),
+            text: "十月一号到三号去西班牙"
+        )
+
+        #expect(final.state == .succeeded)
+        let record = try #require(calendar.records.first)
+        #expect(calendar.records.count == 1)
+        // The action is the authorization record, so the dates come from it —
+        // not from an EventKit read-back, which §3.2 forbids for this case and
+        // which the mirror's all-day upload depends on.
+        #expect(record.eventIdentifier == "EK-TRIP-1")
+        #expect(record.allDay)
+        #expect(record.startDate == "2026-10-01")
+        #expect(record.endDate == "2026-10-03")
+        #expect(record.hasAllDaySpan)
+    }
+
+    @Test("a duplicate is not recorded, because this action did not write it")
+    func duplicateIsNotRecorded() async throws {
+        // The local check found a same-title event in the window. It may be
+        // the user's own, and claiming it would make the mirror read an
+        // all-day event's dates off this action instead of off the device.
+        let (final, calendar, _) = try await run(
+            payload: Self.allDayPayload(),
+            outcome: .duplicate(existingID: "EK-SOMEONE-ELSE"),
+            text: "十月一号到三号去西班牙"
+        )
+
+        #expect(final.state == .succeeded)
+        #expect(calendar.drafts.count == 1, "the save was attempted")
+        #expect(calendar.records.isEmpty)
+    }
+
+    @Test("a refused or failed write is not recorded either")
+    func deniedAndFailedAreNotRecorded() async throws {
+        for outcome in [
+            CalendarSaveOutcome.denied, .failed(detail: "no writable calendar"),
+        ] {
+            let (final, calendar, _) = try await run(
+                payload: Self.allDayPayload(), outcome: outcome,
+                text: "十月一号到三号去西班牙"
+            )
+            #expect(final.state == .failedSafe)
+            #expect(calendar.records.isEmpty)
+        }
+    }
+
+    @Test("a v1 action still runs, with no calendar binding and no all-day span")
+    func v1ActionStillRuns() async throws {
+        // The delivery gate stops a v2 action reaching a v1 client, never the
+        // reverse: this build can meet an action from a server that predates
+        // the v2 fields. It must execute it the way the v1 build did rather
+        // than refuse it or invent the missing fields.
+        let (final, calendar, _) = try await run(
+            payload: [
+                "action_id": Self.actionID,
+                "tool": "calendar.create_event",
+                "event": [
+                    "title": "网球", "start": "2026-09-12T15:00:00Z",
+                    "end": "2026-09-12T16:30:00Z", "all_day": false,
+                ],
+            ],
+            outcome: .created(eventID: "EK-TENNIS"),
+            text: "周六下午三点网球"
+        )
+
+        #expect(final.state == .succeeded)
+        let record = try #require(calendar.records.first)
+        #expect(record.eventIdentifier == "EK-TENNIS")
+        #expect(!record.allDay)
+        // A timed event has no all-day span to vouch for, and `hasAllDaySpan`
+        // is exactly what the mirror checks before trusting the dates.
+        #expect(!record.hasAllDaySpan)
+    }
+
+    @Test("a malformed v2 date is refused, not repaired into a wrong day")
+    func malformedV2DateIsRefused() async throws {
+        // §5.1's fail-closed shape at this boundary: the server promised the
+        // schema's `^\d{4}-\d{2}-\d{2}$`, so a value outside it means the
+        // hand-off cannot be trusted. Writing anyway would put the event on a
+        // date nobody authorised — `2026-13-99` must not become 2027-03-09.
+        var payload = Self.allDayPayload()
+        var event = payload["event"] as! [String: Any]
+        event["start_date"] = "2026-13-99"
+        payload["event"] = event
+
+        let (final, calendar, service) = try await run(
+            payload: payload, outcome: .created(eventID: "EK-TRIP-1"),
+            text: "十月一号到三号去西班牙"
+        )
+
+        #expect(calendar.drafts.isEmpty, "nothing was written")
+        #expect(calendar.records.isEmpty, "and nothing was claimed")
+        #expect(final.state == .failedSafe)
+        // Reported, not silent: silence is what the server's sweep would read
+        // as needs_manual_review, and a malformed action is a *known* failure.
+        #expect(service.count("POST", Self.reportPath) == 1)
+        let report = try #require(service.log.first { $0.path == Self.reportPath })
+        #expect(report.string("result") == "failed")
+    }
+
+    @Test("half an all-day pair is refused: one date is a half-truth")
+    func halfAnAllDayPairIsRefused() async throws {
+        var payload = Self.allDayPayload()
+        var event = payload["event"] as! [String: Any]
+        event["end_date"] = NSNull()
+        payload["event"] = event
+
+        let (final, calendar, service) = try await run(
+            payload: payload, outcome: .created(eventID: "EK-TRIP-1"),
+            text: "十月一号到三号去西班牙"
+        )
+
+        #expect(calendar.drafts.isEmpty)
+        #expect(final.state == .failedSafe)
+        #expect(service.count("POST", Self.reportPath) == 1)
+    }
+}

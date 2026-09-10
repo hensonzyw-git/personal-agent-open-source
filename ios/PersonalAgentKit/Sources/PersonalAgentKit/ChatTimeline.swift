@@ -1169,10 +1169,16 @@ public protocol ChatBackend: Sendable {
     /// deleted — the device is the fact source. `snapshotAsOf` is the batch's
     /// version, identical across every batch of one window (second review F1:
     /// the server's schema requires it).
+    ///
+    /// `calendars` rides on every batch and is idempotent (§2.1). It carries
+    /// **all** ordinary event calendars, subscribed ones included, so the
+    /// server can recognise and refuse them; the `events` alongside it come
+    /// only from the non-subscribed ones.
     func uploadCalendarSync(
         windowStart: Date,
         windowEnd: Date,
         events: [CalendarMirrorEvent],
+        calendars: [CalendarDirectoryEntry],
         windowComplete: Bool,
         snapshotAsOf: Date
     ) async throws -> CalendarSyncResponse

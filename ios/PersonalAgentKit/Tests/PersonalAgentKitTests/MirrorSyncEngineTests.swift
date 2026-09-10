@@ -17,10 +17,19 @@ import Testing
 private struct StubMirrorCalendarStore: CalendarStore {
     var events: [CalendarMirrorEvent]
     var error: Error?
+    var directory: [CalendarDirectoryEntry] = []
+    var directoryError: Error?
 
     func save(_ draft: CalendarEventDraft) async -> CalendarSaveOutcome {
         .failed(detail: "not used in these tests")
     }
+
+    func calendarDirectory() async throws -> [CalendarDirectoryEntry] {
+        if let directoryError { throw directoryError }
+        return directory
+    }
+
+    func recordAgentCreated(_ record: AgentCreatedEvent) async {}
 
     func snapshot(since: Date, until: Date, asOf: Date) async throws -> [CalendarMirrorEvent] {
         if let error { throw error }
@@ -32,17 +41,24 @@ private struct StubMirrorCalendarStore: CalendarStore {
 /// optional "lose the network after N batches" failure shape.
 private final class StubMirrorBackend: ChatBackend, @unchecked Sendable {
     private let lock = NSLock()
-    private var _uploads: [(windowStart: Date, windowEnd: Date, events: [CalendarMirrorEvent], windowComplete: Bool)] = []
-    var uploads: [(Date, Date, [CalendarMirrorEvent], Bool)] { lock.withLock { _uploads } }
+    private var _uploads: [(windowStart: Date, windowEnd: Date, events: [CalendarMirrorEvent], calendars: [CalendarDirectoryEntry], windowComplete: Bool)] = []
+    var uploads: [(Date, Date, [CalendarMirrorEvent], Bool)] {
+        lock.withLock { _uploads.map { ($0.windowStart, $0.windowEnd, $0.events, $0.windowComplete) } }
+    }
+    /// The directory each batch carried, in upload order.
+    var uploadedDirectories: [[CalendarDirectoryEntry]] {
+        lock.withLock { _uploads.map(\.calendars) }
+    }
     /// When > 0, batch number `failAfterBatches` (1-based) throws.
     var failAfterBatches = 0
 
     func uploadCalendarSync(
         windowStart: Date, windowEnd: Date, events: [CalendarMirrorEvent],
+        calendars: [CalendarDirectoryEntry],
         windowComplete: Bool, snapshotAsOf: Date
     ) async throws -> CalendarSyncResponse {
         let shouldFail = lock.withLock {
-            _uploads.append((windowStart, windowEnd, events, windowComplete))
+            _uploads.append((windowStart, windowEnd, events, calendars, windowComplete))
             return failAfterBatches > 0 && _uploads.count == failAfterBatches
         }
         if shouldFail {
@@ -312,12 +328,14 @@ struct MirrorSyncEngineTests {
         // Two batches of the same window: same snapshot instant.
         _ = try await client.uploadCalendarSync(
             windowStart: window.start, windowEnd: window.end,
-            events: Array(events.prefix(2)), windowComplete: false,
+            events: Array(events.prefix(2)), calendars: [],
+            windowComplete: false,
             snapshotAsOf: instant, token: "token"
         )
         _ = try await client.uploadCalendarSync(
             windowStart: window.start, windowEnd: window.end,
-            events: Array(events.suffix(1)), windowComplete: true,
+            events: Array(events.suffix(1)), calendars: [],
+            windowComplete: true,
             snapshotAsOf: instant, token: "token"
         )
         let bodies = box.all

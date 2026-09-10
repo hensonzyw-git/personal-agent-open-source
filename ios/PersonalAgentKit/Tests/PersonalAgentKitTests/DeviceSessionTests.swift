@@ -532,6 +532,74 @@ struct DeviceSessionTests {
 
 // --- the declared wire version ------------------------------------------------
 
+/// A stub of this suite's own, deliberately not `StubProtocol`.
+///
+/// `StubProtocol` answers through one process-wide static handler, and the two
+/// suites in this file run concurrently (`.serialized` orders tests *within* a
+/// suite, never between two). Sharing it made the enrollment suite answer 500
+/// whenever this suite's handler won the race — the assertion here never reads
+/// a reply, so the interference could only ever show up as someone else's
+/// failure. This stub has no handler to race on: its answer is fixed at 500 by
+/// construction, which is exactly what the test needs (the header is set before
+/// the request leaves, so an unusable body is the point).
+private final class HeaderStubProtocol: URLProtocol {
+    nonisolated(unsafe) static var headers: [[String: String]] = []
+    nonisolated(unsafe) static var paths: [String] = []
+    private static let lock = NSLock()
+
+    static func reset() {
+        lock.withLock {
+            headers = []
+            paths = []
+        }
+    }
+
+    static func count(_ path: String) -> Int {
+        lock.withLock { paths.filter { $0 == path }.count }
+    }
+
+    /// The value a named header carried on **every** request this stub saw.
+    /// Nil when any request omitted it, or when none was made — a declaration
+    /// that holds on some requests and not others is exactly the drift this is
+    /// here to catch.
+    static func unanimousHeader(_ name: String) -> String? {
+        let seen = lock.withLock { headers }
+        guard !seen.isEmpty else { return nil }
+        let values = seen.map { $0[name] }
+        guard let first = values.first, first != nil else { return nil }
+        return values.allSatisfy { $0 == first } ? first : nil
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let recorded = request.allHTTPHeaderFields ?? [:]
+        HeaderStubProtocol.lock.withLock {
+            HeaderStubProtocol.headers.append(recorded)
+            HeaderStubProtocol.paths.append(request.url?.path ?? "")
+        }
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 500, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data())
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    static func client() throws -> AgentClient {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [HeaderStubProtocol.self]
+        return try AgentClient(
+            baseURL: URL(string: "http://127.0.0.1:8811")!,
+            session: URLSession(configuration: configuration)
+        )
+    }
+}
+
 /// The header the server's calendar issuance and delivery gates read (design
 /// §2.5, R1-F1).
 ///
@@ -554,14 +622,8 @@ struct ClientWireVersionTests {
 
     @Test("every request this build sends declares it, without exception")
     func everyRequestDeclaresIt() async throws {
-        StubProtocol.reset()
-        // The answers are deliberately unusable. The header is set before the
-        // request leaves, so what the server replies cannot change what this
-        // test reads — and a test that needed five valid bodies would be
-        // checking only the calls someone remembered to give a body to, which
-        // is the same omission it is meant to catch.
-        StubProtocol.handler = { _ in .init(status: 500, body: Data()) }
-        let client = try stubbedClient()
+        HeaderStubProtocol.reset()
+        let client = try HeaderStubProtocol.client()
         let key = "018f0000-0000-7000-8000-0000000000ff"
 
         _ = try? await client.requestChallenge(deviceID: deviceID)
@@ -576,6 +638,7 @@ struct ClientWireVersionTests {
             windowStart: Date(timeIntervalSince1970: 0),
             windowEnd: Date(timeIntervalSince1970: 86_400),
             events: [],
+            calendars: [],
             windowComplete: true,
             snapshotAsOf: Date(timeIntervalSince1970: 0),
             token: "t"
@@ -583,10 +646,10 @@ struct ClientWireVersionTests {
 
         // The requests really went out; a stub that recorded nothing would
         // make the assertion below pass for the wrong reason.
-        #expect(StubProtocol.count("/v1/chat/messages") == 1)
-        #expect(StubProtocol.count("/v1/calendar/sync") == 1)
+        #expect(HeaderStubProtocol.count("/v1/chat/messages") == 1)
+        #expect(HeaderStubProtocol.count("/v1/calendar/sync") == 1)
         #expect(
-            StubProtocol.unanimousHeader(ClientWireVersion.header)
+            HeaderStubProtocol.unanimousHeader(ClientWireVersion.header)
                 == ClientWireVersion.value
         )
     }
