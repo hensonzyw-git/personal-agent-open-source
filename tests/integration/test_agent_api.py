@@ -65,6 +65,7 @@ from personal_agent.storage.engine import (
 )
 from envelope_factory import envelope_factory
 from personal_agent.storage.models import (
+    ApiRequest,
     ContextSession,
     ContextCheckpoint,
     Conversation,
@@ -568,6 +569,94 @@ def test_the_same_key_with_a_different_body_conflicts(engine, token_ring, keyrin
         headers=_auth(token_ring),
     )
     assert resp.status_code == 409
+
+
+# --- the parts boundary (§3.1) ----------------------------------------------
+#
+# Text and parts are two forms of one request, and the boundary decides which
+# one it is before anything is persisted. A refusal here has to leave nothing
+# behind: §3.1's "非法 part 不落事件、不创建 operation" is what separates a
+# rejected request from a half-accepted one.
+
+
+def _parts_client(engine, token_ring, keyring):
+    return _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("ok")),
+        dispatcher=FakeDispatcher(),
+    )
+
+
+def _chat_rows(engine) -> tuple[int, int]:
+    with session_factory(engine)() as session:
+        return (
+            session.query(ApiRequest).count(),
+            session.query(Operation).count(),
+        )
+
+
+def test_a_parts_request_is_refused_while_the_chain_is_incomplete(
+    engine, token_ring, keyring
+) -> None:
+    """A photo the model never receives must be refused, not acknowledged.
+
+    The gateway input half and the capability switch do not exist yet, so an
+    accepted parts request would be anchored and shown to the user as sent
+    while the model saw only the text. §3.1 requires the refusal instead, and
+    it must happen "在任何模型调用前" -- so nothing is persisted either.
+    """
+    client = _parts_client(engine, token_ring, keyring)
+    resp = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "parts": [
+                {"type": "text", "text": "这张账单记一下"},
+                {"type": "image_ref", "media_id": "media_1"},
+            ],
+        },
+        headers=_auth(token_ring),
+    )
+    assert resp.status_code != 200
+    assert resp.json()["error"]["code"] == "UNSUPPORTED_OPERATION"
+    assert _chat_rows(engine) == (0, 0)
+
+
+def test_a_structurally_bad_part_is_not_reported_as_not_ready(
+    engine, token_ring, keyring
+) -> None:
+    """The two refusals answer different questions and must stay apart.
+
+    Reporting a malformed part as "not available yet" would tell a client to
+    retry later something that can never succeed, and would hide the typo that
+    caused it.
+    """
+    client = _parts_client(engine, token_ring, keyring)
+    resp = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "parts": [{"type": "image_ref", "media_id": "media_1", "data": "AAA"}],
+        },
+        headers=_auth(token_ring),
+    )
+    assert resp.json()["error"]["code"] == "INVALID_ARGUMENT"
+    assert _chat_rows(engine) == (0, 0)
+
+
+def test_text_and_parts_together_are_refused(engine, token_ring, keyring) -> None:
+    client = _parts_client(engine, token_ring, keyring)
+    resp = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "这张账单记一下",
+            "parts": [{"type": "image_ref", "media_id": "media_1"}],
+        },
+        headers=_auth(token_ring),
+    )
+    assert resp.json()["error"]["code"] == "INVALID_ARGUMENT"
+    assert _chat_rows(engine) == (0, 0)
 
 
 def test_confirmed_new_topic_cancels_a_parked_operation_and_writes_a_divider(

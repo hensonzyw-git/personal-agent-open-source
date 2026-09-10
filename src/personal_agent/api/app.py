@@ -40,6 +40,7 @@ from sqlalchemy import text as text_clause
 from sqlalchemy.exc import IntegrityError
 
 from personal_agent.api import events
+from personal_agent.api.chat_parts import parse_chat_parts, parts_text
 from personal_agent.api.finance_query_projection import (
     FinanceQueryProjectionError,
     decode_finance_query_projection,
@@ -575,7 +576,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         body = await _json_body(request)
         key = idempotency_key(request)
         conversation_id = _required(body, "conversation_id")
-        text = _required(body, "text")
+        text = _chat_text(body)
         clarification_of = _optional_operation_id(body, "clarification_of")
         start_new_session = _optional_bool(body, "start_new_session", default=False)
         if start_new_session and clarification_of is not None:
@@ -2677,6 +2678,62 @@ def _operation_event_content(
         if value is not None:
             content[name] = value
     return content
+
+
+def _chat_text(body: dict[str, Any]) -> str:
+    """The request's effective text, from exactly one of `text` and `parts`.
+
+    §3.1: "text 与 parts 恰有一个". A parts request carries its text inside the
+    parts, so the two are not merged and not defaulted: sending both is a
+    refusal rather than a choice of which one wins, because a caller who sends
+    both has a different request in mind than the server can guess at.
+
+    For a parts request the effective text is :func:`parts_text`, which is `""`
+    when the user sent images and nothing else -- a legitimate request, and the
+    reason this cannot simply delegate to `_required`.
+    """
+    has_parts = "parts" in body
+    has_text = "text" in body
+    if has_parts and has_text:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail="text and parts are mutually exclusive",
+        )
+    if not has_parts:
+        return _required(body, "text")
+    parts = parse_chat_parts(body["parts"])
+    _require_multimodal_ready()
+    return parts_text(parts)
+
+
+#: The links an image must traverse to reach the model, and which do not exist
+#: yet. This is a fact about this build, not a policy anyone chose: each entry
+#: is deleted by the change that lands it, and when the tuple is empty the
+#: guard below is a no-op that can go with them.
+#:
+#: `gateway_input_part` is the model-input half (§12, #12). Without it an
+#: anchored photo would be silently absent from the model's view -- accepted,
+#: acknowledged, and never seen, which §5.1 forbids outright.
+#: `media_capability` is §8's composed switch (#13): declared vision support,
+#: media/backup/deletion readiness, and the scanner exemption. §3.1 requires
+#: both to be settled "在任何模型调用前", and until they are, refusing is the
+#: only answer that does not lie to the user about what the system did.
+_MULTIMODAL_MISSING_LINKS: tuple[str, ...] = (
+    "gateway_input_part",
+    "media_capability",
+)
+
+
+def _require_multimodal_ready() -> None:
+    """Refuse a parts request while the chain it needs is still incomplete."""
+    if _MULTIMODAL_MISSING_LINKS:
+        raise AppError(
+            ErrorCode.UNSUPPORTED_OPERATION,
+            internal_detail=(
+                "multimodal chat is not available yet: missing "
+                + ", ".join(_MULTIMODAL_MISSING_LINKS)
+            ),
+        )
 
 
 def _required(body: dict[str, Any], field: str) -> str:
