@@ -22,12 +22,31 @@ public struct AcceptanceChecklistItem: Sendable, Equatable, Identifiable {
     /// 看到什么即通过 — stated as something a person can look at and answer yes
     /// or no to, never as "the card works".
     public let pass: String
+    /// Whether this item can only be ticked if the anchored card still offers
+    /// its two 核对 buttons.
+    ///
+    /// A field rather than a turn of phrase, and it exists because a turn of
+    /// phrase was not enough. The 2026-09-10 review found the checklist asking a
+    /// person to look at a 人工核对 prompt the build could not show: the script
+    /// had one legacy record and a marker answering it, and the card hides its
+    /// guidance and buttons once the operation is answered. Nothing in the file
+    /// said which items depended on the buttons still being there, so nothing
+    /// could notice. `AcceptanceScenarioTests` now fails if a flag here and the
+    /// seeded script disagree.
+    public let requiresAnswerableCard: Bool
 
-    public init(id: String, anchorEventID: String, title: String, pass: String) {
+    public init(
+        id: String,
+        anchorEventID: String,
+        title: String,
+        pass: String,
+        requiresAnswerableCard: Bool = false
+    ) {
         self.id = id
         self.anchorEventID = anchorEventID
         self.title = title
         self.pass = pass
+        self.requiresAnswerableCard = requiresAnswerableCard
     }
 }
 
@@ -65,7 +84,8 @@ public enum AcceptanceChecklist {
             anchorEventID: "evt_accept_008",
             title: "人工核对（日历域）",
             pass: "卡片说「请打开 iPhone 日历…核对这条日程」，标识符一栏写"
-                + "「事件标识符」，两个按钮是「日历里有这条日程」和「日历里没有」。"
+                + "「事件标识符」，两个按钮是「日历里有这条日程」和「日历里没有」。",
+            requiresAnswerableCard: true
         ),
         AcceptanceChecklistItem(
             id: "confirm-dialog",
@@ -73,14 +93,17 @@ public enum AcceptanceChecklist {
             title: "确认弹窗（点上面那张卡的任一结论）",
             pass: "弹窗标题随点的是哪个按钮而变，分别是「确认日历里有这条日程？」"
                 + "和「确认日历里没有这条日程？」；正文说「不会改动日历」。"
-                + "弹窗里**不能**出现「账本」。"
+                + "弹窗里**不能**出现「账本」。",
+            requiresAnswerableCard: true
         ),
         AcceptanceChecklistItem(
             id: "review-ledger",
-            anchorEventID: "evt_accept_013",
+            anchorEventID: "evt_accept_016",
             title: "人工核对（无 domain 的旧记录）",
-            pass: "卡片回落到账本措辞（「请先在飞书账本里核对这一笔」）。"
-                + "这是旧记录的既定行为，不是缺陷。"
+            pass: "卡片回落到账本措辞（「请先在飞书账本里核对这一笔」），"
+                + "并且**两个结论按钮都在**——这一张还没有被核对过。"
+                + "这是旧记录的既定行为，不是缺陷。",
+            requiresAnswerableCard: true
         ),
         AcceptanceChecklistItem(
             id: "marker-calendar",
@@ -93,14 +116,19 @@ public enum AcceptanceChecklist {
             anchorEventID: "evt_accept_014",
             title: "核对结论标记（旧事件，无 domain）",
             pass: "历史行写「已人工核对：你核对到它已经存在（核对目标未记录）」，"
-                + "**不出现**「账本」，也**不出现**「日历」。"
+                + "**不出现**「账本」，也**不出现**「日历」。这是这一张**已经被"
+                + "核对过**的旧记录留下的行——上面「无 domain 的旧记录」那一项"
+                + "是另一条还没有被核对的记录。"
         ),
         AcceptanceChecklistItem(
             id: "relaunch",
             anchorEventID: "evt_accept_001",
             title: "杀进程重启后的历史恢复",
-            pass: "从后台完全划掉 App 再打开：上面每一张卡片都还在，顺序不变，"
-                + "列表卡的两行日程与重启前逐字相同。"
+            pass: "先在「无 domain 的旧记录」那张卡上点一个结论，看到历史里多出"
+                + "一行；再从后台完全划掉 App 重开：**你刚点出来的那一行还在**，"
+                + "上面每一张卡片也都还在，顺序不变，列表卡的两行日程与重启前"
+                + "逐字相同。**只看「还在」不够**——重新生成的种子会让同样的卡片"
+                + "原样出现，所以判据是你自己点出来的那一行是否被保留。"
         ),
     ]
 

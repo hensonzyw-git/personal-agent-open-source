@@ -145,3 +145,38 @@ public struct ManualReviewCopy: Sendable, Equatable {
         domain == OperationReceipt.calendarDomain ? .calendar : .ledger
     }
 }
+
+/// Which operations the loaded Timeline says have already been answered.
+///
+/// One statement of one rule, because two statements of it produced a defect.
+/// The 2026-09-10 review found the acceptance checklist asking a person to look
+/// for a 人工核对 prompt that the build could not show: the script seeded a
+/// legacy record *and* a marker answering it, and the card hides its guidance
+/// and buttons once the operation is answered. The rule itself is a single
+/// fold — a `manual_review_resolved` event answers the operation it names — and
+/// it had been written out in the view model and, silently, again in the
+/// fixture, where nothing checked the two against each other.
+///
+/// It lives here, rather than in the view model, so the acceptance tests can ask
+/// the same question the screen asks. `ChatModel.mirror` folds through this;
+/// `AcceptanceScenarioTests` uses it to assert that a card the checklist calls
+/// answerable really still is. Two copies would drift the same way twice.
+///
+/// The domain is deliberately not returned. What this answers is *whether* a
+/// conclusion has been recorded; the wording fork is `ManualReviewCopy`'s, and
+/// a caller that wanted the domain would be re-deriving the fork from a map.
+public enum ManualReviewResolutionIndex {
+
+    /// `operation_id` → the recorded resolution wire value. Timeline order, so
+    /// a later marker for the same operation wins.
+    public static func answered(by events: [TimelineEvent]) -> [String: String] {
+        var answered: [String: String] = [:]
+        for event in events {
+            guard case .manualReviewResolved(let resolution, _) = event.kind,
+                  let operationID = event.operationID
+            else { continue }
+            answered[operationID] = resolution
+        }
+        return answered
+    }
+}

@@ -655,6 +655,16 @@ final class ChatModel {
     private func mirror() async {
         events = await timeline.events
         hasOlder = await timeline.hasOlder
+        // Same merge rule, same reason as the duplicate map below: the card that
+        // offered the buttons and the marker that closes it are different
+        // events, and a rebuild from `events` alone would re-offer a conclusion
+        // the server has already recorded — where the second tap is either a
+        // no-op or, if the user changes their mind, a `409` the screen would
+        // have invited. The rule itself is stated once, in the Kit, because the
+        // acceptance tests have to ask the screen's own question.
+        resolvedManualReviews.merge(
+            ManualReviewResolutionIndex.answered(by: events)
+        ) { _, newest in newest }
         // The query gate is read here rather than at the card, for the same
         // reason everything else on screen is re-derived here: one funnel, one
         // statement of what this screen currently knows.
@@ -671,18 +681,10 @@ final class ChatModel {
             if case .duplicateDecision(let checkID, let decision) = event.kind {
                 resolvedDuplicateDecisions[checkID] = decision
             }
-            // Same merge rule, same reason: the card that offered the buttons and
-            // the marker that closes it are different events, and a rebuild from
-            // `events` alone would re-offer a conclusion the server has already
-            // recorded — where the second tap is either a no-op or, if the user
-            // changes their mind, a `409` the screen would have invited.
-            // The domain is the marker's rendering fork; what this map answers is
-            // only "has a conclusion been recorded for this operation", so it is
-            // deliberately not read here.
-            if case .manualReviewResolved(let resolution, _) = event.kind,
-               let operationID = event.operationID {
-                resolvedManualReviews[operationID] = resolution
-            }
+            // (The manual-review map is folded below rather than in this loop:
+            // it is the same merge rule, and it is the one fold whose rule the
+            // acceptance tests also have to ask — see
+            // `ManualReviewResolutionIndex`.)
             if case .expenseCategoryCorrected(let recordID, let record) = event.kind {
                 currentRecords[recordID] = record
             }

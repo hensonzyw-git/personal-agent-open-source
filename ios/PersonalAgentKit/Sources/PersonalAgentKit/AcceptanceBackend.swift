@@ -43,6 +43,14 @@ public enum AcceptanceHarnessError: Error, Equatable, LocalizedError {
     case noMirror
     /// The action id names no seeded operation.
     case unknownAction(String)
+    /// An archive is on disk and could not be read or decoded.
+    ///
+    /// A typed refusal rather than a fallback, and the distinction is the whole
+    /// of the restart item: a build that quietly re-seeded over a damaged file
+    /// would show the same cards, in the same order, with the same wording —
+    /// passing 「内容和顺序不变」 while proving nothing about recovery. The
+    /// detail is carried so the screen can say which of the two happened.
+    case archiveUnreadable(String)
 
     public var errorDescription: String? {
         switch self {
@@ -56,6 +64,10 @@ public enum AcceptanceHarnessError: Error, Equatable, LocalizedError {
             return "验收构建不读日历、也不上传镜像。"
         case .unknownAction(let id):
             return "验收构建里没有这个设备动作：\(id)"
+        case .archiveUnreadable(let detail):
+            return "验收归档存在于磁盘上，但这次打不开：\(detail)。"
+                + "这不是「第一次启动」——重新生成会掩盖重启恢复的问题，"
+                + "所以这里直接停下来。请点「重置」重写归档，然后重新走一遍清单。"
         }
     }
 }
@@ -177,20 +189,51 @@ public actor AcceptanceTimeline: ChatBackend {
         archive = fresh
     }
 
+    /// The archive, from memory, from disk, or seeded — and **never** re-seeded
+    /// over something already there.
+    ///
+    /// The 2026-09-10 review found the two failure modes folded into one: a read
+    /// error and a decode error both fell through to `AcceptanceScenario.seed()`
+    /// and a rewrite. A damaged archive therefore came back as the same cards in
+    /// the same order, which is exactly what the 「杀进程重启」 item asks a person
+    /// to confirm — the item would have been ticked on a build that had not
+    /// recovered anything.
+    ///
+    /// So the branches are now three, not two: absent → seed it; present and
+    /// readable → use it; present and *not* readable → refuse, loudly, with the
+    /// reason. The last one is the only one this build has no answer for, and
+    /// saying so is the point of it.
     private func loaded() throws -> AcceptanceScenario.Seed {
         if let archive { return archive }
         let seed: AcceptanceScenario.Seed
-        if let data = try? Data(contentsOf: location.fileURL),
-           let stored = try? JSONDecoder().decode(
-               StoredAcceptanceArchive.self, from: data
-           ) {
-            seed = stored.seed
+        if FileManager.default.fileExists(atPath: location.fileURL.path) {
+            seed = try Self.read(from: location)
         } else {
             seed = AcceptanceScenario.seed()
             try Self.write(seed, to: location)
         }
         archive = seed
         return seed
+    }
+
+    /// Read an archive that is known to exist. Both failures refuse: a file the
+    /// process cannot open and a file it cannot parse are the same fact from
+    /// here — this build does not have the archive it was supposed to recover.
+    private static func read(
+        from location: AcceptanceArchiveLocation
+    ) throws -> AcceptanceScenario.Seed {
+        let data: Data
+        do {
+            data = try Data(contentsOf: location.fileURL)
+        } catch {
+            throw AcceptanceHarnessError.archiveUnreadable(error.localizedDescription)
+        }
+        do {
+            return try JSONDecoder()
+                .decode(StoredAcceptanceArchive.self, from: data).seed
+        } catch {
+            throw AcceptanceHarnessError.archiveUnreadable(error.localizedDescription)
+        }
     }
 
     private static func write(

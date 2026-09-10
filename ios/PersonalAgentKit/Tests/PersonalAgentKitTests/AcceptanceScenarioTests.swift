@@ -70,6 +70,63 @@ struct AcceptanceScenarioTests {
         }
     }
 
+    /// The check the 2026-09-10 review asked for, stated as a property of the
+    /// script rather than as a turn of phrase in an item.
+    ///
+    /// An item flagged `requiresAnswerableCard` is one a person can only tick if
+    /// the card still shows its 核对 prompt and both buttons. `ChatView` hides
+    /// them once the operation is answered, and "answered" is a fact about the
+    /// whole Timeline — a marker *later in the script* closes a card *earlier*
+    /// in it. That is how the legacy item came to ask for a prompt the build
+    /// could not show, with everything green.
+    @Test("a card the checklist says can be answered is not already answered")
+    func theAnswerableCardsAreAnswerable() throws {
+        let answered = ManualReviewResolutionIndex.answered(by: seed.events)
+        var checked = 0
+        for item in AcceptanceChecklist.items where item.requiresAnswerableCard {
+            let anchored = try #require(
+                event(item.anchorEventID),
+                "\(item.id) anchors \(item.anchorEventID), which is not seeded"
+            )
+            let operationID = try #require(anchored.operationID)
+            let receipt = try #require(
+                AcceptanceScenario.receipt(operationID, in: seed),
+                "\(operationID) has an event but no projection"
+            )
+            guard case .needsManualReview = receipt.outcome else {
+                Issue.record("\(item.id) is about \(operationID), which is not a review card")
+                continue
+            }
+            #expect(
+                answered[operationID] == nil,
+                "\(item.id) asks for the 核对 prompt on \(operationID), but a manual_review_resolved marker in the same script answers it and the card hides its guidance and buttons"
+            )
+            checked += 1
+        }
+        // A loop over an empty set passes. These are the three items the flag is
+        // for, so a later edit that dropped the flag would fail here instead.
+        #expect(checked == 3, "only \(checked) items declare an answerable card")
+    }
+
+    @Test("the answered shape is still in the walk-through")
+    func theAnsweredCardsAreStillSeeded() throws {
+        // The other half of the check above: a script where *nothing* is answered
+        // would satisfy it trivially, and the neutral marker copy is exactly the
+        // case of an operation that has been.
+        let answered = ManualReviewResolutionIndex.answered(by: seed.events)
+        let legacy = try #require(
+            AcceptanceScenario.receipt("op-accept-review-legacy", in: seed)
+        )
+        guard case .needsManualReview = legacy.outcome else {
+            Issue.record("op-accept-review-legacy is no longer a review card")
+            return
+        }
+        #expect(answered["op-accept-review-legacy"] != nil)
+        // And the unanswered record is a *different* operation, which is the
+        // whole of the review's first finding.
+        #expect(answered["op-accept-review-legacy-pending"] == nil)
+    }
+
     // --- the seeded cards project to what the checklist claims ----------------
 
     @Test("the list card is the calendar query, with the all-day range closed")
@@ -301,30 +358,101 @@ struct AcceptanceHarnessTests {
     func theRestartRecovers() async throws {
         let location = try temporaryLocation()
         let first = AcceptanceTimeline(location: location)
-        _ = try await first.timelinePage(
+        let opening = try await first.timelinePage(
             conversationID: AcceptanceScenario.conversationID,
             cursor: nil, direction: .older, limit: nil
         )
-        // A conclusion recorded in the first launch is the proof that what the
-        // second launch reads is the file and not a fresh seed: a reseed would
-        // silently drop it.
+        // The card the person is asked to answer in the relaunch item. Answering
+        // it *not* is the stronger choice: the seed holds no conclusion for this
+        // operation, so a marker with this value can only have come from here.
+        let operationID = "op-accept-review-calendar"
+        #expect(ManualReviewResolutionIndex.answered(by: opening.events)[operationID] == nil)
         _ = try await first.resolveManualReview(
-            operationID: "op-accept-review-calendar",
+            operationID: operationID,
             resolution: .confirmedNotWritten
         )
-        let markerCount = try await first.timelinePage(
-            conversationID: AcceptanceScenario.conversationID,
-            cursor: nil, direction: .older, limit: nil
-        ).events.filter { $0.eventType == "manual_review_resolved" }.count
 
         let second = AcceptanceTimeline(location: location)
         let page = try await second.timelinePage(
             conversationID: AcceptanceScenario.conversationID,
             cursor: nil, direction: .older, limit: nil
         )
-        #expect(page.events.filter { $0.eventType == "manual_review_resolved" }.count
-            == markerCount)
+        // Read through the same index the view model uses to decide whether to
+        // hide the buttons, so "restored" means the same thing in the test as it
+        // does on the screen.
+        let answered = ManualReviewResolutionIndex.answered(by: page.events)
+        #expect(
+            answered[operationID] == ManualResolution.confirmedNotWritten.rawValue,
+            "the conclusion recorded in the first launch did not survive the second — a re-seeded archive would look identical without it"
+        )
         #expect(page.events.count == AcceptanceScenario.seed().events.count + 1)
+    }
+
+    @Test("an archive that will not decode stops the launch instead of reseeding")
+    func aCorruptArchiveIsRefused() async throws {
+        let location = try temporaryLocation()
+        // A plausible kind of damage: the file is there, and it is not what the
+        // harness wrote. Reseeding here would redraw the identical cards and let
+        // the relaunch item pass while proving nothing.
+        let damaged = Data("{\"seed\": ".utf8)
+        try damaged.write(to: location.fileURL)
+
+        let timeline = AcceptanceTimeline(location: location)
+        await #expect(throws: AcceptanceHarnessError.self) {
+            _ = try await timeline.timelinePage(
+                conversationID: AcceptanceScenario.conversationID,
+                cursor: nil, direction: .older, limit: nil
+            )
+        }
+        // And it is a refusal, not a repair: the bytes on disk are untouched.
+        #expect(try Data(contentsOf: location.fileURL) == damaged)
+    }
+
+    @Test("an archive that will not read stops the launch instead of reseeding")
+    func anUnreadableArchiveIsRefused() async throws {
+        let location = try temporaryLocation()
+        // A directory at the file's path: `fileExists` is true and the read
+        // fails, which is the other way into the same branch. Built this way
+        // rather than with permissions so the test does not depend on the user
+        // the suite runs as.
+        try FileManager.default.createDirectory(
+            at: location.fileURL, withIntermediateDirectories: false
+        )
+        let timeline = AcceptanceTimeline(location: location)
+        await #expect(throws: AcceptanceHarnessError.self) {
+            _ = try await timeline.timelinePage(
+                conversationID: AcceptanceScenario.conversationID,
+                cursor: nil, direction: .older, limit: nil
+            )
+        }
+        var isDirectory: ObjCBool = false
+        #expect(FileManager.default.fileExists(
+            atPath: location.fileURL.path, isDirectory: &isDirectory
+        ))
+        #expect(isDirectory.boolValue, "the harness replaced what it could not read")
+    }
+
+    @Test("a damaged archive is still the one that stands after a reset")
+    func theResetRewritesAnUnreadableArchive() async throws {
+        // The error message tells the person to press 重置, so the reset has to
+        // actually be able to. Asserted here rather than assumed, because a
+        // `.atomic` write onto a path that cannot be read is exactly the kind of
+        // thing that fails only on the device.
+        let location = try temporaryLocation()
+        try Data("not an archive".utf8).write(to: location.fileURL)
+        let timeline = AcceptanceTimeline(location: location)
+        await #expect(throws: AcceptanceHarnessError.self) {
+            _ = try await timeline.timelinePage(
+                conversationID: AcceptanceScenario.conversationID,
+                cursor: nil, direction: .older, limit: nil
+            )
+        }
+        try await timeline.resetToSeed()
+        let page = try await timeline.timelinePage(
+            conversationID: AcceptanceScenario.conversationID,
+            cursor: nil, direction: .older, limit: nil
+        )
+        #expect(page.events == AcceptanceScenario.seed().events)
     }
 
     @Test("incremental sync from the live edge sees only what was appended")

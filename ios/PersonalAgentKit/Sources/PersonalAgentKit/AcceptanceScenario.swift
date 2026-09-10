@@ -179,7 +179,7 @@ public enum AcceptanceScenario {
                 failureReason: "SOURCE_COMMIT_UNKNOWN"
             )
         ),
-        .userMessage(text: "上周那笔打车费记一下"),
+        .userMessage(text: "再帮我加一条 10-06 的日程"),
         .result(
             Operation(
                 operationID: "op-accept-review-calendar-done",
@@ -213,6 +213,26 @@ public enum AcceptanceScenario {
             operationID: "op-accept-review-legacy",
             resolution: ManualResolution.confirmedWritten.rawValue,
             domain: nil
+        ),
+        // The **unanswered** legacy record, and the reason this script has two of
+        // them.
+        //
+        // The 2026-09-10 review found the checklist asking a person to look for
+        // 「请先在飞书账本里核对这一笔」 on a card that could not show it: the
+        // one legacy record in this script was answered by the marker directly
+        // above, and `ChatView` hides the guidance and both buttons once an
+        // operation is answered. The item above the pair is now a separate
+        // record with no marker after it, and `AcceptanceChecklist` carries a
+        // flag saying so, so the two can no longer be collapsed into one.
+        .userMessage(text: "上个月那笔停车费也记一笔"),
+        .result(
+            Operation(
+                operationID: "op-accept-review-legacy-pending",
+                tool: "finance.record_expense",
+                state: "needs_manual_review",
+                recordID: "REC-ACCEPT-0002",
+                failureReason: "SOURCE_COMMIT_UNKNOWN"
+            )
         ),
     ]
 

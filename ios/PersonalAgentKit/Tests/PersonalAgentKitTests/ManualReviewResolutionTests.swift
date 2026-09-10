@@ -505,3 +505,76 @@ struct ManualReviewResolutionTests {
         #expect(receipt.outcome.provesWrite == false)
     }
 }
+
+/// The one statement of "is this card answered", shared by the view model that
+/// hides the buttons and the acceptance script that claims they are there.
+///
+/// The two used to be separate statements of the same rule — an inline fold in
+/// `ChatModel` and a turn of phrase in the checklist — and the 2026-09-10 review
+/// found the drift: the checklist asked a person to look for a 核对 prompt on a
+/// card the fold had already closed, on a build where every test was green.
+@Suite("The answered-operation index")
+struct ManualReviewResolutionIndexTests {
+
+    private func marker(
+        _ eventID: String, operation: String?, _ resolution: String
+    ) -> TimelineEvent {
+        TimelineEvent(
+            eventID: eventID,
+            eventType: "manual_review_resolved",
+            operationID: operation,
+            createdAt: "2026-08-04T09:00:00+00:00",
+            content: ["resolution": .string(resolution)]
+        )
+    }
+
+    @Test("only the operations that carry a marker are answered")
+    func onlyMarkedOperationsAreAnswered() {
+        let answered = ManualReviewResolutionIndex.answered(by: [
+            marker("e1", operation: "op-1", "confirmed_written"),
+            // A result event is not a conclusion and must not answer anything.
+            TimelineEvent(
+                eventID: "e2",
+                eventType: "operation_result",
+                operationID: "op-2",
+                createdAt: "2026-08-04T09:01:00+00:00",
+                content: [:]
+            ),
+        ])
+        #expect(answered == ["op-1": "confirmed_written"])
+    }
+
+    @Test("a marker with no operation answers nothing")
+    func aMarkerWithoutAnOperationAnswersNothing() {
+        // The field is optional on the wire, and an entry that did not name its
+        // operation cannot close a card. Dropping it is the safe direction: the
+        // card keeps its buttons rather than hiding behind someone else's
+        // conclusion.
+        #expect(ManualReviewResolutionIndex.answered(by: [
+            marker("e1", operation: nil, "confirmed_written")
+        ]).isEmpty)
+    }
+
+    @Test("a second conclusion on one operation is the one that stands")
+    func theLaterConclusionWins() {
+        // Timeline order, so the newest marker is the answer. A guard that kept
+        // the *first* would be equally plausible to write and would leave a card
+        // closed on a conclusion the person has since changed.
+        let answered = ManualReviewResolutionIndex.answered(by: [
+            marker("e1", operation: "op-1", "confirmed_written"),
+            marker("e2", operation: "op-1", "confirmed_not_written"),
+        ])
+        #expect(answered["op-1"] == "confirmed_not_written")
+    }
+
+    @Test("an unknown conclusion still counts as answered")
+    func anUnknownConclusionStillAnswers() {
+        // Paired with `anUnknownConclusionStaysVisible` above: the marker's
+        // wording is allowed to be unknown, but the card must still close. If
+        // this returned nothing, the build would offer the buttons again and
+        // invite a 409 on an operation the server has already settled.
+        #expect(ManualReviewResolutionIndex.answered(by: [
+            marker("e1", operation: "op-1", "confirmed_partially_written")
+        ]) == ["op-1": "confirmed_partially_written"])
+    }
+}
