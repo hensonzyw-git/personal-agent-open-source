@@ -24,6 +24,7 @@ from personal_agent.media.container import (
     CONTAINER_VERSION,
     MAX_CHUNK_BYTES,
     ChunkHasher,
+    SealRecord,
     StagingWriter,
     open_container,
     read_container,
@@ -802,3 +803,147 @@ def test_open_container_yields_chunks_in_order(tmp_path, keyring) -> None:
         )
     )
     assert streamed == payload
+
+
+# --- the content ceiling, and who owns a file ---------------------------------
+#
+# Two defects found in review, both offline-reproducible:
+#
+# 1. `max_content_bytes` was only ever compared against the *file* size, through
+#    a bound that adds ciphertext overhead. A container of many small chunks is
+#    close to its plaintext size, so a file well under the padded ceiling can
+#    hold far more plaintext than the ceiling allows -- `max_content_bytes=1`
+#    still returned 128 bytes. The seal declares the true total, so the ceiling
+#    is checkable before the first read, and the running total is checkable
+#    before the last chunk is handed out.
+#
+# 2. `abort()` unlinked by path, unconditionally. A writer whose `open()` failed
+#    with `O_EXCL` never created anything, but its `abort()` still deleted the
+#    file that was already there -- somebody else's sealed upload.
+
+
+def test_a_container_over_the_content_ceiling_is_refused_before_it_is_read(
+    tmp_path, keyring
+) -> None:
+    """The seal already states the total, so the refusal costs no read."""
+    payload = b"x" * (CHUNK * 2)
+    path, seal = write(tmp_path, payload, keyring=keyring)
+
+    with pytest.raises(ContainerError, match="ceiling"):
+        read_container(
+            path,
+            seal,
+            keyring=keyring,
+            media_id=MEDIA,
+            attempt_number=ATTEMPT,
+            max_content_bytes=1,
+        )
+
+
+def test_the_ceiling_is_the_plaintext_size_not_the_file_size(
+    tmp_path, keyring
+) -> None:
+    """The regression this pins: an overhead-padded bound passes small chunks.
+
+    The file holds barely more than its plaintext, so the old
+    `file_size <= ceiling + overhead` check let all of it through.
+    """
+    payload = b"a" * (CHUNK * 2)
+    path, seal = write(tmp_path, payload, keyring=keyring)
+    assert seal.total_bytes == len(payload)
+
+    with pytest.raises(ContainerError, match="ceiling"):
+        read_container(
+            path,
+            seal,
+            keyring=keyring,
+            media_id=MEDIA,
+            attempt_number=ATTEMPT,
+            max_content_bytes=len(payload) - 1,
+        )
+
+
+def test_the_running_total_is_checked_not_only_the_declaration(
+    tmp_path, keyring
+) -> None:
+    """A seal is metadata; the bytes are the fact.
+
+    The declaration is checked first, so this drives the streaming path by
+    handing the reader a seal that understates the stream. The reader must stop
+    on the bytes themselves rather than trust the record it was given.
+    """
+    payload = b"y" * (CHUNK * 2)
+    path, seal = write(tmp_path, payload, keyring=keyring)
+    understated = SealRecord(
+        format_version=seal.format_version,
+        chunk_count=seal.chunk_count,
+        total_bytes=1,
+        sha256=seal.sha256,
+    )
+
+    with pytest.raises(ContainerError, match="ceiling"):
+        list(
+            open_container(
+                path,
+                understated,
+                keyring=keyring,
+                media_id=MEDIA,
+                attempt_number=ATTEMPT,
+                max_content_bytes=CHUNK,
+            )
+        )
+
+
+def test_a_container_exactly_at_the_ceiling_is_read(tmp_path, keyring) -> None:
+    """A boundary that refuses its own limit is off by one, not safe."""
+    payload = b"z" * CHUNK
+    path, seal = write(tmp_path, payload, keyring=keyring)
+
+    assert (
+        read_container(
+            path,
+            seal,
+            keyring=keyring,
+            media_id=MEDIA,
+            attempt_number=ATTEMPT,
+            max_content_bytes=CHUNK,
+        )
+        == payload
+    )
+
+
+def test_an_abort_by_a_writer_that_never_opened_leaves_the_file_alone(
+    tmp_path, keyring
+) -> None:
+    """The repro: `open()` loses to `O_EXCL`, then `abort()` deletes the winner.
+
+    A caller cleans up on its error path, so an aborted writer that never owned
+    the path must not remove what it found there.
+    """
+    path, seal = write(tmp_path, b"owned by the first writer", keyring=keyring)
+
+    loser = StagingWriter(path, keyring=keyring, media_id=MEDIA, attempt_number=2)
+    with pytest.raises(ContainerError, match="already exists"):
+        loser.open()
+    loser.abort()
+
+    assert path.exists()
+    assert (
+        read_container(
+            path, seal, keyring=keyring, media_id=MEDIA, attempt_number=ATTEMPT
+        )
+        == b"owned by the first writer"
+    )
+
+
+def test_an_abort_by_the_writer_that_did_open_removes_its_own_file(
+    tmp_path, keyring
+) -> None:
+    """The other half: ownership must not make cleanup a no-op everywhere."""
+    path = tmp_path / "mine.part"
+    writer = StagingWriter(path, keyring=keyring, media_id=MEDIA, attempt_number=1)
+    writer.open()
+    writer.append(b"half a file")
+    writer.abort()
+
+    assert not path.exists()

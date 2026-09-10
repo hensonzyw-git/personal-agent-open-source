@@ -154,6 +154,16 @@ def probe_non_overwriting_publish(root: Path) -> None:
     probe_root = Path(root) / ".publish-probe"
     try:
         probe_root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # A root this identity cannot write is a finding, not a crash. The
+        # caller is a verifier: it reports every reason the host is unusable,
+        # so an unanticipated OSError here must become one of those reasons
+        # rather than propagating out of the check that was meant to state it.
+        raise MediaStoreError(
+            f"cannot run the publish probe: {root} is not writable by this "
+            f"identity ({exc})"
+        ) from exc
+    try:
         with tempfile.TemporaryDirectory(dir=probe_root) as scratch:
             source = Path(scratch) / "source"
             target = Path(scratch) / "target"
@@ -175,15 +185,16 @@ def probe_non_overwriting_publish(root: Path) -> None:
         shutil.rmtree(probe_root, ignore_errors=True)
 
 
-def verify_media_installation(root: Path) -> list[str]:
+def verify_media_installation(root: Path, *, boundary: Path | None = None) -> list[str]:
     """Every reason this host cannot store media safely. Empty means usable.
 
     Both halves are checks against the filesystem rather than against
     configuration, because both properties *are* filesystem properties: the
     lock set must not be replaceable, and publishing must not be able to
-    overwrite.
+    overwrite. `boundary` is passed through to the lock check, which walks the
+    lock directory's ancestors up to it.
     """
-    problems = list(verify_lock_installation(root))
+    problems = list(verify_lock_installation(root, boundary=boundary))
     try:
         probe_non_overwriting_publish(root)
     except MediaStoreError as exc:

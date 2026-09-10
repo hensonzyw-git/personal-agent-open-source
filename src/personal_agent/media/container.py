@@ -262,6 +262,12 @@ class StagingWriter:
         self._hasher = ChunkHasher()
         self._handle: Any | None = None
         self._sealed = False
+        #: Whether *this* writer created the file. `open()` loses to `O_EXCL`
+        #: when another attempt already owns the path, and the loser's
+        #: `abort()` must not delete the winner's file: a caller cleans up on
+        #: its error path, so an unowned abort would destroy a sealed upload
+        #: that nothing had asked to remove.
+        self._owns_file = False
 
     @property
     def chunk_bytes(self) -> int:
@@ -298,13 +304,16 @@ class StagingWriter:
             raise ContainerError(
                 f"cannot create staging at {self._path}: {exc}"
             ) from exc
+        # `O_EXCL` succeeded, so this call created the file and is the only
+        # thing entitled to remove it.
+        self._owns_file = True
         handle = os.fdopen(fd, "wb", closefd=True)
         try:
             handle.write(CONTAINER_MAGIC)
             handle.write(bytes([CONTAINER_VERSION]))
         except BaseException:
             handle.close()
-            self._path.unlink(missing_ok=True)
+            self.abort()
             raise
         self._handle = handle
 
@@ -399,6 +408,12 @@ class StagingWriter:
                 handle.close()
             except OSError:
                 pass
+        if not self._owns_file:
+            # This writer never created anything -- `open()` lost to `O_EXCL`,
+            # or was never called. Removing the path would delete another
+            # attempt's file, which is the opposite of cleaning up after
+            # oneself.
+            return
         self._path.unlink(missing_ok=True)
 
 
@@ -535,10 +550,21 @@ def _read_verified(
         raise ContainerError(f"{path} is not a regular file")
     if info.st_size > max_content_bytes + _overhead_bound(record.chunk_count):
         # Refuse on the size alone: reading it first would be work the input
-        # asked for and the ceiling already forbids.
+        # asked for and the ceiling already forbids. This is only a cheap early
+        # refusal -- the bound it uses is padded for ciphertext overhead, so a
+        # container of small chunks can sit well under it and still carry far
+        # more plaintext than the ceiling allows. The authoritative checks are
+        # the declared total below and the running total per chunk.
         raise ContainerError(
             f"container is {info.st_size} bytes, past the {max_content_bytes} "
             "ceiling for its content"
+        )
+    if record.total_bytes > max_content_bytes:
+        # The seal states the plaintext total, so the ceiling is decidable
+        # before a byte is read and without trusting the file's size.
+        raise ContainerError(
+            f"container holds {record.total_bytes} bytes of content, past the "
+            f"{max_content_bytes} ceiling"
         )
 
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -548,6 +574,7 @@ def _read_verified(
         raise ContainerError(f"cannot open container at {path}: {exc}") from exc
 
     hasher = ChunkHasher()
+    yielded_bytes = 0
     with os.fdopen(fd, "rb", closefd=True) as handle:
         header = _read_exactly(handle, _HEADER_BYTES, "header")
         if header[: len(CONTAINER_MAGIC)] != CONTAINER_MAGIC:
@@ -594,6 +621,17 @@ def _read_verified(
                 raise ContainerError(
                     f"chunk {index} decrypts to {len(chunk)} bytes, over the "
                     f"configured {chunk_bytes}"
+                )
+            yielded_bytes += len(chunk)
+            if yielded_bytes > max_content_bytes:
+                # The declared total was checked before the read, but a seal is
+                # metadata and the bytes are the fact. A caller streaming into
+                # memory has to be stopped on the running total, because the
+                # whole-stream hash that would also catch a lying seal only
+                # runs once everything has already been handed out.
+                raise ContainerError(
+                    f"container has passed the {max_content_bytes} ceiling "
+                    f"after chunk {index}"
                 )
             hasher.update(chunk)
             yield chunk

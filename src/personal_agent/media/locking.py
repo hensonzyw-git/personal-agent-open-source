@@ -101,24 +101,77 @@ def ensure_lock_files(root: Path) -> list[Path]:
     return created
 
 
-def verify_lock_installation(root: Path) -> list[str]:
+def _swap_problems(directory: Path, boundary: Path | None) -> list[str]:
+    """Every directory from `directory` up to `boundary` that this identity could
+    rename the lock set out of.
+
+    Replacing a lock is not only a permission on the lock's own directory. The
+    directory itself can be renamed away and a fresh one put in its place, which
+    swaps every lock file at once for inodes nothing else holds; and that is
+    possible exactly when the *parent* is writable. So the whole chain matters,
+    one hop per directory, and each hop is checked.
+
+    Two independent reasons a directory is not safe to rely on:
+
+    - the running identity can write it, so it can rename the entry below it;
+    - the running identity *owns* it, because an owner can chmod a read-only
+      directory back to writable and then do the same thing. A mode check alone
+      therefore proves nothing about a directory the service owns.
+
+    `boundary` is the topmost directory the deployment declares it protects;
+    the walk stops before it, because above that point the check would be
+    asserting something about the host rather than about this installation.
+    `None` walks to the filesystem root.
+    """
+    problems: list[str] = []
+    running_uid = os.geteuid()
+    current = directory
+    while True:
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
+            problems.append(f"{current} does not exist")
+            return problems
+        if stat.S_ISLNK(info.st_mode):
+            # A symlinked ancestor means the path being checked is not
+            # necessarily the path being used, so the rest of the chain says
+            # nothing. Stop rather than report on the wrong tree.
+            problems.append(f"{current} is a symlink, so the lock path is not fixed")
+            return problems
+
+        if info.st_uid == running_uid:
+            problems.append(
+                f"{current} is owned by the running identity, which can chmod it "
+                "writable and rename the lock set out from under a held lock"
+            )
+        elif os.access(current, os.W_OK) and not info.st_mode & stat.S_ISVTX:
+            problems.append(
+                f"{current} is writable by this process, so everything inside it "
+                "-- including the lock directory -- can be renamed and replaced"
+            )
+
+        parent = current.parent
+        if parent == current or (boundary is not None and parent == boundary):
+            return problems
+        current = parent
+
+
+def verify_lock_installation(root: Path, *, boundary: Path | None = None) -> list[str]:
     """Report every reason the lock set cannot be trusted. Empty means usable.
 
     This is the check that makes "the service cannot replace a lock file" a
     tested property rather than an assumption about how the box was set up. It
-    looks at the filesystem, not at configuration, because the thing that
-    actually stops a replacement is the directory's write bit.
+    looks at the filesystem, not at configuration, because the things that
+    actually stop a replacement are the directory's write bit and its owner.
     """
     problems: list[str] = []
     directory = locks_directory(root)
     if not directory.is_dir():
         return [f"lock directory {directory} does not exist"]
 
-    if os.access(directory, os.W_OK):
-        problems.append(
-            f"lock directory {directory} is writable by this process, so a lock "
-            "file could be unlinked and replaced with a different inode"
-        )
+    # The lock directory and every ancestor above it: a read-only lock
+    # directory inside a writable parent is the same hole one level up.
+    problems.extend(_swap_problems(directory, boundary))
 
     for name in [STORAGE_LOCK_NAME] + [
         stripe_lock_name(stripe) for stripe in range(STRIPE_COUNT)

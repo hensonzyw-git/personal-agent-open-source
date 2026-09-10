@@ -23,7 +23,7 @@ from personal_agent.media.container import (
     read_container,
     write_container,
 )
-from personal_agent.media.locking import ensure_lock_files
+from personal_agent.media.locking import ensure_lock_files, verify_lock_installation
 from personal_agent.media.store import (
     FinalOutcome,
     MediaIntegrityError,
@@ -84,13 +84,138 @@ def test_installation_verification_names_the_missing_lock_set(tmp_path) -> None:
     assert any("lock" in problem for problem in problems)
 
 
-def test_installation_verification_passes_for_an_installed_root(tmp_path) -> None:
-    ensure_lock_files(tmp_path)
-    os.chmod(tmp_path / "locks", 0o555)
+def _install(root, monkeypatch) -> None:
+    """Build a root the lock check can accept, and say why each step is needed.
+
+    Every directory in the chain has to be neither writable by the running
+    identity nor *owned* by it -- an owner can chmod a read-only directory back
+    to writable and then rename what is inside it. A test cannot drop its own
+    ownership of a temporary directory, so the running identity is presented as
+    a foreign one, which is the same lever the check uses.
+    """
+    ensure_lock_files(root)
+    os.chmod(root / "locks", 0o555)
+    os.chmod(root, 0o555)
+    monkeypatch.setattr(os, "geteuid", lambda: os.stat(root).st_uid + 1)
+
+
+def test_lock_verification_passes_for_an_installed_root(tmp_path, monkeypatch) -> None:
+    """The positive case, which needs every directory in the chain protected."""
+    root = tmp_path / "storage"
+    root.mkdir()
+    _install(root, monkeypatch)
     try:
-        assert verify_media_installation(tmp_path) == []
+        assert verify_lock_installation(root, boundary=tmp_path) == []
     finally:
-        os.chmod(tmp_path / "locks", 0o755)
+        os.chmod(root, 0o755)
+
+
+def test_a_writable_parent_that_could_swap_the_lock_directory_is_reported(
+    tmp_path, monkeypatch
+) -> None:
+    """The repro: `locks/` is read-only, but its parent is not.
+
+    Renaming the directory and creating a fresh one hands two writers different
+    inodes for the same lock name, and both then believe they hold it. Checking
+    only the lock directory cannot see this, which is why the check walks up.
+    """
+    root = tmp_path / "storage"
+    root.mkdir()
+    _install(root, monkeypatch)
+    os.chmod(root, 0o755)  # the service can rename `locks/` again
+
+    try:
+        problems = verify_lock_installation(root, boundary=tmp_path)
+        assert any("storage" in problem for problem in problems)
+    finally:
+        os.chmod(root, 0o555)
+
+
+def test_a_lock_directory_owned_by_the_running_identity_is_reported(
+    tmp_path, monkeypatch
+) -> None:
+    """Read-only is reversible by whoever owns the directory.
+
+    Mode 0o555 only stops a *non-owner*; the owner chmods it and unlinks. So the
+    ownership is a finding on its own, not a strengthening of the mode check.
+    """
+    root = tmp_path / "storage"
+    root.mkdir()
+    ensure_lock_files(root)
+    os.chmod(root / "locks", 0o555)
+    os.chmod(root, 0o555)
+    # The running identity owns everything here, which is the default in tests.
+    monkeypatch.setattr(os, "geteuid", lambda: os.stat(root).st_uid)
+
+    try:
+        problems = verify_lock_installation(root, boundary=tmp_path)
+        assert any("owned" in problem for problem in problems)
+    finally:
+        os.chmod(root, 0o755)
+
+
+def test_the_walk_stops_at_the_boundary_the_deployment_declares(
+    tmp_path, monkeypatch
+) -> None:
+    """Everything above the boundary is the deployment's claim, not our check.
+
+    The chain has to be examined hop by hop -- each hop is what stops the next
+    directory down from being renamed -- but a caller that owns the region above
+    its storage root says so explicitly rather than having the check guess.
+    """
+    root = tmp_path / "storage"
+    root.mkdir()
+    _install(root, monkeypatch)
+    try:
+        # The lock half only: the publish probe wants a writable root, which is
+        # the disagreement the test below pins.
+        assert verify_lock_installation(root, boundary=tmp_path) == []
+    finally:
+        os.chmod(root, 0o755)
+
+
+def test_a_read_only_root_is_reported_by_the_publish_probe_not_raised(
+    tmp_path,
+) -> None:
+    """A verifier reports; it does not crash.
+
+    The probe creates its scratch directory under the root, so a root this
+    identity cannot write raised `PermissionError` straight out of the check
+    that exists to name exactly that condition.
+    """
+    root = tmp_path / "storage"
+    root.mkdir()
+    os.chmod(root, 0o555)
+    try:
+        with pytest.raises(MediaStoreError, match="publish probe"):
+            probe_non_overwriting_publish(root)
+    finally:
+        os.chmod(root, 0o755)
+
+
+def test_the_publish_probe_and_the_lock_check_disagree_about_a_writable_root(
+    tmp_path, monkeypatch
+) -> None:
+    """An open conflict, pinned so it cannot be forgotten.
+
+    Replacing the lock set needs `root` to be unwritable by the service, because
+    renaming `locks/` is a write on `root`. The publish probe needs `root` to be
+    writable, because it creates its scratch directory there. Both cannot hold
+    of the same directory, so `verify_media_installation` cannot currently
+    return an empty list on any host -- one half or the other always objects.
+
+    This test states the disagreement rather than resolving it. Resolving it
+    means deciding where the probe runs or where the locks live, and that is an
+    amendment to §4.1 and §5.3, not a bug fix.
+    """
+    root = tmp_path / "storage"
+    root.mkdir()
+    ensure_lock_files(root)
+    os.chmod(root / "locks", 0o555)
+    monkeypatch.setattr(os, "geteuid", lambda: os.stat(root).st_uid + 1)
+
+    probe_non_overwriting_publish(root)  # needs a writable root: passes
+    assert verify_lock_installation(root, boundary=tmp_path)  # needs the opposite
 
 
 def test_verify_installation_fails_closed(tmp_path, keyring) -> None:

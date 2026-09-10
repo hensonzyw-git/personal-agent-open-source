@@ -563,6 +563,83 @@ def test_the_fan_out_finds_the_images_before_the_deleting_message_goes(
         assert origin_media_ids_for_event(session, event_id="evt-1") == ["media-1"]
 
 
+def test_a_long_conversation_does_not_break_the_fan_out(engine, keyring: KeyRing) -> None:
+    """The fan-out must not grow with the number of messages.
+
+    The first version built one ``OR`` per event, so a conversation past
+    SQLAlchemy's expression-depth ceiling failed outright -- and it failed for
+    conversations with no images at all, which is the common case. A JOIN or a
+    subquery keeps the statement the same size whatever the conversation holds.
+    """
+    count = 1200
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO conversations (conversation_id, created_at, "
+                "next_sequence) VALUES ('c1', :now, :next)"
+            ),
+            {"now": to_rfc3339(NOW), "next": count + 1},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO context_sessions (session_id, conversation_id, "
+                "status, relation_kind, opened_at) VALUES "
+                "('sess-c1', 'c1', 'open', 'new_topic', :now)"
+            ),
+            {"now": to_rfc3339(NOW)},
+        )
+        for index in range(count):
+            connection.execute(
+                text(
+                    "INSERT INTO conversation_events (event_id, conversation_id, "
+                    "session_id, turn_id, event_type, encrypted_content, "
+                    "timeline_sequence, created_at) VALUES "
+                    "(:eid, 'c1', 'sess-c1', :turn, 'user_message', :content, "
+                    ":seq, :now)"
+                ),
+                {
+                    "eid": f"evt-{index}",
+                    "turn": f"turn-{index}",
+                    "content": json.dumps({"sealed": "irrelevant here"}),
+                    "seq": index + 1,
+                    "now": to_rfc3339(NOW),
+                },
+            )
+    _add_media(engine, media_id="media-1")
+    _add_binding(
+        engine,
+        binding_id="b1",
+        media_id="media-1",
+        event_id="evt-77",
+        role="origin",
+        ordinal=0,
+    )
+
+    with session_factory(engine)() as session:
+        assert origin_media_ids_for_conversation(
+            session, conversation_id="c1"
+        ) == ["media-1"]
+        summary = replay_manifest(
+            session,
+            [
+                {
+                    "entry_id": "m1",
+                    "object_type": "conversation",
+                    "encrypted_object_id": keyring.encrypt(
+                        b"c1",
+                        table=MANIFEST_TABLE,
+                        column=MANIFEST_COLUMN,
+                        row_id="m1",
+                    ),
+                }
+            ],
+            keyring,
+        )
+
+    assert summary == {"applied": 1, "already_absent": 0}
+    assert _media_state(engine, "media-1")[0] == "deleting"
+
+
 # --- replay ------------------------------------------------------------------
 
 

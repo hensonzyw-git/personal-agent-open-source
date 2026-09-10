@@ -26,7 +26,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Final
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from personal_agent.storage.deletion import write_manifest_entry
@@ -209,22 +209,18 @@ def origin_media_ids_for_conversation(
 ) -> list[str]:
     """The images any message of one conversation originated.
 
-    Reads the events first and the bindings second, in that order, so the
-    fan-out does not depend on how SQLite chooses to plan a subquery -- and so
-    that a conversation whose events are already gone fans out to nothing rather
-    than to an error.
+    The events are named by a subquery rather than expanded into one ``OR`` per
+    event. The expanded form grew with the conversation and hit SQLAlchemy's
+    expression-depth ceiling somewhere past a thousand messages, which made
+    deleting a long conversation fail outright -- including one holding no
+    images at all, which is the ordinary case. The statement here is the same
+    size whatever the conversation contains.
     """
-    event_ids = list(
-        session.execute(
+    return _origin_media_ids(
+        session,
+        MediaBinding.event_id.in_(
             select(ConversationEvent.event_id).where(
                 ConversationEvent.conversation_id == conversation_id
             )
-        )
-        .scalars()
-        .all()
-    )
-    if not event_ids:
-        return []
-    return _origin_media_ids(
-        session, or_(*[MediaBinding.event_id == event_id for event_id in event_ids])
+        ),
     )
