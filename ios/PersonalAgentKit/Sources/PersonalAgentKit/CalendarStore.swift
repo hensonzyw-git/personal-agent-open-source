@@ -349,20 +349,34 @@ public struct EventKitCalendarStore: CalendarStore {
             }
         }
 
+        // One derivation for the whole request: the instants the write will
+        // use, and the window the duplicate check scans, come out of the same
+        // value. They used to disagree for all-day events -- the check read the
+        // action's absolute instant while the write built the device's floating
+        // day -- and the check then looked in a window the write would never
+        // land in. See `CalendarWritePlan`.
+        //
+        // A nil plan is a zero-write refusal. *Half* an all-day pair is the
+        // shape that matters: the decode layer refuses it, and one arriving
+        // here anyway must not fall back to the absolute instants and write the
+        // wrong day.
+        guard let plan = CalendarWriteRules.plan(for: draft, in: calendar) else {
+            return .failed(detail: "the authorised all-day dates are not usable")
+        }
+
         // Local duplicate detection before any write: the same title within
-        // ±5 minutes of the proposed start means the user (or an earlier
-        // attempt) already put this event there. Auto-retry is off at the
-        // server precisely because it could double-create; this is the
+        // ±5 minutes of the instant the write will use means the user (or an
+        // earlier attempt) already put this event there. Auto-retry is off at
+        // the server precisely because it could double-create; this is the
         // mitigation, not a guarantee.
         //
         // §3.1 narrows the scan to the target calendar. The predicate is the
         // optimisation; `CalendarWriteRules.duplicate` is the rule and applies
         // the same scope, so the two cannot disagree about what was checked.
         let scope: [EKCalendar] = target.map { [$0] } ?? store.calendars(for: .event)
-        let windowStart = draft.start.addingTimeInterval(-CalendarWriteRules.duplicateWindow)
-        let windowEnd = draft.start.addingTimeInterval(CalendarWriteRules.duplicateWindow)
         let predicate = store.predicateForEvents(
-            withStart: windowStart, end: windowEnd, calendars: scope
+            withStart: plan.dupeWindowStart, end: plan.dupeWindowEnd,
+            calendars: scope
         )
         let candidates = store.events(matching: predicate).compactMap { event -> CalendarDuplicateCandidate? in
             guard let eventIdentifier = event.eventIdentifier,
@@ -374,7 +388,8 @@ public struct EventKitCalendarStore: CalendarStore {
             )
         }
         if let existing = CalendarWriteRules.duplicate(
-            of: draft, in: draft.calendarIdentifier, among: candidates
+            of: draft, startingAt: plan.start, in: draft.calendarIdentifier,
+            among: candidates
         ) {
             return .duplicate(existingID: existing)
         }
@@ -385,35 +400,14 @@ public struct EventKitCalendarStore: CalendarStore {
         event.location = draft.location
         event.notes = draft.notes
         event.calendar = target
-        // A v1 all-day action carries no dates at all, and keeps the v1
-        // construction. *Half* a pair is a different thing — the decode layer
-        // refuses it, and one arriving here anyway fails closed rather than
-        // falling back to the absolute instants and writing the wrong day.
-        let hasAllDayDates = draft.startDate != nil || draft.endDate != nil
-        if draft.allDay, hasAllDayDates {
-            // §3.2: the floating dates, constructed in the device calendar.
-            // No `event.timeZone` is set — the probe showed it flips
-            // `isAllDay` back to false.
-            guard let startDate = draft.startDate, let endDate = draft.endDate,
-                  let span = CalendarWriteRules.allDaySpan(
-                      startDate: startDate, endDate: endDate, in: calendar
-                  )
-            else {
-                return .failed(detail: "the authorised all-day dates are not usable")
-            }
-            event.startDate = span.start
-            event.endDate = span.end
-        } else {
-            event.startDate = draft.start
-            event.endDate = draft.end
-            // Timed: the zone makes the event *display* by the local rules.
-            // An identifier this device does not know is ignored rather than
-            // refused — the instant is correct either way — and an all-day
-            // draft yields none at all (§3.2; `displayZone` is the rule).
-            if let identifier = CalendarWriteRules.displayZone(for: draft),
-               let zone = TimeZone(identifier: identifier) {
-                event.timeZone = zone
-            }
+        event.startDate = plan.start
+        event.endDate = plan.end
+        // Timed: the zone makes the event *display* by the local rules. An
+        // identifier this device does not know is ignored rather than refused —
+        // the instant is correct either way — and an all-day draft yields none
+        // at all (§3.2; `displayZone` is the rule the plan carried out).
+        if let identifier = plan.zoneIdentifier, let zone = TimeZone(identifier: identifier) {
+            event.timeZone = zone
         }
         do {
             try store.save(event, span: .thisEvent)

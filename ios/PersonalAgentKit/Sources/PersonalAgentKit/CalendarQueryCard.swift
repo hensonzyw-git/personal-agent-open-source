@@ -261,7 +261,7 @@ extension CalendarQueryResult.EventRow {
     /// The row's 日期时间 cell -- the all-day span, or the timed start in the
     /// event's own zone.
     public var when: String {
-        allDay ? allDaySpan : startMoment
+        allDay ? allDayLabel : startMoment
     }
 
     /// The honesty notes, in the server's order (`_event_line`).
@@ -282,7 +282,14 @@ extension CalendarQueryResult.EventRow {
 
     /// `10-02 全天`, or `10-01 至 10-03 全天` for a range: the stored end date
     /// is exclusive, so the last day is the one before it.
-    var allDaySpan: String {
+    ///
+    /// Named `allDayLabel` and not `allDaySpan`: the write side has a span too
+    /// (`CalendarWriteRules.allDayWriteSpan`), and it is a *pair of instants*
+    /// in the opposite direction from this *string*. Two things called
+    /// `allDaySpan` meaning a date pair and a rendered label is how a day could
+    /// be added on one side of the wire and not the other with nothing to
+    /// notice it.
+    var allDayLabel: String {
         // Unreachable from decoded wire -- the initialiser refuses an all-day
         // row without both dates -- and shaped like the server's own fallback
         // for the same reason: a row built by hand in a test should say what

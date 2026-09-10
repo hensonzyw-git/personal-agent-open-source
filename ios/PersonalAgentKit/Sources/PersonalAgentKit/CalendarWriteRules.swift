@@ -83,8 +83,14 @@ public enum CalendarWriteRules {
     /// it *because* this check found something, so running the check again
     /// would refuse the write they just authorised. Only the override endpoint
     /// can set it, and it reaches the device on the sealed action.
+    ///
+    /// `start` is the instant the write will actually use — `plan.start` — and
+    /// it is a parameter rather than something read off `draft` so that it
+    /// cannot silently diverge from the write again. The predicate's window is
+    /// built from the same value; see `CalendarWritePlan`.
     public static func duplicate(
         of draft: CalendarEventDraft,
+        startingAt start: Date,
         in scope: String?,
         among candidates: [CalendarDuplicateCandidate]
     ) -> String? {
@@ -94,33 +100,108 @@ public enum CalendarWriteRules {
         } ?? candidates
         return scoped.first { candidate in
             candidate.title == draft.title
-                && abs(candidate.start.timeIntervalSince(draft.start)) <= duplicateWindow
+                && abs(candidate.start.timeIntervalSince(start)) <= duplicateWindow
         }?.eventIdentifier
     }
 
     /// §3.2's all-day construction, in the **device's** calendar.
     ///
-    /// `start` is the first instant of `startDate` in `calendar`; `end` is the
-    /// first instant of the day after `endDate`, because the wire's `end_date`
-    /// is exclusive and EventKit takes a half-open span. Constructing in the
-    /// device calendar — never in the action's own zone — is what makes the
-    /// floating date equal the authorised date when the two zones differ. The
-    /// 2026-09-09 probe showed the other way round writes the wrong day, and
-    /// that setting a zone on an all-day event flips `isAllDay` back to false,
-    /// which is why no caller sets one.
+    /// **Both ends are the wire's own days, and neither is adjusted.** The
+    /// wire's `end_date` is already exclusive — `calendar_issue._day_pair`
+    /// carries it through unchanged and refuses `end_date <= start_date` for
+    /// exactly that reason — and EventKit takes a half-open span, so the two
+    /// are the same convention and the conversion is the identity. Adding a
+    /// day here (as this function did until 2026-09-10) made every multi-day
+    /// event the agent wrote one day too long.
+    ///
+    /// The opposite conversion — an EventKit *inclusive* end to an exclusive
+    /// wire date — lives in `CalendarMirrorRules.exclusiveDay(after:in:)` and
+    /// belongs to the upload side. Two directions, one convention; the name
+    /// `allDayWriteSpan` says which direction this one is.
+    ///
+    /// Constructing in the device calendar — never in the action's own zone —
+    /// is what makes the floating date equal the authorised date when the two
+    /// zones differ. The 2026-09-09 probe showed the other way round writes the
+    /// wrong day, and that setting a zone on an all-day event flips `isAllDay`
+    /// back to false, which is why no caller sets one.
     ///
     /// A device day whose local midnight does not exist (a DST spring-forward)
     /// resolves to the first instant that does; the calendar date is still the
     /// date asked for, which is the property that matters here.
-    public static func allDaySpan(
+    public static func allDayWriteSpan(
         startDate: String, endDate: String, in calendar: Calendar
     ) -> (start: Date, end: Date)? {
         guard let start = dayStart(startDate, in: calendar),
-              let lastInclusive = dayStart(endDate, in: calendar),
-              let end = calendar.date(byAdding: .day, value: 1, to: lastInclusive),
+              let end = dayStart(endDate, in: calendar),
               start < end
         else { return nil }
         return (start, end)
+    }
+
+    /// Everything the store needs for one action, derived **once**.
+    ///
+    /// This type exists because of one defect: the duplicate check built its
+    /// window from `draft.start` (the action's absolute instant) while the write
+    /// constructed the device's floating day. For a timed event the two agree
+    /// and nothing showed; for an all-day event they differ by the whole offset
+    /// between the action's zone and the device's, so the check looked in a
+    /// window the write would never land in and a genuine duplicate went
+    /// unwritten-but-created.
+    ///
+    /// Two fields of one value cannot disagree. The store computes a `plan` and
+    /// uses `start`/`end` for the write and `dupeWindowStart`/`dupeWindowEnd`
+    /// for the predicate, and `CalendarWriteRules.duplicate` is handed the same
+    /// `start` — so the only way to reintroduce the defect is to stop using the
+    /// plan, which the call sites can be read for.
+    public struct CalendarWritePlan: Sendable, Equatable {
+        /// The instants EventKit is given. Half-open: `end` is exclusive.
+        public let start: Date
+        public let end: Date
+        /// The window the duplicate predicate scans, built from `start`.
+        public let dupeWindowStart: Date
+        public let dupeWindowEnd: Date
+        /// The zone a **timed** event displays in; nil for all-day (§3.2).
+        public let zoneIdentifier: String?
+    }
+
+    /// The plan for `draft`, or `nil` when the action cannot be written.
+    ///
+    /// `nil` is a **zero-write refusal**, not a degraded write: an all-day
+    /// action carrying half a date pair, or a pair the server would not have
+    /// issued, must not fall back to the action's absolute instants — that is a
+    /// floating date written from an instant, which is the wrong-day failure
+    /// §3.2 exists to prevent.
+    public static func plan(
+        for draft: CalendarEventDraft,
+        in calendar: Calendar,
+        window: TimeInterval = duplicateWindow
+    ) -> CalendarWritePlan? {
+        let basis: (start: Date, end: Date)?
+        if draft.allDay, draft.startDate != nil || draft.endDate != nil {
+            guard let startDate = draft.startDate, let endDate = draft.endDate
+            else { return nil }
+            guard let span = allDayWriteSpan(
+                startDate: startDate, endDate: endDate, in: calendar
+            ) else { return nil }
+            basis = span
+        } else {
+            // A timed event, and a v1 all-day action that carries no floating
+            // dates at all: both keep the v1 construction from the action's own
+            // instants.
+            basis = (draft.start, draft.end)
+        }
+        // No ordering check on the fallback branch: a timed event's instants
+        // are the server's, and refusing a shape this rule has no opinion about
+        // would refuse writes that used to land. The all-day branch is guarded
+        // where the dates are, by `allDayWriteSpan`.
+        guard let basis else { return nil }
+        return CalendarWritePlan(
+            start: basis.start,
+            end: basis.end,
+            dupeWindowStart: basis.start.addingTimeInterval(-window),
+            dupeWindowEnd: basis.start.addingTimeInterval(window),
+            zoneIdentifier: displayZone(for: draft)
+        )
     }
 
     /// The zone to attach to the EventKit event, if any.

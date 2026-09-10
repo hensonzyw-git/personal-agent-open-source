@@ -1098,6 +1098,11 @@ def test_an_all_day_end_that_is_not_midnight_of_its_exclusive_date_is_refused() 
 
 
 def test_an_all_day_event_with_no_days_in_it_is_refused() -> None:
+    """`end_date <= start_date` is an empty range under the half-open wire
+    contract, so the server never issues one -- which is what makes the
+    device's matching refusal (`CalendarWriteRules.allDayWriteSpan` returning
+    nil for a zero-day span) a refusal of an unreachable input rather than a
+    tolerance the two sides could disagree about."""
     outcome, _, _ = _refusal(
         {
             **ALL_DAY_ARGS,
@@ -1218,6 +1223,16 @@ def test_an_unreadable_directory_is_a_safe_failure_not_a_question() -> None:
 
 
 def test_an_all_day_action_carries_dates_and_never_a_zone() -> None:
+    """The wire's dates are **half-open**: `[start_date, end_date)`.
+
+    `end_date` is the exclusive end and travels verbatim -- the phone hands
+    EventKit exactly these two days and adjusts neither. Written down here
+    because it is the one fact about this payload a device can get wrong
+    without anything on this side looking wrong: a client that read
+    `end_date` as the last *inclusive* day and added one would write
+    `[10-01, 10-05)` for a trip the user asked to end on 10-04, and this
+    test would still pass.
+    """
     outcome, _, _ = _refusal_with(
         ALL_DAY_ARGS, CalendarResolved("uuid-chu-you", "出游计划")
     )
@@ -1227,7 +1242,8 @@ def test_an_all_day_action_carries_dates_and_never_a_zone() -> None:
     assert outcome.event_fields["calendar_title"] == "出游计划"
     assert outcome.event_fields["timezone"] is None
     assert outcome.event_fields["start_date"] == "2026-10-01"
-    assert outcome.event_fields["end_date"] == "2026-10-04"
+    # Verbatim: not `end_date - 1 day`, and not `end_date + 1 day`.
+    assert outcome.event_fields["end_date"] == ALL_DAY_ARGS["end_date"] == "2026-10-04"
 
 
 def test_a_timed_action_keeps_the_zone_the_model_resolved() -> None:

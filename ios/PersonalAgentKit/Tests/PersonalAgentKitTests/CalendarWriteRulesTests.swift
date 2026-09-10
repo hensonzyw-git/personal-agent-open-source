@@ -44,6 +44,16 @@ private func draft(
     )
 }
 
+/// Tokyo midnight of `day`, as an absolute instant. It is the shape an
+/// all-day action carries for a Tokyo event written while the device is
+/// somewhere else — the instant and the floating date deliberately disagree,
+/// which is the only way to tell the two bases apart in a test.
+private func tokyoMidnight(_ day: String) -> Date {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+    return CalendarWriteRules.dayStart(day, in: calendar)!
+}
+
 private func candidate(
     _ id: String, _ title: String, in calendar: String, at start: Date
 ) -> CalendarDuplicateCandidate {
@@ -153,6 +163,7 @@ struct CalendarDedupScopeTests {
     func sameCalendarMatches() {
         let found = CalendarWriteRules.duplicate(
             of: draft("网球", start: t0, calendarIdentifier: "CAL-TRIP"),
+            startingAt: t0,
             in: "CAL-TRIP",
             among: [candidate("EK-1", "网球", in: "CAL-TRIP", at: inside)]
         )
@@ -166,6 +177,7 @@ struct CalendarDedupScopeTests {
         // is a wrong answer with no way to tell it apart from a real duplicate.
         let found = CalendarWriteRules.duplicate(
             of: draft("网球", start: t0, calendarIdentifier: "CAL-TRIP"),
+            startingAt: t0,
             in: "CAL-TRIP",
             among: [candidate("EK-1", "网球", in: "CAL-DAILY", at: inside)]
         )
@@ -177,7 +189,7 @@ struct CalendarDedupScopeTests {
         // `nil` scope is not "no check": an action that names no calendar has
         // no scope to narrow to, and the v1 behaviour is what it should get.
         let found = CalendarWriteRules.duplicate(
-            of: draft("网球", start: t0), in: nil,
+            of: draft("网球", start: t0), startingAt: t0, in: nil,
             among: [candidate("EK-1", "网球", in: "CAL-DAILY", at: inside)]
         )
         #expect(found == "EK-1")
@@ -190,12 +202,14 @@ struct CalendarDedupScopeTests {
         // it. Off-by-one here is a duplicate event or a spurious refusal.
         let atEdge = CalendarWriteRules.duplicate(
             of: draft("网球", start: t0, calendarIdentifier: "CAL-TRIP"),
+            startingAt: t0,
             in: "CAL-TRIP",
             among: [candidate("EK-1", "网球", in: "CAL-TRIP", at: justOutside.addingTimeInterval(-1))]
         )
         #expect(atEdge == "EK-1")
         let past = CalendarWriteRules.duplicate(
             of: draft("网球", start: t0, calendarIdentifier: "CAL-TRIP"),
+            startingAt: t0,
             in: "CAL-TRIP",
             among: [candidate("EK-1", "网球", in: "CAL-TRIP", at: justOutside)]
         )
@@ -206,6 +220,7 @@ struct CalendarDedupScopeTests {
     func differentTitleDoesNotMatch() {
         let found = CalendarWriteRules.duplicate(
             of: draft("网球", start: t0, calendarIdentifier: "CAL-TRIP"),
+            startingAt: t0,
             in: "CAL-TRIP",
             among: [candidate("EK-1", "体检", in: "CAL-TRIP", at: inside)]
         )
@@ -216,6 +231,7 @@ struct CalendarDedupScopeTests {
     func earlierCandidateInsideTheWindowCounts() {
         let found = CalendarWriteRules.duplicate(
             of: draft("网球", start: t0, calendarIdentifier: "CAL-TRIP"),
+            startingAt: t0,
             in: "CAL-TRIP",
             among: [candidate("EK-1", "网球", in: "CAL-TRIP", at: t0.addingTimeInterval(-4 * 60))]
         )
@@ -232,6 +248,7 @@ struct CalendarDedupScopeTests {
                 "网球", start: t0, calendarIdentifier: "CAL-TRIP",
                 skipLocalDedup: true
             ),
+            startingAt: t0,
             in: "CAL-TRIP",
             among: [candidate("EK-1", "网球", in: "CAL-TRIP", at: inside)]
         )
@@ -244,7 +261,7 @@ struct CalendarDedupScopeTests {
         #expect(
             CalendarWriteRules.duplicate(
                 of: draft("网球", start: t0, calendarIdentifier: "CAL-TRIP"),
-                in: "CAL-TRIP", among: candidates
+                startingAt: t0, in: "CAL-TRIP", among: candidates
             ) == "EK-1"
         )
         #expect(
@@ -253,9 +270,74 @@ struct CalendarDedupScopeTests {
                     "网球", start: t0, calendarIdentifier: "CAL-TRIP",
                     skipLocalDedup: true
                 ),
-                in: "CAL-TRIP", among: candidates
+                startingAt: t0, in: "CAL-TRIP", among: candidates
             ) == nil
         )
+    }
+
+    @Test("an all-day duplicate is found against the day the device writes, not the action's instant")
+    func allDayDuplicateUsesTheDeviceDay() throws {
+        // The defect this replaces: the window and the comparison were built
+        // from `draft.start` -- the action's absolute instant -- while the
+        // write constructed the floating date in the device's calendar. For an
+        // all-day event the two differ by the whole offset between the action's
+        // zone and the device's, so the check looked at a window the write was
+        // never going to land in.
+        //
+        // Tokyo all-day 10-01 issued while the device is in Shanghai: the
+        // action's instant is 09-30T16:00Z, the event EventKit will hold is
+        // 10-01T00:00+08:00 (the device's own midnight, §3.2).
+        let device = calendar(shanghai)
+        var allDay = draft(
+            "机票", start: tokyoMidnight("2026-10-01"),
+            allDay: true, calendarIdentifier: "CAL-TRIP"
+        )
+        allDay.startDate = "2026-10-01"
+        allDay.endDate = "2026-10-02"
+        let plan = try #require(
+            CalendarWriteRules.plan(
+                for: allDay, in: device
+            )
+        )
+        let alreadyThere = candidate(
+            "EK-1", "机票", in: "CAL-TRIP",
+            at: try #require(CalendarWriteRules.dayStart("2026-10-01", in: device))
+        )
+        // Against the write's own start: found.
+        #expect(
+            CalendarWriteRules.duplicate(
+                of: allDay, startingAt: plan.start, in: allDay.calendarIdentifier,
+                among: [alreadyThere]
+            ) == "EK-1"
+        )
+        // Against the action's instant -- the old basis -- missed by the whole
+        // UTC+8 offset. Pinned so the two can never be confused again.
+        #expect(
+            CalendarWriteRules.duplicate(
+                of: allDay, startingAt: allDay.start, in: allDay.calendarIdentifier,
+                among: [alreadyThere]
+            ) == nil
+        )
+    }
+
+    @Test("the all-day window is built from the write's own start")
+    func allDayWindowFollowsTheWrite() throws {
+        let device = calendar(shanghai)
+        var allDay = draft(
+            "机票", start: tokyoMidnight("2026-10-01"),
+            allDay: true, calendarIdentifier: "CAL-TRIP"
+        )
+        allDay.startDate = "2026-10-01"
+        allDay.endDate = "2026-10-02"
+        let plan = try #require(
+            CalendarWriteRules.plan(
+                for: allDay, in: device
+            )
+        )
+        // The window is the write's start ± the window, never the action's.
+        #expect(plan.dupeWindowStart == plan.start - CalendarWriteRules.duplicateWindow)
+        #expect(plan.dupeWindowEnd == plan.start + CalendarWriteRules.duplicateWindow)
+        #expect(plan.dupeWindowStart > allDay.start)
     }
 }
 
@@ -290,33 +372,45 @@ struct WriteDisplayZoneTests {
 }
 
 @Suite("The all-day span the device constructs")
-struct AllDaySpanTests {
+struct AllDayWriteSpanTests {
 
-    @Test("the span runs from the first day's start to the day after the last")
+    @Test("the span ends on the wire's end_date, which is already the exclusive end")
     func spanIsHalfOpenInTheDeviceCalendar() throws {
+        // The defect this pins: `end_date` is exclusive on the wire, and the
+        // construction added a further day to it, so every multi-day event the
+        // agent wrote was one day too long. The server is unambiguous --
+        // `calendar_issue._day_pair` carries `end_date` through unchanged and
+        // rejects `end_date <= start_date` -- so the device's job is to hand
+        // EventKit exactly `[first, end)` and touch neither end.
         let device = calendar(shanghai)
         let span = try #require(
-            CalendarWriteRules.allDaySpan(
-                startDate: "2026-10-01", endDate: "2026-10-03", in: device
+            CalendarWriteRules.allDayWriteSpan(
+                startDate: "2026-10-01", endDate: "2026-10-04", in: device
             )
         )
         #expect(CalendarMirrorRules.dayString(span.start, in: device) == "2026-10-01")
-        // The wire's `end_date` is exclusive, so the last day the user named is
-        // 10-03 and EventKit must be handed a span ending on 10-04 at 00:00.
-        #expect(CalendarMirrorRules.dayString(span.end.addingTimeInterval(-1), in: device) == "2026-10-03")
+        // Exclusive end 10-04 ⇒ the last day the user named is 10-03. The
+        // previous version of this test asserted 10-04 while its own comment
+        // said the end was exclusive.
+        #expect(
+            CalendarMirrorRules.dayString(
+                span.end.addingTimeInterval(-1), in: device
+            ) == "2026-10-03"
+        )
+        #expect(CalendarMirrorRules.dayString(span.end, in: device) == "2026-10-04")
         #expect(span.start < span.end)
     }
 
     @Test("the construction is in the device's calendar, never the action's zone")
     func constructionUsesTheDeviceCalendar() throws {
         // §3.2 and the 2026-09-09 probe: constructing in the action's zone
-        // writes the wrong day whenever the two differ. The same dates in two
-        // device calendars must both land on the day that was asked for.
+        // writes the wrong day whenever the two differ. The same dates in three
+        // device calendars must all land on the day that was asked for.
         for zone in ["Asia/Shanghai", "America/New_York", "Pacific/Auckland"] {
             let device = calendar(TimeZone(identifier: zone)!)
             let span = try #require(
-                CalendarWriteRules.allDaySpan(
-                    startDate: "2026-10-01", endDate: "2026-10-01", in: device
+                CalendarWriteRules.allDayWriteSpan(
+                    startDate: "2026-10-01", endDate: "2026-10-02", in: device
                 ),
                 "\(zone) could not construct the span at all"
             )
@@ -325,7 +419,9 @@ struct AllDaySpanTests {
                 "\(zone) projected the start onto the wrong day"
             )
             #expect(
-                CalendarMirrorRules.dayString(span.end.addingTimeInterval(-1), in: device) == "2026-10-01",
+                CalendarMirrorRules.dayString(
+                    span.end.addingTimeInterval(-1), in: device
+                ) == "2026-10-01",
                 "\(zone) projected the end onto the wrong day"
             )
         }
@@ -337,12 +433,31 @@ struct AllDaySpanTests {
         // breaks any arithmetic done in seconds.
         let device = calendar(TimeZone(identifier: "America/New_York")!)
         let span = try #require(
-            CalendarWriteRules.allDaySpan(
-                startDate: "2026-03-07", endDate: "2026-03-08", in: device
+            CalendarWriteRules.allDayWriteSpan(
+                startDate: "2026-03-07", endDate: "2026-03-09", in: device
             )
         )
         #expect(CalendarMirrorRules.dayString(span.start, in: device) == "2026-03-07")
-        #expect(CalendarMirrorRules.dayString(span.end.addingTimeInterval(-1), in: device) == "2026-03-08")
+        #expect(
+            CalendarMirrorRules.dayString(
+                span.end.addingTimeInterval(-1), in: device
+            ) == "2026-03-08"
+        )
+    }
+
+    @Test("a zero-day span is refused, exactly as the server refuses to issue one")
+    func zeroDaySpanIsRefused() {
+        // `_day_pair` rejects `last <= first` because an exclusive end equal to
+        // the start describes an event with no days in it. The device must
+        // refuse the same shape rather than invent the one-day event the old
+        // rule constructed by adding a day -- which is how the two ends of this
+        // contract were able to disagree without any test noticing.
+        let device = calendar(shanghai)
+        #expect(
+            CalendarWriteRules.allDayWriteSpan(
+                startDate: "2026-10-01", endDate: "2026-10-01", in: device
+            ) == nil
+        )
     }
 
     @Test("a day that does not exist is refused, not rounded to a real one")
@@ -350,11 +465,21 @@ struct AllDaySpanTests {
         // `Calendar.date(from:)` is happy to roll 2026-02-30 into 2026-03-02.
         // That would write the event on a real day the user never named, which
         // is worse than refusing: nothing on screen would say it moved.
+        //
+        // Both positions are exercised with the *other* date valid: a broken
+        // value that only ever appears next to an equally broken one would be
+        // refused for the wrong reason and prove nothing about the parse.
         let device = calendar(shanghai)
         for day in ["2026-02-30", "2026-13-01", "2026-00-10", "2026-04-31"] {
             #expect(
-                CalendarWriteRules.allDaySpan(
-                    startDate: day, endDate: day, in: device
+                CalendarWriteRules.allDayWriteSpan(
+                    startDate: day, endDate: "2026-12-31", in: device
+                ) == nil,
+                "\(day) is not a date and must not resolve to one"
+            )
+            #expect(
+                CalendarWriteRules.allDayWriteSpan(
+                    startDate: "2026-01-01", endDate: day, in: device
                 ) == nil,
                 "\(day) is not a date and must not resolve to one"
             )
@@ -366,8 +491,14 @@ struct AllDaySpanTests {
         let device = calendar(shanghai)
         for day in ["2026-1-1", "26-01-01", "2026/01/01", "", "2026-01-01T00:00:00Z"] {
             #expect(
-                CalendarWriteRules.allDaySpan(
+                CalendarWriteRules.allDayWriteSpan(
                     startDate: day, endDate: "2026-12-31", in: device
+                ) == nil,
+                "\(day) is not YYYY-MM-DD"
+            )
+            #expect(
+                CalendarWriteRules.allDayWriteSpan(
+                    startDate: "2026-01-01", endDate: day, in: device
                 ) == nil,
                 "\(day) is not YYYY-MM-DD"
             )
@@ -378,37 +509,162 @@ struct AllDaySpanTests {
     func invertedSpanIsRefused() {
         let device = calendar(shanghai)
         #expect(
-            CalendarWriteRules.allDaySpan(
+            CalendarWriteRules.allDayWriteSpan(
                 startDate: "2026-10-05", endDate: "2026-10-01", in: device
             ) == nil
         )
-        // Equal dates are a one-day event, not an empty one: start 10-01 00:00,
-        // end 10-02 00:00.
-        #expect(
-            CalendarWriteRules.allDaySpan(
-                startDate: "2026-10-01", endDate: "2026-10-01", in: device
-            ) != nil
-        )
     }
 
-    @Test("the constructed span is what the mirror uploads for its own event")
+    @Test("the span the write constructs uploads back as the action's own end_date")
     func constructedSpanRoundTripsThroughTheMirror() throws {
-        // The write rule and the read-back rule have to agree, or an event the
-        // agent created uploads a date the user never sees. The mirror does not
-        // read EventKit back for own events, but the two must still be talking
-        // about the same day — this is where a drift between them would show.
+        // The write rule and the read-back rule are two conversions in opposite
+        // directions, and the failure mode is that they disagree by a day
+        // without either one looking wrong on its own -- which is precisely how
+        // the off-by-one survived. This test holds both ends of the round trip
+        // at once: what the device writes is what the mirror uploads, and what
+        // the mirror uploads is what the action said.
+        //
+        // `CalendarMirrorRules.mirrorEvent` reuses the action's own dates for an
+        // agent-created event, so the assertion is that the construction did not
+        // introduce a day the action never carried.
         let device = calendar(shanghai)
+        let actionEndDate = "2026-10-04"
         let span = try #require(
-            CalendarWriteRules.allDaySpan(
-                startDate: "2026-10-01", endDate: "2026-10-03", in: device
+            CalendarWriteRules.allDayWriteSpan(
+                startDate: "2026-10-01", endDate: actionEndDate, in: device
             )
         )
-        #expect(CalendarMirrorRules.dayString(span.start, in: device) == "2026-10-01")
-        let lastInclusive = try #require(
-            CalendarMirrorRules.dayString(span.end.addingTimeInterval(-1), in: device)
+        let source = CalendarMirrorSource(
+            eventIdentifier: "EK-ROUND-TRIP", calendarIdentifier: "CAL-TRIP",
+            title: "西班牙旅行", start: span.start, end: span.end, allDay: true,
+            location: nil, notes: nil, timeZoneIdentifier: nil, lastModified: t0
+        )
+        let uploaded = try #require(
+            CalendarMirrorRules.mirrorEvent(
+                source,
+                agentCreated: AgentCreatedEvent(
+                    eventIdentifier: "EK-ROUND-TRIP", allDay: true,
+                    startDate: "2026-10-01", endDate: actionEndDate
+                ),
+                calendar: device
+            )
+        )
+        #expect(uploaded.allDayStartDate == "2026-10-01")
+        #expect(uploaded.allDayEndDate == actionEndDate)
+        #expect(uploaded.dateAnchorUnknown == false)
+    }
+}
+
+@Suite("The one write basis the store uses")
+struct CalendarWritePlanTests {
+
+    private func allDayDraft(
+        _ title: String, startDate: String, endDate: String, start: Date,
+        calendarIdentifier: String? = "CAL-TRIP"
+    ) -> CalendarEventDraft {
+        var allDay = draft(
+            title, start: start, allDay: true,
+            calendarIdentifier: calendarIdentifier
+        )
+        allDay.startDate = startDate
+        allDay.endDate = endDate
+        return allDay
+    }
+
+    @Test("a timed event's basis is the action's own instants")
+    func timedBasisIsTheAction() throws {
+        let device = calendar(shanghai)
+        let plan = try #require(
+            CalendarWriteRules.plan(for: draft("网球", start: t0), in: device)
+        )
+        #expect(plan.start == t0)
+        #expect(plan.end == t0.addingTimeInterval(3600))
+        #expect(plan.dupeWindowStart == t0 - CalendarWriteRules.duplicateWindow)
+        #expect(plan.dupeWindowEnd == t0 + CalendarWriteRules.duplicateWindow)
+    }
+
+    @Test("an all-day event's basis is the device's floating midnight, not the action's instant")
+    func allDayBasisIsTheDeviceDay() throws {
+        // The whole point of the split: the duplicate check and the write read
+        // the same value. Tokyo's 10-01 is 09-30T16:00Z, and on a Shanghai
+        // device the event lands at 10-01T00:00+08:00. A store that built its
+        // window from one and its write from the other checked a window the
+        // write was never going to land in.
+        let device = calendar(shanghai)
+        let allDay = allDayDraft(
+            "机票", startDate: "2026-10-01", endDate: "2026-10-02",
+            start: tokyoMidnight("2026-10-01")
+        )
+        let plan = try #require(CalendarWriteRules.plan(for: allDay, in: device))
+        #expect(
+            CalendarMirrorRules.dayString(plan.start, in: device) == "2026-10-01"
         )
         #expect(
-            CalendarMirrorRules.exclusiveDay(after: lastInclusive, in: device) == "2026-10-04"
+            CalendarMirrorRules.dayString(plan.end, in: device) == "2026-10-02"
+        )
+        #expect(plan.start != allDay.start)
+    }
+
+    @Test("a half-carrying all-day action is refused rather than falling back")
+    func halfAnAllDayPairIsRefused() throws {
+        // One date present and the other absent: the decode layer refuses it,
+        // and one arriving here anyway must not quietly fall back to the
+        // action's absolute instants -- that is a floating date written from an
+        // instant, which is the wrong-day failure §3.2 exists to prevent.
+        let device = calendar(shanghai)
+        for (startDate, endDate) in [("2026-10-01", nil), (nil, "2026-10-02")] {
+            var half = draft("机票", start: tokyoMidnight("2026-10-01"), allDay: true)
+            half.startDate = startDate
+            half.endDate = endDate
+            #expect(
+                CalendarWriteRules.plan(for: half, in: device) == nil,
+                "startDate=\(startDate ?? "nil") endDate=\(endDate ?? "nil") was given a basis instead of being refused"
+            )
+        }
+    }
+
+    @Test("a v1 all-day action with no dates keeps the v1 construction")
+    func v1AllDayKeepsTheActionInstants() throws {
+        // The pre-§3.2 shape: no floating dates at all. It must not be refused
+        // -- there are v1 actions in flight and in history -- and it keeps
+        // exactly the construction the v1 build made.
+        let device = calendar(shanghai)
+        let plan = try #require(
+            CalendarWriteRules.plan(
+                for: draft("机票", start: t0, allDay: true), in: device
+            )
+        )
+        #expect(plan.start == t0)
+    }
+
+    @Test("an unusable all-day pair is refused, and never becomes a window")
+    func unusableAllDayIsRefused() {
+        let device = calendar(shanghai)
+        let zeroDay = allDayDraft(
+            "机票", startDate: "2026-10-01", endDate: "2026-10-01", start: t0
+        )
+        #expect(CalendarWriteRules.plan(for: zeroDay, in: device) == nil)
+    }
+
+    @Test("the zone the plan carries is the display zone, and all-day has none")
+    func planCarriesTheDisplayZone() throws {
+        let device = calendar(shanghai)
+        var timed = draft("网球", start: t0)
+        timed.timeZoneIdentifier = "Asia/Tokyo"
+        #expect(
+            try #require(CalendarWriteRules.plan(for: timed, in: device))
+                .zoneIdentifier == "Asia/Tokyo"
+        )
+        // Probe-frozen: setting a zone on an all-day event flips `isAllDay`
+        // back to false, so the plan must carry none however the action was
+        // stamped.
+        var allDay = allDayDraft(
+            "机票", startDate: "2026-10-01", endDate: "2026-10-02", start: t0
+        )
+        allDay.timeZoneIdentifier = "Asia/Tokyo"
+        #expect(
+            try #require(CalendarWriteRules.plan(for: allDay, in: device))
+                .zoneIdentifier == nil
         )
     }
 }
