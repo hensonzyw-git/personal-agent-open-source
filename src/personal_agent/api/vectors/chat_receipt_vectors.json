@@ -1,6 +1,6 @@
 {
-  "contract": "chat_receipt_projection_v8",
-  "note": "DEV-030. Generated from the server's own _operation_projection; the iOS client reads this file rather than a copy. Both sides must agree case by case, because the client's only reason to say 已写入 is a record_id in one of these bodies, and an indeterminate/manual-review result must not release the durable idempotency slot. v3 adds query_result: a succeeded finance.query_expenses receipt carries the whitelisted projection plus a deterministic answer fallback, and the client renders it as a structured card rather than prose. v4 pins query_evidence_tools: the server derives it from the IR (governed read whose output contract is the expense query projection), and the client holds its hard-coded `tool == \"finance.query_expenses\"` check against it, so a rename or a second governed query fails both suites before it reaches a user. v5 adds `record` (G1): a governed write's receipt now carries the written ledger row -- 名称/原始金额/日期/是否家庭支出/分类, plus 个人支出 when the Base formula had been evaluated at read-back. It is strictly subordinate to record_id and is emitted only alongside one, so a card can never show an amount for a write the same body did not state as recorded; an idempotent_replay and an envelope that will not open both resolve to an absent record, and the client falls back to the status row rather than inventing fields. expense_categories pins the single-select option set a client may offer when editing 分类, so the picker cannot drift from the ledger's own options -- the connector never creates one. v6 adds calendar.create_event to record_evidence_tools: the device-executed calendar write is R2, so its succeeded receipt carries record_id = the device-reported event_id and renders as 已写入 through the same recorded path as a Finance write; the event carries no `record` fields, and the client must fall back to the status row when event_id is absent. operation_states is unchanged. v7 adds `domain` (design §10, gap 4): every receipt states which domain its tool belongs to -- read from the tool's IR contract, never a list beside it -- so the client can pick the 人工核对 card by domain instead of guessing from a tool name, and a null domain means no tool was recorded. v7 also pins the calendar list card (design §9.2): a succeeded calendar.query_events receipt carries `query_result` whose rows name their calendar (`calendar_title`, null when the device has no name for that identifier), give an all-day event's dates as its authority (start_date/end_date, the end being exclusive) with `date_anchor_unknown` when the device could not confirm the anchor, and flag a field the mirror dropped for length. The deterministic `answer` is the same projection in words. `calendar_query_evidence_tools` pins that read the way `query_evidence_tools` pins the ledger's (v4): the server derives it from the IR -- a governed, enabled read whose output contract is the mirror's -- and the client holds its own set against it, because the client's set is what decides which of the two projections `query_result` is even decoded as. The calendar query case's agreed outcome is now `answered_with_query`, not `answered`: step 6 (2026-09-10) built the list card that renders those same rows, so the case moves from the server's text summary to the structured card that summarises it. The client catching up, not a change of meaning. The version deliberately stays v7 -- v7 is the version this feature's contract was frozen at, no server-side shape changed in step 6, and the only new fact is a client-side pin. A client of the previous revision that reads this file fails `casesAgree` loudly on this one case, which is the intended signal that it predates the card. v8 adds `device_result` and `device_action_id`. The first is what the phone decided about a write it executed: `created` means it made the event, `duplicate` means it found one already there. Both settle as `succeeded` with the same event id, so only this field separates them -- and it decides which card the client draws and whether 「仍要创建」 may be offered, which is why folding them into one outcome was the defect (2026-09-10 review: a calendar success rendered 「账本已存在此记录」 beside a 打开飞书账本 link). The succeeded calendar case that predates the field carries none, and the client must still draw it -- as evidence `unstated`, claiming neither. `device_action_id` is the action id a 「仍要创建」 override names; it is the operation's own idempotency key, emitted only for a tool whose IR contract says the device executes it, so a connector write's internal key never reaches a card. `device_executed_tools` holds the server's IR-derived set and the client's hard-coded one equal, the way `query_evidence_tools` does.",
+  "contract": "chat_receipt_projection_v9",
+  "note": "DEV-030. Generated from the server's own _operation_projection; the iOS client reads this file rather than a copy. Both sides must agree case by case, because the client's only reason to say 已写入 is a record_id in one of these bodies, and an indeterminate/manual-review result must not release the durable idempotency slot. v3 adds query_result: a succeeded finance.query_expenses receipt carries the whitelisted projection plus a deterministic answer fallback, and the client renders it as a structured card rather than prose. v4 pins query_evidence_tools: the server derives it from the IR (governed read whose output contract is the expense query projection), and the client holds its hard-coded `tool == \"finance.query_expenses\"` check against it, so a rename or a second governed query fails both suites before it reaches a user. v5 adds `record` (G1): a governed write's receipt now carries the written ledger row -- 名称/原始金额/日期/是否家庭支出/分类, plus 个人支出 when the Base formula had been evaluated at read-back. It is strictly subordinate to record_id and is emitted only alongside one, so a card can never show an amount for a write the same body did not state as recorded; an idempotent_replay and an envelope that will not open both resolve to an absent record, and the client falls back to the status row rather than inventing fields. expense_categories pins the single-select option set a client may offer when editing 分类, so the picker cannot drift from the ledger's own options -- the connector never creates one. v6 adds calendar.create_event to record_evidence_tools: the device-executed calendar write is R2, so its succeeded receipt carries record_id = the device-reported event_id and renders as 已写入 through the same recorded path as a Finance write; the event carries no `record` fields, and the client must fall back to the status row when event_id is absent. operation_states is unchanged. v7 adds `domain` (design §10, gap 4): every receipt states which domain its tool belongs to -- read from the tool's IR contract, never a list beside it -- so the client can pick the 人工核对 card by domain instead of guessing from a tool name, and a null domain means no tool was recorded. v7 also pins the calendar list card (design §9.2): a succeeded calendar.query_events receipt carries `query_result` whose rows name their calendar (`calendar_title`, null when the device has no name for that identifier), give an all-day event's dates as its authority (start_date/end_date, the end being exclusive) with `date_anchor_unknown` when the device could not confirm the anchor, and flag a field the mirror dropped for length. The deterministic `answer` is the same projection in words. `calendar_query_evidence_tools` pins that read the way `query_evidence_tools` pins the ledger's (v4): the server derives it from the IR -- a governed, enabled read whose output contract is the mirror's -- and the client holds its own set against it, because the client's set is what decides which of the two projections `query_result` is even decoded as. The calendar query case's agreed outcome is now `answered_with_query`, not `answered`: step 6 (2026-09-10) built the list card that renders those same rows, so the case moves from the server's text summary to the structured card that summarises it. The client catching up, not a change of meaning. The version deliberately stays v7 -- v7 is the version this feature's contract was frozen at, no server-side shape changed in step 6, and the only new fact is a client-side pin. A client of the previous revision that reads this file fails `casesAgree` loudly on this one case, which is the intended signal that it predates the card. v8 adds `device_result` and `device_action_id`. The first is what the phone decided about a write it executed: `created` means it made the event, `duplicate` means it found one already there. Both settle as `succeeded` with the same event id, so only this field separates them -- and it decides which card the client draws and whether 「仍要创建」 may be offered, which is why folding them into one outcome was the defect (2026-09-10 review: a calendar success rendered 「账本已存在此记录」 beside a 打开飞书账本 link). The succeeded calendar case that predates the field carries none, and the client must still draw it -- as evidence `unstated`, claiming neither. `device_action_id` is the action id a 「仍要创建」 override names; it is the operation's own idempotency key, emitted only for a tool whose IR contract says the device executes it, so a connector write's internal key never reaches a card. `device_executed_tools` holds the server's IR-derived set and the client's hard-coded one equal, the way `query_evidence_tools` does. v9 pins `override_tool` and each case's `expected_override_action_id`. The server decides whether 「仍要创建」 may be answered in `calendar_issue.may_override`, and the client decides whether to draw the button in `OperationOutcome.overrideDecision`; both are the *same* predicate -- tool equals `override_tool`, state is `succeeded`, `device_result` is `duplicate` -- and a rule stated twice is a rule that drifts. So the vector carries the answer per case, the client asserts its own decision against it, and the Python pin asserts `may_override` against the same field. The criterion is deliberately narrow: `created` settles with the same state and the same event id, so an override offered there would write a second copy of an event the user already has. Only the duplicate case names an action id, and it is the action the override must be addressed to -- not `record_id`, which is the EventKit identifier the phone reported.",
   "operation_states": [
     "accepted",
     "interpreting",
@@ -31,6 +31,7 @@
   "device_executed_tools": [
     "calendar.create_event"
   ],
+  "override_tool": "calendar.create_event",
   "cases": [
     {
       "name": "expense_recorded",
@@ -51,7 +52,8 @@
       "expected_proves_write": true,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "calendar_event_recorded",
@@ -73,7 +75,8 @@
       "expected_settled": true,
       "expected_releases_pending": true,
       "expected_cancellation": "none",
-      "expected_device_evidence": "unstated"
+      "expected_device_evidence": "unstated",
+      "expected_override_action_id": null
     },
     {
       "name": "expense_recorded_with_fields",
@@ -102,7 +105,8 @@
       "expected_proves_write": true,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "family_expense_recorded_with_fields",
@@ -131,7 +135,8 @@
       "expected_proves_write": true,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "expense_category_edited",
@@ -160,7 +165,8 @@
       "expected_proves_write": true,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "refund_recorded_without_category",
@@ -189,7 +195,8 @@
       "expected_proves_write": true,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "succeeded_without_evidence",
@@ -210,7 +217,8 @@
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": false,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "query_total",
@@ -262,7 +270,8 @@
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "query_by_category",
@@ -328,7 +337,8 @@
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "query_records",
@@ -390,7 +400,8 @@
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "no_tool_answer",
@@ -412,7 +423,8 @@
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "parked_clarification",
@@ -434,7 +446,8 @@
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "parked_duplicate",
@@ -456,7 +469,8 @@
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "failed_safe",
@@ -477,7 +491,8 @@
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "manual_review_keeps_record",
@@ -498,7 +513,8 @@
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": false,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "cancelled_pre_submit",
@@ -519,7 +535,8 @@
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "cancelled_before_submit"
+      "expected_cancellation": "cancelled_before_submit",
+      "expected_override_action_id": null
     },
     {
       "name": "cancel_after_submit_is_not_a_rollback",
@@ -540,7 +557,8 @@
       "expected_proves_write": false,
       "expected_settled": false,
       "expected_releases_pending": false,
-      "expected_cancellation": "requested_outcome_still_authoritative"
+      "expected_cancellation": "requested_outcome_still_authoritative",
+      "expected_override_action_id": null
     },
     {
       "name": "still_interpreting",
@@ -561,7 +579,8 @@
       "expected_proves_write": false,
       "expected_settled": false,
       "expected_releases_pending": false,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "calendar_query_list_card",
@@ -669,7 +688,8 @@
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "calendar_manual_review_keeps_record",
@@ -690,7 +710,8 @@
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": false,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "calendar_event_created",
@@ -712,7 +733,8 @@
       "expected_settled": true,
       "expected_releases_pending": true,
       "expected_cancellation": "none",
-      "expected_device_evidence": "created"
+      "expected_device_evidence": "created",
+      "expected_override_action_id": null
     },
     {
       "name": "calendar_event_duplicate",
@@ -734,7 +756,8 @@
       "expected_settled": true,
       "expected_releases_pending": true,
       "expected_cancellation": "none",
-      "expected_device_evidence": "duplicate"
+      "expected_device_evidence": "duplicate",
+      "expected_override_action_id": "act-calendar_event_duplicate"
     }
   ],
   "expense_categories": [

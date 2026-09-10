@@ -769,7 +769,7 @@ struct ChatView: View {
                 record: record,
                 operationID: operationID
             )
-        } else if case .calendarEventWritten(let eventID, let tool, let evidence) = outcome {
+        } else if case .calendarEventWritten(let eventID, let tool, let evidence, _) = outcome {
             // Its own branch, not a fallthrough to `recordedReceipt`. The two
             // receipts share the evidence field and nothing else: the ledger
             // row's wording, its fields and its 打开飞书账本 link all name a
@@ -778,7 +778,14 @@ struct ChatView: View {
                 eventID: eventID,
                 tool: tool,
                 evidence: evidence,
-                operationID: operationID
+                operationID: operationID,
+                // The card's own fields decide this for every receipt this
+                // build produces; the map only has entries for cards drawn
+                // from history that had to ask (`ChatModel.overrideDecisions`).
+                // One lookup per undecided card per page load, never per redraw.
+                decision: model.overrideDecision(
+                    for: outcome, operationID: operationID
+                )
             )
         } else if case .answeredWithQuery(let result, let tool) = outcome {
             queryReceiptCard(result: result, tool: tool, operationID: operationID)
@@ -899,7 +906,7 @@ struct ChatView: View {
         }
     }
 
-    /// The calendar write's receipt: 状态行, and nothing else.
+    /// The calendar write's receipt: 状态行, 仍要创建, and nothing else.
     ///
     /// It shares the status-row shape with the ledger's because the shape is
     /// right — a receipt with no business fields to draw must not pretend to
@@ -909,6 +916,12 @@ struct ChatView: View {
     /// link, because this write never went near the ledger. The 2026-09-10
     /// review found exactly those two strings on a created calendar event.
     ///
+    /// 仍要创建 appears for exactly one badge: 日历里已有. It re-issues the write
+    /// the phone declined, which is only safe when the phone's report and the
+    /// server's row agree that an event was already there — so the button is
+    /// drawn from `decision`, which cannot carry one without the other (see
+    /// `OperationOutcome.overrideDecision`).
+    ///
     /// The EventKit id stays reachable through the same long-press menu the
     /// ledger receipt uses: it is the evidence the write happened, and 20
     /// opaque characters on the row would cost more than it buys.
@@ -916,12 +929,13 @@ struct ChatView: View {
         eventID: String,
         tool: String?,
         evidence: CalendarDeviceResult,
-        operationID: String?
+        operationID: String?,
+        decision: OverrideDecision
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             terminalChip(
                 for: .calendarEventWritten(
-                    eventID: eventID, tool: tool, evidence: evidence
+                    eventID: eventID, tool: tool, evidence: evidence, actionID: nil
                 ),
                 toolEvidence: .known(tool)
             )
@@ -930,6 +944,16 @@ struct ChatView: View {
                 Text(Capabilities.displayName(forAlias: tool, tools: model.tools))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+
+            if let actionID = decision.actionID {
+                Button {
+                    Task { await model.overrideDeviceAction(actionID: actionID) }
+                } label: {
+                    Text("仍要创建").font(.footnote)
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.busy)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1774,7 +1798,7 @@ struct ChatView: View {
             // this name states the verifiable fact instead, and can be promoted
             // back only if the comparison is ever actually implemented.
             return TerminalBadge(text: "账本已存在此记录", color: .accentText)
-        case .calendarEventWritten(_, _, let evidence):
+        case .calendarEventWritten(_, _, let evidence, _):
             // The calendar's own label, chosen by what the phone reported. It
             // deliberately does **not** say 账本, which is what this card said
             // before the 2026-09-10 review: a created calendar event was

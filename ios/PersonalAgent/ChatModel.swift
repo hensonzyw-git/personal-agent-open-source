@@ -496,6 +496,86 @@ final class ChatModel {
         }
     }
 
+    // --- overriding a duplicate calendar write ---------------------------------
+
+    /// The answers to 「仍要创建」 this client had to ask for, by operation id.
+    ///
+    /// Populated only for calendar receipts whose own frozen fields are silent —
+    /// a Timeline event appended before the server projected `device_result` and
+    /// `device_action_id`. Every receipt this build produces decides the question
+    /// by itself, so this map is empty in normal use and never consulted for a
+    /// live reply.
+    ///
+    /// Filled by `refreshOverrideDecisions()` once per page load, not per card
+    /// and not per redraw: a scroll through a year of calendar cards must not
+    /// become one request per row.
+    private(set) var overrideDecisions: [String: OverrideDecision] = [:]
+
+    /// Answer 「仍要创建」 for a calendar event the phone found already there.
+    ///
+    /// The action id comes from the server's projection, never from this
+    /// client's own reading of the receipt — the server derives the override's
+    /// idempotency key from it, which is what makes a double tap, a retry and a
+    /// concurrent pair converge on **one** created event instead of three. The
+    /// wait afterwards is `ChatTimeline`'s, and it carries no slot: the decision
+    /// is durable on the server, and a lost reply leaves the operation settleable
+    /// rather than repeatable.
+    ///
+    /// A refusal is reported as-is. The endpoint refuses for reasons the user
+    /// cannot see from the card — the operation was not a duplicate, it is not
+    /// settled, nothing was retained to resume — and inventing reassurance for
+    /// those would be the client claiming a decision the server did not make.
+    func overrideDeviceAction(actionID: String) async {
+        busy = true
+        defer { busy = false }
+        do {
+            _ = try await timeline.overrideDeviceAction(actionID: actionID)
+            try await timeline.syncNewer()
+            await mirror()
+            lastError = nil
+        } catch {
+            lastError = describe(error)
+        }
+        await mirrorPendingSlots()
+    }
+
+    /// What 「仍要创建」 may be answered on one card: the card's own answer when
+    /// its fields give one, and this map's when they do not.
+    ///
+    /// The `??` is the whole policy. An entry exists only where the card asked a
+    /// question it could not answer, so a missing entry means the card decided
+    /// for itself — never "the lookup failed", which stores `.notOffered`.
+    func overrideDecision(
+        for outcome: OperationOutcome, operationID: String?
+    ) -> OverrideDecision {
+        guard let operationID, let asked = overrideDecisions[operationID] else {
+            return outcome.overrideDecision
+        }
+        return asked
+    }
+
+    /// Ask the server about every calendar receipt on screen whose own fields
+    /// cannot say whether 「仍要创建」 belongs.
+    ///
+    /// Called after a page load, where "on screen" is "in the Timeline as
+    /// loaded" and the count is bounded by how many undecided calendar receipts
+    /// that page contains — normally the oldest few, and none at all once the
+    /// history in question was written by this build. Answers are kept, so a
+    /// later page load re-asks about nothing already answered.
+    ///
+    /// Deliberately not an error path: `ChatTimeline.overrideDecision` fails
+    /// closed to `.notOffered`, and a banner about a button that is not there
+    /// would report a problem the user cannot act on. The *tap* is where a
+    /// refusal matters, and `overrideDeviceAction` surfaces that one.
+    func refreshOverrideDecisions() async {
+        for (operationID, outcome) in await timeline.undecidedOverrideCandidates()
+        where overrideDecisions[operationID] == nil {
+            overrideDecisions[operationID] = await timeline.overrideDecision(
+                frozen: outcome, operationID: operationID
+            )
+        }
+    }
+
     // --- the manual-review resolution (`DEV-040`) ------------------------------
 
     /// Report what the user found in the ledger for a parked
@@ -628,6 +708,11 @@ final class ChatModel {
                 latestDailyReviewEventID[snapshot.reviewID] = event.eventID
             }
         }
+        // Last, because it is the only part of this that touches the network and
+        // it must not delay anything above. Self-limiting rather than
+        // rate-limited: it asks only about receipts with no entry yet, so the
+        // steady state makes no requests at all, whichever call site ran this.
+        await refreshOverrideDecisions()
     }
 
     /// `1j`. Whether a `daily_review` event has been superseded by a newer

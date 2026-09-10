@@ -1892,6 +1892,10 @@ private struct ReceiptVectors {
         /// server emitting the field -- which is itself the case that matters:
         /// history must render without it, as `unstated`.
         let deviceEvidence: String?
+        /// The action id an override of this receipt must name, or `null` when
+        /// 「仍要创建」 may not be answered at all (v9). The server states it once,
+        /// from `may_override`; the client asserts its own decision against it.
+        let expectedOverrideActionID: String?
     }
 
     let contract: String
@@ -1900,6 +1904,10 @@ private struct ReceiptVectors {
     let queryEvidenceTools: [String]
     let calendarQueryEvidenceTools: [String]
     let deviceExecutedTools: [String]
+    /// The one device tool whose duplicates the user may override (v9). The
+    /// server's `CALENDAR_DEVICE_TOOL` and the client's `calendarDeviceTool` are
+    /// two names for it, and this holds them equal.
+    let overrideTool: String
     let expenseCategories: [String]
     let cases: [Case]
 
@@ -1940,7 +1948,9 @@ private struct ReceiptVectors {
                 expectedReleasesPending: releasesPending,
                 expectedCancellation: cancellation,
                 domain: (chatReceipt as? [String: Any])?["domain"] as? String,
-                deviceEvidence: entry["expected_device_evidence"] as? String
+                deviceEvidence: entry["expected_device_evidence"] as? String,
+                expectedOverrideActionID: entry["expected_override_action_id"]
+                    as? String
             )
         }
         return ReceiptVectors(
@@ -1951,6 +1961,7 @@ private struct ReceiptVectors {
             calendarQueryEvidenceTools: root["calendar_query_evidence_tools"]
                 as? [String] ?? [],
             deviceExecutedTools: root["device_executed_tools"] as? [String] ?? [],
+            overrideTool: root["override_tool"] as? String ?? "",
             expenseCategories: root["expense_categories"] as? [String] ?? [],
             cases: cases
         )
@@ -1994,7 +2005,7 @@ struct ReceiptContractTests {
     @Test("the vector file is the one this build was written against")
     func contractVersion() throws {
         let vectors = try #require(vectors)
-        #expect(vectors.contract == "chat_receipt_projection_v8")
+        #expect(vectors.contract == "chat_receipt_projection_v9")
         #expect(!vectors.cases.isEmpty)
     }
 
@@ -2160,7 +2171,7 @@ struct ReceiptContractTests {
             let declared = try #require(vectorCase.deviceEvidence)
             seen.insert(declared)
             guard
-                case .calendarEventWritten(let eventID, _, let evidence) =
+                case .calendarEventWritten(let eventID, _, let evidence, _) =
                     receipt.outcome
             else {
                 Issue.record("\(vectorCase.name): not the calendar card")
@@ -2319,7 +2330,28 @@ struct ReceiptContractTests {
                 parsed.domain == entry.domain,
                 "\(entry.name): the decoded domain disagreed with the server's"
             )
+            // Whether 「仍要创建」 belongs on this receipt, and to which action.
+            // The server answers the same question in `may_override`, and the
+            // Python pin holds `may_override` against this same field -- so a
+            // rule changed on one side fails on both, instead of shipping a
+            // button that writes a second copy of an event the user has.
+            let decision = parsed.outcome.overrideDecision
+            #expect(
+                decision.actionID == entry.expectedOverrideActionID,
+                "\(entry.name): override decision disagreed with the contract"
+            )
         }
+    }
+
+    @Test("the override tool is the one the server names")
+    func theOverrideToolAgrees() throws {
+        let vectors = try #require(vectors)
+        // Named on both sides rather than derived from `deviceExecutedTools`:
+        // an override is not a property of being device-executed, it is the
+        // meaning a calendar duplicate has, and a second device tool must
+        // decide its own override semantics rather than inherit these.
+        #expect(vectors.overrideTool == OperationReceipt.calendarDeviceTool)
+        #expect(vectors.overrideTool == "calendar.create_event")
     }
 }
 

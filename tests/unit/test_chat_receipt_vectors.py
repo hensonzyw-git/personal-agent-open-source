@@ -27,6 +27,7 @@ What each test here defends:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,7 @@ from personal_agent.api.finance_record_projection import (
     decode_finance_expense_record,
     seal_expense_record,
 )
+from personal_agent.api.calendar_issue import CALENDAR_DEVICE_TOOL, may_override
 from personal_agent.api.operation_state import is_terminal
 from personal_agent.storage.models import OPERATION_STATES, Operation
 from personal_agent_core.crypto import KeyRing, generate_key
@@ -62,6 +64,18 @@ from personal_agent_core.tool_ir import (
 #: the projection has to open what the write path sealed -- the point of the
 #: file is that both halves are the server's own code.
 RING = KeyRing([generate_key("receipt-vectors")], service="personal-agent-api")
+
+def _swift_source() -> str:
+    """The iOS half of this contract, read as text.
+
+    Read rather than restated for the same reason the vectors themselves are
+    read: two copies of a rule drift, and the drift here draws a button whose
+    press writes a second copy of an event the user already has.
+    """
+    path = Path(__file__).parents[2] / "ios/PersonalAgentKit/Sources/PersonalAgentKit/ChatWire.swift"
+    assert path.is_file(), f"{path} is gone; the iOS half moved and this test cannot see it"
+    return path.read_text(encoding="utf-8")
+
 
 #: Every vector in this file is a receipt for a *settled* operation, so the
 #: client capability gate cannot be what decides any of them -- a settled
@@ -151,7 +165,7 @@ def _operation_for(case: dict) -> Operation:
 
 
 def test_contract_version_is_pinned() -> None:
-    assert V["contract"] == "chat_receipt_projection_v8"
+    assert V["contract"] == "chat_receipt_projection_v9"
     assert V["cases"], "an empty vector file would pass every check vacuously"
 
 
@@ -628,6 +642,73 @@ def test_every_receipt_states_the_domain_of_its_tool() -> None:
         for case in V["cases"]
         if case["receipt"]["state"] == "needs_manual_review"
     } == {"calendar", "finance"}
+
+
+def test_the_override_rule_is_one_rule_stated_once() -> None:
+    """`may_override` and the client's `overrideDecision`, held together (v9).
+
+    Whether 「仍要创建」 may be answered is decided by the server
+    (`calendar_issue.may_override`) and drawn by the client
+    (`OperationOutcome.overrideDecision`). Two statements of one predicate drift,
+    and this pair drifts in the direction that writes a second copy of an event
+    the user already has -- so the vector carries the answer per case, the Swift
+    suite asserts the client's decision against it, and this asserts the server's.
+
+    The tool name is read back out of the Swift source rather than restated, so
+    a rename on either side fails here instead of leaving two names that agree
+    only by having been typed the same day.
+    """
+    swift = _swift_source()
+    match = re.search(
+        r'public static let calendarDeviceTool = "([^"]+)"', swift
+    )
+    assert match is not None, (
+        "the client no longer names the override tool as a single constant; "
+        "the rule cannot be held equal to the server's without one"
+    )
+    assert match.group(1) == CALENDAR_DEVICE_TOOL
+    assert V["override_tool"] == CALENDAR_DEVICE_TOOL
+
+    for case in V["cases"]:
+        receipt = case["receipt"]
+        assert may_override(
+            tool=receipt["tool"],
+            state=receipt["state"],
+            device_result=receipt.get("device_result"),
+        ) is (case["expected_override_action_id"] is not None), case["name"]
+
+    # And the criterion is narrow in both directions: a `created` report settles
+    # with the same state and the same event id, so only the phone having *found*
+    # an event may be overridden.
+    assert may_override(
+        tool=CALENDAR_DEVICE_TOOL, state="succeeded", device_result="created"
+    ) is False
+    assert may_override(
+        tool=CALENDAR_DEVICE_TOOL, state="succeeded", device_result=None
+    ) is False
+    # A second device tool does not inherit this by being device-executed.
+    assert may_override(
+        tool="finance.log_expense", state="succeeded", device_result="duplicate"
+    ) is False
+
+
+def test_only_a_duplicate_names_an_override_action() -> None:
+    """The action id is the override's target, and nothing else's.
+
+    `record_id` and `device_action_id` travel in the same body and mean
+    different things -- the EventKit identifier the phone reported, and the key
+    the server will accept an override under. A card that sent the first would
+    be refused by the endpoint's UUID pin rather than misapplied, but only if
+    the two are never conflated on the way there.
+    """
+    for case in V["cases"]:
+        action_id = case["expected_override_action_id"]
+        if action_id is None:
+            continue
+        receipt = case["receipt"]
+        assert receipt["device_result"] == "duplicate", case["name"]
+        assert action_id == receipt["device_action_id"], case["name"]
+        assert action_id != receipt["record_id"], case["name"]
 
 
 def test_new_events_carry_tool_explicitly_even_when_null() -> None:

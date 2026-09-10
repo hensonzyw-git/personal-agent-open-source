@@ -450,8 +450,22 @@ public enum OperationOutcome: Sendable, Equatable {
     /// and its 「仍要创建」 button are both chosen by it: `.created` claims the
     /// phone made the event, `.duplicate` claims it found one, and `.unstated`
     /// claims neither.
+    /// `actionID` is the action 「仍要创建」 must be addressed to — the server's
+    /// `device_action_id`, which equals this operation's own idempotency key
+    /// (`orchestrator.py`: 「`action_id` is the operation's own idempotency
+    /// key」). It is **not** `eventID`: the EventKit identifier the phone
+    /// reported and the key the server will accept an override under are two
+    /// different facts that happen to travel in the same receipt, and an
+    /// override sent to the former would be refused by the pinned-UUID check
+    /// rather than misapplied. `nil` when the projection carried none -- a
+    /// Timeline event frozen before the field existed, or a tool the server
+    /// does not execute on the device. Never guessed from the operation id: see
+    /// `overrideDecision`.
     case calendarEventWritten(
-        eventID: String, tool: String?, evidence: CalendarDeviceResult
+        eventID: String,
+        tool: String?,
+        evidence: CalendarDeviceResult,
+        actionID: String?
     )
     /// A no-side-effect answer.
     case answered(String)
@@ -518,6 +532,71 @@ public enum OperationOutcome: Sendable, Equatable {
         default: return false
         }
     }
+
+    /// What 「仍要创建」 may be answered here, and to which action.
+    ///
+    /// The whole rule, in one place, on purpose. The server decides the same
+    /// question in `calendar_issue.may_override` and the two are held equal by
+    /// a pin in `tests/unit/test_chat_receipt_vectors.py`; a client that
+    /// re-decided it per view would be a second source of truth for a question
+    /// whose wrong answer writes a second copy of an event the user already has.
+    ///
+    /// Read from the *outcome*, not the receipt, because the outcome is what a
+    /// Timeline event decodes to as well: history and the live reply must not be
+    /// able to disagree about whether the button is there, any more than they
+    /// may disagree about whether something was written.
+    public var overrideDecision: OverrideDecision {
+        guard case .calendarEventWritten(_, let tool, let evidence, let actionID) = self,
+              tool == OperationReceipt.calendarDeviceTool,
+              evidence == .duplicate,
+              let actionID, !actionID.isEmpty
+        else { return .notOffered }
+        return .offered(actionID: actionID)
+    }
+
+    /// True when the frozen fields do not decide `overrideDecision` and only
+    /// the server's current projection can.
+    ///
+    /// This is the history case: `device_result` and `device_action_id` are
+    /// frozen into a Timeline event when it is appended, so an event written by
+    /// the build before they existed carries neither — while the *operation row*
+    /// behind it has had both since migration 0010. A card that read only its
+    /// own event would show no button for a duplicate it cannot rule out.
+    ///
+    /// `.created` is **not** undecided: the phone said it wrote the event, and
+    /// no later projection can turn that into a duplicate. Nor is a decided
+    /// `.duplicate` with its action id -- there is nothing left to ask.
+    /// `.unstated` is undecided rather than "no", because the two readings it
+    /// covers (never projected / projected as nothing readable) are exactly the
+    /// ones a lookup separates.
+    public var overrideIsUndecided: Bool {
+        guard case .calendarEventWritten(_, let tool, let evidence, let actionID) = self,
+              tool == OperationReceipt.calendarDeviceTool
+        else { return false }
+        switch evidence {
+        case .created: return false
+        case .duplicate: return overrideDecision == .notOffered
+        case .unstated: return true
+        }
+    }
+}
+
+/// The answer to "may this device write be overridden, and where must the answer
+/// be sent" -- one value rather than a `Bool` beside an optional id, so a button
+/// cannot be drawn without the identifier its action needs.
+public enum OverrideDecision: Sendable, Equatable {
+    /// No button. Also the answer to every question this client could not get a
+    /// server confirmation for: an override offered on a guess writes an event.
+    case notOffered
+    /// The button, addressed to this action.
+    case offered(actionID: String)
+
+    /// The action id, when there is one. Reading it from the decision rather
+    /// than beside it is what makes `.notOffered` mean "no call is possible".
+    public var actionID: String? {
+        guard case .offered(let actionID) = self else { return nil }
+        return actionID
+    }
 }
 
 /// How a cancel request must be presented.
@@ -566,6 +645,14 @@ public struct OperationReceipt: Sendable, Equatable {
     /// the receipt carries no readable `device_result` — every Finance receipt,
     /// and every calendar one frozen before the server projected the field.
     public let deviceResult: CalendarDeviceResult
+    /// The action this operation's own idempotency key names, when the server
+    /// projects one — what an override must be addressed to. `nil` for every
+    /// operation that is not executed on the device, and for a projection that
+    /// predates the field. Never derived here from `operationID`: the two are
+    /// equal for a device action *by the server's construction*, and a client
+    /// that re-derived that equality would be asserting a server invariant it
+    /// cannot check (`app.py` gates the field on the tool's executor).
+    public let deviceActionID: String?
     /// The device actions this reply hands over, in plan order — empty when
     /// there are none. One message may carry several arrangements (design
     /// §4.2), so this is **always** a list, even for a single action; a client
@@ -593,6 +680,7 @@ public struct OperationReceipt: Sendable, Equatable {
         calendarQuery: CalendarQueryResult? = nil,
         record: FinanceExpenseRecord? = nil,
         deviceResult: CalendarDeviceResult = .unstated,
+        deviceActionID: String? = nil,
         deviceActions: [DeviceActionEnvelope] = []
     ) {
         self.operationID = operationID
@@ -611,6 +699,7 @@ public struct OperationReceipt: Sendable, Equatable {
         self.calendarQuery = calendarQuery
         self.record = record
         self.deviceResult = deviceResult
+        self.deviceActionID = deviceActionID
         self.deviceActions = deviceActions
     }
 
@@ -691,6 +780,14 @@ public struct OperationReceipt: Sendable, Equatable {
     /// is why nothing else in this client branches on it.
     public static let calendarDomain = "calendar"
 
+    /// The device-executed tool whose duplicates the user may answer 「仍要创建」
+    /// to. Mirrors the server's `CALENDAR_DEVICE_TOOL` (`calendar_issue.py`),
+    /// which is a written-out registry there rather than "every device tool" for
+    /// the reason stated at its definition: an override is not a property of
+    /// being device-executed, it is the meaning a *calendar* duplicate has. The
+    /// two names are held equal by `chat_receipt_vectors.json` (`override_tool`).
+    public static let calendarDeviceTool = "calendar.create_event"
+
     public var outcome: OperationOutcome {
         Self.project(
             state: state,
@@ -705,7 +802,8 @@ public struct OperationReceipt: Sendable, Equatable {
             queryResult: queryResult,
             calendarQuery: calendarQuery,
             record: record,
-            deviceResult: deviceResult
+            deviceResult: deviceResult,
+            deviceActionID: deviceActionID
         )
     }
 
@@ -738,7 +836,8 @@ public struct OperationReceipt: Sendable, Equatable {
         queryResult: FinanceQueryResult? = nil,
         calendarQuery: CalendarQueryResult? = nil,
         record: FinanceExpenseRecord? = nil,
-        deviceResult: CalendarDeviceResult = .unstated
+        deviceResult: CalendarDeviceResult = .unstated,
+        deviceActionID: String? = nil
     ) -> OperationOutcome {
         let tool: String?
         if case .known(let value) = toolEvidence { tool = value } else { tool = nil }
@@ -771,7 +870,10 @@ public struct OperationReceipt: Sendable, Equatable {
                     return .indeterminate(state: state.wire)
                 }
                 return .calendarEventWritten(
-                    eventID: recordID, tool: tool, evidence: deviceResult
+                    eventID: recordID,
+                    tool: tool,
+                    evidence: deviceResult,
+                    actionID: deviceActionID
                 )
             }
             if let recordID, !recordID.isEmpty {
@@ -846,6 +948,7 @@ extension OperationReceipt: Decodable {
         case queryResult = "query_result"
         case record
         case deviceResult = "device_result"
+        case deviceActionID = "device_action_id"
         case deviceActions = "device_actions"
         case deviceAction = "device_action"
     }
@@ -907,6 +1010,14 @@ extension OperationReceipt: Decodable {
         // calendar receipt frozen before 2026-09-10 carries no fact about it.
         deviceResult = CalendarDeviceResult(
             wire: try container.decodeIfPresent(String.self, forKey: .deviceResult)
+        )
+        // Read as written, never derived. An absent field stays `nil` and the
+        // card asks the server (see `overrideIsUndecided`); filling it in from
+        // `operation_id` would put the client in the business of asserting that
+        // an operation is device-executed, which is the server's answer to give
+        // (`_operation_projection` gates the field on the tool's executor).
+        deviceActionID = try container.decodeIfPresent(
+            String.self, forKey: .deviceActionID
         )
         // The device-action hand-off rides the same reply, and since design
         // §2.5.4 it is the plural `device_actions`. Which branch runs is
@@ -1291,7 +1402,12 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                     // does not know.
                     deviceResult: CalendarDeviceResult(
                         wire: content["device_result"]?.stringValue
-                    )
+                    ),
+                    // Same freeze, same consequence: an event appended before
+                    // the server projected the action id leaves 「仍要创建」
+                    // undecided rather than answered, and the card asks the
+                    // server's current projection (`overrideIsUndecided`).
+                    deviceActionID: content["device_action_id"]?.stringValue
                 ),
                 state: state,
                 toolEvidence: toolEvidence

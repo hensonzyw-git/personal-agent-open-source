@@ -755,6 +755,57 @@ public actor ChatTimeline {
         return try await settleOverride(first)
     }
 
+    /// Every loaded receipt whose own fields cannot say whether 「仍要创建」
+    /// belongs, by operation id.
+    ///
+    /// What a caller iterates to ask the server once per page load rather than
+    /// once per card. The filter is `overrideIsUndecided`, so this is empty for
+    /// a Timeline written by this build — the fields are frozen onto each event
+    /// as it is appended, and only history predating them is in here.
+    public func undecidedOverrideCandidates() -> [String: OperationOutcome] {
+        var found: [String: OperationOutcome] = [:]
+        for event in events {
+            guard let operationID = event.operationID else { continue }
+            guard case .operationResult(let outcome, _, _) = event.kind else { continue }
+            guard outcome.overrideIsUndecided else { continue }
+            found[operationID] = outcome
+        }
+        return found
+    }
+
+    /// What 「仍要创建」 may be answered on a card drawn from `frozen`, asking the
+    /// server only when the frozen receipt cannot decide it.
+    ///
+    /// `device_result` and `device_action_id` are frozen into a Timeline event
+    /// when it is appended. The operation row behind that event is *not* frozen
+    /// — it has carried both since migration 0010 — so an event scrolled back to
+    /// from before the projection included them shows nothing where the current
+    /// row would show a duplicate. This is the one lookup that closes that gap,
+    /// and it is the fallback rather than the path: a card whose own fields
+    /// already decide the question never asks.
+    ///
+    /// **Fail closed, and say so by returning `.notOffered`.** Every failure
+    /// here — an unreachable server, a refusal, a projection that still does not
+    /// answer — is the same answer, because the alternative is inventing an
+    /// action id and offering a button that would write a second copy of an
+    /// event the user already has. A refusal is not surfaced as an error for the
+    /// same reason: this runs while drawing a card that is otherwise complete,
+    /// and a banner about a button that is not there is noise. The *cast* is not
+    /// swallowed: `overrideDeviceAction` propagates its refusal.
+    public func overrideDecision(
+        frozen: OperationOutcome, operationID: String
+    ) async -> OverrideDecision {
+        guard frozen.overrideIsUndecided else { return frozen.overrideDecision }
+        guard let current = try? await backend.operation(operationID: operationID)
+        else { return .notOffered }
+        let decision = current.outcome.overrideDecision
+        // A projection that answers `.offered` from an operation the card did
+        // not draw as a calendar write is still honoured: the decision is a
+        // property of the server's row, and this method's whole reason to exist
+        // is that the card's own copy of that row may be older than it is.
+        return decision
+    }
+
     // --- the manual-review resolution (`DEV-040`) -----------------------------
 
     /// Record what the user found in the ledger for an operation that ended at
