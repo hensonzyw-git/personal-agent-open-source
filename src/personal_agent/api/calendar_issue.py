@@ -23,6 +23,8 @@ such as which of two identically named calendars they meant.
 
 from __future__ import annotations
 
+import hashlib
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Any, Callable, Final
@@ -51,6 +53,63 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 CLIENT_UPGRADE_QUESTION: Final[str] = (
     "iPhone 上的 App 需要升级后才能记录日程。请把 App 更新到最新版本，然后再说一次。"
 )
+
+#: The device-executed tool a duplicate may be overridden for. Named rather
+#: than derived from "every device-executed contract", for the same reason
+#: `issuance_policy` is a written-out registry: 「仍要创建」 is not a property of
+#: being device-executed, it is the meaning a *calendar* duplicate has for the
+#: user. A second device tool must decide its own override semantics instead of
+#: inheriting these -- inheriting them by default is how a tool whose reports
+#: happen to include "duplicate" would silently become overridable.
+CALENDAR_DEVICE_TOOL: Final[str] = "calendar.create_event"
+
+#: The namespace every override key is derived in. A fixed, published constant
+#: rather than a random one, because the derivation *is* the idempotency
+#: mechanism: a double tap, a retry and a concurrent pair must all land on the
+#: same key without any of them carrying one.
+_OVERRIDE_NAMESPACE: Final[uuid.UUID] = uuid.UUID(
+    "64564cc9-fb26-555a-a9ad-f1419a8c8a33"
+)
+
+
+def may_override(*, tool: str | None, state: str, device_result: str | None) -> bool:
+    """Whether this operation is one the user may answer 「仍要创建」 to.
+
+    One case, and it is narrower than "the write succeeded": the phone must have
+    reported that it *found the event already there*. A `created` report settles
+    with the same state and the same EventKit id in `safe_result`, so on a row
+    without the report this question is not answerable at all -- and an override
+    offered there would write a second copy of an event the user already has.
+    """
+    return (
+        tool == CALENDAR_DEVICE_TOOL
+        and state == "succeeded"
+        and device_result == "duplicate"
+    )
+
+
+def override_key(operation_id: str) -> str:
+    """The one key a given operation's override may ever be created under.
+
+    Deterministic on purpose, and this is the one place in the system where a
+    predictable idempotency key is the *mechanism* rather than a hazard: the
+    client never supplies it, cannot guess another device's (it is derived from
+    an operation id it cannot read), and the endpoint that mints it has already
+    proved ownership. `require_uuid4` guards the client-facing channel; this key
+    never travels through it.
+    """
+    return str(uuid.uuid5(_OVERRIDE_NAMESPACE, f"{operation_id}:calendar-override"))
+
+
+def override_fingerprint(operation_id: str) -> str:
+    """The request fingerprint the derived operation is anchored with.
+
+    A replay must match and a different source must not, which is exactly what
+    `open_operation`'s fingerprint comparison enforces on the derived key.
+    """
+    return hashlib.sha256(
+        f"calendar_override:{operation_id}".encode("utf-8")
+    ).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -164,6 +223,7 @@ def action_fields(
     resolution: CalendarResolution,
     *,
     attested: dict[str, Any],
+    skip_local_dedup: bool = False,
 ) -> dict[str, Any]:
     """The `event` object a v2 client executes from.
 
@@ -175,6 +235,17 @@ def action_fields(
     Dates and zone are written out explicitly, including as null. A client that
     has to tell "absent" from "not applicable" would otherwise read a timed
     event as one whose dates simply failed to arrive.
+
+    `skip_local_dedup` is the one instruction that is not a field of the event.
+    It says "write even though the phone's own lookup will find this" and it
+    exists for exactly one caller: the 「仍要创建」 override, which the user
+    pressed *because* the device reported a duplicate (design 3.3). It travels
+    as a Host-bound keyword rather than an argument for the same reason
+    `duplicate_override` does -- it is a decision only a person may make, and an
+    argument is the model's channel. The key is written only when true: a normal
+    action stays byte-identical to what it was before overrides existed, and
+    "absent" keeps meaning "do the local check", which is the safe default if an
+    older client ever sees one.
     """
     if not isinstance(resolution, CalendarResolved):
         raise _invalid("a device action needs a resolved calendar")
@@ -184,6 +255,8 @@ def action_fields(
     fields["timezone"] = request.timezone
     fields["start_date"] = request.start_date
     fields["end_date"] = request.end_date
+    if skip_local_dedup:
+        fields["skip_local_dedup"] = True
     return fields
 
 
@@ -289,9 +362,13 @@ def _require_local_midnight(moment: datetime, day: date, which: str) -> None:
 
 __all__ = [
     "CLIENT_UPGRADE_QUESTION",
+    "CALENDAR_DEVICE_TOOL",
     "CalendarRequest",
     "action_fields",
     "issuance_policy",
+    "may_override",
+    "override_fingerprint",
+    "override_key",
     "parse_request",
     "routing_question",
 ]

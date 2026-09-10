@@ -31,6 +31,7 @@ from personal_agent.api.control_client import (
     CalendarUnresolved,
     ControlPlaneError,
 )
+from personal_agent.api.intent import WriteIntent
 from personal_agent.api.orchestrator import (
     DeviceActionIssued,
     NeedsClarification,
@@ -214,6 +215,36 @@ def test_the_issued_action_carries_the_attested_arguments_not_the_raw_output() -
     assert "device_id" not in outcome.event_fields
 
 
+def test_an_override_action_tells_the_phone_to_skip_its_own_lookup() -> None:
+    """「仍要创建」 is a decision about the phone's *own* duplicate check, so
+    the instruction has to reach the thing that performs it. The flag rides
+    the action because there is nowhere else: the phone builds the EKEvent
+    from this payload and runs its lookup on the way to saving it."""
+    bridge = SpyBridge()
+    outcome = cal_dispatcher(bridge).resolve(
+        tool="calendar.create_event",
+        model_args=dict(CAL_ARGS),
+        idempotency_key="action-key-1",
+        skip_local_dedup=True,
+    )
+    assert isinstance(outcome, DeviceActionIssued)
+    assert outcome.event_fields["skip_local_dedup"] is True
+
+
+def test_an_ordinary_action_carries_no_skip_flag() -> None:
+    """The default action is byte-identical to what it was before overrides
+    existed. "Absent" has to keep meaning "do the local check": that is the
+    safe reading, and it is what an older client will do with it."""
+    bridge = SpyBridge()
+    outcome = cal_dispatcher(bridge).resolve(
+        tool="calendar.create_event",
+        model_args=dict(CAL_ARGS),
+        idempotency_key="action-key-1",
+    )
+    assert isinstance(outcome, DeviceActionIssued)
+    assert "skip_local_dedup" not in outcome.event_fields
+
+
 def test_device_action_idempotency_key_is_supplied_by_the_host() -> None:
     """The orchestrator reuses the operation's own idempotency key as the
     action_id, so one message can produce at most one device side effect and
@@ -354,6 +385,10 @@ def test_apply_resolve_moves_device_action_to_source_in_progress(op_session) -> 
             keyring=None,
             now=now,
             action_keyring=_action_keyring(),
+            # Retained so a 「仍要创建」 decision resumes it (design 3.3).
+            intent=WriteIntent(
+                tool="calendar.create_event", model_args=dict(CAL_ARGS)
+            ),
         )
         session.commit()
 
@@ -413,7 +448,6 @@ def test_device_action_commit_is_a_composition_error(op_session) -> None:
     the fork failed to intercept, and it must be loud."""
     from datetime import datetime, timezone
 
-    from personal_agent.api.intent import WriteIntent
     from personal_agent.api.orchestrator import _commit
 
     factory, now = op_session
@@ -645,9 +679,11 @@ def test_the_issued_action_is_sealed_on_the_operation_in_the_same_transition(
     written in the same committed transition that steps to
     `source_in_progress`, so the parked operation and its undelivered action
     become durable together."""
+    from personal_agent.api.operation_request import open_operation_request
     from personal_agent.api.orchestrator import _apply_resolve
 
     factory, now = op_session
+    keyring = _action_keyring()
     with factory() as session:
         operation = _make_operation(session)
         outcome = DeviceActionIssued(
@@ -663,7 +699,11 @@ def test_the_issued_action_is_sealed_on_the_operation_in_the_same_transition(
             dispatcher=None,
             keyring=None,
             now=now,
-            action_keyring=_action_keyring(),
+            action_keyring=keyring,
+            # Retained so a 「仍要创建」 decision resumes it (design 3.3).
+            intent=WriteIntent(
+                tool="calendar.create_event", model_args=dict(CAL_ARGS)
+            ),
         )
         session.commit()
 
@@ -674,6 +714,20 @@ def test_the_issued_action_is_sealed_on_the_operation_in_the_same_transition(
         envelope = operation.encrypted_device_action
         assert envelope is not None
         assert {"v", "kid", "nonce", "ciphertext", "tag"} <= set(envelope)
+        # The request is sealed beside it, in the same transition, and opens
+        # back to exactly what was authorised. Retaining it is what makes the
+        # duplicate this operation may report answerable at all: the phone
+        # says so only after the operation has left `source_in_progress`, so a
+        # seal with the action's own lifetime would already be gone by then.
+        sealed_request = operation.encrypted_request
+        assert sealed_request is not None
+        resumed = open_operation_request(
+            keyring,
+            operation_id=operation.operation_id,
+            envelope=sealed_request,
+        )
+        assert resumed.tool == "calendar.create_event"
+        assert resumed.model_args == dict(CAL_ARGS)
 
 
 def test_the_projection_hands_the_action_over_while_parked(op_session) -> None:
@@ -700,6 +754,10 @@ def test_the_projection_hands_the_action_over_while_parked(op_session) -> None:
             keyring=None,
             now=now,
             action_keyring=keyring,
+            # Retained so a 「仍要创建」 decision resumes it (design 3.3).
+            intent=WriteIntent(
+                tool="calendar.create_event", model_args=dict(CAL_ARGS)
+            ),
         )
         session.commit()
         session.refresh(operation)
@@ -746,6 +804,10 @@ def test_a_settled_operation_refuses_to_hand_the_action_over(op_session) -> None
             keyring=None,
             now=now,
             action_keyring=keyring,
+            # Retained so a 「仍要创建」 decision resumes it (design 3.3).
+            intent=WriteIntent(
+                tool="calendar.create_event", model_args=dict(CAL_ARGS)
+            ),
         )
         session.commit()
         session.refresh(operation)
@@ -795,6 +857,10 @@ def test_an_unopenable_action_envelope_fails_closed(op_session) -> None:
             keyring=None,
             now=now,
             action_keyring=other,
+            # Retained so a 「仍要创建」 decision resumes it (design 3.3).
+            intent=WriteIntent(
+                tool="calendar.create_event", model_args=dict(CAL_ARGS)
+            ),
         )
         session.commit()
         session.refresh(operation)
@@ -850,6 +916,10 @@ def test_a_finance_operation_never_carries_a_device_action(op_session) -> None:
             keyring=None,
             now=now,
             action_keyring=keyring,
+            # Retained so a 「仍要创建」 decision resumes it (design 3.3).
+            intent=WriteIntent(
+                tool="calendar.create_event", model_args=dict(CAL_ARGS)
+            ),
         )
         session.commit()
         session.refresh(operation)
@@ -901,6 +971,10 @@ def test_a_sealed_action_with_an_unreadable_wire_version_does_not_open(
             keyring=None,
             now=now,
             action_keyring=keyring,
+            # Retained so a 「仍要创建」 decision resumes it (design 3.3).
+            intent=WriteIntent(
+                tool="calendar.create_event", model_args=dict(CAL_ARGS)
+            ),
         )
         session.commit()
         session.refresh(operation)
@@ -1319,6 +1393,10 @@ def test_the_delivery_gate_withholds_a_v2_action_from_a_v1_caller(op_session) ->
             keyring=None,
             now=now,
             action_keyring=keyring,
+            # Retained so a 「仍要创建」 decision resumes it (design 3.3).
+            intent=WriteIntent(
+                tool="calendar.create_event", model_args=dict(CAL_ARGS)
+            ),
         )
         session.commit()
         session.refresh(operation)
@@ -1365,6 +1443,10 @@ def test_the_delivery_gate_reads_the_action_not_the_contract(op_session) -> None
             keyring=None,
             now=now,
             action_keyring=keyring,
+            # Retained so a 「仍要创建」 decision resumes it (design 3.3).
+            intent=WriteIntent(
+                tool="calendar.create_event", model_args=dict(CAL_ARGS)
+            ),
         )
         session.commit()
         session.refresh(operation)

@@ -83,6 +83,7 @@ def open_operation(
     now: datetime,
     encrypted_request_payload: dict[str, Any] | None = None,
     trace_id: str | None = None,
+    parent_operation_id: str | None = None,
 ) -> OpenedOperation:
     """Create, or return, the single operation for this client request.
 
@@ -115,6 +116,7 @@ def open_operation(
                 request_id=request_id,
                 trace_id=trace_id or new_traceparent(),
                 idempotency_key=client_request_id,
+                parent_operation_id=parent_operation_id,
                 state="accepted",
                 state_version=1,
                 created_at=now,
@@ -226,6 +228,8 @@ def transition_operation(
     safe_result: str | None = None,
     encrypted_result_record: dict[str, Any] | None = None,
     encrypted_device_action: dict[str, Any] | None = None,
+    encrypted_request: dict[str, Any] | None = None,
+    device_result: str | None = None,
     zero_write_proven: bool = False,
 ) -> int:
     """Move one operation forward, returning its new `state_version`.
@@ -268,6 +272,14 @@ def transition_operation(
         "source_in_progress"
     ):
         values["encrypted_device_action"] = None
+    # The retained request has no such lifecycle: it is written once, on the
+    # same transition that issues the action, and kept afterwards -- settlement
+    # is when the override that needs it becomes possible, not when it stops
+    # being needed. Nothing clears it, so there is deliberately no `else`.
+    if encrypted_request is not None:
+        values["encrypted_request"] = encrypted_request
+    if device_result is not None:
+        values["device_result"] = device_result
 
     result = session.execute(
         update(Operation)

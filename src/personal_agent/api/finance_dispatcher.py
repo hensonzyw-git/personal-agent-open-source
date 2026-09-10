@@ -265,6 +265,7 @@ class McpFinanceDispatcher:
         tool: str,
         model_args: dict[str, Any],
         idempotency_key: str | None = None,
+        skip_local_dedup: bool = False,
     ) -> ResolveOutcome:
         try:
             remote = self._remote_name(tool)
@@ -356,7 +357,10 @@ class McpFinanceDispatcher:
                 tool=tool,
                 wire_version=contract.wire_version,
                 event_fields=action_fields(
-                    request, resolution, attested=attested
+                    request,
+                    resolution,
+                    attested=attested,
+                    skip_local_dedup=skip_local_dedup,
                 ),
             )
         if remote not in READ_TOOLS:

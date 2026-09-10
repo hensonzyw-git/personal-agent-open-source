@@ -42,6 +42,11 @@ from sqlalchemy import text as text_clause
 from sqlalchemy.exc import IntegrityError
 
 from personal_agent.api import events
+from personal_agent.api.calendar_issue import (
+    may_override,
+    override_fingerprint,
+    override_key,
+)
 from personal_agent.api.calendar_query_projection import (
     CalendarQueryProjectionError,
     decode_calendar_query_projection,
@@ -57,6 +62,11 @@ from personal_agent.api.finance_record_projection import open_expense_record
 from personal_agent.api.manual_review import (
     append_resolution_event,
     resolve_manual_review,
+)
+from personal_agent.api.operation_request import (
+    OperationRequestError,
+    open_operation_request,
+    seal_operation_request,
 )
 from personal_agent_core.timeutil import to_rfc3339
 from personal_agent.api.device_api import (
@@ -128,6 +138,7 @@ from personal_agent.runtime.bookkeeping_intent import (
 from personal_agent.diagnostics import transcript
 from personal_agent.diagnostics.transcript import NullRecorder, Recorder, TurnIdentity
 from personal_agent.storage.models import (
+    DEVICE_REPORT_WRITES,
     REVIEW_STATUSES,
     TERMINAL_OPERATION_STATES,
     ApiRequest,
@@ -1180,6 +1191,41 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         body = await _json_body(request)
         return await asyncio.to_thread(
             _process_device_action_result, deps, auth, action_id, body
+        )
+
+    @app.post("/v1/device-actions/{action_id}/override")
+    async def post_device_action_override(action_id: str, request: Request):
+        """Write the calendar event again, because the user said 「仍要创建」.
+
+        The device reported `duplicate`, so the phone's own lookup found an
+        event it will not write over. The user answered the card and asked for
+        it anyway; that answer is what this endpoint carries, and nothing else.
+
+        There is no decision to submit, which is why the body is empty and
+        closed: the meaning of the call is entirely in *which* action it names
+        and in whether that action is allowed to be overridden (a device-
+        executed calendar create that settled `succeeded` on a `duplicate`
+        report). An override is a write, so it is issued afresh through the
+        normal dispatch path -- policy, scopes and kill switch are all
+        re-evaluated rather than inherited from the operation being overridden.
+
+        It is idempotent by derivation, not by a key the caller sends: the one
+        derived operation for an action is fixed by the action's own id, so a
+        double tap, a retry whose response was lost, and two concurrent taps
+        all reach the same operation and the same projection (design 3.3).
+        """
+        # Authentication precedes any body check, as it does on every other
+        # device endpoint: an unauthenticated caller learns nothing about this
+        # action, not even whether its own envelope would have been accepted.
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        body = await _json_body(request)
+        if body:
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail="an override carries no body",
+            )
+        return await asyncio.to_thread(
+            _process_device_action_override, deps, auth, action_id
         )
 
     @app.post("/v1/calendar/sync")
@@ -2440,7 +2486,7 @@ def _process_device_action_result(
     result = body["result"]
     event_id = body.get("event_id")
     detail = body.get("detail")
-    if result in _DEVICE_REPORT_WRITES and (
+    if result in DEVICE_REPORT_WRITES and (
         not isinstance(event_id, str) or not event_id.strip()
     ):
         raise AppError(
@@ -2454,21 +2500,9 @@ def _process_device_action_result(
         )
     with deps.session_factory() as session:
         def work():
-            operation = (
-                session.query(Operation)
-                .filter(Operation.idempotency_key == action_id)
-                .filter(Operation.api_request.has(device_id=auth.device_id))
-                .one_or_none()
+            operation = _owned_action_operation(
+                session, action_id, device_id=auth.device_id
             )
-            if operation is None:
-                # Not "no such action" and not "another device's action": one
-                # opaque refusal that maps out no surface.
-                raise AppError(
-                    ErrorCode.INVALID_ARGUMENT,
-                    internal_detail=(
-                        f"no operation anchored for action {action_id} on this device"
-                    ),
-                )
             # This endpoint settles *device-executed* actions. Ownership alone
             # is not enough: a Finance operation parked by its own execution
             # path must not be settleable by a phone POST claiming a calendar
@@ -2487,7 +2521,7 @@ def _process_device_action_result(
             session.refresh(operation)
             if not is_terminal(operation.state):
                 now = deps.now()
-                if result in _DEVICE_REPORT_WRITES:
+                if result in DEVICE_REPORT_WRITES:
                     # Success evidence: the phone holds the event. Two hops,
                     # both audited, so the receipt carries the EventKit id.
                     transition_operation(
@@ -2507,6 +2541,13 @@ def _process_device_action_result(
                         target_state="succeeded",
                         now=now,
                         safe_result=event_id,
+                        # Kept verbatim, and kept at all, because `created` and
+                        # `duplicate` are not interchangeable downstream: both
+                        # settle here with the EventKit id above, and only the
+                        # report itself says whether the phone *found* the event
+                        # or *made* it. 「仍要创建」 may be offered for exactly
+                        # one of those (design 3.3).
+                        device_result=result,
                     )
                 else:
                     # The device refused before any write could exist: the
@@ -2524,6 +2565,7 @@ def _process_device_action_result(
                         target_state="failed_safe",
                         now=now,
                         failure_reason=reason,
+                        device_result=result,
                     )
                 session.refresh(operation)
             # A settled operation (including one this request did not move --
@@ -2537,9 +2579,152 @@ def _process_device_action_result(
         return _commit(session, work)
 
 
-_DEVICE_REPORT_WRITES: Final[frozenset[str]] = frozenset({"created", "duplicate"})
+def _process_device_action_override(
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    action_id: str,
+) -> JSONResponse:
+    """Re-issue a calendar write the user answered 「仍要创建」 to (design 3.3).
+
+    The decision is a server-side binding, not a new conversation turn. A turn
+    would ask the model to produce the call again -- and a turn is exactly what
+    a double tap, a retry whose response was lost, or two concurrent taps each
+    produce, giving two independently valid actions and two real events. So the
+    endpoint derives *one* key from the original operation
+    (`uuid5(namespace, "<operation_id>:calendar-override")`) and calls the same
+    INSERT-or-get the rest of the API uses: the first tap creates the derived
+    operation, and every later one reads it back and answers its current
+    projection. The client never supplies this key and cannot compute it for
+    another device's action, which is what keeps a predictable key the
+    mechanism here rather than a hazard.
+
+    The new operation carries `parent_operation_id`, so the audit shows two
+    operations -- the write that found the duplicate and the deliberate second
+    one -- rather than one silent pass. It resumes the *sealed* arguments the
+    original turn was authorised to make, never a re-derivation, and the device
+    is told to skip its own lookup, which is the whole point of the decision.
+
+    Only a `succeeded` operation whose report was `duplicate` qualifies; every
+    other state, including a settled one, is refused with `INVALID_ARGUMENT`.
+    """
+    action_keyring = deps.action_keyring
+    if action_keyring is None:
+        raise AppError(
+            ErrorCode.INTERNAL_ERROR,
+            internal_detail="the override endpoint is not composed",
+        )
+    with deps.session_factory() as session:
+        def work():
+            source = _owned_action_operation(
+                session, action_id, device_id=auth.device_id
+            )
+            if not may_override(
+                tool=source.tool,
+                state=source.state,
+                device_result=source.device_result,
+            ):
+                raise AppError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    internal_detail=(
+                        f"action {action_id} is not a duplicate a user may override"
+                    ),
+                )
+            if source.encrypted_request is None:
+                # The row says it is overridable and carries nothing to resume.
+                # Only a row that predates the retained request can be in this
+                # state, and guessing its arguments is the one thing an override
+                # must never do.
+                raise AppError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    internal_detail=(
+                        f"action {action_id} kept no request to resume"
+                    ),
+                )
+            try:
+                intent = open_operation_request(
+                    action_keyring,
+                    operation_id=source.operation_id,
+                    envelope=source.encrypted_request,
+                )
+            except OperationRequestError as unreadable:
+                raise AppError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    internal_detail=str(unreadable),
+                ) from unreadable
+
+            opened = open_operation(
+                session,
+                device_id=auth.device_id,
+                client_request_id=override_key(source.operation_id),
+                request_fingerprint=override_fingerprint(source.operation_id),
+                now=deps.now(),
+                parent_operation_id=source.operation_id,
+            )
+            derived = opened.operation
+            if derived.state == "accepted":
+                # Sealed *before* the run, because this is what makes the
+                # derived operation pre-resolved: the orchestrator recognises
+                # an override by the parent lineage together with this seal, and
+                # runs it without a model. The seal is rewritten in the same
+                # transition that issues the new action, where the freshly
+                # attested arguments are in hand.
+                derived.encrypted_request = seal_operation_request(
+                    action_keyring,
+                    operation_id=derived.operation_id,
+                    intent=intent,
+                )
+                session.flush()
+                # The override joins the source message's turn when the source
+                # has one: it is the same user request, continued, and its own
+                # record is appended under that turn's identity rather than a
+                # fabricated one. A press is still not a chat turn, though, so a
+                # source with no anchor is a legitimate shape here (as it is for
+                # the other card-driven actions) and the record is labelled by
+                # the operation, trace and device instead of a guessed turn.
+                anchor = _anchor_event_or_none(session, source.operation_id)
+                with deps.recorder.turn(_turn_identity(derived, anchor)):
+                    run_operation(
+                        session,
+                        derived,
+                        # No model: the write is the one already authorised.
+                        build_context=None,
+                        interpreter=deps.build_interpreter(auth),
+                        dispatcher=deps.build_dispatcher(auth, derived.trace_id),
+                        authorize=deps.build_authorizer(auth),
+                        keyring=deps.keyring,
+                        now=deps.now,
+                        recorder=deps.recorder,
+                        action_keyring=action_keyring,
+                    )
+            session.refresh(derived)
+            # The derived operation's own projection is the answer, on both the
+            # first tap and every replay: a parked operation hands over its
+            # action through the same delivery door every other response uses
+            # (and under the same capability gate), and a settled one reports
+            # what the phone did with it.
+            return _operation_response(
+                deps.keyring,
+                derived,
+                client_wire_version=auth.client_wire_version,
+            )
+
+        # Retrying is safe here, and required: the device fork's `resolve` only
+        # *reads* our control plane (the calendar directory) and the write
+        # itself happens on the phone, after this response is delivered -- so a
+        # re-run repeats an idempotent read and nothing else. It is also what
+        # makes a double tap converge: two taps are a read-then-write each, and
+        # the loser of that shape cannot upgrade its snapshot once the winner
+        # commits (SQLite refuses immediately; `busy_timeout` cannot help), so
+        # without the retry the second tap would be a 500 rather than the same
+        # projection.
+        return _commit(session, work)
+
+
 #: The stable failure reasons a refused report records. The device's report is
-#: the evidence; the reason only names which closed value carried it.
+#: the evidence; the reason only names which closed value carried it. Which
+#: results are *writes* is not restated here: `DEVICE_REPORT_WRITES` is the
+#: same constant the operations CHECK constraint is built from, so a value the
+#: database would accept can never be one this endpoint refuses, or the reverse.
 _DEVICE_REPORT_REASONS: Final[dict[str, str]] = {
     "denied": "DEVICE_ACTION_DENIED",
     "failed": "DEVICE_EXECUTION_FAILED",
@@ -2558,7 +2743,7 @@ def _closed_device_result_body(body: dict[str, Any]) -> None:
             internal_detail=f"unexpected fields in request body: {unexpected}",
         )
     result = body.get("result")
-    if result not in _DEVICE_REPORT_REASONS and result not in _DEVICE_REPORT_WRITES:
+    if result not in _DEVICE_REPORT_REASONS and result not in DEVICE_REPORT_WRITES:
         raise AppError(
             ErrorCode.INVALID_ARGUMENT,
             internal_detail=(
@@ -2819,6 +3004,33 @@ def _commit(session, work: Callable[[], Any], *, retry: bool = True):
             session.rollback()
             raise
     return run_write_transaction(session, work)
+
+
+def _owned_action_operation(
+    session, action_id: str, *, device_id: str
+) -> Operation:
+    """Locate the operation a device action id names, for its own device.
+
+    An action id *is* the operation's idempotency key, which is why the two
+    device endpoints (the report and the override) look it up this way rather
+    than by `operation_id`: the phone only ever holds the action id. Not "no
+    such action" and not "another device's action" -- one opaque refusal that
+    maps out no surface.
+    """
+    operation = (
+        session.query(Operation)
+        .filter(Operation.idempotency_key == action_id)
+        .filter(Operation.api_request.has(device_id=device_id))
+        .one_or_none()
+    )
+    if operation is None:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=(
+                f"no operation anchored for action {action_id} on this device"
+            ),
+        )
+    return operation
 
 
 def _owned_operation(

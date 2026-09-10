@@ -345,6 +345,25 @@ def test_an_undeclared_host_field_is_still_dropped(registry) -> None:
     assert cleaned == EXPENSE
 
 
+def test_an_ordinary_create_carrying_skip_local_dedup_is_refused(registry) -> None:
+    """The override's instruction is refused at the dispatcher, not stripped.
+
+    `skip_local_dedup` tells the phone to write even though its own lookup will
+    find the event already there. Only the 「仍要创建」 endpoint may say that, and
+    it says it as a Host-bound keyword rather than an argument, so a model has
+    no channel to it. Refusing -- rather than dropping the field and
+    proceeding -- is the point: dropping would issue an action the model
+    believes skips dedup, and only the contract's own
+    `additionalProperties: false` can tell the two intentions apart.
+    """
+    governed = bridge(registry)
+    with pytest.raises(AppError) as refused:
+        governed.authorize(
+            "calendar.create_event", {**CALENDAR, "skip_local_dedup": True}, device()
+        )
+    assert refused.value.code is ErrorCode.INVALID_ARGUMENT
+
+
 def test_authorisation_is_recomputed_rather_than_cached(registry) -> None:
     # Revocation must take effect mid-conversation, which it cannot do if the
     # effective set is computed once when the catalog is built.

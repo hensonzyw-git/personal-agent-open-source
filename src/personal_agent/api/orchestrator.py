@@ -41,6 +41,11 @@ from personal_agent.api.finance_record_projection import (
     seal_expense_record,
 )
 from personal_agent.api.intent import WriteIntent, open_intent
+from personal_agent.api.operation_request import (
+    OperationRequestError,
+    open_operation_request,
+    seal_operation_request,
+)
 from personal_agent.api.operation_store import transition_operation
 from personal_agent.context.builder import ContextEnvelope
 from personal_agent.diagnostics import transcript
@@ -317,6 +322,7 @@ class Dispatcher(Protocol):
         tool: str,
         model_args: dict[str, Any],
         idempotency_key: str | None = None,
+        skip_local_dedup: bool = False,
     ) -> ResolveOutcome: ...
 
     def commit(
@@ -446,6 +452,16 @@ def _run_operation(
     # a `write anyway` override, or a deterministic user action such as the
     # receipt card's category picker. Neither has anything to ask a model.
     if _is_pre_resolved(operation, declared=pre_resolved):
+        if _is_calendar_override(operation):
+            return _run_calendar_override(
+                session,
+                operation,
+                dispatcher=dispatcher,
+                authorize=authorize,
+                keyring=keyring,
+                action_keyring=action_keyring,
+                now=now,
+            )
         return _run_override(
             session, operation, dispatcher=dispatcher, keyring=keyring, now=now
         )
@@ -677,6 +693,7 @@ def _run_operation(
         now,
         prior_clarification_question=prior_clarification_question,
         action_keyring=action_keyring,
+        intent=WriteIntent(tool=interpretation.tool, model_args=cleaned),
     )
 
 
@@ -769,6 +786,7 @@ def _apply_resolve(
     *,
     prior_clarification_question: str | None = None,
     action_keyring: KeyRing | None = None,
+    intent: WriteIntent | None = None,
 ) -> RunResult:
     if isinstance(outcome, ReadCompleted):
         _step(session, operation, "succeeded", now, safe_result=outcome.result)
@@ -853,6 +871,20 @@ def _apply_resolve(
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail="device action issued with no action keyring",
             )
+        # The authorised request is sealed beside the action, in the same
+        # committed transition (design 3.3). An issued action is also a
+        # promise the user can act on: if the phone reports a duplicate, the
+        # receipt offers 「仍要创建」, and that decision has to resume *these*
+        # arguments rather than re-derive them. It is sealed here, where the
+        # attested arguments are in hand, rather than at settlement, where
+        # they no longer exist -- and unlike the action it is not cleared when
+        # the operation settles, because settlement is when it is needed. A
+        # missing intent is a wiring bug, like a missing keyring.
+        if intent is None:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="device action issued with no request to retain",
+            )
         _step(
             session,
             operation,
@@ -864,6 +896,11 @@ def _apply_resolve(
                 operation_id=operation.operation_id,
                 action=outcome.response_payload(),
             ),
+            encrypted_request=seal_operation_request(
+                action_keyring,
+                operation_id=operation.operation_id,
+                intent=intent,
+            ),
         )
         return RunResult(
             state="source_in_progress",
@@ -873,6 +910,81 @@ def _apply_resolve(
     raise AppError(  # pragma: no cover - the union is exhaustive above
         ErrorCode.INTERNAL_ERROR,
         internal_detail=f"unhandled resolve outcome {type(outcome).__name__}",
+    )
+
+
+def _run_calendar_override(
+    session,
+    operation: Operation,
+    *,
+    dispatcher: Dispatcher,
+    authorize: Authorizer,
+    keyring: KeyRing,
+    action_keyring: KeyRing | None,
+    now: Clock,
+) -> RunResult:
+    """Re-issue a calendar write the user answered 「仍要创建」 to (design 3.3).
+
+    The one thing an override must never do is ask a model. Between the
+    duplicate report and the tap the world moves -- the directory syncs, the
+    conversation continues -- and a re-derived request would be a *different*
+    write wearing the original's receipt. So the arguments come from the seal
+    the original turn wrote when it issued the action, and the only difference
+    is the instruction the phone executes them under.
+
+    Policy is deliberately re-checked, even though this request was authorised
+    once already. The gap is real: the kill switch may have been turned off, the
+    device may have been revoked, the calendar may have gone read-only or
+    ambiguous. An override is a new write and is authorised like one. What is
+    *not* re-done is the user's own decision -- it is what this endpoint exists
+    to carry, and asking again would be the duplicate check they just overruled.
+    """
+    if action_keyring is None or operation.encrypted_request is None:
+        raise AppError(
+            ErrorCode.INTERNAL_ERROR,
+            internal_detail="a calendar override arrived with no retained request",
+        )
+    try:
+        intent = open_operation_request(
+            action_keyring,
+            operation_id=operation.operation_id,
+            envelope=operation.encrypted_request,
+        )
+    except OperationRequestError as unreadable:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=str(unreadable),
+        ) from unreadable
+
+    _step(session, operation, "interpreting", now)
+    try:
+        cleaned = authorize(tool=intent.tool, model_args=intent.model_args)
+    except AppError as denied:
+        reason = _policy_reason(denied)
+        _step(session, operation, "failed_safe", now, failure_reason=reason)
+        return RunResult(state="failed_safe", failure_reason=reason)
+
+    _step(session, operation, "dispatching", now, tool=intent.tool)
+    outcome = dispatcher.resolve(
+        tool=intent.tool,
+        model_args=cleaned,
+        idempotency_key=operation.idempotency_key,
+        # The device is told to skip its own lookup, which is the whole point of
+        # the decision: the user has seen the duplicate and chosen to write
+        # anyway. It travels as a Host-bound keyword, never as an argument --
+        # a model-authored `skip_local_dedup` is refused by the input schema
+        # before it can reach this line.
+        skip_local_dedup=True,
+    )
+    return _apply_resolve(
+        session,
+        operation,
+        outcome,
+        dispatcher,
+        keyring,
+        now,
+        action_keyring=action_keyring,
+        intent=WriteIntent(tool=intent.tool, model_args=cleaned),
     )
 
 
@@ -1051,23 +1163,41 @@ def _is_override_operation(operation: Operation) -> bool:
     )
 
 
+def _is_calendar_override(operation: Operation) -> bool:
+    """Whether this operation re-issues a device write the user overrode.
+
+    `parent_operation_id` is set only by the override endpoint, and the seal
+    beside it only by that same write, so both halves are Host-written facts --
+    nothing a model or a client can assert. Requiring both is what keeps this
+    from being a generic "someone said so" flag: an operation with a parent but
+    no retained request has nothing to resume and must not be run as one.
+    """
+    return (
+        operation.parent_operation_id is not None
+        and operation.encrypted_request is not None
+    )
+
+
 def _is_pre_resolved(operation: Operation, *, declared: bool) -> bool:
     """Whether this operation already knows its write and must skip the model.
 
-    Two shapes qualify, and they are kept distinguishable on purpose:
+    Three shapes qualify, and they are kept distinguishable on purpose:
 
     - a `write anyway` override, recognised by its `duplicate_check_id`. The id
       is both the marker and the authorisation, so inferring it is safe;
+    - a calendar 「仍要创建」 override (design 3.3), recognised by its parent
+      lineage and the request retained beside it -- both written by the
+      endpoint, neither expressible by a model;
     - a caller that *declares* the operation pre-resolved, which is how the
       category-correction route arrives. It carries no duplicate check and there
       is nothing on the row to infer from, so the caller states it and the
       sealed intent still has to be there.
 
-    The `declared` route deliberately does not widen the first: an operation is
+    The `declared` route deliberately does not widen the others: an operation is
     not treated as an override just because someone said "pre-resolved", so it
-    cannot acquire duplicate-override authority it was never granted.
+    cannot acquire override authority it was never granted.
     """
-    if _is_override_operation(operation):
+    if _is_override_operation(operation) or _is_calendar_override(operation):
         return True
     return declared and operation.api_request.encrypted_request_payload is not None
 
@@ -1089,6 +1219,7 @@ def _step(
     safe_result: str | None = None,
     encrypted_result_record: dict[str, Any] | None = None,
     encrypted_device_action: dict[str, Any] | None = None,
+    encrypted_request: dict[str, Any] | None = None,
     failure_reason: str | None = None,
     zero_write_proven: bool = False,
 ) -> None:
@@ -1104,6 +1235,7 @@ def _step(
         safe_result=safe_result,
         encrypted_result_record=encrypted_result_record,
         encrypted_device_action=encrypted_device_action,
+        encrypted_request=encrypted_request,
         failure_reason=failure_reason,
         zero_write_proven=zero_write_proven,
     )

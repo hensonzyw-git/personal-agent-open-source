@@ -319,12 +319,16 @@ class DeviceBoundDispatcher:
         tool: str,
         model_args: dict[str, Any],
         idempotency_key: str | None = None,
+        skip_local_dedup: bool = False,
     ) -> ResolveOutcome:
         dispatcher = self._dispatcher()
         if dispatcher is None:
             return ResolveFailedSafe(reason="policy_denied")
         return dispatcher.resolve(
-            tool=tool, model_args=model_args, idempotency_key=idempotency_key
+            tool=tool,
+            model_args=model_args,
+            idempotency_key=idempotency_key,
+            skip_local_dedup=skip_local_dedup,
         )
 
     def commit(

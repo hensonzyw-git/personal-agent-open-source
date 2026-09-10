@@ -93,6 +93,32 @@ MANUAL_RESOLUTIONS: Final[tuple[str, ...]] = (
     "confirmed_not_written",
 )
 
+#: The closed vocabulary a device reports for an action it executed. The phone
+#: is the fact source for its own write, so this is testimony rather than a
+#: claim to be checked -- and it is kept verbatim on the operation because the
+#: four values are not interchangeable downstream:
+#:
+#: - `created` and `duplicate` both mean the event exists, and both settle with
+#:   the EventKit id in `safe_result`, but only `duplicate` says the *device*
+#:   found the event already there -- which is the one case 「仍要创建」 may
+#:   override (design 3.3). A column that stored only success could not tell
+#:   them apart, and an override offered on a `created` would write a second
+#:   copy of an event the user already has.
+#: - `denied` and `failed` are the device's own zero-write testimony: EventKit
+#:   refused before any write could exist, which is what lets the operation
+#:   settle `failed_safe` instead of being parked for review.
+DEVICE_REPORT_RESULTS: Final[tuple[str, ...]] = (
+    "created",
+    "duplicate",
+    "denied",
+    "failed",
+)
+
+#: The reports that say the event exists on the phone.
+DEVICE_REPORT_WRITES: Final[frozenset[str]] = frozenset(
+    {"created", "duplicate"}
+)
+
 #: What the push provider has said, which is never what the user has done.
 #: `provider_accepted` means APNs took the notification, nothing more; only an
 #: explicit `/ack` moves the review itself to `reviewed` (design 7.7 step 6).
@@ -612,6 +638,39 @@ class Operation(Base):
     encrypted_device_action: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedEnvelope, nullable=True
     )
+    #: The resolved tool call this operation was authorised to make -- the
+    #: *attested* arguments, sealed on the same transition that issues the
+    #: device action (design 3.3).
+    #:
+    #: It is what an override resumes from: 「仍要创建」 must re-issue the write
+    #: the user originally authorised, never a re-derived one, so the arguments
+    #: have to outlive the turn that produced them -- and outlive *settlement*,
+    #: which is why this is not the device-action seal beside it (cleared when
+    #: the operation leaves `source_in_progress`; a duplicate is only discovered
+    #: after the phone reports). It is not `api_requests
+    #: .encrypted_request_payload` either: that column holds the chat request
+    #: the turn replays, and writing an intent there would cost the request its
+    #: own idempotent replay.
+    #:
+    #: Sealed because the arguments name the user's calendar, title and time,
+    #: and bound by AAD to this operation so a ciphertext cannot be lifted onto
+    #: another row.
+    encrypted_request: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
+    #: The operation an override was derived from. Kept so the override is
+    #: visible in the audit as *two* operations -- the original write and the
+    #: deliberate second one -- rather than one silent pass. See
+    #: `parent_operation_derives_once` for why the promise is a constraint.
+    parent_operation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("operations.operation_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    #: What the phone reported it did with the action. The verbatim value, not a
+    #: boolean, because the four reports are not interchangeable: only
+    #: `duplicate` may be overridden, and both success reports otherwise look
+    #: identical on this row (state `succeeded`, EventKit id in `safe_result`).
+    device_result: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: What a human concluded after looking at the ledger, for an operation that
     #: ended at `needs_manual_review`. A *flag*, not a state, for the same reason
     #: `cancel_requested` is one: the accounting outcome belongs to the state
@@ -662,6 +721,25 @@ class Operation(Base):
         CheckConstraint(
             "encrypted_device_action IS NULL OR state = 'source_in_progress'",
             name="device_action_only_while_parked",
+        ),
+        # An operation may be derived from at most one parent and may not be its
+        # own parent. Today the derived key is
+        # `uuid5(namespace, "<parent>:calendar-override")`, which could not
+        # produce two children or a self-parent -- but design 3.3's promise
+        # ("一次 duplicate → 至多一条派生 operation") is what makes a double tap
+        # harmless, and a promise should not rest on a derivation a later change
+        # could alter.
+        CheckConstraint(
+            "parent_operation_id IS NULL OR parent_operation_id <> operation_id",
+            name="parent_operation_is_not_self",
+        ),
+        UniqueConstraint(
+            "parent_operation_id", name="parent_operation_derives_once"
+        ),
+        CheckConstraint(
+            _in_set("device_result", DEVICE_REPORT_RESULTS)
+            + " OR device_result IS NULL",
+            name="device_result",
         ),
         CheckConstraint(
             _in_set("manual_resolution", MANUAL_RESOLUTIONS)
