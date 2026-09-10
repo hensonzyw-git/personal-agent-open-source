@@ -36,6 +36,17 @@ struct ChatView: View {
     struct ResolutionIntent: Equatable {
         let operationID: String
         let resolution: ManualResolution
+        /// The words of the card this tap came from. The dialog is the last thing
+        /// read before a human conclusion is recorded, so it has to name the same
+        /// destination the card named. Carrying the copy rather than a domain
+        /// makes that structural: there is no second lookup that could fork
+        /// differently from the card's.
+        let copy: ManualReviewCopy
+
+        /// What the dialog asks, in the tapped card's words.
+        var confirmPrompt: String {
+            copy.confirmPrompt(forWire: resolution.rawValue)
+        }
     }
 
     /// Scroll target for the in-flight bubble, which has no `event_id` to use.
@@ -80,15 +91,19 @@ struct ChatView: View {
             Button("再想想", role: .cancel) { confirmingWriteAnyway = nil }
         }
         .confirmationDialog(
-            confirmingResolution.map(resolutionPrompt) ?? "",
+            confirmingResolution?.confirmPrompt ?? "",
             isPresented: Binding(
                 get: { confirmingResolution != nil },
                 set: { if !$0 { confirmingResolution = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("确认，我已在账本里核对过") {
-                if let intent = confirmingResolution {
+            // Every word here comes from the tapped card's copy, including the
+            // confirm button and the message: the dialog is one tap from a
+            // recorded human fact, and naming the wrong destination on the way
+            // in is the card's own defect one screen later.
+            if let intent = confirmingResolution {
+                Button(intent.copy.confirmButton) {
                     confirmingResolution = nil
                     Task {
                         await model.resolveManualReview(
@@ -100,7 +115,7 @@ struct ChatView: View {
             }
             Button("再想想", role: .cancel) { confirmingResolution = nil }
         } message: {
-            Text("这个结论记录后不能在应用里改判：服务端会拒绝相反的答复。它只写在这次操作旁边，不会改动账本。")
+            Text(confirmingResolution?.copy.confirmMessage ?? "")
         }
         .confirmationDialog(
             "开始新话题？",
@@ -151,15 +166,6 @@ struct ChatView: View {
                 Button("新话题") { confirmingNewTopic = true }
                     .disabled(model.busy || model.unresolved != nil)
             }
-        }
-    }
-
-    private func resolutionPrompt(_ intent: ResolutionIntent) -> String {
-        switch intent.resolution {
-        case .confirmedWritten:
-            return "确认飞书账本里已经有这一笔？"
-        case .confirmedNotWritten:
-            return "确认飞书账本里没有这一笔？"
         }
     }
 
@@ -389,9 +395,10 @@ struct ChatView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
-        case .manualReviewResolved(let resolution):
+        case .manualReviewResolved(let resolution, let domain):
+            let copy = ManualReviewCopy.forResolvedMarker(domain)
             Label(
-                "已人工核对：\(manualResolutionText(resolution))",
+                "已人工核对：\(manualResolutionText(resolution, copy: copy))",
                 systemImage: "person.crop.circle.badge.checkmark"
             )
             .font(.caption)
@@ -1968,13 +1975,17 @@ struct ChatView: View {
             HStack {
                 Button(copy.writtenButton) {
                     confirmingResolution = .init(
-                        operationID: operationID, resolution: .confirmedWritten
+                        operationID: operationID,
+                        resolution: .confirmedWritten,
+                        copy: copy
                     )
                 }
                 Spacer()
                 Button(copy.notWrittenButton) {
                     confirmingResolution = .init(
-                        operationID: operationID, resolution: .confirmedNotWritten
+                        operationID: operationID,
+                        resolution: .confirmedNotWritten,
+                        copy: copy
                     )
                 }
             }
@@ -1986,15 +1997,13 @@ struct ChatView: View {
     /// The conclusion in words. The wording is `ManualReviewCopy`'s rule, in the
     /// Kit where it can be tested; this only supplies the copy.
     ///
-    /// The default is the ledger copy, and one caller relies on it: the
-    /// `manual_review_resolved` history marker. The server records only the
-    /// resolution on that event, so the marker has no domain of its own to fork
-    /// on. That is a real gap, not a fallback that was reasoned about here — a
-    /// calendar resolution's marker therefore still says 账本. It is left as it is
-    /// because closing it means changing that event's content, which is a server
-    /// contract this step did not open.
+    /// Every caller passes its copy explicitly, because the two markers fork
+    /// differently. A live card forks on its operation's domain and falls back to
+    /// the ledger words; a `manual_review_resolved` history marker forks on the
+    /// domain the server froze into the event, and a marker with no domain gets
+    /// the neutral words. Neither default is right for the other.
     private func manualResolutionText(
-        _ wire: String, copy: ManualReviewCopy = .ledger
+        _ wire: String, copy: ManualReviewCopy
     ) -> String {
         copy.conclusion(forWire: wire)
     }

@@ -2080,6 +2080,10 @@ def test_the_resolution_lands_on_the_timeline_exactly_once(
     ]
     assert len(markers) == 1
     assert markers[0]["content"]["resolution"] == "confirmed_not_written"
+    # The domain travels with it, derived from the tool's own IR contract rather
+    # than a second list: the client's history line chooses its words by this
+    # value, and a marker appended without one can never be corrected.
+    assert markers[0]["content"]["domain"] == "finance"
 
 
 # --- `G1`: the category correction route -------------------------------------

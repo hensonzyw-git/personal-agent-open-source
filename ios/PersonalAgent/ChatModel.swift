@@ -596,7 +596,10 @@ final class ChatModel {
             // `events` alone would re-offer a conclusion the server has already
             // recorded — where the second tap is either a no-op or, if the user
             // changes their mind, a `409` the screen would have invited.
-            if case .manualReviewResolved(let resolution) = event.kind,
+            // The domain is the marker's rendering fork; what this map answers is
+            // only "has a conclusion been recorded for this operation", so it is
+            // deliberately not read here.
+            if case .manualReviewResolved(let resolution, _) = event.kind,
                let operationID = event.operationID {
                 resolvedManualReviews[operationID] = resolution
             }

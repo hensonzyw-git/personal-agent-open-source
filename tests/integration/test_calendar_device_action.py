@@ -1532,3 +1532,116 @@ def test_the_version_comparison_is_the_one_both_gates_use() -> None:
     assert not client_supports_wire_version(
         client=parse_client_wire_version("nonsense"), required=2
     )
+
+
+# --- the resolution marker's domain -------------------------------------------
+
+
+def _timeline(session, now) -> str:
+    """The canonical Timeline and its one open Session, as a chat turn makes them."""
+    from personal_agent.api import events
+    from personal_agent.storage.models import ContextSession
+
+    conversation_id = events.canonical_timeline_id(session, now=now)
+    session.add(
+        ContextSession(
+            session_id="ses-1",
+            conversation_id=conversation_id,
+            status="open",
+            relation_kind="new_topic",
+            opened_at=now,
+        )
+    )
+    session.flush()
+    return conversation_id
+
+
+def _markers_after_resolving(
+    factory, keyring, now, *, tool: str | None, resolution: str
+) -> list:
+    """Record one resolution on the calendar operation and read its markers back."""
+    from personal_agent.api import events
+    from personal_agent.api.manual_review import (
+        MANUAL_REVIEW_RESOLVED,
+        append_resolution_event,
+    )
+    from personal_agent.storage.models import Operation
+
+    with factory() as session:
+        _make_operation(session)
+        operation = session.get(Operation, "op-1")
+        if tool is not None:
+            operation.tool = tool
+        session.flush()
+        conversation_id = _timeline(session, now)
+        append_resolution_event(
+            session,
+            keyring,
+            operation=operation,
+            conversation_id=conversation_id,
+            session_id="ses-1",
+            turn_id=events.new_turn_id(),
+            resolution=resolution,
+            now=now,
+        )
+        session.commit()
+
+    with factory() as session:
+        return [
+            entry
+            for entry in events.list_timeline(
+                session, keyring, conversation_id=conversation_id
+            )
+            if entry.event_type == MANUAL_REVIEW_RESOLVED
+        ]
+
+
+def test_a_calendar_resolutions_marker_names_the_calendar(op_session) -> None:
+    """The Timeline marker a resolved card leaves behind carries the operation's
+    domain, so the history entry says 日历 in the same words the card did.
+
+    Without it the client has only the resolution string, and its only possible
+    wording is the ledger's -- a calendar write's history line reading
+    `已人工核对：账本里有这笔`, which is the card's own misdirection one screen
+    later and permanent: the marker is frozen when it is appended and nothing
+    backfills it, so the wrong word is the only word that entry will ever carry.
+    """
+    factory, now = op_session
+    markers = _markers_after_resolving(
+        factory, _action_keyring(), now, tool=None, resolution="confirmed_written"
+    )
+
+    assert len(markers) == 1
+    assert markers[0].content == {
+        "resolution": "confirmed_written",
+        "domain": "calendar",
+    }
+
+
+def test_a_tool_with_no_contract_has_no_domain(op_session) -> None:
+    """Unknown is not a default, and the marker says so rather than guessing.
+
+    An operation whose tool the IR no longer carries -- or which was recorded
+    before the tool was -- must not be labelled finance. The client draws the
+    ledger's words for the finance domain and the neutral ones for a missing
+    one, so a guessed label here is how 账本 lands on a write nobody has
+    established is a ledger write.
+    """
+    from personal_agent_core.tool_ir import domain_of_tool
+
+    factory, now = op_session
+    markers = _markers_after_resolving(
+        factory,
+        _action_keyring(),
+        now,
+        tool="retired.old_tool",
+        resolution="confirmed_not_written",
+    )
+
+    assert len(markers) == 1
+    assert markers[0].content["domain"] is None
+    assert domain_of_tool("retired.old_tool") is None
+    assert domain_of_tool(None) is None
+    assert domain_of_tool("") is None
+    assert domain_of_tool("calendar.create_event") == "calendar"
+    assert domain_of_tool("finance.log_expense") == "finance"

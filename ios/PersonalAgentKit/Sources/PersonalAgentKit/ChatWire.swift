@@ -1154,10 +1154,19 @@ public enum TimelineEntryKind: Sendable, Equatable {
     /// separate append-only Timeline fact; the original write receipt remains
     /// sealed and is never rewritten.
     case expenseCategoryCorrected(recordID: String, record: FinanceExpenseRecord)
-    /// `DEV-040`. The permanent marker recording what a person found in the
-    /// ledger for an operation parked at `needs_manual_review`. Presentation
-    /// state, never dialogue — and never evidence that a write happened.
-    case manualReviewResolved(resolution: String)
+    /// `DEV-040`. The permanent marker recording what a person found for an
+    /// operation parked at `needs_manual_review`. Presentation state, never
+    /// dialogue — and never evidence that a write happened.
+    ///
+    /// `domain` is the operation's IR domain, frozen into the event when it was
+    /// appended (batch 2 of the calendar step). It rides in the case rather than
+    /// beside the rendering for the same reason `needsManualReview`'s does: the
+    /// words this entry is drawn in are chosen by it, and a rendering that
+    /// defaulted to the ledger would put 「账本」 on a calendar write's history
+    /// line for good — the marker is written once and never backfilled. `nil` is
+    /// a marker appended before the field existed; see
+    /// `ManualReviewCopy.forResolvedMarker`.
+    case manualReviewResolved(resolution: String, domain: String?)
     /// `1j`. The daily review card, sealed by the nightly job with the ledger
     /// values read once at build time. The `snapshot` is frozen; the card's
     /// status is read live because ack/defer keep changing it after the seal.
@@ -1323,7 +1332,13 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                 // client could not read the entry.
                 return .unrecognised(eventType: eventType)
             }
-            return .manualReviewResolved(resolution: resolution)
+            // A domain that is absent, null or not a string is simply no
+            // domain — the shape every marker had before the field existed. It
+            // is not a reason to hide a conclusion that really was recorded.
+            return .manualReviewResolved(
+                resolution: resolution,
+                domain: content["domain"]?.stringValue
+            )
         case "daily_review":
             // The whole sealed content is the snapshot. Re-encoding the nested
             // `JSONValue` object and decoding it back is the same path the query

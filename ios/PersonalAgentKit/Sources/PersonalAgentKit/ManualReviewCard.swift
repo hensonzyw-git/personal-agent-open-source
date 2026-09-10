@@ -36,6 +36,15 @@ public struct ManualReviewCopy: Sendable, Equatable {
     public let notWrittenButton: String
     public let writtenConclusion: String
     public let notWrittenConclusion: String
+    /// The confirmation dialog that stands between a tap and a recorded human
+    /// fact. Its words are the last thing read before the conclusion is written,
+    /// so which destination they name decides whether the person looks in the
+    /// right place on the way in — the card's own rule, one tap later.
+    public let confirmButton: String
+    public let confirmMessage: String
+    private let writtenConfirmPrompt: String
+    private let notWrittenConfirmPrompt: String
+    private let unknownConfirmPrompt: String
 
     /// What the person concluded, in this domain's words. The wire values are
     /// the server's; only the sentence is ours. A value this build cannot name is
@@ -49,13 +58,33 @@ public struct ManualReviewCopy: Sendable, Equatable {
         }
     }
 
+    /// The dialog's title for one conclusion.
+    ///
+    /// A value this build cannot name gets the neutral prompt rather than either
+    /// conclusion's: the two buttons can only produce the two known values, so an
+    /// unknown one means a server that has learned a third, and asking the person
+    /// to confirm the *written* wording for a conclusion nobody has seen yet is
+    /// an invention they would then confirm.
+    public func confirmPrompt(forWire wire: String) -> String {
+        switch wire {
+        case ManualResolution.confirmedWritten.rawValue: return writtenConfirmPrompt
+        case ManualResolution.confirmedNotWritten.rawValue: return notWrittenConfirmPrompt
+        default: return unknownConfirmPrompt
+        }
+    }
+
     public static let ledger = ManualReviewCopy(
         instruction: "请先在飞书账本里核对这一笔（复核页有「打开飞书账本」），再选择结论。选择只记录你看到的事实，不会改动账本。",
         recordLabel: "记录 ID",
         writtenButton: "账本里有这笔",
         notWrittenButton: "账本里没有",
         writtenConclusion: "账本里有这笔",
-        notWrittenConclusion: "账本里没有这笔"
+        notWrittenConclusion: "账本里没有这笔",
+        confirmButton: "确认，我已在账本里核对过",
+        confirmMessage: "这个结论记录后不能在应用里改判：服务端会拒绝相反的答复。它只写在这次操作旁边，不会改动账本。",
+        writtenConfirmPrompt: "确认飞书账本里已经有这一笔？",
+        notWrittenConfirmPrompt: "确认飞书账本里没有这一笔？",
+        unknownConfirmPrompt: "确认你已经核对过这个结论？"
     )
 
     public static let calendar = ManualReviewCopy(
@@ -64,7 +93,45 @@ public struct ManualReviewCopy: Sendable, Equatable {
         writtenButton: "日历里有这条日程",
         notWrittenButton: "日历里没有",
         writtenConclusion: "日历里有这条日程",
-        notWrittenConclusion: "日历里没有这条日程"
+        notWrittenConclusion: "日历里没有这条日程",
+        confirmButton: "确认，我已在日历里核对过",
+        confirmMessage: "这个结论记录后不能在应用里改判：服务端会拒绝相反的答复。它只写在这次操作旁边，不会改动日历。",
+        writtenConfirmPrompt: "确认日历里有这条日程？",
+        notWrittenConfirmPrompt: "确认日历里没有这条日程？",
+        unknownConfirmPrompt: "确认你已经核对过这个结论？"
+    )
+
+    /// The words for a `manual_review_resolved` marker, whose domain is the one
+    /// frozen into the event when it was appended.
+    ///
+    /// **Not** `forDomain`. A card's missing domain means a projection from
+    /// before the field existed, and every such operation is a ledger write, so
+    /// the ledger copy is the honest fallback there. A *marker*'s missing domain
+    /// means the same thing historically, but the entry cannot be backfilled and
+    /// the marker is read long after the operation is gone — and a calendar
+    /// resolution appended by any build that did not write the field would carry
+    /// 账本 for good. So a missing domain renders neutrally: it states the
+    /// conclusion without naming a destination it cannot prove, which is the only
+    /// claim the entry actually supports.
+    public static func forResolvedMarker(_ domain: String?) -> ManualReviewCopy {
+        domain == OperationReceipt.calendarDomain ? .calendar : .neutral
+    }
+
+    /// Neither destination's words. Used only for a marker whose domain was never
+    /// recorded, and for a domain this build does not know — borrowing either
+    /// domain's wording would be a claim about where the person looked.
+    public static let neutral = ManualReviewCopy(
+        instruction: "这条核对结论记录时没有写下核对的目标，请以你当时看到的事实为准。",
+        recordLabel: "标识符",
+        writtenButton: "目标里确实有",
+        notWrittenButton: "目标里没有",
+        writtenConclusion: "你核对到它已经存在（核对目标未记录）",
+        notWrittenConclusion: "你核对到它不存在（核对目标未记录）",
+        confirmButton: "确认，我已经核对过",
+        confirmMessage: "这个结论记录后不能在应用里改判：服务端会拒绝相反的答复。它只写在这次操作旁边，不会改动任何东西。",
+        writtenConfirmPrompt: "确认你核对到它已经存在？",
+        notWrittenConfirmPrompt: "确认你核对到它不存在？",
+        unknownConfirmPrompt: "确认你已经核对过这个结论？"
     )
 
     /// The fork. Exactly one value selects the calendar card; everything else —

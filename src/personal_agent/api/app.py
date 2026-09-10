@@ -164,6 +164,7 @@ from personal_agent_core.tool_ir import (
     TOOL_CONTRACTS,
     SCOPE_CALENDAR_READ,
     client_supports_wire_version,
+    domain_of_tool,
     parse_client_wire_version,
 )
 
@@ -382,13 +383,14 @@ _CALENDAR_QUERY_RESULT_TOOLS = frozenset(
 #: automatically.
 _DEVICE_EXECUTED_TOOLS = DEVICE_EXECUTED_TOOL_NAMES
 
-#: Which domain each tool belongs to, read from the IR contract (design §10,
-#: gap 4). A client picks the manual-review card by domain — a calendar write
-#: cannot be checked in the ledger — so the domain has to be a fact the server
-#: states, derived from the tool's own contract like every other executor and
-#: risk split in this file. A tool with no contract is absent from the map and
-#: projects as null rather than falling into a default domain.
-_TOOL_DOMAINS = {contract.name: contract.domain for contract in TOOL_CONTRACTS}
+#: Which domain each tool belongs to is the IR's answer, not this file's
+#: (`domain_of_tool`). A client picks the manual-review card by domain — a
+#: calendar write cannot be checked in the ledger — so the domain has to be a
+#: fact the server states, derived from the tool's own contract like every
+#: other executor and risk split here. A tool with no contract has no domain
+#: and projects as null rather than falling into a default. The Timeline marker
+#: asks the same question when it freezes a resolution, and two expressions of
+#: it would be two things to keep in step.
 
 
 class _Unauthenticated(Exception):
@@ -3596,7 +3598,7 @@ def _operation_projection(
         # contract, never a list beside the IR — the same rule the record and
         # query evidence sets follow. Null when no tool was recorded: an old
         # event's domain is unknown, and unknown is not a default.
-        "domain": _TOOL_DOMAINS.get(operation.tool) if operation.tool else None,
+        "domain": domain_of_tool(operation.tool),
         "record_id": None,
         "failure_reason": operation.failure_reason,
         "duplicate_check_id": operation.duplicate_check_id,

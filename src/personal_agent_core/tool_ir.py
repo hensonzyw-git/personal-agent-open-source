@@ -1843,3 +1843,22 @@ def contract_by_name(name: str) -> ToolContract:
         if contract.name == name:
             return contract
     raise KeyError(f"no tool contract named {name!r}")
+
+
+def domain_of_tool(name: str | None) -> str | None:
+    """The domain a tool belongs to, or `None` when it is not a known tool.
+
+    The one expression of this question, so a card's wording, a marker frozen
+    into the Timeline and a projection read live cannot disagree about which
+    domain an operation is in. `None` is a real answer: an operation whose tool
+    was never recorded, or whose tool the IR has since dropped, has no domain,
+    and a caller must not read that as "finance" or as a default. A person sent
+    to the wrong destination by a guessed domain taps a conclusion that is then
+    recorded as a human fact the server refuses to contradict.
+    """
+    if not name:
+        return None
+    for contract in TOOL_CONTRACTS:
+        if contract.name == name:
+            return contract.domain
+    return None
