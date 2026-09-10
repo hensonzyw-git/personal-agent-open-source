@@ -183,7 +183,7 @@ def keys(tmp_path: Path, monkeypatch) -> AgentKeyFiles:
     # network call, so the production path is exercised with a placeholder
     # credential and every test that needs a proposal injects its own gateway.
     monkeypatch.setenv("ZAI_API_KEY", "placeholder-not-a-real-key")
-    monkeypatch.delenv("GLM_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("MODEL_API_BASE", raising=False)
     return written
 
 
@@ -425,7 +425,7 @@ def test_a_tampered_model_endpoint_fails_composition(
     keys, agent_db, finance, monkeypatch
 ) -> None:
     """A credential may only travel to the pinned provider endpoint."""
-    monkeypatch.setenv("GLM_OPENAI_BASE_URL", "https://open.bigmodel.cn.evil.test/api/paas/v4/")
+    monkeypatch.setenv("MODEL_API_BASE", "https://open.bigmodel.cn.evil.test/api/paas/v4/")
 
     async def scenario():
         async with agent_service(config_for(agent_db, finance), write_switch=shared_enabled_write_switch()):

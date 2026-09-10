@@ -280,5 +280,5 @@ def test_env_override_accepts_a_positive_integer() -> None:
 def test_env_override_absent_or_unrelated_keys_yield_nothing() -> None:
     assert operator_override_from_env({}) == {}
     assert operator_override_from_env(
-        {"GLM_MODEL": "glm-5.3", "PERSONAL_AGENT_USER_ID": "henson"}
+        {"MODEL_ID": "glm-5.3", "PERSONAL_AGENT_USER_ID": "henson"}
     ) == {}

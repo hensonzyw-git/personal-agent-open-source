@@ -70,7 +70,7 @@ PROVIDERS: dict[str, ModelProvider] = {
             host=_DEEPSEEK_HOST,
             path=_DEEPSEEK_PATH,
             credential_env="DEEPSEEK_API_KEY",
-            default_model="deepseek-v4-flash",
+            default_model="deepseek-flash",
             illegal_tool_name_chars=r"[^A-Za-z0-9_-]",
         ),
     )
@@ -207,7 +207,7 @@ def validated_api_base(value: str, provider: ModelProvider) -> str:
         parsed = urlsplit(value)
         port = parsed.port
     except ValueError as exc:
-        raise ModelGatewayError("GLM_OPENAI_BASE_URL is invalid") from exc
+        raise ModelGatewayError("MODEL_API_BASE is invalid") from exc
     if (
         parsed.scheme != "https"
         or parsed.hostname != provider.host
@@ -219,7 +219,7 @@ def validated_api_base(value: str, provider: ModelProvider) -> str:
         or parsed.fragment
     ):
         raise ModelGatewayError(
-            f"GLM_OPENAI_BASE_URL must be the pinned endpoint of provider "
+            f"MODEL_API_BASE must be the pinned endpoint of provider "
             f"{provider.name!r}"
         )
     return canonical_api_base(provider)

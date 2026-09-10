@@ -265,9 +265,9 @@ def glm_gateway_from_env(
     provider = provider_from_env()
     api_key = credential_from_env(provider)
     model = (
-        os.environ.get("GLM_MODEL", "").strip() or provider.default_model
+        os.environ.get("MODEL_ID", "").strip() or provider.default_model
     )
-    api_base = os.environ.get("GLM_OPENAI_BASE_URL", canonical_api_base(provider))
+    api_base = os.environ.get("MODEL_API_BASE", canonical_api_base(provider))
     return GlmGateway(
         model=f"openai/{model}",
         api_key=api_key,
@@ -277,7 +277,7 @@ def glm_gateway_from_env(
     )
 
 
-MODEL_CONTEXT_TOKENS_ENV = "GLM_MODEL_CONTEXT_TOKENS"
+MODEL_CONTEXT_TOKENS_ENV = "MODEL_CONTEXT_TOKENS"
 
 
 def declared_context_limit() -> int | None:
@@ -289,7 +289,7 @@ def declared_context_limit() -> int | None:
     fact to look up, not to guess, and an invented number would be worse than an
     absent one. The product ceiling still bounds the budget on its own.
 
-    A deployment that knows the figure sets `GLM_MODEL_CONTEXT_TOKENS`, and a
+    A deployment that knows the figure sets `MODEL_CONTEXT_TOKENS`, and a
     malformed value is refused rather than ignored.
     """
     raw = os.environ.get(MODEL_CONTEXT_TOKENS_ENV)

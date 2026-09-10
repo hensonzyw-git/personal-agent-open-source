@@ -25,8 +25,8 @@ fi
 
 {
   printf "ZAI_API_KEY=%s\n" "$zai_api_key"
-  printf "GLM_OPENAI_BASE_URL=https://open.bigmodel.cn/api/paas/v4/\n"
-  printf "GLM_MODEL=glm-5.2\n"
+  printf "MODEL_API_BASE=https://open.bigmodel.cn/api/paas/v4/\n"
+  printf "MODEL_ID=glm-5.2\n"
   printf "ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/anthropic\n"
   printf "ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.7\n"
   printf "ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.2\n"
