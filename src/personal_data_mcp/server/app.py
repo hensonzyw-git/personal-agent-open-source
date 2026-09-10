@@ -35,7 +35,11 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.finance_tools import FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
-from personal_agent_core.host_context import HOST_ONLY_FIELDS, ServiceKeyRing
+from personal_agent_core.host_context import (
+    HOST_ONLY_FIELDS,
+    ServiceKeyRing,
+    declared_model_fields,
+)
 from personal_agent_core.mcp_protocol import ModernProtocolOnlyMiddleware
 from personal_agent_core.write_switch import WriteSwitch
 from personal_data_mcp.server.authz import Authorizer
@@ -153,10 +157,16 @@ async def dispatch(
 
         # Verify before the handler. Nothing below this line may run for a
         # call that fails here.
+        # A host-only name this contract declares is the tool's own business
+        # field (see `declared_model_fields`); it is neither rejected here nor
+        # dropped from the hash, and the Host derived the same exemption from
+        # the same manifest before signing.
+        declared = declared_model_fields(contract["model_input_schema"])
         verified_call = authorizer.authorize(
             tool=name,
             arguments=arguments,
             headers=headers,
+            declared=declared,
             required_scopes=tuple(contract["required_scopes"]),
         )
         # After authorisation, so that an unauthenticated caller cannot probe
@@ -171,7 +181,7 @@ async def dispatch(
                     internal_detail=f"{name} refused: {switch_state.detail}",
                 )
 
-        forbidden = sorted(set(arguments) & HOST_ONLY_FIELDS)
+        forbidden = sorted(set(arguments) & (HOST_ONLY_FIELDS - declared))
         if forbidden:
             raise AppError(
                 ErrorCode.HOST_CONTEXT_MISMATCH,

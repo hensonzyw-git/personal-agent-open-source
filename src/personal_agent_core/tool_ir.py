@@ -9,8 +9,12 @@ another to the connector.
 Two rules shape the model-visible schemas:
 
 - the model only ever sees business fields. Identity, scopes, idempotency keys,
-  duplicate overrides, resource identifiers and timezone are Host injected and
-  are dropped if they appear in model output;
+  duplicate overrides, resource identifiers and the Host Context's timezone are
+  Host injected and are dropped if they appear in model output. A contract may
+  re-declare one of those names as its own business field -- `timezone` on
+  `calendar.create_event` is the *event's* IANA zone -- and the strip then
+  exempts it, because the exemption is read from this contract rather than from
+  a list beside it (`host_context.declared_model_fields`);
 - a field with a default is a field the model can quietly omit. `is_family_expense`
   therefore has no default anywhere: a missing personal/family scope must stop and
   ask, never write.
@@ -33,9 +37,31 @@ from personal_agent_core.money import (
 )
 
 
-IR_VERSION: Final[str] = "0.2.0"
+IR_VERSION: Final[str] = "0.3.0"
 
 DATE_PATTERN: Final[str] = r"^\d{4}-\d{2}-\d{2}$"
+
+#: The header a device client uses to state the action semantics it implements
+#: (design §2.5). It is read per request and never persisted: a client that
+#: cannot honour a tool's action must be refused the action, not told about it
+#: later. Absent or unparseable means version 1.
+CLIENT_WIRE_VERSION_HEADER: Final[str] = "X-Client-Wire-Version"
+
+#: Every client that predates the calendar work implements version 1.
+DEFAULT_CLIENT_WIRE_VERSION: Final[int] = 1
+
+#: The four calendars routing may target. 【飞行计划】 is managed by another app
+#: and is read-only; it stays in the enum so a flight request receives the
+#: honest refusal from the server instead of the model inventing a calendar or
+#: funnelling it into 【日常安排】. The server is the single refusal point.
+ALLOWED_CALENDARS: Final[tuple[str, ...]] = (
+    "日常安排",
+    "出游计划",
+    "演出&活动",
+    "飞行计划",
+)
+
+CALENDAR_FLIGHT_PLAN: Final[str] = "飞行计划"
 
 #: The only categories the 2026 ledger accepts. The connector must never create
 #: a new Feishu select option.
@@ -132,6 +158,14 @@ class ToolContract(BaseModel):
     #: `model_callable`, this is a contract field rather than a list beside the
     #: IR, because the dispatch fork must be derived, not hand-maintained.
     executor: Literal["mcp", "device"] = "mcp"
+    #: The action semantics a client must implement before it may be handed
+    #: this tool's device action (design §2.5, review R1-F1). A client that
+    #: ignores fields it does not know would perform a *different* write than
+    #: the one that was authorised, so issuance and delivery both gate on the
+    #: requester's `X-Client-Wire-Version`. It is a contract field for the same
+    #: reason `executor` is: the gate must be derived from the IR, and it
+    #: travels with the sealed action so the phone and the Host agree.
+    wire_version: int = DEFAULT_CLIENT_WIRE_VERSION
     summary: str
     model_input_schema: dict[str, Any]
     output_schema: dict[str, Any]
@@ -1122,7 +1156,7 @@ _CALENDAR_EVENT_FIELDS: Final[dict[str, Any]] = {
 _CALENDAR_CREATE_INPUT: Final[dict[str, Any]] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["title", "start", "end", "all_day"],
+    "required": ["title", "start", "end", "all_day", "calendar"],
     "properties": {
         "title": {
             "type": "string",
@@ -1130,12 +1164,34 @@ _CALENDAR_CREATE_INPUT: Final[dict[str, Any]] = {
             "maxLength": 80,
             "description": "日程标题，使用用户口述的措辞。",
         },
+        "calendar": {
+            "type": "string",
+            "enum": list(ALLOWED_CALENDARS),
+            "description": (
+                "目标日历，按参与语义选择，不看关键词："
+                "自己打网球→【日常安排】，看网球比赛→【演出&活动】，"
+                "出行/住宿/多日行程→【出游计划】。语义不明时必须先追问，"
+                "绝不落到任何默认日历。"
+            ),
+        },
+        "timezone": {
+            "type": ["string", "null"],
+            "default": None,
+            "description": (
+                "事件的 IANA 时区（如 Asia/Tokyo），跨时区时按目的地推断并"
+                "在回执中标注；不确定就先追问，绝不静默假设 Asia/Shanghai。"
+                "省略 = Asia/Shanghai。全天事件必须为 null：EventKit 的全天"
+                "事件是浮动日期，没有归属时区（2026-09-09 探针结论）。"
+            ),
+        },
         "start": {
             "type": "string",
             "format": "date-time",
             "description": (
-                "开始时刻，Asia/Shanghai 绝对时间（如 2026-09-12T15:00:00+08:00）；"
-                "all_day 时为当日语义，服务端落为当日零点。"
+                "开始时刻的绝对时间（如 2026-09-12T15:00:00+08:00，"
+                "跨时区时为 2027-01-01T00:00:00+09:00）。"
+                "all_day 时必须等于 start_date 在当地时区（timezone 为空时"
+                "为 Asia/Shanghai）的零点，服务端会校验，不一致直接拒绝。"
                 "用户只说了相对表达（明天下午）时必须先换算或追问，"
                 "绝不把没说清的时刻猜成整点写入。"
             ),
@@ -1144,14 +1200,33 @@ _CALENDAR_CREATE_INPUT: Final[dict[str, Any]] = {
             "type": "string",
             "format": "date-time",
             "description": (
-                "结束时刻，Asia/Shanghai 绝对时间；all_day 时为结束日次日凌晨"
-                "（EventKit 全天事件结束时刻排他）。用户没说结束时刻时按 "
-                "一小时默认并如实告知。"
+                "结束时刻的绝对时间；all_day 时为 end_date 当天零点"
+                "（end_date 已是最后一天 + 1，EventKit 全天事件结束排他）。"
+                "用户没说结束时刻时按一小时默认并如实告知。"
             ),
         },
         "all_day": {
             "type": "boolean",
-            "description": "是否为全天日程。全天事件只需日期，不需要具体时刻。",
+            "description": (
+                "是否为全天日程。全天事件只按日期表达：必须同时提供 "
+                "start_date/end_date，且 timezone 为 null。"
+            ),
+        },
+        "start_date": {
+            "type": ["string", "null"],
+            "pattern": DATE_PATTERN,
+            "description": (
+                "全天事件的开始日期（YYYY-MM-DD）；all_day=false 时必须缺省。"
+            ),
+        },
+        "end_date": {
+            "type": ["string", "null"],
+            "pattern": DATE_PATTERN,
+            "description": (
+                "全天事件的排他结束日 = 用户口述的最后一天 + 1"
+                "（「10-01 到 10-03」= 3 天 → end_date 2026-10-04）；"
+                "all_day=false 时必须缺省。"
+            ),
         },
         "location": {
             "type": "string",
@@ -1164,6 +1239,39 @@ _CALENDAR_CREATE_INPUT: Final[dict[str, Any]] = {
             "description": "可选备注。",
         },
     },
+    # The two shapes are mutually exclusive by construction: an all-day event
+    # travels as dates and must not carry an owner timezone, a timed event
+    # travels as instants and must not carry dates. Both spellings of "not
+    # applicable" (absent or explicit null) are accepted, as the family-fund
+    # modes already do.
+    "allOf": [
+        {
+            "if": {
+                "properties": {"all_day": {"const": True}},
+                "required": ["all_day"],
+            },
+            "then": {
+                "required": ["start_date", "end_date"],
+                "properties": {
+                    "start_date": {"type": "string", "pattern": DATE_PATTERN},
+                    "end_date": {"type": "string", "pattern": DATE_PATTERN},
+                    "timezone": {"const": None},
+                },
+            },
+        },
+        {
+            "if": {
+                "properties": {"all_day": {"const": False}},
+                "required": ["all_day"],
+            },
+            "then": {
+                "properties": {
+                    "start_date": {"const": None},
+                    "end_date": {"const": None},
+                },
+            },
+        },
+    ],
 }
 
 _CALENDAR_CREATE_OUTPUT: Final[dict[str, Any]] = {
@@ -1183,12 +1291,16 @@ _CALENDAR_CREATE_OUTPUT: Final[dict[str, Any]] = {
         },
         "event": {
             "type": "object",
-            "required": ["title", "start", "end", "all_day"],
+            "required": ["title", "start", "end", "all_day", "calendar"],
             "properties": {
                 "title": {"type": "string"},
                 "start": {"type": "string", "format": "date-time"},
                 "end": {"type": "string", "format": "date-time"},
                 "all_day": {"type": "boolean"},
+                "calendar": {"type": "string", "enum": list(ALLOWED_CALENDARS)},
+                "timezone": {"type": ["string", "null"]},
+                "start_date": {"type": ["string", "null"]},
+                "end_date": {"type": ["string", "null"]},
                 "location": {"type": ["string", "null"]},
                 "notes": {"type": ["string", "null"]},
             },
@@ -1373,8 +1485,14 @@ CALENDAR_CREATE_EVENT = ToolContract(
     risk_level="R2",
     enabled=True,
     executor="device",
+    # v2 carries the routing decision and the all-day date fields; a v1 client
+    # would perform a different write than the one that was authorised, so it
+    # is refused the action instead (design §2.5).
+    wire_version=2,
     summary=(
-        "在用户 iPhone 的 Apple 日历中创建一条单次日程。全天日程传 all_day；"
+        "在用户 iPhone 的 Apple 日历中创建一条单次日程。"
+        "必须先按参与语义选定目标日历（calendar），语义不明就问，不要猜；"
+        "全天日程传 all_day 并给出 start_date/end_date（可选时区）；"
         "不支持重复日程——用户要每周重复时如实说明暂不支持，不要建多条冒充。"
     ),
     model_input_schema={

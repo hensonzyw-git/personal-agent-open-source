@@ -260,7 +260,14 @@ class McpFinanceDispatcher:
             # idempotency key, so one message can produce at most one device
             # side effect.
             try:
-                self._bridge.authorize(tool, model_args, self._context.device)
+                # The cleaned arguments are the *attested* ones: host-only
+                # fields the model tried to smuggle in are gone, and a field
+                # this contract declares survives. The action is the
+                # authorisation record, so what it carries must be what was
+                # attested, never the model's raw output.
+                _, attested = self._bridge.authorize(
+                    tool, model_args, self._context.device
+                )
             except AppError as error:
                 # Nothing was issued, so this is provably zero-write.
                 return ResolveFailedSafe(reason=_reason(error))
@@ -271,7 +278,7 @@ class McpFinanceDispatcher:
             return DeviceActionIssued(
                 action_id=idempotency_key,
                 tool=tool,
-                event_fields=model_args,
+                event_fields=attested,
             )
         if remote not in READ_TOOLS:
             # A write tool has exactly one MCP call and it belongs to `commit`.

@@ -36,6 +36,7 @@ CAL_ARGS = {
     "start": "2026-09-12T15:00:00+08:00",
     "end": "2026-09-12T16:30:00+08:00",
     "all_day": False,
+    "calendar": "日常安排",
 }
 
 CAL_DEVICE = DeviceAuthorization(
@@ -113,6 +114,32 @@ def test_calendar_create_event_authorizes_and_issues_a_device_action() -> None:
     assert bridge.authorized == ["calendar.create_event"]
     # And nothing was dispatched anywhere: the phone is the executor.
     assert bridge.executed == []
+
+
+def test_the_issued_action_carries_the_attested_arguments_not_the_raw_output() -> None:
+    """The action is the authorisation record, so what it carries must be what
+    `authorize` attested — not the model's raw output. Reusing the model's dict
+    verbatim would seal a smuggled `device_id` into the record the phone
+    executes from, and the seal would then be testimony to something no policy
+    approved."""
+    cleaned_by_authorize = {
+        key: value for key, value in {**CAL_ARGS, "device_id": "smuggled"}.items()
+        if key != "device_id"
+    }
+
+    class AttestingBridge(SpyBridge):
+        def authorize(self, alias, arguments, device):
+            self.authorized.append(alias)
+            return self.registry.resolve(alias), cleaned_by_authorize
+
+    outcome = cal_dispatcher(AttestingBridge()).resolve(
+        tool="calendar.create_event",
+        model_args={**CAL_ARGS, "device_id": "smuggled"},
+        idempotency_key="action-key-1",
+    )
+    assert isinstance(outcome, DeviceActionIssued)
+    assert outcome.event_fields == CAL_ARGS
+    assert "device_id" not in outcome.event_fields
 
 
 def test_device_action_idempotency_key_is_supplied_by_the_host() -> None:

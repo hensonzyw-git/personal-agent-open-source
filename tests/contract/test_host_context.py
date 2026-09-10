@@ -167,6 +167,89 @@ def test_a_forged_duplicate_override_does_not_survive_verification(ring) -> None
     assert "duplicate_override" not in claims
 
 
+# --- a contract may declare a host-only name for itself ---------------------
+
+
+CALENDAR_TOOL = "calendar.create_event"
+CALENDAR_ARGUMENTS = {
+    "title": "东京行",
+    "start": "2027-01-01T00:00:00+08:00",
+    "end": "2027-01-04T00:00:00+08:00",
+    "all_day": True,
+    "calendar": "出游计划",
+    "timezone": "Asia/Tokyo",
+    "start_date": "2027-01-01",
+    "end_date": "2027-01-04",
+}
+#: What the tool's own schema declares, derived the same way the bridge derives
+#: it — from the contract, never from the request.
+DECLARED = frozenset(CALENDAR_ARGUMENTS)
+
+
+def test_without_a_declaration_every_host_field_is_dropped() -> None:
+    assert strip_host_only_fields({**ARGUMENTS, "timezone": "Asia/Tokyo"}) == ARGUMENTS
+
+
+def test_a_declared_business_field_survives_the_strip() -> None:
+    hostile = {
+        **CALENDAR_ARGUMENTS,
+        "device_id": "someone-elses-device",
+        "user_id": "henson",
+    }
+    cleaned = strip_host_only_fields(hostile, declared=DECLARED)
+    assert cleaned == CALENDAR_ARGUMENTS
+    assert cleaned["timezone"] == "Asia/Tokyo"
+
+
+def test_the_declared_field_is_bound_into_the_hash() -> None:
+    # The exemption must not open a hole: a field the model controls has to be
+    # covered by the binding, or a tampered timezone would verify against an
+    # honest signature.
+    forged_host_field = {**CALENDAR_ARGUMENTS, "device_id": "injected"}
+    assert arguments_hash(forged_host_field, declared=DECLARED) == arguments_hash(
+        CALENDAR_ARGUMENTS, declared=DECLARED
+    )
+    tampered = {**CALENDAR_ARGUMENTS, "timezone": "Asia/Shanghai"}
+    assert arguments_hash(tampered, declared=DECLARED) != arguments_hash(
+        CALENDAR_ARGUMENTS, declared=DECLARED
+    )
+
+
+def test_sign_and_verify_agree_on_the_declared_field(ring) -> None:
+    token = sign_host_context(
+        ring,
+        context(tool=CALENDAR_TOOL),
+        CALENDAR_ARGUMENTS,
+        now=NOW,
+        declared=DECLARED,
+    )
+    claims = verify(
+        ring, token, tool=CALENDAR_TOOL, arguments=CALENDAR_ARGUMENTS, declared=DECLARED
+    )
+    assert claims["arguments_hash"] == arguments_hash(
+        CALENDAR_ARGUMENTS, declared=DECLARED
+    )
+
+
+def test_a_tampered_declared_field_fails_verification(ring) -> None:
+    token = sign_host_context(
+        ring,
+        context(tool=CALENDAR_TOOL),
+        CALENDAR_ARGUMENTS,
+        now=NOW,
+        declared=DECLARED,
+    )
+    with pytest.raises(AppError) as excinfo:
+        verify(
+            ring,
+            token,
+            tool=CALENDAR_TOOL,
+            arguments={**CALENDAR_ARGUMENTS, "timezone": "Asia/Shanghai"},
+            declared=DECLARED,
+        )
+    assert excinfo.value.code is ErrorCode.HOST_CONTEXT_MISMATCH
+
+
 # --- key handling -----------------------------------------------------------
 
 

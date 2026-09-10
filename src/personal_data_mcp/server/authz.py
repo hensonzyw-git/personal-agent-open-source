@@ -26,7 +26,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from personal_agent_core.errors import AppError, ErrorCode
-from personal_agent_core.host_context import ServiceKeyRing, verify_host_context
+from personal_agent_core.host_context import (
+    ServiceKeyRing,
+    verify_host_context,
+)
 from personal_agent_core.manifest import load_manifest
 
 
@@ -115,6 +118,7 @@ class Authorizer:
         arguments: dict[str, Any],
         headers: dict[str, str],
         required_scopes: tuple[str, ...],
+        declared: frozenset[str] = frozenset(),
         now=None,
     ) -> VerifiedCall:
         """Verify one call, or raise before anything downstream runs.
@@ -122,6 +126,10 @@ class Authorizer:
         `headers` are lower-cased. `arguments` are the model-visible arguments
         exactly as received; the hash is recomputed from them and any Host-only
         field a model tried to smuggle in is stripped inside `verify_host_context`.
+
+        `declared` is the target contract's own top-level field names, so a
+        host-only name the contract declares (the calendar event's `timezone`)
+        is hashed rather than stripped on both sides of the binding.
         """
         token = self._bearer(headers)
         idempotency_key = self._required_header(headers, IDEMPOTENCY_HEADER)
@@ -146,6 +154,7 @@ class Authorizer:
             arguments=arguments,
             duplicate_override=duplicate_override,
             now=now,
+            declared=declared,
         )
 
         granted = frozenset(claims.get("scopes") or [])

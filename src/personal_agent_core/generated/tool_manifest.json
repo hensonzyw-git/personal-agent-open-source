@@ -1,6 +1,6 @@
 {
   "manifest_version": "1.0.0",
-  "ir_version": "0.2.0",
+  "ir_version": "0.3.0",
   "generated_from": [
     "docs/MCP工具IR_v0.1.md",
     "docs/Finance MCP工具设计草案_v0.1.md",
@@ -87,7 +87,7 @@
     "calendar.create_event",
     "calendar.query_events"
   ],
-  "allowed_tools_version": "6eb06903e8e672a1e6fec363df165e9add3cada5896bb58974b4878802611d1b",
+  "allowed_tools_version": "8a7ee7ff298221f51cafaba32296f10f3ad3e6870ac798d43f6d715a29660262",
   "tools": [
     {
       "name": "finance.log_expense",
@@ -99,6 +99,7 @@
       "model_callable": true,
       "disabled_reason": null,
       "executor": "mcp",
+      "wire_version": 1,
       "summary": "新增单笔支出、退款或 AA 收款到年度支出记录表。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -352,7 +353,7 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "f300a6f42f89d8db35ff566e5288d369287ea8f9cb4828438023921c53591a0c",
-      "contract_hash": "f63323788dbee7da654bbbf612988834ff12c8e3d4701768d57533ef61bdca09"
+      "contract_hash": "8d255273feea15edba4e46f928836c186e28e4f7494f57966d20e319291f3b5c"
     },
     {
       "name": "finance.log_expense_batch",
@@ -364,6 +365,7 @@
       "model_callable": true,
       "disabled_reason": "飞书批量新增接口有 client_token，但官方文档未声明事务级全成全败语义。在非生产测试表证明原子性之前保持关闭，且不得退化为逐笔顺序写入。",
       "executor": "mcp",
+      "wire_version": 1,
       "summary": "一条消息中两笔及以上完全解析的支出，全成功或一笔也不写。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -654,7 +656,7 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "7dcd88bfc3436d877016cdd50904fe2de778f8c73c65b412fdca770603dfec63",
-      "contract_hash": "19100e4502385a62c39af27e4c56b7a6aadde67461e6f3af8db50633bfcdcf53"
+      "contract_hash": "927919b6f03c77685c55bad075fecf668ae7fdb5e016c36699bce7b0a04564da"
     },
     {
       "name": "finance.update_expense_category",
@@ -666,6 +668,7 @@
       "model_callable": false,
       "disabled_reason": null,
       "executor": "mcp",
+      "wire_version": 1,
       "summary": "把一条已入账支出的分类改成账本已有的另一个选项，不改动其他任何字段。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -836,7 +839,7 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "2bd43204a58afad8976940ae2d910acc42f035d2bb25bc1b1f023e9647266382",
-      "contract_hash": "9e7cfa2721d7345c90266d40f197cb4110c45d4c92bf2c0efcc5ea89ebf9830c"
+      "contract_hash": "6467e117b3a327b28ad95b248f5a938380a032675458cedf39c489ba2dd0d80c"
     },
     {
       "name": "finance.log_income",
@@ -848,6 +851,7 @@
       "model_callable": true,
       "disabled_reason": null,
       "executor": "mcp",
+      "wire_version": 1,
       "summary": "新增单笔收入到年度收入记录表；分类由封闭 Income Policy 决定。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1021,7 +1025,7 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "eeb791038e6547dde489cab4bcecfe7454b3fbff4dfd717fb44133b95bd76f0a",
-      "contract_hash": "eaffb418dd9cac6f92e7e9fffb2e10d70b788790760f791b542d20be267a8f34"
+      "contract_hash": "1dbb9c205003e0a727f90cd61be9d0a165219a5fe31786bd20e6ede831ed70d7"
     },
     {
       "name": "finance.update_family_fund",
@@ -1033,6 +1037,7 @@
       "model_callable": true,
       "disabled_reason": null,
       "executor": "mcp",
+      "wire_version": 1,
       "summary": "家庭基金充值，或按目标余额补齐利息；只记账本变动，不执行资金划转。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1274,7 +1279,7 @@
         "SOURCE_COMMITTED_MISMATCH"
       ],
       "input_schema_hash": "d2067ac7ebc9cc96cdc64a52e4b079079405a249603dc8ce02e2710697e3e7df",
-      "contract_hash": "6cb711060c3fbae2aa0e2e4004166441026ea955f0d6e179f12f0eb9be9ee1ea"
+      "contract_hash": "bd7006a492bb69c28fe5e0e0bb94b5fac2877741935f5ebcc5aeb47c51ad0238"
     },
     {
       "name": "finance.query_expenses",
@@ -1286,6 +1291,7 @@
       "model_callable": true,
       "disabled_reason": null,
       "executor": "mcp",
+      "wire_version": 1,
       "summary": "支出明细、总额和分类统计；金额口径固定为飞书“个人支出”公式的有符号值。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1557,7 +1563,7 @@
         "SOURCE_TIMEOUT_UNKNOWN"
       ],
       "input_schema_hash": "24e4b58fa1180ed23cbce2c3c6ba06ce733aec235aacf351db9abb61cb4c753b",
-      "contract_hash": "d366168e93e0b536567e89e6928cbe57207017e3107d81a6ab6c520fbd1272ce"
+      "contract_hash": "7c5617f6118bda89c437aa7d8cf7dc393cfed7b86752404bb972bacd15abc778"
     },
     {
       "name": "meta.capabilities",
@@ -1569,6 +1575,7 @@
       "model_callable": true,
       "disabled_reason": null,
       "executor": "mcp",
+      "wire_version": 1,
       "summary": "返回当前设备实际可用的工具，用于渐进披露能力。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1637,7 +1644,7 @@
         "SCOPE_DENIED"
       ],
       "input_schema_hash": "3389f18f3a0992d9511246cd730ff47998266119f91c5c685dab194aeb55a4bf",
-      "contract_hash": "f2b2335c0a7fbf20f374557892bb9ae2bdbb0193d3ffe3f55205074f95d3ae9b"
+      "contract_hash": "468e6c5a21c56cd9db496bf93e7489e72184644431b1b7aff422f43d40c1bc35"
     },
     {
       "name": "calendar.create_event",
@@ -1649,7 +1656,8 @@
       "model_callable": true,
       "disabled_reason": null,
       "executor": "device",
-      "summary": "在用户 iPhone 的 Apple 日历中创建一条单次日程。全天日程传 all_day；不支持重复日程——用户要每周重复时如实说明暂不支持，不要建多条冒充。",
+      "wire_version": 2,
+      "summary": "在用户 iPhone 的 Apple 日历中创建一条单次日程。必须先按参与语义选定目标日历（calendar），语义不明就问，不要猜；全天日程传 all_day 并给出 start_date/end_date（可选时区）；不支持重复日程——用户要每周重复时如实说明暂不支持，不要建多条冒充。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "CalendarCreateEventInput",
@@ -1659,7 +1667,8 @@
           "title",
           "start",
           "end",
-          "all_day"
+          "all_day",
+          "calendar"
         ],
         "properties": {
           "title": {
@@ -1668,19 +1677,53 @@
             "maxLength": 80,
             "description": "日程标题，使用用户口述的措辞。"
           },
+          "calendar": {
+            "type": "string",
+            "enum": [
+              "日常安排",
+              "出游计划",
+              "演出&活动",
+              "飞行计划"
+            ],
+            "description": "目标日历，按参与语义选择，不看关键词：自己打网球→【日常安排】，看网球比赛→【演出&活动】，出行/住宿/多日行程→【出游计划】。语义不明时必须先追问，绝不落到任何默认日历。"
+          },
+          "timezone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null,
+            "description": "事件的 IANA 时区（如 Asia/Tokyo），跨时区时按目的地推断并在回执中标注；不确定就先追问，绝不静默假设 Asia/Shanghai。省略 = Asia/Shanghai。全天事件必须为 null：EventKit 的全天事件是浮动日期，没有归属时区（2026-09-09 探针结论）。"
+          },
           "start": {
             "type": "string",
             "format": "date-time",
-            "description": "开始时刻，Asia/Shanghai 绝对时间（如 2026-09-12T15:00:00+08:00）；all_day 时为当日语义，服务端落为当日零点。用户只说了相对表达（明天下午）时必须先换算或追问，绝不把没说清的时刻猜成整点写入。"
+            "description": "开始时刻的绝对时间（如 2026-09-12T15:00:00+08:00，跨时区时为 2027-01-01T00:00:00+09:00）。all_day 时必须等于 start_date 在当地时区（timezone 为空时为 Asia/Shanghai）的零点，服务端会校验，不一致直接拒绝。用户只说了相对表达（明天下午）时必须先换算或追问，绝不把没说清的时刻猜成整点写入。"
           },
           "end": {
             "type": "string",
             "format": "date-time",
-            "description": "结束时刻，Asia/Shanghai 绝对时间；all_day 时为结束日次日凌晨（EventKit 全天事件结束时刻排他）。用户没说结束时刻时按 一小时默认并如实告知。"
+            "description": "结束时刻的绝对时间；all_day 时为 end_date 当天零点（end_date 已是最后一天 + 1，EventKit 全天事件结束排他）。用户没说结束时刻时按一小时默认并如实告知。"
           },
           "all_day": {
             "type": "boolean",
-            "description": "是否为全天日程。全天事件只需日期，不需要具体时刻。"
+            "description": "是否为全天日程。全天事件只按日期表达：必须同时提供 start_date/end_date，且 timezone 为 null。"
+          },
+          "start_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "全天事件的开始日期（YYYY-MM-DD）；all_day=false 时必须缺省。"
+          },
+          "end_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "全天事件的排他结束日 = 用户口述的最后一天 + 1（「10-01 到 10-03」= 3 天 → end_date 2026-10-04）；all_day=false 时必须缺省。"
           },
           "location": {
             "type": "string",
@@ -1692,7 +1735,62 @@
             "maxLength": 500,
             "description": "可选备注。"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "all_day": {
+                  "const": true
+                }
+              },
+              "required": [
+                "all_day"
+              ]
+            },
+            "then": {
+              "required": [
+                "start_date",
+                "end_date"
+              ],
+              "properties": {
+                "start_date": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "end_date": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+                },
+                "timezone": {
+                  "const": null
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "all_day": {
+                  "const": false
+                }
+              },
+              "required": [
+                "all_day"
+              ]
+            },
+            "then": {
+              "properties": {
+                "start_date": {
+                  "const": null
+                },
+                "end_date": {
+                  "const": null
+                }
+              }
+            }
+          }
+        ]
       },
       "output_schema": {
         "type": "object",
@@ -1717,7 +1815,8 @@
               "title",
               "start",
               "end",
-              "all_day"
+              "all_day",
+              "calendar"
             ],
             "properties": {
               "title": {
@@ -1733,6 +1832,33 @@
               },
               "all_day": {
                 "type": "boolean"
+              },
+              "calendar": {
+                "type": "string",
+                "enum": [
+                  "日常安排",
+                  "出游计划",
+                  "演出&活动",
+                  "飞行计划"
+                ]
+              },
+              "timezone": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "start_date": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "end_date": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "location": {
                 "type": [
@@ -1796,8 +1922,8 @@
         "DEVICE_ACTION_DENIED",
         "DEVICE_EXECUTION_FAILED"
       ],
-      "input_schema_hash": "e793330bc95b0209721521a1bcb130dc40421130a85658e72c6253c764d8d3d3",
-      "contract_hash": "834a40faf1ae20a6cba7cfc7f20dff4c794cd58b750f039d7c6fcd634f50e991"
+      "input_schema_hash": "2a4f4de5d030a85d019f4dea9810295169175f25f296dbe7092063e7ea68b546",
+      "contract_hash": "6d608124bacc375955effb2f19cd1787372b3b4fbc4c124c00abe961dc56432d"
     },
     {
       "name": "calendar.query_events",
@@ -1809,6 +1935,7 @@
       "model_callable": true,
       "disabled_reason": null,
       "executor": "mcp",
+      "wire_version": 1,
       "summary": "查询日历镜像中的日程（日期窗口必填）。镜像由设备同步上载，回答必须携带数据截至时间，镜像陈旧时如实说明。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1991,7 +2118,7 @@
         "SOURCE_UNAVAILABLE"
       ],
       "input_schema_hash": "c2312dca5342a0b9cb5995055531ff310c42fe2fc9f9fdc999963ecd708d8817",
-      "contract_hash": "537e2be39fc1a7be0a2277a18ec40a11533c603a042f4ee7a177d5ef7d6955c9"
+      "contract_hash": "1f13f09d13b7d44452f99065ccb9a87405bf84bb77c607d7f3da36bfc5c704ee"
     },
     {
       "name": "calendar.ingest_events",
@@ -2003,6 +2130,7 @@
       "model_callable": false,
       "disabled_reason": "镜像上载是设备同步路由的确定性动作，不是模型推理的选择；模型可写镜像等于模型可伪造日历。",
       "executor": "mcp",
+      "wire_version": 1,
       "summary": "把设备上报的日历事件快照按 last_modified 仲裁合并进镜像。",
       "model_input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2167,7 +2295,7 @@
         "SCOPE_DENIED"
       ],
       "input_schema_hash": "b8ab33a00bfc47e43359e0d90819ed9d7e71ed09d4a2102c198d90deb24ad25e",
-      "contract_hash": "849304b379c93a79402f4f274fca7814fef2a3032c4ac1568f0eff7940636342"
+      "contract_hash": "db20a37ff523f66d4d09e0500ca6c916c56397b26b7e39ef6740ec398e765c7c"
     }
   ]
 }

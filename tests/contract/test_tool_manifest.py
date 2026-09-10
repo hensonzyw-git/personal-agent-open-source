@@ -28,7 +28,11 @@ from personal_agent_core.manifest import (
     sha256_of,
 )
 from personal_agent_core.money import AMOUNT_PATTERN, SIGNED_AMOUNT_PATTERN
-from personal_agent_core.tool_ir import ALLOWED_EXPENSE_CATEGORIES, TOOL_CONTRACTS
+from personal_agent_core.tool_ir import (
+    ALLOWED_EXPENSE_CATEGORIES,
+    CLIENT_WIRE_VERSION_HEADER,
+    TOOL_CONTRACTS,
+)
 
 
 OBSOLETE_TOOL_NAMES = (
@@ -47,6 +51,15 @@ HOST_ONLY_FIELDS = (
     "duplicate_override",
 )
 
+#: Host-only names a contract may re-declare as one of its own business fields.
+#: `calendar.create_event`'s `timezone` is the *event's* IANA timezone (design
+#: §2.2); the Host Context's `timezone` is the message day-boundary. They share
+#: a name and nothing else. The exemption is read from the schema itself (a
+#: host-only key survives only where the tool's own closed schema declares it at
+#: top level), and this map is pinned literally — widening it must be a
+#: deliberate edit, not a side effect of adding a field.
+DECLARED_HOST_ONLY_FIELDS = {"calendar.create_event": ["timezone"]}
+
 
 def tools() -> list[dict[str, Any]]:
     return load_manifest()["tools"]
@@ -57,18 +70,6 @@ def tool(name: str) -> dict[str, Any]:
         if entry["name"] == name:
             return entry
     raise AssertionError(f"missing tool {name}")
-
-
-def walk_keys(node: Any) -> list[str]:
-    keys: list[str] = []
-    if isinstance(node, dict):
-        for key, value in node.items():
-            keys.append(key)
-            keys.extend(walk_keys(value))
-    elif isinstance(node, list):
-        for item in node:
-            keys.extend(walk_keys(item))
-    return keys
 
 
 # --- reproducibility -------------------------------------------------------
@@ -379,10 +380,26 @@ def test_batch_requires_at_least_two_entries() -> None:
 
 
 def test_host_context_is_never_visible_to_the_model() -> None:
+    """Host-only names are stripped from model arguments at the bridge.
+
+    The strip is per top level, because that is the only level it operates on:
+    a host-only name nested inside a business array lives in that array's own
+    closed schema and is business data, not a Host field.
+
+    One contract may legitimately declare such a name for itself, and the set
+    of those declarations is pinned below rather than re-derived — a tool that
+    quietly starts accepting `device_id` must fail here.
+    """
+    declared_by_tool: dict[str, list[str]] = {}
     for entry in tools():
-        keys = set(walk_keys(entry["model_input_schema"]))
-        leaked = keys.intersection(HOST_ONLY_FIELDS)
-        assert leaked == set(), f"{entry['name']} exposes host fields {leaked}"
+        properties = entry["model_input_schema"].get("properties", {})
+        declared = set(properties).intersection(HOST_ONLY_FIELDS)
+        if declared:
+            declared_by_tool[entry["name"]] = sorted(declared)
+        allowed = set(DECLARED_HOST_ONLY_FIELDS.get(entry["name"], ()))
+        leaked = declared - allowed
+        assert leaked == set(), f"{entry['name']} exposes host fields {sorted(leaked)}"
+    assert declared_by_tool == DECLARED_HOST_ONLY_FIELDS
 
 
 def test_host_context_schema_is_closed_and_pins_the_timezone() -> None:
@@ -460,6 +477,112 @@ def test_calendar_ingest_events_is_not_model_callable() -> None:
     assert entry["model_callable"] is False
     assert entry["enabled"] is True
     assert entry["idempotency"]["key_source"] == "not_applicable"
+
+
+def test_ir_version_is_the_calendar_contract_revision() -> None:
+    assert load_manifest()["ir_version"] == "0.3.0"
+
+
+def test_calendar_create_routes_by_business_calendar() -> None:
+    """Routing is a required model decision, never a default.
+
+    A default would let the model stay silent and have the server pick — and
+    every silent pick is 「日常安排」, which is exactly the funnel the PRD
+    forbids. 【飞行计划】 stays in the enum because it is the only way a flight
+    request gets the honest refusal; the server is the single refusal point.
+    """
+    schema = tool("calendar.create_event")["model_input_schema"]
+    field = schema["properties"]["calendar"]
+    assert "calendar" in schema["required"]
+    assert field["enum"] == ["日常安排", "出游计划", "演出&活动", "飞行计划"]
+    assert "default" not in field, "a default lets the model omit routing"
+
+
+def test_calendar_timezone_is_the_events_own_field() -> None:
+    """`timezone` here is the event's IANA zone (Q11), not the Host's day
+    boundary — and it is model-facing, so `HOST_ONLY_FIELDS` must exempt it
+    through the schema (see `DECLARED_HOST_ONLY_FIELDS`)."""
+    field = tool("calendar.create_event")["model_input_schema"]["properties"][
+        "timezone"
+    ]
+    assert field["type"] == ["string", "null"]
+    assert field["default"] is None
+    assert "Asia/Shanghai" in field["description"]
+
+
+def test_all_day_events_travel_as_dates_and_never_a_timezone() -> None:
+    schema = tool("calendar.create_event")["model_input_schema"]
+    all_day = {
+        "title": "东京行",
+        "start": "2027-01-01T00:00:00+08:00",
+        "end": "2027-01-04T00:00:00+08:00",
+        "all_day": True,
+        "calendar": "出游计划",
+        "start_date": "2027-01-01",
+        "end_date": "2027-01-04",
+    }
+    jsonschema.validate(all_day, schema)
+    # An all-day event has no owner timezone: the probe proved EventKit keeps
+    # them floating, and setting `timeZone` flips `isAllDay` to false.
+    jsonschema.validate({**all_day, "timezone": None}, schema)
+
+    for invalid in (
+        {**all_day, "timezone": "Asia/Tokyo"},
+        {key: value for key, value in all_day.items() if key != "start_date"},
+        {key: value for key, value in all_day.items() if key != "end_date"},
+        {**all_day, "start_date": None},
+        {**all_day, "end_date": "2027-1-4"},
+        {**all_day, "start_date": "2027/01/01"},
+    ):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(invalid, schema)
+
+
+def test_timed_events_carry_an_instant_not_dates() -> None:
+    schema = tool("calendar.create_event")["model_input_schema"]
+    timed = {
+        "title": "网球",
+        "start": "2026-09-12T15:00:00+08:00",
+        "end": "2026-09-12T16:30:00+08:00",
+        "all_day": False,
+        "calendar": "日常安排",
+    }
+    jsonschema.validate(timed, schema)
+    jsonschema.validate({**timed, "timezone": "Asia/Tokyo"}, schema)
+    # "Not applicable" may be spelled either way, exactly as the family-fund
+    # modes already allow.
+    jsonschema.validate({**timed, "start_date": None, "end_date": None}, schema)
+
+    for invalid in (
+        {**timed, "start_date": "2026-09-12"},
+        {**timed, "end_date": "2026-09-13"},
+    ):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(invalid, schema)
+
+
+def test_a_calendar_write_without_a_route_is_refused_at_the_schema() -> None:
+    schema = tool("calendar.create_event")["model_input_schema"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            {
+                "title": "网球",
+                "start": "2026-09-12T15:00:00+08:00",
+                "end": "2026-09-12T16:30:00+08:00",
+                "all_day": False,
+            },
+            schema,
+        )
+
+
+def test_the_calendar_action_declares_the_client_wire_version_it_needs() -> None:
+    """R1-F1: a client that cannot honour the new fields must not receive the
+    action. The requirement is a contract field, so the dispatcher and the
+    projection read it from the IR instead of a hand-maintained tool list."""
+    versions = {entry["name"]: entry["wire_version"] for entry in tools()}
+    assert versions["calendar.create_event"] == 2
+    assert {n for n, v in versions.items() if v != 1} == {"calendar.create_event"}
+    assert CLIENT_WIRE_VERSION_HEADER == "X-Client-Wire-Version"
 
 
 def test_device_executor_forks_the_dispatch_path() -> None:

@@ -2083,6 +2083,12 @@ def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
                             "start": "2026-09-12T15:00:00+08:00",
                             "end": "2026-09-12T16:30:00+08:00",
                             "all_day": False,
+                            "calendar": "日常安排",
+                            # The event's own timezone (Q11) is business data
+                            # and must reach the phone; the smuggled host field
+                            # next to it must not.
+                            "timezone": "Asia/Tokyo",
+                            "device_id": "someone-elses-device",
                         },
                     )
                 ),
@@ -2136,8 +2142,8 @@ def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
     # a later poll (or the report endpoint's answer), and every one of those
     # polls carried the action while the operation stayed parked.
     assert polled.status_code == 202, polled.text
-    # The parked operation hands the action over — the same authorised
-    # arguments the model proposed, nothing re-derived.
+    # The parked operation hands the action over — the attested arguments the
+    # bridge authorised, nothing re-derived and nothing the model invented.
     assert body["state"] == "source_in_progress"
     assert body["device_action"] == {
         "action_id": key,
@@ -2147,6 +2153,8 @@ def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
             "start": "2026-09-12T15:00:00+08:00",
             "end": "2026-09-12T16:30:00+08:00",
             "all_day": False,
+            "calendar": "日常安排",
+            "timezone": "Asia/Tokyo",
         },
     }
 

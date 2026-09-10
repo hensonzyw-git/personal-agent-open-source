@@ -39,6 +39,7 @@ from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.host_context import (
     HostContext,
     ServiceKeyRing,
+    declared_model_fields,
     sign_host_context,
     strip_host_only_fields,
 )
@@ -274,7 +275,12 @@ class GovernedToolBridge:
                 ErrorCode.SCOPE_DENIED,
                 internal_detail="device carries a stale allowed_tools_version",
             )
-        cleaned = strip_host_only_fields(arguments)
+        # A host-only name this tool's own contract declares is the tool's
+        # business field, not the Host's (see `declared_model_fields`), and it
+        # must survive to the connector and into the argument hash.
+        cleaned = strip_host_only_fields(
+            arguments, declared=declared_model_fields(contract["model_input_schema"])
+        )
         try:
             Draft202012Validator(
                 contract["model_input_schema"],
@@ -349,7 +355,16 @@ class GovernedToolBridge:
                 internal_detail=f"no MCP client for connector {entry.connector_id}",
             ) from None
 
-        token = sign_host_context(call_context.signing_keys, host, cleaned)
+        token = sign_host_context(
+            call_context.signing_keys,
+            host,
+            cleaned,
+            # The verifier derives the same exemption from the same contract,
+            # so a field the schema declares is hashed on both sides.
+            declared=declared_model_fields(
+                self._contracts[entry.remote_name]["model_input_schema"]
+            ),
+        )
         headers = {
             "Authorization": f"Bearer {token}",
             "X-Request-ID": host.request_id,
