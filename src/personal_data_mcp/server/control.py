@@ -30,6 +30,7 @@ from starlette.routing import Route
 from personal_agent_core.control_token import (
     MAX_RECORD_BATCH,
     ControlAction,
+    calendar_lookup_resource,
     record_batch_resource,
     verify_control_token,
 )
@@ -40,6 +41,7 @@ from personal_agent_core.timeutil import parse_ledger_date, utc_now
 from personal_data_mcp.server.control_queries import (
     get_execution_status,
     get_pending_duplicate_check,
+    resolve_calendar_target,
     successful_writes_on,
     verified_receipt_for,
 )
@@ -245,11 +247,39 @@ def build_control_app(
 
         return JSONResponse({"records": response_items})
 
+    async def resolve_calendar(request: Request) -> JSONResponse:
+        device_id = request.path_params["device_id"]
+        title = request.query_params.get("title", "")
+        try:
+            token = _bearer(request)
+            verify_control_token(
+                ring,
+                token,
+                action=ControlAction.RESOLVE_CALENDAR,
+                resource=calendar_lookup_resource(device_id, title),
+            )
+        except AppError as error:
+            return _error_response(error)
+
+        with session_factory() as session:
+            resolution = resolve_calendar_target(
+                session, device_id=device_id, title=title
+            )
+        # Every outcome is a `status`, including the misses: "no such calendar"
+        # is the answer to the question asked, not a failure of the read. Only
+        # an unreadable plane is an error, and that leaves via `_error_response`.
+        return JSONResponse(resolution)
+
     return Starlette(
         routes=[
             Route(
                 f"{CONTROL_PREFIX}/executions/{{idempotency_key}}",
                 get_execution,
+                methods=["GET"],
+            ),
+            Route(
+                f"{CONTROL_PREFIX}/calendars/{{device_id}}/resolve",
+                resolve_calendar,
                 methods=["GET"],
             ),
             Route(

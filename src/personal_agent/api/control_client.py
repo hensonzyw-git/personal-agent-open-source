@@ -28,13 +28,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Final
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 
 from personal_agent_core.control_token import (
     MAX_RECORD_BATCH,
     ControlAction,
+    calendar_lookup_resource,
     record_batch_resource,
     sign_control_token,
 )
@@ -123,6 +124,44 @@ class RecordUnavailable:
 
     table_kind: str
     record_id: str
+
+
+@dataclass(frozen=True)
+class CalendarCandidate:
+    """One calendar the user might have meant: a name and where it comes from.
+
+    Deliberately without an identifier. A candidate exists to be *asked about*,
+    and the answer names a calendar; only the resolved calendar's identifier is
+    ever sealed into an action.
+    """
+
+    title: str
+    source_title: str | None
+
+
+@dataclass(frozen=True)
+class CalendarResolved:
+    """The one writable calendar that bears the requested name."""
+
+    calendar_identifier: str
+    calendar_title: str
+
+
+@dataclass(frozen=True)
+class CalendarUnresolved:
+    """No single writable calendar matched, and why.
+
+    `reason` is one of the directory's own stable names -- `not_found`,
+    `directory_empty`, `ambiguous`, `read_only` -- never a collapsed "failed":
+    the caller turns each into a different sentence for the user, and an
+    unreadable control plane is a `ControlPlaneError` instead.
+    """
+
+    reason: str
+    candidates: tuple[CalendarCandidate, ...] = ()
+
+
+CalendarResolution = CalendarResolved | CalendarUnresolved
 
 
 class FinanceControlClient:
@@ -285,6 +324,45 @@ class FinanceControlClient:
             existing_summary=existing_summary,
         )
 
+    async def resolve_calendar(
+        self, *, device_id: str, title: str
+    ) -> CalendarResolution:
+        """Which calendar on this device bears this name (design 2.1).
+
+        Every outcome but the miss is returned as data, because each is a
+        legitimate answer the caller must act on differently: a resolved
+        identifier is sealed into the action, an ambiguous name is an
+        opportunity to ask which one, and a read-only match is a refusal with a
+        reason. Only an unreadable or nonsensical body raises.
+        """
+        payload = await self._get(
+            f"{CONTROL_PREFIX}/calendars/{device_id}/resolve?title={quote(title)}",
+            action=ControlAction.RESOLVE_CALENDAR,
+            resource=calendar_lookup_resource(device_id, title),
+        )
+        status = payload.get("status")
+        if status == "resolved":
+            identifier = payload.get("calendar_identifier")
+            resolved_title = payload.get("title")
+            if not isinstance(identifier, str) or not identifier:
+                raise ControlPlaneError("calendar resolution carried no identifier")
+            if not isinstance(resolved_title, str) or not resolved_title:
+                raise ControlPlaneError("calendar resolution carried no title")
+            return CalendarResolved(
+                calendar_identifier=identifier,
+                calendar_title=resolved_title,
+            )
+        if status in ("not_found", "directory_empty"):
+            return CalendarUnresolved(reason=status)
+        if status in ("ambiguous", "read_only"):
+            candidates = payload.get("candidates")
+            if not isinstance(candidates, list):
+                raise ControlPlaneError("calendar resolution carried no candidates")
+            return CalendarUnresolved(
+                reason=status, candidates=tuple(_candidate(item) for item in candidates)
+            )
+        raise ControlPlaneError("calendar resolution status was not understood")
+
     async def list_successful_writes(self, write_date: str) -> list[SuccessfulWrite]:
         """The verified writes committed on one Asia/Shanghai ledger day.
 
@@ -391,6 +469,18 @@ def _successful_write(item: Any) -> SuccessfulWrite:
             )
         fields[key] = value
     return SuccessfulWrite(**fields)
+
+
+def _candidate(item: Any) -> CalendarCandidate:
+    if not isinstance(item, dict):
+        raise ControlPlaneError("a calendar candidate was not an object")
+    title = item.get("title")
+    if not isinstance(title, str) or not title:
+        raise ControlPlaneError("a calendar candidate carried no title")
+    source_title = item.get("source_title")
+    if source_title is not None and not isinstance(source_title, str):
+        raise ControlPlaneError("a calendar candidate carried a non-string source")
+    return CalendarCandidate(title=title, source_title=source_title)
 
 
 def _record_fields(
