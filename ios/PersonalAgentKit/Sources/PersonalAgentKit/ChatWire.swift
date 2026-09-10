@@ -399,7 +399,16 @@ public enum OperationOutcome: Sendable, Equatable {
     case failedSafe(reason: String?)
     /// Something may have been written and could not be verified. Never shown as
     /// success and never shown as a clean failure.
-    case needsManualReview(reason: String?, recordID: String?)
+    ///
+    /// `domain` is the operation's own IR domain, carried here rather than
+    /// threaded into the card beside the outcome: the card's wording and its two
+    /// conclusion paths are chosen by it, so a rendering that forgot to pass it
+    /// would silently ask the person to check the *ledger* for a calendar write
+    /// -- and the conclusion they then tap is recorded as a human fact the
+    /// server refuses to contradict. `recordID` travels the same way for the
+    /// same reason. `nil` means the operation recorded no domain (see
+    /// `OperationReceipt.calendarDomain`).
+    case needsManualReview(reason: String?, recordID: String?, domain: String?)
     /// Cancelled before any external submit could have happened.
     case cancelledBeforeSubmit
     /// The server reported success but gave this client nothing it can present as
@@ -457,6 +466,11 @@ public struct OperationReceipt: Sendable, Equatable {
     public let cancelRequested: Bool
     public let clientDetached: Bool
     public let tool: String?
+    /// The IR domain of the recorded tool (design §10, gap 4) -- `"calendar"`,
+    /// `"finance"` -- or `nil` when no tool was recorded. Never guessed from the
+    /// tool's name: the server derives this from the tool's own contract, and a
+    /// list kept beside it here would be the second source of truth that drifts.
+    public let domain: String?
     public let recordID: String?
     public let failureReason: String?
     public let duplicateCheckID: String?
@@ -490,6 +504,7 @@ public struct OperationReceipt: Sendable, Equatable {
         cancelRequested: Bool,
         clientDetached: Bool,
         tool: String?,
+        domain: String? = nil,
         recordID: String?,
         failureReason: String?,
         duplicateCheckID: String?,
@@ -506,6 +521,7 @@ public struct OperationReceipt: Sendable, Equatable {
         self.cancelRequested = cancelRequested
         self.clientDetached = clientDetached
         self.tool = tool
+        self.domain = domain
         self.recordID = recordID
         self.failureReason = failureReason
         self.duplicateCheckID = duplicateCheckID
@@ -566,10 +582,24 @@ public struct OperationReceipt: Sendable, Equatable {
         "calendar.query_events",
     ]
 
+    /// The IR domain the calendar tools declare (design §10, gap 4).
+    ///
+    /// The 人工核对 card picks its wording by the operation's own domain, and
+    /// this is the one value that selects the calendar card. Everything else --
+    /// including an absent domain -- draws the ledger card, which is what every
+    /// such card drew before the field existed: `domain` is written into a
+    /// Timeline event when the event is appended, so only operations recorded
+    /// before step 5 carry none, and every one of those is a ledger write. A
+    /// live receipt always carries it. This is the *display* fallback for that
+    /// history and never a claim that an unknown domain is a ledger write, which
+    /// is why nothing else in this client branches on it.
+    public static let calendarDomain = "calendar"
+
     public var outcome: OperationOutcome {
         Self.project(
             state: state,
             toolEvidence: .known(tool),
+            domain: domain,
             recordID: recordID,
             failureReason: failureReason,
             duplicateCheckID: duplicateCheckID,
@@ -601,6 +631,7 @@ public struct OperationReceipt: Sendable, Equatable {
     static func project(
         state: OperationState,
         toolEvidence: ToolEvidence,
+        domain: String? = nil,
         recordID: String?,
         failureReason: String?,
         duplicateCheckID: String?,
@@ -672,7 +703,9 @@ public struct OperationReceipt: Sendable, Equatable {
         case .failedSafe:
             return .failedSafe(reason: failureReason)
         case .needsManualReview:
-            return .needsManualReview(reason: failureReason, recordID: recordID)
+            return .needsManualReview(
+                reason: failureReason, recordID: recordID, domain: domain
+            )
         case .cancelledPreSubmit:
             return .cancelledBeforeSubmit
         case .unrecognised(let raw):
@@ -688,6 +721,7 @@ extension OperationReceipt: Decodable {
         case cancelRequested = "cancel_requested"
         case clientDetached = "client_detached"
         case tool
+        case domain
         case recordID = "record_id"
         case failureReason = "failure_reason"
         case duplicateCheckID = "duplicate_check_id"
@@ -711,6 +745,7 @@ extension OperationReceipt: Decodable {
         clientDetached = try container.decode(Bool.self, forKey: .clientDetached)
         let recordedTool = try container.decodeIfPresent(String.self, forKey: .tool)
         tool = recordedTool
+        domain = try container.decodeIfPresent(String.self, forKey: .domain)
         recordID = try container.decodeIfPresent(String.self, forKey: .recordID)
         failureReason = try container.decodeIfPresent(
             String.self, forKey: .failureReason
@@ -1102,6 +1137,11 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                 outcome: OperationReceipt.project(
                     state: state,
                     toolEvidence: toolEvidence,
+                    // The domain travels with the history (design §10), so a
+                    // 人工核对 card re-drawn here still asks about the calendar
+                    // rather than the ledger. Absent on events recorded before
+                    // step 5, which is the same nil the card already handles.
+                    domain: content["domain"]?.stringValue,
                     recordID: content["record_id"]?.stringValue,
                     failureReason: content["failure_reason"]?.stringValue,
                     duplicateCheckID: content["duplicate_check_id"]?.stringValue,

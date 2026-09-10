@@ -1607,13 +1607,19 @@ struct ChatView: View {
                     .foregroundStyle(.danger)
                 if let reason { field("原因", reason) }
 
-            case .needsManualReview(let reason, let recordID):
+            case .needsManualReview(let reason, let recordID, let domain):
+                // Design §10, gap 4: the card is chosen by the operation's
+                // domain, never by guessing from the tool name. A calendar write
+                // cannot be checked in the ledger, and a person sent to the
+                // wrong place taps a conclusion that is then recorded as a
+                // human fact the server refuses to contradict.
+                let copy = ManualReviewCopy.forDomain(domain)
                 Label("需要人工核对：写入结果无法确认", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.pending)
                 if let reason { field("原因", reason) }
-                if let recordID { field("记录 ID", recordID) }
+                if let recordID { field(copy.recordLabel, recordID) }
                 if let operationID {
-                    manualReviewResolution(operationID: operationID)
+                    manualReviewResolution(operationID: operationID, copy: copy)
                 }
 
             case .cancelledBeforeSubmit:
@@ -1678,9 +1684,10 @@ struct ChatView: View {
     /// to the menu (or have none). Kept here so the menu and the 详情单 see the
     /// same value the body already shows.
     private func recordID(from outcome: OperationOutcome) -> String? {
-        if case .needsManualReview(_, let recordID) = outcome { return recordID }
+        if case .needsManualReview(_, let recordID, _) = outcome { return recordID }
         return nil
     }
+
 
     /// §1o 组件二: the terminal-state label in the card's top corner.
     ///
@@ -1873,34 +1880,41 @@ struct ChatView: View {
     /// `DEV-040`. The human resolution path for a `needs_manual_review` card.
     ///
     /// It answers the question the state itself cannot: the system could not
-    /// establish whether the row reached the ledger, and only a person looking at
-    /// the ledger can. What it deliberately does **not** do is change the receipt
+    /// establish whether the write landed, and only a person looking at the
+    /// destination can. What it deliberately does **not** do is change the receipt
     /// above it — 需要人工核对 stays exactly as rendered, because that is still what
     /// the *system* proved. The resolution is shown beside it as what a person
     /// reported.
+    ///
+    /// `copy` is the domain's wording (design §10, gap 4). It is a parameter and
+    /// not a fresh derivation here so that the resolved line and the button the
+    /// person tapped are worded by the same value: the receipt and the unresolved
+    /// slot both pass the copy their own outcome carried.
     @ViewBuilder
-    private func manualReviewResolution(operationID: String) -> some View {
+    private func manualReviewResolution(
+        operationID: String, copy: ManualReviewCopy
+    ) -> some View {
         if let resolved = model.resolvedManualReviews[operationID] {
             Label(
-                "已人工核对：\(manualResolutionText(resolved))",
+                "已人工核对：\(manualResolutionText(resolved, copy: copy))",
                 systemImage: "checkmark.circle"
             )
             .foregroundStyle(.secondary)
-            Text("这是你核对账本后的结论，不是系统验证的结果。要改判需要重新人工核对，服务端会拒绝相反的答复。")
+            Text("这是你核对后的结论，不是系统验证的结果。要改判需要重新人工核对，服务端会拒绝相反的答复。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else {
-            Text("请先在飞书账本里核对这一笔（复核页有「打开飞书账本」），再选择结论。选择只记录你看到的事实，不会改动账本。")
+            Text(copy.instruction)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
-                Button("账本里有这笔") {
+                Button(copy.writtenButton) {
                     confirmingResolution = .init(
                         operationID: operationID, resolution: .confirmedWritten
                     )
                 }
                 Spacer()
-                Button("账本里没有") {
+                Button(copy.notWrittenButton) {
                     confirmingResolution = .init(
                         operationID: operationID, resolution: .confirmedNotWritten
                     )
@@ -1911,13 +1925,20 @@ struct ChatView: View {
         }
     }
 
-    private func manualResolutionText(_ wire: String) -> String {
-        switch wire {
-        case ManualResolution.confirmedWritten.rawValue: return "账本里有这笔"
-        case ManualResolution.confirmedNotWritten.rawValue: return "账本里没有这笔"
-        // A conclusion this build cannot name is still one that was recorded.
-        default: return "服务端结论 \(wire)"
-        }
+    /// The conclusion in words. The wording is `ManualReviewCopy`'s rule, in the
+    /// Kit where it can be tested; this only supplies the copy.
+    ///
+    /// The default is the ledger copy, and one caller relies on it: the
+    /// `manual_review_resolved` history marker. The server records only the
+    /// resolution on that event, so the marker has no domain of its own to fork
+    /// on. That is a real gap, not a fallback that was reasoned about here — a
+    /// calendar resolution's marker therefore still says 账本. It is left as it is
+    /// because closing it means changing that event's content, which is a server
+    /// contract this step did not open.
+    private func manualResolutionText(
+        _ wire: String, copy: ManualReviewCopy = .ledger
+    ) -> String {
+        copy.conclusion(forWire: wire)
     }
 
     private func duplicateDecisionText(_ wire: String) -> String {
@@ -1944,8 +1965,11 @@ struct ChatView: View {
                 // costs nothing.
                 if let receipt = model.liveReceipt,
                    receipt.operationID == operationID,
-                   case .needsManualReview = receipt.outcome {
-                    manualReviewResolution(operationID: operationID)
+                   case .needsManualReview(_, _, let domain) = receipt.outcome {
+                    manualReviewResolution(
+                        operationID: operationID,
+                        copy: ManualReviewCopy.forDomain(domain)
+                    )
                 }
             } else {
                 Text("尚未拿到 operation_id：服务端可能已收到，也可能没有。")

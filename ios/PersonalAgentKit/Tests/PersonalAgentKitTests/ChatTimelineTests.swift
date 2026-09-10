@@ -336,6 +336,9 @@ func chatReceipt(
     cancelRequested: Bool = false,
     clientDetached: Bool = false,
     tool: Any = NSNull(),
+    // Present and null by default, which is the server's own shape: it always
+    // emits the key, and emits null exactly when no tool was recorded.
+    domain: Any = NSNull(),
     recordID: Any = NSNull(),
     failureReason: Any = NSNull(),
     duplicateCheckID: Any = NSNull(),
@@ -347,6 +350,7 @@ func chatReceipt(
         "cancel_requested": cancelRequested,
         "client_detached": clientDetached,
         "tool": tool,
+        "domain": domain,
         "record_id": recordID,
         "failure_reason": failureReason,
         "duplicate_check_id": duplicateCheckID,
@@ -756,7 +760,9 @@ struct OperationReceiptTests {
         )
         #expect(
             parsed.outcome
-                == .needsManualReview(reason: "SOURCE_COMMIT_UNKNOWN", recordID: "rec-7")
+                == .needsManualReview(
+                    reason: "SOURCE_COMMIT_UNKNOWN", recordID: "rec-7", domain: nil
+                )
         )
         #expect(!parsed.outcome.releasesPendingSlot)
         #expect(!parsed.outcome.provesWrite)
@@ -1514,6 +1520,7 @@ struct ChatSendTests {
                     chatReceipt(
                         "needs_manual_review",
                         tool: "finance.log_expense",
+                        domain: "finance",
                         recordID: "rec-42",
                         failureReason: "RECEIPT_MISMATCH"
                     )
@@ -1527,7 +1534,7 @@ struct ChatSendTests {
         #expect(
             review.outcome
                 == .needsManualReview(
-                    reason: "RECEIPT_MISMATCH", recordID: "rec-42"
+                    reason: "RECEIPT_MISMATCH", recordID: "rec-42", domain: "finance"
                 )
         )
         #expect(try store.read(CredentialKey.pendingChatSend) != nil)
@@ -1875,6 +1882,11 @@ private struct ReceiptVectors {
         let expectedSettled: Bool
         let expectedReleasesPending: Bool
         let expectedCancellation: String
+        /// The domain the *server* wrote into this receipt, read straight off the
+        /// vector's own body. It is a fact the server derived from the tool's IR
+        /// contract, and the client must decode that exact value: the 人工核对
+        /// card's wording is chosen by it.
+        let domain: String?
     }
 
     let contract: String
@@ -1920,7 +1932,8 @@ private struct ReceiptVectors {
                 expectedProvesWrite: provesWrite,
                 expectedSettled: settled,
                 expectedReleasesPending: releasesPending,
-                expectedCancellation: cancellation
+                expectedCancellation: cancellation,
+                domain: (chatReceipt as? [String: Any])?["domain"] as? String
             )
         }
         return ReceiptVectors(
@@ -2103,6 +2116,35 @@ struct ReceiptContractTests {
         )
     }
 
+    @Test("the calendar domain the card forks on is the server's own value")
+    func calendarDomainMatchesTheServer() throws {
+        // `ManualReviewCopy.forDomain` compares against a literal in this
+        // package, and the server derives its domain string from the tool's IR
+        // contract. The vector is the only place the two meet: without this the
+        // client could spell it "cal" and every test would still pass while no
+        // calendar card was ever drawn -- the fork would fail open, silently, to
+        // the ledger copy.
+        let vectors = try #require(vectors)
+        let review = try #require(
+            vectors.cases.first { $0.name == "calendar_manual_review_keeps_record" }
+        )
+        #expect(review.domain == OperationReceipt.calendarDomain)
+        // Every calendar tool must share one domain string, or the fork would
+        // cover the write and miss the read. The query case is the other
+        // calendar tool the vector carries.
+        let query = try #require(
+            vectors.cases.first { $0.name == "calendar_query_list_card" }
+        )
+        #expect(query.domain == review.domain)
+        // The ledger's own case, for the other direction: it must not be the
+        // value this build forks on.
+        let ledger = try #require(
+            vectors.cases.first { $0.name == "manual_review_keeps_record" }
+        )
+        #expect(ledger.domain != OperationReceipt.calendarDomain)
+        #expect(ManualReviewCopy.forDomain(ledger.domain) == .ledger)
+    }
+
     @Test("the list card renders the rows the server's own summary renders")
     func calendarCardMatchesTheServersSummary() throws {
         // The two sides render from the same fields by hand-kept rules (design
@@ -2192,6 +2234,14 @@ struct ReceiptContractTests {
             #expect(
                 label(parsed.cancellation) == entry.expectedCancellation,
                 "\(entry.name): cancellation disagreed with the server contract"
+            )
+            // The domain the server derived from the tool's IR contract is a
+            // fact about the operation, and this client's 人工核对 card is chosen
+            // by it. A receipt that decoded a different value would send the
+            // person to the wrong place to check a write.
+            #expect(
+                parsed.domain == entry.domain,
+                "\(entry.name): the decoded domain disagreed with the server's"
             )
         }
     }

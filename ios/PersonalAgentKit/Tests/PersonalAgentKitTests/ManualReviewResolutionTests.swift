@@ -65,6 +65,7 @@ struct ManualReviewResolutionTests {
                 return .ok(
                     chatReceipt(
                         "needs_manual_review",
+                        domain: "finance",
                         recordID: "rec-42",
                         failureReason: "RECEIPT_MISMATCH"
                     )
@@ -80,7 +81,9 @@ struct ManualReviewResolutionTests {
         // The premise of every case below: parked, and holding the slot.
         #expect(
             receipt.outcome
-                == .needsManualReview(reason: "RECEIPT_MISMATCH", recordID: "rec-42")
+                == .needsManualReview(
+                    reason: "RECEIPT_MISMATCH", recordID: "rec-42", domain: "finance"
+                )
         )
         #expect(try store.read(CredentialKey.pendingChatSend) != nil)
         return (chat, store)
@@ -341,6 +344,7 @@ struct ManualReviewResolutionTests {
             cancelRequested: false,
             clientDetached: false,
             tool: "finance.log_expense",
+            domain: "finance",
             recordID: "rec-42",
             failureReason: "RECEIPT_MISMATCH",
             duplicateCheckID: nil,
@@ -351,7 +355,9 @@ struct ManualReviewResolutionTests {
 
         #expect(
             receipt.outcome
-                == .needsManualReview(reason: "RECEIPT_MISMATCH", recordID: "rec-42")
+                == .needsManualReview(
+                    reason: "RECEIPT_MISMATCH", recordID: "rec-42", domain: "finance"
+                )
         )
         #expect(receipt.outcome.provesWrite == false)
     }

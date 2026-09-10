@@ -245,6 +245,35 @@ def test_the_query_projection_tool_set_is_derived_from_the_ir() -> None:
     assert "meta.capabilities" not in ir_derived
 
 
+def test_the_calendar_domain_is_the_literal_the_client_forks_on() -> None:
+    """The 人工核对 card is chosen by domain, and the client compares a literal.
+
+    `OperationReceipt.calendarDomain` is a hard-coded `"calendar"` in Swift —
+    there is no way for the client to ask the server what the string is at the
+    moment it draws a card. So the string itself is a contract, and this is the
+    end of the chain that holds it: the IR declares it, the vector records it,
+    and the Swift literal must equal it. A rename that moved only the IR would
+    make `ManualReviewCopy.forDomain` fall through to the ledger copy for every
+    calendar write — silently, and in the direction that sends Henson to the
+    wrong place to check a write.
+    """
+    calendar_domains = {
+        contract.domain
+        for contract in TOOL_CONTRACTS
+        if contract.name.startswith("calendar.")
+    }
+    assert calendar_domains == {"calendar"}
+
+    for name in ("calendar_manual_review_keeps_record", "calendar_query_list_card"):
+        case = next(case for case in V["cases"] if case["name"] == name)
+        assert case["receipt"]["domain"] == "calendar", name
+
+    ledger = next(
+        case for case in V["cases"] if case["name"] == "manual_review_keeps_record"
+    )
+    assert ledger["receipt"]["domain"] != "calendar"
+
+
 def test_manual_review_preserves_a_known_record_id() -> None:
     case = {
         "receipt": {
