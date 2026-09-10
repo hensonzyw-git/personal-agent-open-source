@@ -8,6 +8,7 @@ import SwiftUI
 /// problem from a model problem during the first real rollout.
 @main
 struct PersonalAgentApp: App {
+    #if !ACCEPTANCE
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
 
@@ -17,9 +18,18 @@ struct PersonalAgentApp: App {
     /// work before enrollment, so it never depends on a session.
     private let alldayProbe =
         ProcessInfo.processInfo.arguments.contains("--allday-probe")
+    #endif
 
     var body: some Scene {
         WindowGroup {
+            #if ACCEPTANCE
+            // The isolated acceptance build. `AppModel` — and with it the
+            // device session, the enrollment, the Keychain namespace and the
+            // EventKit mirror engine — is never constructed on this path. The
+            // two branches are compile-time siblings, not a run-time choice:
+            // see `AcceptanceScene`.
+            AcceptanceScene()
+            #else
             if alldayProbe {
                 AllDayProbeView()
             } else {
@@ -46,6 +56,7 @@ struct PersonalAgentApp: App {
                     await model.registerPushIfPermitted()
                 }
             }
+            #endif
         }
     }
 }
