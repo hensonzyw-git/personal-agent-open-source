@@ -10,9 +10,15 @@ substituted for that non-compressible state.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
+from personal_agent.api.chat_parts import (
+    PARTS_SCHEMA_VERSION,
+    Parts,
+    open_chat_parts,
+    seal_chat_parts,
+)
 from personal_agent.context.continuation import (
     ClarificationContext,
     ClarificationExchange,
@@ -31,6 +37,8 @@ _KIND = "chat_request_v1"
 @dataclass(frozen=True)
 class ChatRequestPayload:
     conversation_id: str
+    #: The request's effective text. For a parts request this is
+    #: `parts_text(parts)`, which is `""` when the user sent images only.
     text: str
     clarification_of: str | None = None
     clarification_context: ClarificationContext | None = None
@@ -39,6 +47,10 @@ class ChatRequestPayload:
     #: A user-confirmed instruction to abandon only pre-submit work and attach
     #: this message to a fresh semantic Session.
     start_new_session: bool = False
+    #: The original `parts` structure (§3.2). Empty for a pre-media request,
+    #: and the only thing that distinguishes "no text part" from an empty one:
+    #: both give `text == ""`, so the distinction lives here or nowhere.
+    parts: Parts = ()
 
 
 def seal_chat_request(
@@ -80,6 +92,12 @@ def seal_chat_request(
         ),
         "start_new_session": payload.start_new_session,
     }
+    if payload.parts:
+        # §3.2 seals the schema version alongside the original structure, and
+        # only for a parts request: a text-only payload keeps exactly the shape
+        # it has had since before media existed, so nothing has to migrate.
+        data["parts_schema_version"] = PARTS_SCHEMA_VERSION
+        data["parts"] = seal_chat_parts(payload.parts)
     return keyring.encrypt(
         canonical_json(data).encode("utf-8"),
         table=_TABLE,
@@ -156,21 +174,34 @@ def open_chat_request(
         clarification_question=_optional_str(data.get("clarification_question")),
         finance_retry_context=retry_context,
         start_new_session=_optional_bool(data.get("start_new_session"), False),
+        parts=_open_parts(data),
     )
+
+
+def _open_parts(data: dict[str, Any]) -> Parts:
+    """The sealed parts, or none for a payload written before media existed.
+
+    A payload that carries parts must carry the version that produced them: a
+    missing version on a parts-bearing payload is a malformed record rather
+    than an old one, and fails closed instead of being read under today's rules.
+    """
+    raw_parts = data.get("parts")
+    if raw_parts is None:
+        return ()
+    return open_chat_parts(raw_parts, schema_version=data.get("parts_schema_version"))
 
 
 def with_clarification_question(
     payload: ChatRequestPayload, question: str
 ) -> ChatRequestPayload:
-    return ChatRequestPayload(
-        conversation_id=payload.conversation_id,
-        text=payload.text,
-        clarification_of=payload.clarification_of,
-        clarification_context=payload.clarification_context,
-        clarification_question=question,
-        finance_retry_context=payload.finance_retry_context,
-        start_new_session=payload.start_new_session,
-    )
+    """The same request, one question further along.
+
+    Built with `dataclasses.replace` rather than field by field, because §3.2
+    names this exact function as the place media gets lost: a reconstruction
+    that lists fields silently drops every field added after it was written,
+    and nothing fails until a clarification answer loses its photo.
+    """
+    return replace(payload, clarification_question=question)
 
 
 def continuation_context(
