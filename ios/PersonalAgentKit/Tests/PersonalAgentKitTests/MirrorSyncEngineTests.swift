@@ -113,6 +113,14 @@ private func readMarker(_ storage: CredentialStore) throws -> Data {
 
 private struct CalendarMarkerMissing: Error {}
 
+/// A counter a callback can bump from whatever task it runs on, read after.
+private final class CounterBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+    func bump() { lock.withLock { value += 1 } }
+}
+
 private func mirrorEvent(_ id: String, offset: TimeInterval) -> CalendarMirrorEvent {
     CalendarMirrorEvent(
         eventIdentifier: id, calendarIdentifier: "CAL-1", title: id,
@@ -408,6 +416,108 @@ struct MirrorSyncEngineTests {
     }
 }
 
+// --- §9.1's fourth trigger: the wait that gave up --------------------------
+
+/// The pre-send budget's expiry, and the note that records it.
+///
+/// The defect this suite exists for was structural rather than careless: the
+/// note was reached only where the sync had *finished*, which is the one outcome
+/// that means the budget did not expire — and by then the engine's own in-flight
+/// flag was down, so the note's guard turned it into a no-op as well. It sat
+/// beside the wait looking like a check on both sides of a race and was
+/// unreachable on every path. So the tests below are about **which side of the
+/// race the answer comes from**, not about the note's own body.
+@Suite("The pre-send mirror budget", .serialized)
+struct MirrorBudgetTests {
+
+    @Test("the budget running out is recorded, from the losing side of the wait")
+    func theBudgetExpiryIsRecorded() async {
+        let fired = CounterBox()
+        let handle = MirrorSyncHandle(
+            run: { try? await Task.sleep(for: .milliseconds(300)) },
+            budget: .milliseconds(50),
+            onBudgetExpired: { fired.bump() }
+        )
+
+        await handle.wait()
+
+        #expect(fired.count == 1)
+    }
+
+    @Test("a sync that finishes inside the budget records nothing")
+    func aCompletedSyncRecordsNothing() async {
+        let fired = CounterBox()
+        let handle = MirrorSyncHandle(
+            run: { try? await Task.sleep(for: .milliseconds(20)) },
+            budget: .seconds(5),
+            onBudgetExpired: { fired.bump() }
+        )
+
+        await handle.wait()
+
+        // Not "usually": the callback is reachable only through the outcome the
+        // waiter observed. A pass that finished inside the budget confirmed
+        // everything, so a note for it would raise a warning about nothing —
+        // with no pass left able to clear it.
+        #expect(fired.count == 0)
+    }
+
+    @Test("a handle whose work is already done records nothing")
+    func anInstantRunRecordsNothing() async {
+        let fired = CounterBox()
+        // The shape a device with no engine composes, and the shape `done()`
+        // stands for: nothing was waited on, so nothing expired.
+        let handle = MirrorSyncHandle(
+            run: {}, budget: .seconds(30), onBudgetExpired: { fired.bump() }
+        )
+        await handle.wait()
+        await MirrorSyncHandle.done().wait()
+
+        #expect(fired.count == 0)
+    }
+
+    /// The composition `AppModel` performs, exercised end to end. `AppModel`
+    /// itself is in the app target — it builds a device session and an EventKit
+    /// store — so the wiring is reproduced here with the real engine, and the
+    /// app's own body is one line of it. This is the test that would have failed
+    /// for the placement defect: with the note after the pass instead of on the
+    /// budget's side, the device below never says dirty.
+    @Test("an expired budget leaves the device saying the mirror is unsynced")
+    func theAppCompositionLeavesTheMirrorDirty() async throws {
+        let store = StubMirrorCalendarStore(events: [mirrorEvent("EK-1", offset: 0)])
+        let backend = StubMirrorBackend()
+        let storage = InMemoryCredentialStore()
+        try freshMarker(storage, at: t0)
+        let engine = CalendarMirrorSyncEngine(
+            store: store, backend: backend, storage: storage,
+            uploader: CalendarSyncUploader(batchSize: 200),
+            now: { t0 }, stalenessThreshold: 3600
+        )
+        // A pass that outlives any budget the send path would tolerate. The
+        // budget below is far longer than the engine needs to reach its first
+        // upload, so "the pass was still in flight" is a fact here rather than a
+        // race the test hopes to win.
+        backend.onBatch = { _ in try? await Task.sleep(for: .milliseconds(1000)) }
+
+        let handle = MirrorSyncHandle(
+            run: { try? await engine.sync(reason: .forced) },
+            budget: .milliseconds(200),
+            onBudgetExpired: { try? await engine.noteSyncBudgetExhausted() }
+        )
+        await handle.wait()
+
+        // The receipt path has moved on and the device still says dirty — which
+        // is the whole point of the note: the pass took its snapshot before this
+        // change, so its success will confirm a number below the one now stored.
+        #expect(try seq(storage, CredentialKey.calendarChangeSeq) == 1)
+        #expect(try await engine.knownUnsynced)
+
+        // And the pass really is still running, so the note was not a guess
+        // about a pass that had already ended.
+        #expect(backend.uploads.count == 1)
+    }
+}
+
 // The reason parameter, the rerun flag and the two change sequences (design
 // §9.1, review R3-F13). These are the cases that made the old engine wrong:
 // 「刚同步→创建→触发同步→仍读不到新事件」 (the staleness gate) and 「上传期间发生
@@ -641,6 +751,75 @@ struct MirrorSyncReasonTests {
         #expect(try seq(storage, CredentialKey.calendarChangeSeq) == 0)
         #expect(try await engine.knownUnsynced == false)
         #expect(backend.uploads.isEmpty)
+    }
+
+    // --- the device-action report's trigger: armed, not awaited -------------
+
+    @Test("arming returns before the upload finishes, with the mirror already dirty")
+    func armingReturnsBeforeTheUploadFinishes() async throws {
+        let store = StubMirrorCalendarStore(events: [mirrorEvent("EK-1", offset: 0)])
+        let backend = StubMirrorBackend()
+        let (engine, storage) = try makeEngine(store: store, backend: backend, marker: t0)
+        backend.onBatch = { _ in try? await Task.sleep(for: .milliseconds(600)) }
+
+        let started = ContinuousClock.now
+        try await engine.armCalendarChanged()
+        let waited = ContinuousClock.now - started
+
+        // The call is the arm, not the pass. This is what stops one reply's N
+        // reports from putting N whole-window uploads in front of the receipt
+        // the user is waiting for: the sink that calls this sits between a write
+        // landing and its answer. (Before, the sink awaited the full
+        // `noteCalendarChanged`, and this returned only after the upload.)
+        #expect(waited < .milliseconds(300), "armed in \(waited)")
+        // The armed state is committed before the call returns, not raced
+        // against a task the caller never awaited — §9.1's query gate has to be
+        // honest the moment the window opens.
+        #expect(try seq(storage, CredentialKey.calendarChangeSeq) == 1)
+        #expect(try await engine.knownUnsynced)
+    }
+
+    @Test("three reports during one pass arm one follow-up, never three passes")
+    func threeArmsCoalesceIntoOneFollowUp() async throws {
+        let store = StubMirrorCalendarStore(events: [mirrorEvent("EK-1", offset: 0)])
+        let backend = StubMirrorBackend()
+        let (engine, storage) = try makeEngine(store: store, backend: backend, marker: t0)
+        let box = EngineBox()
+        backend.onBatch = { index in
+            guard index == 1, let engine = box.engine else { return }
+            // A multi-action reply: three reports land while the pass is
+            // mid-upload. None of them is in the snapshot that pass took.
+            for _ in 0..<3 { try? await engine.armCalendarChanged() }
+        }
+        box.engine = engine
+
+        try await engine.armCalendarChanged()
+        waitForGate("the armed passes drain") { backend.uploads.count >= 2 }
+
+        // One running pass plus at most one follow-up covers all four changes
+        // (design §9.1 bounds a trigger storm at two), and the device is clean
+        // afterwards — the follow-up took its snapshot after the last arm, so
+        // nothing is left armed with no pass behind it.
+        #expect(backend.uploads.count == 2)
+        #expect(try seq(storage, CredentialKey.calendarChangeSeq) == 4)
+        #expect(try seq(storage, CredentialKey.calendarSyncedChangeSeq) == 4)
+        #expect(try await engine.knownUnsynced == false)
+    }
+
+    @Test("an arm with nothing running runs exactly one pass")
+    func anArmWithNothingRunningRunsOnePass() async throws {
+        let store = StubMirrorCalendarStore(events: [mirrorEvent("EK-1", offset: 0)])
+        let backend = StubMirrorBackend()
+        let (engine, storage) = try makeEngine(store: store, backend: backend, marker: t0)
+
+        // The marker is seconds old, so the staleness gate would have skipped
+        // this entirely: the arm is `.forced` by construction.
+        try await engine.armCalendarChanged()
+        waitForGate("the armed pass drains") { !backend.uploads.isEmpty }
+
+        #expect(backend.uploads.count == 1)
+        #expect(try seq(storage, CredentialKey.calendarSyncedChangeSeq) == 1)
+        #expect(try await engine.knownUnsynced == false)
     }
 
     @Test("a gated trigger during a pass arms nothing: one window, no follow-up")

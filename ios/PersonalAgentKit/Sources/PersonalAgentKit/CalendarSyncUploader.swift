@@ -233,11 +233,24 @@ public struct CalendarSyncUploader: Sendable {
 public struct MirrorSyncHandle: Sendable {
     private let task: Task<Void, Never>
     private let budget: Duration
+    private let onBudgetExpired: (@Sendable () async -> Void)?
 
+    /// - Parameter onBudgetExpired: fired when, and only when, the wait ended
+    ///   because the budget ran out with the sync still running. This is
+    ///   §9.1's fourth trigger, and it is the *race* that defines it — not any
+    ///   state the caller can read afterwards. An implementation that instead
+    ///   asked the engine "is a pass still in flight?" after the wait would be
+    ///   wrong in both directions: the pass may have finished in the gap (no
+    ///   trigger happened, yet the question answers yes if asked too early),
+    ///   and the losing side of the race is exactly the case the question
+    ///   cannot recover.
     public init(
-        run: @escaping @Sendable () async -> Void, budget: Duration = .seconds(2)
+        run: @escaping @Sendable () async -> Void,
+        budget: Duration = .seconds(2),
+        onBudgetExpired: (@Sendable () async -> Void)? = nil
     ) {
         self.budget = budget
+        self.onBudgetExpired = onBudgetExpired
         self.task = Task { await run() }
     }
 
@@ -256,16 +269,26 @@ public struct MirrorSyncHandle: Sendable {
         let gate = Gate()
         let timer = Task {
             try? await Task.sleep(for: budget)
-            gate.open()
+            gate.open(.budget)
         }
         let observer = Task { [task] in
             await task.value
-            gate.open()
+            gate.open(.finished)
         }
-        await gate.wait()
+        let winner = await gate.wait()
         timer.cancel()
         observer.cancel()
+        if winner == .budget, let onBudgetExpired {
+            await onBudgetExpired()
+        }
     }
+}
+
+/// Which side of the wait opened the gate. `finished` means the sync completed
+/// inside the budget; `budget` means the wait gave up while it kept running.
+private enum GateOutcome: Sendable {
+    case finished
+    case budget
 }
 
 /// A one-shot, one-waiter gate. Resuming a finished continuation more than
@@ -273,34 +296,37 @@ public struct MirrorSyncHandle: Sendable {
 /// the losing side's arrival after the winner already woke the waiter.
 private final class Gate: @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<Void, Never>?
-    private var opened = false
+    private var continuation: CheckedContinuation<GateOutcome, Never>?
+    private var outcome: GateOutcome?
 
-    func open() {
-        let toResume: CheckedContinuation<Void, Never>? = lock.withLock {
-            guard !opened else { return nil }
-            opened = true
+    /// Records which side won, once. A late `open()` from the losing side is a
+    /// no-op: the winner's outcome is already stored and its waiter already
+    /// resumed, so the loser cannot overwrite the answer.
+    func open(_ outcome: GateOutcome) {
+        let toResume: CheckedContinuation<GateOutcome, Never>? = lock.withLock {
+            guard self.outcome == nil else { return nil }
+            self.outcome = outcome
             let pending = continuation
             continuation = nil
             return pending
         }
-        toResume?.resume()
+        toResume?.resume(returning: outcome)
     }
 
-    func wait() async {
+    func wait() async -> GateOutcome {
         // The continuation's body runs synchronously *before* the suspend:
         // it either finds the gate already open and resumes immediately, or
         // registers itself for the first `open()`. Both paths hold the lock,
         // so a racing `open()` can never miss a registered waiter and never
         // resumes twice.
         await withCheckedContinuation { cont in
-            let toResumeNow = lock.withLock { () -> Bool in
-                if opened { return true }
+            let decided = lock.withLock { () -> GateOutcome? in
+                if let outcome { return outcome }
                 continuation = cont
-                return false
+                return nil
             }
-            if toResumeNow {
-                cont.resume()
+            if let decided {
+                cont.resume(returning: decided)
             }
         }
     }
@@ -366,6 +392,9 @@ public actor CalendarMirrorSyncEngine {
     /// starts, never after it ends: clearing afterwards would let the pass's own
     /// completion re-arm it, which is the spin §9.1 rules out.
     private var rerunRequested = false
+    /// The single runner `armCalendarChanged` starts. Non-nil is what makes the
+    /// next arm a bump without a second pass.
+    private var passTask: Task<Void, Never>?
 
     public init(
         store: any CalendarStore,
@@ -596,6 +625,60 @@ public actor CalendarMirrorSyncEngine {
     public func noteCalendarChanged() async throws -> Bool {
         try bumpChangeSeq()
         return try await sync(reason: .forced)
+    }
+
+    /// Record that the calendar changed and start the pass that covers it,
+    /// without waiting for the upload (design §9.1's second `.forced` trigger,
+    /// reached from the device-action report).
+    ///
+    /// The split from `noteCalendarChanged` is the whole point. §9.1 requires
+    /// the change to be **armed** when the query window opens — `knownUnsynced`
+    /// true, and a pass running that will clear it — and says nothing about the
+    /// *upload* having finished. Awaiting the pass instead made one reply's N
+    /// reports block the receipt on N uploads of the whole window, so a user
+    /// watching a write land waited on a mirror sync that had nothing to do
+    /// with it.
+    ///
+    /// The bump is committed before this call returns, so the armed state is a
+    /// guarantee rather than a race with a `Task` the caller did not await.
+    /// Failures inside the pass are swallowed here: there is no caller left to
+    /// hand them to, and the engine already records the state a failure leaves
+    /// behind (`runPass` drops the marker and keeps the sequence dirty, so the
+    /// next `.gated` trigger retries and the query stays honest meanwhile).
+    public func armCalendarChanged() throws {
+        try bumpChangeSeq()
+        // Load-bearing, not decorative: a pass that is already running has
+        // taken its snapshot, so this bump is a change it did not see and one
+        // more pass is owed for it. `rerunRequested` is the engine's existing
+        // word for exactly that, and the running pass reads it on its way out
+        // (`noteCalendarChanged` gets this for free by awaiting `sync`; the arm
+        // does not, so it says so itself).
+        rerunRequested = true
+        // One runner, ever. N reports arriving as N calls must not become N
+        // concurrent passes over the same window; the first call starts the
+        // runner and the rest only leave the bump and the flag behind.
+        guard passTask == nil else { return }
+        passTask = Task { await self.runArmedPasses() }
+    }
+
+    /// The armed passes, drained one after another until nothing is owed.
+    ///
+    /// `sync` deliberately leaves `rerunRequested` armed when a trigger arrives
+    /// during its follow-up pass rather than looping on it, because it assumes a
+    /// caller will come back. With the send path no longer waiting, this runner
+    /// is that caller — and if it is not, the flag would stay armed with no pass
+    /// behind it, leaving `knownUnsynced` true forever with nothing able to
+    /// clear it.
+    private func runArmedPasses() async {
+        while true {
+            try? await sync(reason: .forced)
+            // Each iteration is backed by a trigger that really happened during
+            // the previous pass, so this cannot chase its own tail: a pass that
+            // is not followed by another change leaves the flag down and the
+            // loop ends.
+            guard rerunRequested else { break }
+        }
+        passTask = nil
     }
 
     /// The pre-send budget ran out with the sync still running (design §9.1's

@@ -331,9 +331,27 @@ final class AppModel {
 
     /// The `@Sendable` calendar-write sink's entry point (`ChatTimeline` calls
     /// it from its own actor, so the hop back into this one is explicit).
+    ///
+    /// **Arms, never waits.** The sink runs between a write landing and its
+    /// receipt being returned, so awaiting the upload here made the user's
+    /// receipt wait on a whole-window mirror sync it had nothing to do with.
+    /// What §9.1 needs at that moment is that the change is recorded and a pass
+    /// is behind it — both of which the arm does before it returns.
+    ///
+    /// The trade this makes, stated rather than hidden: an upload that fails
+    /// inside the armed pass no longer reaches `degradeMirror`, because there is
+    /// no longer a caller waiting to be told. The failure is still not silent —
+    /// the pass drops the mirror marker and keeps the change sequence dirty, so
+    /// `knownUnsynced` turns the query card's 「本地日历有未同步的变更」 on and
+    /// the next refresh retries through the `.gated` path, which does degrade.
     private func calendarDidChange() async {
         guard let session else { return }
-        await noteCalendarChanged(session: session)
+        guard let engine = mirrorEngine(session: session) else { return }
+        do {
+            try await engine.armCalendarChanged()
+        } catch {
+            degradeMirror(error)
+        }
     }
 
     /// Record the change, then run the pass that covers it (design §9.1). The
@@ -349,10 +367,20 @@ final class AppModel {
         }
     }
 
-    /// §9.1's budget-exhaustion note. A storage failure here is swallowed on
-    /// purpose: the user is mid-send, and the consequence of losing the note is
-    /// a missing warning line, never a wrong one — the pass itself is unaffected
-    /// and the next trigger re-records the state.
+    /// §9.1's budget-exhaustion note, fired by the handle's losing side of the
+    /// race rather than asked for afterwards.
+    ///
+    /// This used to run *inside* the sync task, after `await syncCalendarMirror`
+    /// returned — where the engine's `inFlight` flag was already down, so the
+    /// engine's own guard made it a no-op on every path. It looked like a
+    /// belt-and-braces check on both sides of a race and was in fact
+    /// unreachable. The budget expiring is a fact only the waiter has, at the
+    /// moment it gives up; it is passed in from there.
+    ///
+    /// A storage failure is swallowed on purpose: the user is mid-send, and the
+    /// consequence of losing the note is a missing warning line, never a wrong
+    /// one — the pass itself is unaffected and the next trigger re-records the
+    /// state.
     private func noteMirrorBudgetIfStillRunning() async {
         guard let engine = mirrorSyncEngine else { return }
         try? await engine.noteSyncBudgetExhausted()
@@ -404,17 +432,18 @@ final class AppModel {
                 guard let self, let session = self.session else {
                     return MirrorSyncHandle.done()
                 }
-                return MirrorSyncHandle {
-                    await self.syncCalendarMirror(session: session)
-                    // Design §9.1's fourth trigger, recorded *after* the wait
-                    // rather than by the waiter: if the budget expired, this
-                    // task is still inside the pass and the engine records it;
-                    // if the pass finished first, the engine's in-flight flag
-                    // is already down and this is a no-op. One call covers both
-                    // sides of the race without the handle having to report
-                    // which one won.
-                    await self.noteMirrorBudgetIfStillRunning()
-                }
+                return MirrorSyncHandle(
+                    run: { await self.syncCalendarMirror(session: session) },
+                    // Design §9.1's fourth trigger. The handle reports which
+                    // side of the wait won; only the budget's side means the
+                    // trigger happened. Asking the engine afterwards cannot
+                    // answer it — by then the pass may have finished, and the
+                    // engine's `inFlight` guard would call a real exhaustion a
+                    // no-op.
+                    onBudgetExpired: { [weak self] in
+                        await self?.noteMirrorBudgetIfStillRunning()
+                    }
+                )
             }
             // Design §9.1's second `.forced` trigger, installed next to the
             // Timeline that raises it: a device-action report that landed means

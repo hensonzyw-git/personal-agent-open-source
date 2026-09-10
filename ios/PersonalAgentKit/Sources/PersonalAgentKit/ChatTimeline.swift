@@ -283,6 +283,15 @@ public actor ChatTimeline {
     /// A report whose reply was lost (the executor returns nil) fires nothing
     /// here — the device knows it wrote, but this seam is "the report landed",
     /// and the EventKit observer is what covers that case.
+    ///
+    /// **The sink arms; it does not sync.** It is awaited on the path between a
+    /// write landing and its receipt, so an implementation that uploads the
+    /// mirror here makes the user wait for a whole-window sync to be told about
+    /// their own event. The engine's `armCalendarChanged` is the intended
+    /// implementation: it commits the change and starts the pass before
+    /// returning, which is the whole of what §9.1's query gate needs. (It was
+    /// `noteCalendarChanged` — the full pass — until the review found a
+    /// multi-action reply blocking its receipt on N uploads.)
     private var calendarWriteSink: (@Sendable () async -> Void)?
 
     private var conversationID: String?
@@ -350,8 +359,9 @@ public actor ChatTimeline {
     }
 
     /// Install the calendar-mirror sink (design §9.1). The app sets this to
-    /// `CalendarMirrorSyncEngine.noteCalendarChanged`, which records the change
-    /// and runs the forced pass.
+    /// `CalendarMirrorSyncEngine.armCalendarChanged`, which records the change
+    /// and *starts* the forced pass without waiting for it — see
+    /// `calendarWriteSink` for why the wait is not this seam's to make.
     public func setCalendarWriteSink(_ sink: (@Sendable () async -> Void)?) {
         calendarWriteSink = sink
     }
@@ -1064,7 +1074,15 @@ public actor ChatTimeline {
                 // The report landed: the calendar has been written, and the
                 // mirror has to catch up before the next query reads it back
                 // as missing (design §9.1). Fired before returning, so the
-                // pass is already armed when the query window opens.
+                // change is armed by the time the query window opens.
+                //
+                // "Armed" and not "synced": the sink records the change and
+                // starts the pass, and does not wait for the upload. This call
+                // sits between a write landing and its receipt being shown, so
+                // waiting here put a whole-window upload in front of the user's
+                // answer to a create — the receipt is about the write, and
+                // §9.1 asks for the query gate to be honest, not for the mirror
+                // to be current before the write can be reported.
                 if reported != nil { await calendarWriteSink?() }
                 return reported ?? pollReceipt
             } else {
