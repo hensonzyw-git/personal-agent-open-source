@@ -59,13 +59,11 @@ def keyring() -> KeyRing:
 def engine(tmp_path: Path):
     """A migrated database, built the way every other integration test builds one.
 
-    Worth knowing before reading the assertions below: ``db.upgrade`` on this
-    engine leaves ``PRAGMA foreign_keys`` OFF on the pooled connection it runs
-    Alembic through, and the connections this fixture hands out are the same
-    ones, so no ``ON DELETE CASCADE`` in the schema fires for any test in this
-    file. That is a property of the fixture stack, not of the production
-    database, and it is why the fan-out ordering test asserts what it measures
-    rather than what the schema promises.
+    The cascade behaviour below depends on ``db.upgrade`` leaving ``PRAGMA
+    foreign_keys`` ON for the connections this engine later hands out. It did
+    not, for a while: the migration restored the pragma inside an open
+    transaction, where SQLite ignores it silently. If a test here starts seeing
+    bindings outlive their messages, that is the first thing to re-check.
     """
     engine = create_database_engine(tmp_path / "agent.sqlite")
     db.upgrade(engine, "head")
@@ -516,20 +514,22 @@ def test_deleting_a_conversation_fans_out_to_its_images(
 def test_the_fan_out_finds_the_images_before_the_deleting_message_goes(
     engine, keyring: KeyRing
 ) -> None:
-    """The order inside the handler, measured rather than assumed.
+    """The order inside the handler is load-bearing, and this proves it.
 
     ``media_bindings.event_id`` carries ``ON DELETE CASCADE``, so the bindings
-    that name a message's images go away with the message -- but only when
-    ``PRAGMA foreign_keys`` is on for the connection, which it is not after
-    ``db.upgrade`` has run on this engine (see the note in this file's fixture).
-    The measurement below pins the current truth, because the handler's order
-    is only *provably* necessary under the other setting:
+    that name a message's images are removed by the same statement that removes
+    the message. A fan-out that ran after the delete would therefore find
+    nothing to ask and would report success having destroyed no image -- the
+    quietest possible version of this bug. The last assertion is the one that
+    makes the risk concrete: after the message is gone there is nothing left to
+    traverse, so the earlier traversal is the only chance the fan-out gets.
 
-    - the traversal answers while the message exists,
-    - the media is marked, so the fan-out ran,
-    - the binding outlives the message here, which is the thing that would make
-      a reordered fan-out look harmless in this environment and destructive in
-      one where the cascade does fire.
+    This test previously asserted the opposite -- that the binding survived --
+    because the cascade did not fire. ``_pragma`` in the migration env restored
+    ``foreign_keys=ON`` inside an open transaction, where SQLite ignores it
+    silently, so every connection that engine handed out afterwards had foreign
+    keys off. Fixing that is what turned this from a record of the environment
+    into a live statement about the handler.
     """
     _add_message(engine, conversation_id="c1", event_id="evt-1")
     _add_media(engine, media_id="media-1")
@@ -560,7 +560,7 @@ def test_the_fan_out_finds_the_images_before_the_deleting_message_goes(
 
     assert _media_state(engine, "media-1")[0] == "deleting"
     with session_factory(engine)() as session:
-        assert origin_media_ids_for_event(session, event_id="evt-1") == ["media-1"]
+        assert origin_media_ids_for_event(session, event_id="evt-1") == []
 
 
 def test_a_long_conversation_does_not_break_the_fan_out(engine, keyring: KeyRing) -> None:
