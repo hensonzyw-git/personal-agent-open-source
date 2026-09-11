@@ -125,7 +125,7 @@ def test_i7_resume_requires_new_approval_and_never_revives_old_attempt() -> None
 
     assert world.resume(approval_epoch=1).code == "EXECUTION_AUTHORIZATION_STALE"
     assert world.resume(approval_epoch=2).code == "RESUMED"
-    assert world.claim_dispatch(owner_id="driver-b", send=True).code == "ATTEMPT_OWNERSHIP_LOST"
+    assert world.claim_dispatch(owner_id="driver-b", send=True).code == "EXECUTION_AUTHORIZATION_STALE"
     assert world.recover().code == "ATTEMPT_UNKNOWN"
     assert world.create_replacement(accepted_duplicate_cost=True).code == "REPLACEMENT_CREATED"
     assert world.claim_dispatch(owner_id="driver-b", send=True).code == "DISPATCH_GRANTED"

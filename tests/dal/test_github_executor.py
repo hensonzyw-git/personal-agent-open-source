@@ -1091,6 +1091,7 @@ def test_expired_recovery_case_owned_park_enters_recovery(engine) -> None:
         )
         effect.remote_idempotency_key = "idem-f5-7"
         session.add(effect)
+        session.flush()  # Immediate FK: persist the parent before its target.
         session.add(EffectDispatchTarget(
             effect_id="effect-f5-7", action="push_branch",
             payload_json=json.dumps(push_payload()),

@@ -37,6 +37,7 @@ class Attempt:
     fence: int = 0
     result_digest: str | None = None
     result_consumed: bool = False
+    approval_epoch: int = 1
 
 
 @dataclass
@@ -74,6 +75,8 @@ class ActionWorld:
     def claim_dispatch(self, *, owner_id: str, send: bool) -> Outcome:
         if self.gate.mode != "open":
             return Outcome("EXECUTION_GATE_CLOSED")
+        if self.attempt.approval_epoch != self.gate.approval_epoch:
+            return Outcome("EXECUTION_AUTHORIZATION_STALE")
         if self.attempt.state == "unknown":
             return Outcome("ATTEMPT_UNKNOWN")
         if self.attempt.state != "prepared":
@@ -106,6 +109,8 @@ class ActionWorld:
     ) -> Outcome:
         if not digest:
             raise ValueError("result digest is required")
+        if self.attempt.approval_epoch != self.gate.approval_epoch:
+            return self._refuse_result("EXECUTION_AUTHORIZATION_STALE")
         if job_lease_epoch != self.job_lease_epoch:
             return self._refuse_result("JOB_LEASE_STALE")
         if policy_lease_epoch != self.policy_lease_epoch:
@@ -132,6 +137,8 @@ class ActionWorld:
             return Outcome("APPLIED_REPLAY")
         if self.gate.mode != "open":
             return Outcome("EXECUTION_GATE_CLOSED")
+        if self.attempt.approval_epoch != self.gate.approval_epoch:
+            return Outcome("EXECUTION_AUTHORIZATION_STALE")
         if self.attempt.state != "result_recorded":
             return Outcome("RESULT_NOT_RECORDED")
 
@@ -175,7 +182,8 @@ class ActionWorld:
 
         self.attempt.state = "superseded"
         self.evidence.append(Evidence("attempt_superseded", str(self.attempt.attempt_no)))
-        self.attempt = Attempt(attempt_no=self.attempt.attempt_no + 1)
+        self.attempt = Attempt(attempt_no=self.attempt.attempt_no + 1,
+                               fence=self.attempt.fence, approval_epoch=self.gate.approval_epoch)
         self.evidence.append(Evidence("replacement_prepared", str(self.attempt.attempt_no)))
         return Outcome("REPLACEMENT_CREATED")
 

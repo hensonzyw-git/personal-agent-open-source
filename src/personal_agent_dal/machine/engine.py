@@ -1908,8 +1908,13 @@ def apply_transition(
     facts: GuardFacts | None = None,
     now: datetime | None = None,
     artifact_reader: ArtifactReader | None = None,
+    transaction_session: Session | None = None,
 ) -> TransitionOutcome:
-    """Resolve, validate and apply one transition, or refuse without writing."""
+    """Resolve and apply a transition.
+
+    With transaction_session, use a savepoint and leave commit/retry to the
+    caller so an action consumption marker can share the durable transaction.
+    """
     now = now or utc_now()
     facts = facts or GuardFacts({})
     registry = transition_registry()
@@ -2076,6 +2081,11 @@ def apply_transition(
         )
 
     try:
+        if transaction_session is not None:
+            if transaction_session.get_bind() is not engine:
+                raise ValueError("transition session belongs to another engine")
+            with transaction_session.begin_nested():
+                return _apply_body(transaction_session)
         with sessions() as session:
             return run_write_transaction(session, lambda: _apply_body(session))
     except _Replay as replay:

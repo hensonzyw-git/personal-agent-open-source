@@ -1684,6 +1684,10 @@ def test_coder_prompt_receives_the_task_description(
         capture_output=True, text=True, check=True,
     ).stdout.strip()
 
+    from tests.dal.factories import feature_row
+    from personal_agent_dal.storage.engine import session_factory
+    with session_factory(engine)() as session, session.begin():
+        session.add(feature_row(feature_id="feat-demo", version=1))
     body = "Add a boundary test for the pure-string helper."
     job_id = queue.enqueue_job(
         engine,
@@ -1719,6 +1723,10 @@ def test_coder_prompt_without_the_placeholder_is_unchanged(
     """
     repo = tmp_path / "repo"
     base_sha = _make_synthetic_repo(repo, coder=True)
+    from tests.dal.factories import feature_row
+    from personal_agent_dal.storage.engine import session_factory
+    with session_factory(engine)() as session, session.begin():
+        session.add(feature_row(feature_id="feat-demo", version=1))
     body = "Add a boundary test for the pure-string helper."
     queue.enqueue_job(
         engine,
@@ -1754,6 +1762,10 @@ def test_task_body_digest_mismatch_refuses(
     """
     repo = tmp_path / "repo"
     base_sha = _make_synthetic_repo(repo, coder=True)
+    from tests.dal.factories import feature_row
+    from personal_agent_dal.storage.engine import session_factory
+    with session_factory(engine)() as session, session.begin():
+        session.add(feature_row(feature_id="feat-demo", version=1))
     job_id = queue.enqueue_job(
         engine,
         feature_id="feat-demo",

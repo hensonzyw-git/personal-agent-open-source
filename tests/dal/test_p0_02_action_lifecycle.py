@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import timedelta
+from personal_agent_core.timeutil import utc_now
+from personal_agent_dal.storage.machine_models import Lease
+from personal_agent_dal.storage.worker_models import WorkerJob
 
 import pytest
 from sqlalchemy import select
@@ -25,8 +29,18 @@ from tests.dal.factories import EMPTY_SHA256, feature_row
 def _engine(tmp_path: Path):  # noqa: ANN201
     engine = create_database_engine(tmp_path / "p0-02-lifecycle.db")
     db.upgrade(engine)
+    engine.dispose()
+    engine = create_database_engine(tmp_path / "p0-02-lifecycle.db")
     with session_factory(engine)() as session, session.begin():
         session.add(feature_row(feature_id="feature-1", version=1, state="coding"))
+    now = utc_now()
+    with session_factory(engine)() as session, session.begin():
+        session.add(WorkerJob(job_id="j", feature_id="feature-1", repository_id="repo-placeholder",
+            base_sha="0"*40, branch_name="review", toolchain_ref="test", state="running",
+            attempt_count=1, lease_epoch=3, worker_id="worker-a", lease_expires_at=now+timedelta(hours=1),
+            heartbeat_at=now, created_at=now, updated_at=now))
+        session.add(Lease(lease_id="l", feature_id="feature-1", job_id="j", worker_id="worker-a", epoch=4,
+            expires_at=now+timedelta(hours=1), created_at=now))
     return engine
 
 
@@ -60,7 +74,7 @@ def test_dispatch_result_and_consume_are_cas_bound(tmp_path: Path) -> None:
         execution_snapshot_sha256=EMPTY_SHA256,
     )
     claimed = claim_dispatch(
-        engine, attempt_id=created.attempt_id, expected_version=1, owner_id="worker-a"
+        engine, attempt_id=created.attempt_id, expected_version=1, owner_id="worker-a", job_id="j", lease_id="l"
     )
     assert claimed.code == "DISPATCH_GRANTED"
     assert claim_dispatch(
@@ -74,8 +88,7 @@ def test_dispatch_result_and_consume_are_cas_bound(tmp_path: Path) -> None:
         engine, attempt_id=created.attempt_id, expected_version=3, owner_id="worker-a",
         fence=1, digest="b" * 64,
     ).code == "ATTEMPT_RESULT_CONFLICT"
-    assert consume_result(engine, attempt_id=created.attempt_id, expected_version=3).code == "APPLIED"
-    assert consume_result(engine, attempt_id=created.attempt_id, expected_version=4).code == "APPLIED_REPLAY"
+    assert consume_result(engine, attempt_id=created.attempt_id, expected_version=3).code == "TRANSITION_REQUIRED"
 
     with session_factory(engine)() as session:
         attempt = session.scalar(select(ProviderAttempt).where(ProviderAttempt.attempt_id == created.attempt_id))
@@ -92,8 +105,8 @@ def test_cancel_gate_blocks_dispatch_with_real_cas(tmp_path: Path) -> None:
     assert cancel_execution(engine, feature_id="feature-1", expected_gate_version=1).code == "CANCELLED"
     assert cancel_execution(engine, feature_id="feature-1", expected_gate_version=1).code == "EXECUTION_GATE_STALE"
     assert claim_dispatch(
-        engine, attempt_id=created.attempt_id, expected_version=1, owner_id="worker-a"
-    ).code == "EXECUTION_GATE_CLOSED"
+        engine, attempt_id=created.attempt_id, expected_version=1, owner_id="worker-a", job_id="j", lease_id="l"
+    ).code == "EXECUTION_AUTHORIZATION_STALE"
     with session_factory(engine)() as session:
         gate = session.get(ExecutionGate, "feature-1")
     assert gate is not None and (gate.mode, gate.version, gate.approval_epoch) == ("cancelled", 2, 2)

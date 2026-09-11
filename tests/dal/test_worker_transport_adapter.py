@@ -564,6 +564,10 @@ def test_remote_claim_carries_the_intake_body(engine, tmp_path: Path) -> None:
     """
     client, _ = _service_client(engine)
     body = "Add a boundary test for the pure-string helper."
+    from tests.dal.factories import feature_row
+    from personal_agent_dal.storage.engine import session_factory
+    with session_factory(engine)() as session, session.begin():
+        session.add(feature_row(feature_id="feat-body", version=1))
     queue.enqueue_job(
         engine,
         feature_id="feat-body",

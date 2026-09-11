@@ -178,6 +178,10 @@ def test_claim_response_carries_the_intake_body(engine) -> None:
     client = _client(engine)
     token = _enroll(client)
 
+    from tests.dal.factories import feature_row
+    with session_factory(engine)() as session, session.begin():
+        session.add(feature_row(feature_id="feat-body", version=1))
+
     # A job WITH an intake body.
     body = "Add a boundary test for the pure-string helper."
     queue.enqueue_job(

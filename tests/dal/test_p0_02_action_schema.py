@@ -27,7 +27,7 @@ def test_p0_02_action_models_have_closed_authority_columns() -> None:
         "owner_id", "fence", "dispatch_started_at", "job_id", "lease_id",
         "job_lease_epoch", "policy_lease_epoch", "approval_epoch",
         "result_digest", "result_recorded_at", "result_consumed_at", "created_at",
-        "updated_at",
+        "updated_at", "feature_version", "capability_epoch", "consumption_receipt_id",
     }
     assert set(ExecutionGate.__table__.columns.keys()) == {
         "feature_id", "version", "mode", "approval_epoch", "created_at", "updated_at",

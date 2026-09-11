@@ -450,6 +450,9 @@ class ProviderAttempt(Base):
     result_consumed_at: Mapped[datetime | None] = mapped_column(
         UtcTimestamp, nullable=True
     )
+    feature_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    capability_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    consumption_receipt_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
 
@@ -476,6 +479,24 @@ class ProviderAttempt(Base):
             "action_id", "attempt_no", name="uq_provider_attempts_action_attempt"
         ),
         Index("ix_provider_attempts_action_id", "action_id"),
+    )
+
+
+class ProviderResultObservation(Base):
+    """Append-only result arrival evidence, including refused late results."""
+
+    __tablename__ = "provider_result_observations"
+    observation_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(ForeignKey("provider_attempts.attempt_id"), nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, nullable=False)
+    fence: Mapped[int] = mapped_column(Integer, nullable=False)
+    expected_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    digest: Mapped[str] = mapped_column(Text, nullable=False)
+    code: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        CheckConstraint(_hex_of_length("digest", 64, nullable=False), name="digest_hex"),
+        Index("ix_provider_result_observations_attempt_id", "attempt_id"),
     )
 
 
