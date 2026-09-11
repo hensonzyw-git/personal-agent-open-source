@@ -24,6 +24,7 @@ from personal_agent.api.composition import (
     agent_service,
 )
 from personal_agent.media.config import MediaConfigError, media_config_from_env
+from personal_agent.runtime.modality import ModalityConfigError, master_switch
 from personal_agent_core.write_switch import (
     WriteSwitchConfigError,
     load_write_switch,
@@ -152,6 +153,16 @@ def main() -> None:
     try:
         media = media_config_from_env()
     except MediaConfigError as error:
+        raise SystemExit(str(error)) from error
+
+    # `#13`. §8's master switch, validated here for the same reason a media
+    # value is: a typo in a unit file must stop the boot rather than surface as
+    # every image turn failing for no visible reason. The switch is *read* on
+    # each request (the capability is a callable), so this call is the
+    # fail-fast; the value itself is not carried forward.
+    try:
+        master_switch()
+    except ModalityConfigError as error:
         raise SystemExit(str(error)) from error
 
     config = AgentServiceConfig(

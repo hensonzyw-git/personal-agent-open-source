@@ -101,6 +101,16 @@ class GlmGateway:
         self._generate = generate or generate_with_adk
         self._recorder = recorder or NullRecorder()
 
+    @property
+    def model_id(self) -> str:
+        """The model id as the provider sees it, without the adapter prefix.
+
+        `_model` stays private for the callers that pass it through to LiteLlm
+        verbatim; this exists so §8's capability can name the model that is
+        actually in use rather than a second, independently derived guess.
+        """
+        return self._model.split("/", 1)[-1]
+
     def propose(
         self,
         *,
@@ -279,13 +289,16 @@ def glm_gateway_from_env(
         canonical_api_base,
         credential_from_env,
         provider_from_env,
+        resolved_model_id,
     )
 
     provider = provider_from_env()
     api_key = credential_from_env(provider)
-    model = (
-        os.environ.get("MODEL_ID", "").strip() or provider.default_model
-    )
+    # `resolved_model_id`, not a second reading of `MODEL_ID`: §8's capability
+    # term is evidence about the model in use, and the switch reads the same
+    # resolver. Two readings would let the evidence be checked against a model
+    # the gateway is not sending.
+    model = resolved_model_id(provider)
     api_base = os.environ.get("MODEL_API_BASE", canonical_api_base(provider))
     return GlmGateway(
         model=f"openai/{model}",

@@ -99,6 +99,22 @@ def provider_from_env(env: dict[str, str] | None = None) -> ModelProvider:
     return provider
 
 
+def resolved_model_id(
+    provider: ModelProvider, env: dict[str, str] | None = None
+) -> str:
+    """The model id this deployment will actually request.
+
+    One resolver, because two would let the model that is *sent* and the model
+    that was *checked* drift apart: §8's capability term is evidence about a
+    concrete model id, and a capability computed from one reading of
+    ``MODEL_ID`` while the gateway sends another would be evidence about a
+    model nobody used. Unset means the provider's default, which is what the
+    gateway has always sent.
+    """
+    source = os.environ if env is None else env
+    return (source.get("MODEL_ID") or "").strip() or provider.default_model
+
+
 def credential_from_env(
     provider: ModelProvider, env: dict[str, str] | None = None
 ) -> str:

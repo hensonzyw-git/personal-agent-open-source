@@ -71,7 +71,7 @@ from personal_agent.media.uploads import (
 )
 from personal_agent.storage import db
 from personal_agent.storage.engine import create_database_engine, session_factory
-from personal_agent.storage.models import ApiRequest
+from personal_agent.storage.models import ApiRequest, ConversationEvent
 from personal_agent_core.crypto import KeyRing, generate_key
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.timeutil import to_rfc3339
@@ -704,7 +704,26 @@ def test_a_clarification_question_does_not_drop_the_parts(keyring):
 # --- the anchor end to end, against the real chat path ---------------------
 
 
-def _deps(engine, keyring, store):
+def _capability(enabled: bool):
+    """§8's verdict, in the one position this module needs it in.
+
+    A deployment cannot reach `enabled=True` today -- the scanner exemption is
+    unapproved -- but the anchoring path still has to be exercised, and §5.1 is
+    explicit that a branch nothing can reach is a branch nothing has tested. The
+    switch is an *input* of the code under test here, not a stand-in for an
+    external system: the tests below drive both positions and assert what each
+    one does, and `test_the_anchor_refuses_a_photo_when_the_switch_is_closed`
+    is the closed half of that pair.
+    """
+    from personal_agent.runtime.modality import ImageCapability
+
+    return lambda: ImageCapability(
+        enabled=enabled,
+        closed_by=() if enabled else ("scanner_exemption",),
+    )
+
+
+def _deps(engine, keyring, store, *, images_enabled: bool = True):
     """The real `AgentApiDeps` with the media surface composed.
 
     Everything the anchor must not reach raises, so a test cannot pass by
@@ -727,6 +746,7 @@ def _deps(engine, keyring, store):
         now=lambda: NOW,
         media_store=store,
         media_limits=LIMITS,
+        image_capability=_capability(images_enabled),
     )
 
 
@@ -795,6 +815,69 @@ def test_anchoring_a_photo_binds_it_seals_the_parts_and_answers(
     assert _state(engine, media_id) == "bound"
     rows = _bindings(engine, media_id)
     assert len(rows) == 1 and rows[0]["role"] == "origin"
+
+
+def test_the_anchor_refuses_a_photo_when_the_switch_is_closed(
+    session, store, keyring, engine, timeline
+):
+    """§8's rule about a stale client cache, at the only point it can bite.
+
+    A client that uploaded while the switch was open and re-sends after it
+    closed still names a `ready` object, so "the bytes are already here" is not
+    a reason to proceed. The refusal has to leave nothing behind: an object
+    moved to `bound` and a binding row would be a use the deployment had
+    already said no to, and undoing it afterwards is a different, weaker claim
+    than never recording it.
+    """
+    media_id = _publish(session, store, keyring)
+    deps = _deps(engine, keyring, store, images_enabled=False)
+
+    with pytest.raises(AppError) as excinfo:
+        _anchor(deps, timeline=timeline, key="req-1", media_id=media_id)
+
+    assert excinfo.value.code is ErrorCode.UNSUPPORTED_OPERATION
+    assert "scanner_exemption" in excinfo.value.internal_detail
+    assert _state(engine, media_id) == "ready"
+    assert _bindings(engine, media_id) == []
+    with session_factory(engine)() as reopened:
+        assert reopened.execute(select(ApiRequest)).scalars().all() == []
+        assert (
+            reopened.execute(
+                select(ConversationEvent).where(
+                    ConversationEvent.event_type == "user_message"
+                )
+            )
+            .scalars()
+            .all()
+            == []
+        )
+
+
+def test_a_text_message_is_untouched_by_a_closed_switch(
+    session, store, keyring, engine, timeline
+):
+    """§8: "文本模型路径不受图片关闭影响"."""
+    deps = _deps(engine, keyring, store, images_enabled=False)
+    parts = parse_chat_parts([{"type": "text", "text": "午饭 45"}])
+
+    anchored = _anchor_chat(
+        deps,
+        AUTH,
+        "req-1",
+        timeline,
+        "午饭 45",
+        parts,
+        None,
+        False,
+        ResolvedClassification(
+            expected_session_id=None,
+            expected_last_event_at=None,
+            expected_timeline_sequence=0,
+            outcome=None,
+        ),
+    )
+
+    assert anchored.state == "accepted"
 
 
 def test_a_replayed_photo_message_returns_the_same_operation(

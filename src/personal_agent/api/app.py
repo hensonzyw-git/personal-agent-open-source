@@ -154,6 +154,7 @@ from personal_agent.runtime.bookkeeping_intent import (
     is_bookkeeping_write_request,
     is_finance_retry_request,
 )
+from personal_agent.runtime.modality import ImageCapability, image_capability
 from personal_agent.diagnostics import transcript
 from personal_agent.diagnostics.transcript import NullRecorder, Recorder, TurnIdentity
 from personal_agent.storage.models import (
@@ -206,6 +207,22 @@ class EnvelopeFactory(Protocol):
         clarification_context: ClarificationContext | None,
         finance_retry_context: FinanceRetryContext | None,
     ) -> ContextEnvelope: ...
+
+
+def _images_never_enabled() -> ImageCapability:
+    """The capability of a service that composed no model or no media.
+
+    Not a stand-in for the real composition -- `composition.py` always supplies
+    one -- but the honest default for the many `AgentApiDeps` built by hand in
+    tests, and for any future caller that wires the dataclass directly. It
+    names no model and asserts no approval, so it can only ever answer "off".
+    """
+    return image_capability(
+        master=False,
+        provider="",
+        model_id="",
+        media_ready=False,
+    )
 
 
 @dataclass
@@ -277,6 +294,18 @@ class AgentApiDeps:
     #: `enrollment_manifest_version = None` uses.
     media_store: MediaStore | None = None
     media_limits: MediaLimits | None = None
+    #: `#13`. §8's composed switch, **called** rather than held as a value.
+    #: §8 requires the server to re-validate rather than let a client's stale
+    #: cached capability through, and a verdict computed once at boot would
+    #: make that a statement about a number nothing can move. It is one
+    #: callable so that the entry guard, the anchor that binds an image to a
+    #: message, and `/v1/capabilities` are three reads of one source instead of
+    #: three sources -- §8's "客户端 capability 和服务端入口同源计算".
+    #:
+    #: The default is closed and says so. A deployment that wired nothing has
+    #: not enabled images, and an `AgentApiDeps` built by a test must not
+    #: accidentally advertise a capability the test never composed.
+    image_capability: Callable[[], ImageCapability] = _images_never_enabled
 
     def __post_init__(self) -> None:
         if self.sync_wait_seconds <= 0 or self.sync_wait_seconds > 30.0:
@@ -669,7 +698,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         body = await _json_body(request)
         key = idempotency_key(request)
         conversation_id = _required(body, "conversation_id")
-        parts, text = _chat_request(body)
+        parts, text = _chat_request(body, deps)
         clarification_of = _optional_operation_id(body, "clarification_of")
         start_new_session = _optional_bool(body, "start_new_session", default=False)
         if start_new_session and clarification_of is not None:
@@ -1022,6 +1051,13 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 }
                 if deps.ledger_url is not None:
                     body["ledger_url"] = deps.ledger_url
+                # `#13`. §8's "客户端 capability 和服务端入口同源计算": this is
+                # the same callable the entry guard and the anchor read, so a
+                # client cannot be told one thing while the server does another.
+                # Only the verdict travels -- the closed terms name internal
+                # controls, and a client needs to know whether it may send an
+                # image, not which of the deployment's approvals is missing.
+                body["images"] = {"enabled": deps.image_capability().enabled}
                 return JSONResponse(body)
 
             return _commit(session, work)
@@ -2134,6 +2170,19 @@ def _resolve_chat_images(
     """
     if not _chat_image_ids(parts):
         return ()
+    # §3.2 checks "扫描/豁免状态 ... 与能力" inside the anchoring transaction,
+    # which is here, and §8's reason is worth restating: a client that uploaded
+    # while the switch was open, and then re-sends after it closed, must not be
+    # let through because its own cached capability still says yes. The entry
+    # guard has already asked the same question; this asks it again at the point
+    # where an object would acquire a use, because that is the point a refusal
+    # still costs nothing.
+    capability = deps.image_capability()
+    if not capability.enabled:
+        raise AppError(
+            ErrorCode.UNSUPPORTED_OPERATION,
+            internal_detail=capability.refusal(),
+        )
     _, limits = _media_ready(deps)
     return resolve_chat_images(
         session,
@@ -3269,7 +3318,7 @@ def _operation_event_content(
     return content
 
 
-def _chat_request(body: dict[str, Any]) -> tuple[Parts, str]:
+def _chat_request(body: dict[str, Any], deps: AgentApiDeps) -> tuple[Parts, str]:
     """The request's parts and effective text, from exactly one of `text` and `parts`.
 
     §3.1: "text 与 parts 恰有一个". A parts request carries its text inside the
@@ -3293,7 +3342,7 @@ def _chat_request(body: dict[str, Any]) -> tuple[Parts, str]:
     if not has_parts:
         return (), _required(body, "text")
     parts = parse_chat_parts(body["parts"])
-    _require_multimodal_ready()
+    _require_multimodal_ready(deps)
     return parts, parts_text(parts)
 
 
@@ -3314,29 +3363,40 @@ def _chat_image_ids(parts: Parts) -> list[str]:
 #: is deleted by the change that lands it, and when the tuple is empty the
 #: guard below is a no-op that can go with them.
 #:
-#: `media_capability` is §8's composed switch (#13): declared vision support,
-#: media/backup/deletion readiness, and the scanner exemption. §3.1 requires it
-#: to be settled "在任何模型调用前", and until it is, refusing is the only answer
-#: that does not lie to the user about what the system did.
+#: `media_capability` has left the list (#13): §8's switch -- master switch,
+#: (provider, model id) vision declaration, composed media surface, scanner
+#: exemption and G1 -- is now one verdict read by the entry, the anchor and
+#: `/v1/capabilities`.
 #:
-#: `gateway_input_part` was the model-input half and is now landed (#12): a
-#: resolved part travels `InputPart -> ContextEnvelope -> gateway message ->
-#: ADK Part -> LiteLlm -> HTTP`, and the A2 witness checks the bytes that leave
-#: against the digest the server measured. It is deleted here rather than
-#: reworded, as the rule above requires of the change that lands a link.
-_MULTIMODAL_MISSING_LINKS: tuple[str, ...] = ("media_capability",)
+#: `authorized_read` is §6: the lock-scoped step that re-validates an image's
+#: use, registers it, and only then decrypts it into the `InputPart` the gateway
+#: sends. Nothing produces that part yet, so a parts request that got past this
+#: guard would reach assembly with no image at all and be refused there -- later,
+#: and with a message about the wrong thing. The guard stays until the read
+#: exists, and the tuple is what makes "the switch is open but the road is not
+#: built" impossible to ship by accident.
+_MULTIMODAL_MISSING_LINKS: tuple[str, ...] = ("authorized_read",)
 
 
-def _require_multimodal_ready() -> None:
-    """Refuse a parts request while the chain it needs is still incomplete."""
-    if _MULTIMODAL_MISSING_LINKS:
-        raise AppError(
-            ErrorCode.UNSUPPORTED_OPERATION,
-            internal_detail=(
-                "multimodal chat is not available yet: missing "
-                + ", ".join(_MULTIMODAL_MISSING_LINKS)
-            ),
-        )
+def _require_multimodal_ready(deps: AgentApiDeps) -> None:
+    """Refuse a parts request while the chain it needs is still incomplete.
+
+    Two different questions, kept apart on purpose. §8's switch answers whether
+    this *deployment* may serve images -- a policy, made of decisions people
+    made and facts about what is composed. The link list answers whether this
+    *build* can, which no configuration can move. A refusal names whichever are
+    closed, so an operator is never reading about the wrong one.
+    """
+    capability = deps.image_capability()
+    if capability.enabled and not _MULTIMODAL_MISSING_LINKS:
+        return
+    reasons = list(capability.closed_by) + list(_MULTIMODAL_MISSING_LINKS)
+    raise AppError(
+        ErrorCode.UNSUPPORTED_OPERATION,
+        internal_detail=(
+            "multimodal chat is not available yet: missing " + ", ".join(reasons)
+        ),
+    )
 
 
 def _required(body: dict[str, Any], field: str) -> str:

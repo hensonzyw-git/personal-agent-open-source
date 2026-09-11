@@ -94,6 +94,15 @@ from personal_agent.runtime.glm_gateway import (
     declared_context_limit,
     glm_gateway_from_env,
 )
+from personal_agent.runtime.model_providers import (
+    provider_from_env,
+    resolved_model_id,
+)
+from personal_agent.runtime.modality import (
+    ImageCapability,
+    image_capability,
+    master_switch,
+)
 from personal_agent.diagnostics.recording_dispatcher import RecordingDispatcher
 from personal_agent.diagnostics.transcript import (
     TranscriptRecorder,
@@ -192,6 +201,35 @@ class ComposedAgentService:
     bridge: GovernedToolBridge
     catalog_aliases: tuple[str, ...]
     quarantined: tuple[str, ...] = field(default=())
+
+
+def image_capability_from(
+    config: AgentServiceConfig,
+) -> Callable[[], ImageCapability]:
+    """§8's switch, bound to this deployment's provider, model and media surface.
+
+    Built here rather than inside the app layer so there is exactly one place
+    that knows which model is in use. The provider and the model id come from
+    the same resolvers the gateway uses (`provider_from_env`,
+    `resolved_model_id`), so the model the evidence is checked against is the
+    model that will be sent -- a capability computed from a second reading of
+    `MODEL_ID` would be evidence about a model nobody calls.
+
+    The closure re-reads the master switch on every call. The rest cannot move
+    without a restart: the provider, the model id and the composed media
+    surface are all fixed by the time this runs.
+    """
+
+    def capability() -> ImageCapability:
+        provider = provider_from_env()
+        return image_capability(
+            master=master_switch(),
+            provider=provider.name,
+            model_id=resolved_model_id(provider),
+            media_ready=config.media is not None,
+        )
+
+    return capability
 
 
 # --- device state ------------------------------------------------------------
@@ -826,6 +864,10 @@ async def agent_service(
                     media_limits=(
                         config.media.limits() if config.media is not None else None
                     ),
+                    # `#13`. §8's switch. Recomputing per call rather than
+                    # freezing a verdict is what makes "服务端再次校验" a
+                    # property of the code instead of a promise about a value.
+                    image_capability=image_capability_from(config),
                 ),
                 bridge=bridge,
                 catalog_aliases=aliases,

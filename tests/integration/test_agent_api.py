@@ -600,12 +600,16 @@ def test_a_parts_request_is_refused_while_the_chain_is_incomplete(
 ) -> None:
     """A photo the model never receives must be refused, not acknowledged.
 
-    The model-input half is landed (#12): the parts would reach the provider.
-    §8's composed switch is not (#13) -- declared vision support, media/backup/
-    deletion readiness and the scanner exemption -- so an accepted parts request
-    would be anchored and shown to the user as sent while the deployment has not
-    established that the model reads images. §3.1 requires the refusal instead,
-    and it must happen "在任何模型调用前" -- so nothing is persisted either.
+    Two halves are landed -- the model-input chain (#12) and §8's composed
+    switch (#13) -- and the switch's verdict is read, not assumed: it refuses
+    here because this deployment has no scanner exemption and no media surface,
+    not because a constant in the guard says so. What is still missing is §6's
+    authorized read, so an accepted request would anchor an image that nothing
+    can turn into a model input. §3.1 requires the refusal, and it must happen
+    "在任何模型调用前" -- so nothing is persisted either.
+
+    The refusal names both reasons, which is the point of composing the detail
+    from the switch rather than from a build-time list.
     """
     client = _parts_client(engine, token_ring, keyring)
     resp = client.post(
@@ -622,6 +626,24 @@ def test_a_parts_request_is_refused_while_the_chain_is_incomplete(
     assert resp.status_code != 200
     assert resp.json()["error"]["code"] == "UNSUPPORTED_OPERATION"
     assert _chat_rows(engine) == (0, 0)
+
+
+def test_capabilities_reports_images_off_when_nothing_composed_them(
+    engine, token_ring, keyring
+) -> None:
+    """§8's same-source rule, from the client's side of it.
+
+    `_client` builds `AgentApiDeps` by hand, so what this pins is the default:
+    a service that composed no provider, no media and no approvals must not
+    advertise images. It also pins the field's shape, which the iOS side reads
+    as the sole authority for whether to offer the photo button.
+    """
+    client = _parts_client(engine, token_ring, keyring)
+
+    resp = client.get("/v1/capabilities", headers=_auth(token_ring))
+
+    assert resp.status_code == 200
+    assert resp.json()["images"] == {"enabled": False}
 
 
 def test_a_structurally_bad_part_is_not_reported_as_not_ready(
