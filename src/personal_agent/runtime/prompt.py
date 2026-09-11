@@ -129,6 +129,13 @@ finance.query_expenses：
 - 没有日期且没有其他能界定范围的筛选时先澄清。
 - cursor 只原样续传服务端值，不构造；金额口径由服务端按“个人支出”公式字段全量分页计算。
 
+calendar.create_event：
+- 用户明确要求创建、新建、添加或安排日程时，必须调用 calendar.create_event；绝不能用自由文本
+  声称“已创建”或“已加入日历”。只有 iPhone EventKit 返回的设备执行结果才是创建证据。
+- title、开始时间、结束时间和日历语义不明确时，调用 agent.ask_clarification；绝不猜测日历。
+- 一条消息只创建一个日程。重复、批量、修改或删除既有日程不在当前能力内，调用
+  agent.fail_safely(reason="UNSUPPORTED_OPERATION")。
+
 meta.capabilities：
 - 用户询问当前能做什么或有哪些工具时调用它；不要凭提示词臆测当前设备权限。
 """.strip()

@@ -77,6 +77,7 @@ from personal_agent.runtime.bookkeeping_intent import (
     is_finance_retry_request,
     is_income_write_request,
 )
+from personal_agent.runtime.calendar_intent import is_calendar_create_request
 from personal_agent.storage.models import (
     TERMINAL_OPERATION_STATES,
     ContextCheckpoint,
@@ -324,6 +325,9 @@ class ContextEnvelope:
     #: A direct answer is forbidden for this turn. This is derived by the
     #: trusted builder, never by the provider, and includes sealed safe retries.
     finance_intent_required: bool = False
+    #: A direct answer is forbidden: an EventKit-backed calendar create tool
+    #: call is required before the operation can claim success.
+    calendar_create_intent_required: bool = False
     #: The exact Finance tool required where the intent is unambiguous. Query
     #: turns use this to prevent a model from turning a read into a write.
     finance_required_tool: str | None = None
@@ -529,6 +533,7 @@ class ContextEnvelope:
             "compaction_requested": self.compaction_requested,
             "checkpoint_rebuild_required": self.checkpoint_rebuild_required,
             "finance_intent_required": self.finance_intent_required,
+            "calendar_create_intent_required": self.calendar_create_intent_required,
             "finance_required_tool": self.finance_required_tool,
             "finance_clarification_required": self.finance_clarification_required,
             "finance_date_default_eligible": self.finance_date_default_eligible,
@@ -760,10 +765,20 @@ class ContextBuilder:
             and finance_retry_context is None
             and is_finance_retry_request(user_text)
         )
+        calendar_create_intent_required = is_calendar_create_request(user_text)
+        calendar_essential_tools = (
+            frozenset({"calendar.create_event"})
+            if calendar_create_intent_required
+            else frozenset()
+        )
         declarations = self._tool_declarations(
             effective_tools,
             candidate_tools=candidate_tools,
-            essential_tools=(*essential_tools, *finance_essential_tools),
+            essential_tools=(
+                *essential_tools,
+                *finance_essential_tools,
+                *calendar_essential_tools,
+            ),
         )
         components.extend(declarations)
 
@@ -815,6 +830,7 @@ class ContextBuilder:
                         source_operation_ids
                     ),
                     "finance_intent_required": finance_intent_required,
+                    "calendar_create_intent_required": calendar_create_intent_required,
                     "finance_required_tool": finance_required_tool,
                     "finance_clarification_required": finance_clarification_required,
                     "finance_date_default_eligible": finance_date_default_eligible,
@@ -832,6 +848,7 @@ class ContextBuilder:
                 outcome.compaction_requested or checkpoint_rebuild_required
             ),
             finance_intent_required=finance_intent_required,
+            calendar_create_intent_required=calendar_create_intent_required,
             finance_required_tool=finance_required_tool,
             finance_clarification_required=finance_clarification_required,
             finance_date_default_eligible=finance_date_default_eligible,

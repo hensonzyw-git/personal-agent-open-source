@@ -62,6 +62,13 @@ _QUERY = VisibleTool(
     risk_level="R1",
     required_scopes=("finance.read",),
 )
+_CALENDAR_CREATE = VisibleTool(
+    alias="calendar.create_event",
+    description="在 iPhone 日历中创建日程",
+    input_schema={"type": "object", "properties": {"title": {"type": "string"}}},
+    risk_level="R2",
+    required_scopes=("calendar.event.write",),
+)
 
 
 def _response(*parts, error_code=None):
@@ -147,6 +154,22 @@ def test_a_tool_call_response_becomes_one_proposed_tool_call(envelope) -> None:
         "finance.log_expense",
         {"name": "午饭", "input_amount": "45"},
     )
+
+
+def test_explicit_calendar_create_limits_provider_tools_to_eventkit_action(tmp_path) -> None:
+    calendar_envelope = envelope_for(
+        tmp_path,
+        system="SYS",
+        user_text="明天上午 10 点，在日常安排创建一个名为“Personal Agent 验收”的 30 分钟日程",
+        tools=[_EXPENSE, _CALENDAR_CREATE],
+    )
+    gateway, generate = _gateway(_response(_call("calendar.create_event", {"title": "验收"})))
+    _propose(gateway, calendar_envelope)
+    assert generate.kwargs["allowed_function_names"] == [
+        "calendar.create_event",
+        "agent.ask_clarification",
+        "agent.fail_safely",
+    ]
 
 
 def test_one_valid_tool_call_plus_prose_is_explicitly_suppressed(envelope) -> None:

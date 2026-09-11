@@ -238,6 +238,7 @@ def _recorded_context(envelope: ContextEnvelope) -> dict[str, Any]:
         "compaction_requested": envelope.compaction_requested,
         "source_fingerprint": envelope.source_fingerprint,
         "finance_intent_required": envelope.finance_intent_required,
+        "calendar_create_intent_required": envelope.calendar_create_intent_required,
         "finance_required_tool": envelope.finance_required_tool,
         "finance_clarification_required": envelope.finance_clarification_required,
         "finance_date_default_eligible": envelope.finance_date_default_eligible,
@@ -957,13 +958,23 @@ def generate_with_adk(
 def _required_function_names(
     envelope: ContextEnvelope, declarations: list[dict[str, Any]]
 ) -> list[str] | None:
-    """Return the trusted function-choice subset for a Finance turn.
+    """Return the trusted function-choice subset for a governed turn.
 
     The envelope is the only trusted source for the Finance intent class; the
     model cannot loosen its own tool choice. We preserve declaration order so
     the selected names are a measured subset of the exact provider request.
     """
 
+    if envelope.calendar_create_intent_required:
+        allowed = {_ASK_CLARIFICATION, _FAIL_SAFELY, "calendar.create_event"}
+        selected = [
+            item["function"]["name"]
+            for item in declarations
+            if item["function"]["name"] in allowed
+        ]
+        if not selected:  # pragma: no cover - internal declarations are mandatory
+            raise ModelGatewayError("Calendar create had no allowed declarations")
+        return selected
     if not envelope.finance_intent_required:
         return None
     allowed = {_ASK_CLARIFICATION, _FAIL_SAFELY}
