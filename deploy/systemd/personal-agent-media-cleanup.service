@@ -16,4 +16,3 @@ PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
 RestrictAddressFamilies=AF_UNIX
-
