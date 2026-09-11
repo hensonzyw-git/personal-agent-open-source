@@ -724,12 +724,10 @@ def test_a_refused_sibling_also_gets_its_own_line(
     assert receipt.content["state"] == "failed_safe"
 
 
-def test_the_messages_own_item_keeps_the_single_line_the_turn_wrote(
+def test_the_messages_own_item_appends_a_durable_terminal_receipt(
     engine, token_ring, keyring
 ) -> None:
-    """Item 0's result event belongs to the turn that issued it. Reporting it
-    settles the operation; it must not add a second line saying the same thing,
-    or every ordinary single-action message would grow a duplicate card."""
+    """A restart reads history, so the head needs a durable final receipt too."""
     head_id, _, _ = _seed_two_item_plan(engine, keyring)
     client = _client(engine, token_ring, keyring)
 
@@ -742,9 +740,17 @@ def test_the_messages_own_item_keeps_the_single_line_the_turn_wrote(
     assert response.status_code == 200, response.text
     assert response.json()["operation_id"] == head_id
     events = _result_events(engine, keyring)
-    assert [event.operation_id for event in events] == [head_id]
-    # The line still says what the turn wrote; it is not rewritten in place.
+    assert [event.operation_id for event in events] == [head_id, head_id]
     assert events[0].content["state"] == "source_in_progress"
+    assert events[1].content["state"] == "succeeded"
+    assert events[1].content["record_id"] == EVENT_ID
+    replay = client.post(
+        f"/v1/device-actions/{ACTION_KEY}/result",
+        json={"result": "created", "event_id": EVENT_ID},
+        headers=_auth_headers(token_ring),
+    )
+    assert replay.status_code == 200
+    assert len(_result_events(engine, keyring)) == 2
 
 
 def test_an_operation_with_no_turn_still_gets_no_fabricated_one(
