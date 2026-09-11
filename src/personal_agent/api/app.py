@@ -2237,30 +2237,30 @@ def _message_operation(session, operation: Operation) -> Operation:
 def _append_plan_item_result_event(
     session, keyring: KeyRing, *, operation: Operation, now: datetime
 ) -> None:
-    """Write this operation's own result line, unless it already has one.
+    """Append a changed result projection once, preserving earlier history.
 
-    One message with N actions is one plan and N operations (design 4.1), and
-    each settles through its own report and gets its own receipt (design 4.2:
-    各 operation 由各自的回报独立结算，回执各一行). A receipt line is a Timeline
-    event, and the message's *own* item already has the one the issuing turn
-    wrote -- so the guard is the event itself, which covers a replay and the
-    loser of a CAS race in the same test as it covers item 0. Without this the
-    siblings settled into rows no client ever saw: no card when it happened, and
-    nothing to find in history after a restart.
-
-    A row with no anchor is not a conversation turn at all (a card-driven
-    action, say). It gets no line, because the alternative is a fabricated turn
-    id in a permanently retained archive.
+    Both the message's own operation and plan siblings need durable terminal
+    receipts. An earlier running projection must not suppress settlement.
+    Replayed reports compare the latest event with the current stored state.
+    Operations without a conversation anchor cannot invent a history turn.
     """
-    existing = session.execute(
-        text_clause(
-            "SELECT 1 FROM conversation_events "
-            "WHERE operation_id = :oid AND event_type = :kind LIMIT 1"
-        ),
-        {"oid": operation.operation_id, "kind": events.OPERATION_RESULT},
-    ).one_or_none()
+    # An initial source_in_progress event is not the final receipt. Keep it
+    # in the archive and append the settled projection exactly once, including
+    # on a replay that repairs a previously missing terminal event.
+    session.refresh(operation)
+    existing = (
+        session.query(ConversationEvent)
+        .filter(
+            ConversationEvent.operation_id == operation.operation_id,
+            ConversationEvent.event_type == events.OPERATION_RESULT,
+        )
+        .order_by(ConversationEvent.timeline_sequence.desc())
+        .first()
+    )
     if existing is not None:
-        return
+        previous = events._entry(keyring, existing).content
+        if previous.get("state") == operation.state:
+            return
     anchor = _anchor_event_or_none(
         session, _message_operation(session, operation).operation_id
     )
