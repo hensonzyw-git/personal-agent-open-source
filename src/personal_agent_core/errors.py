@@ -77,6 +77,28 @@ class ErrorCode(StrEnum):
     CONTEXT_UNAVAILABLE = "CONTEXT_UNAVAILABLE"
     PENDING_OPERATION_NOT_CANCELLABLE = "PENDING_OPERATION_NOT_CANCELLABLE"
 
+    # Media (`#18`). `MEDIA_NOT_READY` is the name the comment above reserved
+    # for this CAP; the other three are the distinctions §5.2's state machine
+    # makes and a client has to act on differently, which is the test for
+    # whether a code deserves to exist.
+    #: The object is real and not yet usable -- `pending`/`uploading` at
+    #: `complete`, or anything but `ready`/`bound` at `GET`. Retryable, and
+    #: specifically not a 404: "not yet" and "never" are different answers, and
+    #: a client that reads one as the other either gives up early or polls
+    #: forever.
+    MEDIA_NOT_READY = "MEDIA_NOT_READY"
+    #: §6's stripe lock is held by a reader or another writer. Also retryable,
+    #: and separate from `MEDIA_NOT_READY` because nothing is wrong with the
+    #: object -- the refusal is about the moment, not the state.
+    MEDIA_BUSY = "MEDIA_BUSY"
+    #: No such object *for this device*. Identical to what an id that never
+    #: existed gets, so the endpoint cannot be used to ask whether an id is
+    #: real.
+    MEDIA_NOT_FOUND = "MEDIA_NOT_FOUND"
+    #: §5.2: "删除后返回墓碑，不复活". A tombstone is not an absence -- saying so
+    #: is what lets a client stop retrying instead of concluding it mistyped.
+    MEDIA_GONE = "MEDIA_GONE"
+
     # Internal
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -173,6 +195,14 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.INVALID_CURSOR: "翻页游标无效或已过期",
     ErrorCode.CONTEXT_BUDGET_EXCEEDED: "本轮必要上下文超出可用长度，未调用模型",
     ErrorCode.CONTEXT_UNAVAILABLE: "暂时无法安全组装对话上下文",
+    # `#18`. These four are read by a client that is mid-upload, so each says
+    # what to do next rather than what went wrong: wait, re-send, stop. A
+    # message that only names the refusal leaves the client to guess, and the
+    # guesses (retry a tombstone, abandon a busy lock) are both wrong.
+    ErrorCode.MEDIA_NOT_READY: "图片还在处理中，请稍后重试",
+    ErrorCode.MEDIA_BUSY: "图片存储正忙，请稍后重试",
+    ErrorCode.MEDIA_NOT_FOUND: "找不到这张图片",
+    ErrorCode.MEDIA_GONE: "这张图片已被删除",
     ErrorCode.PENDING_OPERATION_NOT_CANCELLABLE: (
         "当前待办可能已提交，不能放弃后另开话题"
     ),

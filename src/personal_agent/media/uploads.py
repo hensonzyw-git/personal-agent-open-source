@@ -39,7 +39,6 @@ re-encodes: §5.4's "失败拒绝：封口不完整、超限、探测不符一�
 
 from __future__ import annotations
 
-import enum
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -48,7 +47,7 @@ from typing import Final
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from personal_agent.media.container import DEFAULT_CHUNK_BYTES, SealRecord
+from personal_agent.media.container import DEFAULT_CHUNK_BYTES
 from personal_agent.media.deletion import mark_media_deleting
 from personal_agent.media.lifecycle import (
     CHAT_IMAGE_PURPOSE,
@@ -92,6 +91,22 @@ class MediaRejectedError(MediaError):
 
 class MediaIncompleteUploadError(MediaError):
     """Fewer bytes arrived than the client declared. The object is untouched."""
+
+
+class MediaNotFoundError(MediaError):
+    """No such object *for this device*.
+
+    Raised with the same message whether the id is unknown or simply belongs to
+    somebody else, so the endpoint cannot be used to ask whether an id exists.
+    """
+
+
+class MediaNotReadyError(MediaError):
+    """The object is real and not yet usable. Retryable, not terminal."""
+
+
+class MediaGoneError(MediaError):
+    """A tombstone. §5.2: "删除后返回墓碑，不复活"."""
 
 
 @dataclass(frozen=True)
@@ -167,6 +182,13 @@ class CompletedUpload:
     #: wherever they travel, and the field names do the labelling.
     declared_width: int | None
     declared_height: int | None
+    #: §5.2's "处理中返回可轮询状态与期限", and `None` for every other outcome.
+    #: The deadline is the current claim's, so a client that polls until then
+    #: is waiting exactly as long as the server has promised to hold the object
+    #: for that writer -- past it §5.2 lets a new attempt take over, and a
+    #: client that kept polling would be watching a writer that no longer
+    #: exists.
+    retry_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -374,9 +396,9 @@ def receive_upload(
     if row is None or row.device_id != device_id:
         # The same message for both, so a caller cannot ask whether an id
         # exists without being entitled to it.
-        raise MediaError("no such media object")
-    if row.state in ("expired", "rejected", "deleted", "deleting", "reaping"):
-        raise MediaError(f"this upload can no longer be completed ({row.state})")
+        raise MediaNotFoundError("no such media object")
+    if row.state in ("deleted", "deleting", "reaping", "expired", "rejected"):
+        raise MediaGoneError(f"this upload can no longer be completed ({row.state})")
     declared = _declaration_columns(session, media_id)
     if declared is None or declared[0] is None:
         raise MediaLifecycleError(f"{media_id} has no declaration to check against")
@@ -493,7 +515,7 @@ def complete_upload(
     """
     row = read_media_row(session, media_id)
     if row is None or row.device_id != device_id:
-        raise MediaError("no such media object")
+        raise MediaNotFoundError("no such media object")
 
     if row.state == "uploaded":
         attempt = row.current_attempt_number
@@ -528,23 +550,28 @@ def complete_upload(
     measured = content_sha256(session, keyring=keyring, media_id=media_id)
     actual = session.execute(
         select(MediaObject.actual_mime, MediaObject.content_size,
-               MediaObject.declared_width, MediaObject.declared_height).where(
+               MediaObject.declared_width, MediaObject.declared_height,
+               MediaObject.state, MediaObject.claim_deadline).where(
             MediaObject.media_id == media_id
         )
     ).one()
-    actual_mime, content_size, width, height = actual
+    actual_mime, content_size, width, height, state, claim_deadline = actual
     return CompletedUpload(
         media_id=media_id,
         # Re-read rather than assumed: on `IN_PROGRESS`/`TOMBSTONED` the object
         # did not move, and reporting a state this call did not observe is how
         # a client ends up polling a value that was never true.
-        state=state_of(session, media_id) or row.state,
+        state=state or row.state,
         outcome=outcome,
         content_sha256=measured,
         mime=actual_mime,
         size=content_size,
         declared_width=width,
         declared_height=height,
+        # Only meaningful while an attempt is in flight; `None` on a published
+        # or tombstoned object, where polling again is not what the client
+        # should do next.
+        retry_at=claim_deadline if outcome is CompleteOutcome.IN_PROGRESS else None,
     )
 
 
@@ -574,14 +601,14 @@ def read_media(
     """
     row = read_media_row(session, media_id)
     if row is None or row.device_id != device_id:
-        raise MediaError("no such media object")
-    if row.state in ("deleting", "reaping", "deleted"):
+        raise MediaNotFoundError("no such media object")
+    if row.state in ("deleted", "deleting", "reaping", "expired", "rejected"):
         # §5.2: a tombstone is not an absence. Saying so is what lets a client
         # tell "you deleted this" from "this never existed", which is the only
         # way it can stop retrying.
-        raise MediaError("this image was deleted")
+        raise MediaGoneError("this image was deleted")
     if row.state not in ("ready", "bound"):
-        raise MediaError(f"this image is not ready ({row.state})")
+        raise MediaNotReadyError(f"this image is not ready ({row.state})")
     attempt = row.current_attempt_number
     if attempt is None:
         raise MediaLifecycleError(f"{media_id} is {row.state} with no attempt")
@@ -593,8 +620,10 @@ def read_media(
             # writer may have decided a deletion, and §6's protection is worth
             # nothing if it protects a row that has already changed.
             current = read_media_row(session, media_id)
-            if current is None or current.state not in ("ready", "bound"):
-                raise MediaError("this image was deleted")
+            if current is None:
+                raise MediaNotFoundError("no such media object")
+            if current.state not in ("ready", "bound"):
+                raise MediaGoneError("this image was deleted")
             seal = seal_record(
                 session, keyring=keyring, media_id=media_id, attempt_number=attempt
             )
@@ -631,7 +660,7 @@ def delete_media(
     """
     row = read_media_row(session, media_id)
     if row is None or row.device_id != device_id:
-        raise MediaError("no such media object")
+        raise MediaNotFoundError("no such media object")
     decided = mark_media_deleting(session, media_id=media_id, keyring=keyring, now=now)
     session.commit()
     return decided
@@ -652,9 +681,12 @@ __all__ = [
     "FetchedMedia",
     "MediaBusyError",
     "MediaError",
+    "MediaGoneError",
     "MediaIncompleteUploadError",
     "MediaLifecycleError",
     "MediaLimits",
+    "MediaNotFoundError",
+    "MediaNotReadyError",
     "MediaRejectedError",
     "UploadDeclaration",
     "UploadReceipt",

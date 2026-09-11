@@ -23,6 +23,7 @@ from personal_agent.api.composition import (
     CompositionError,
     agent_service,
 )
+from personal_agent.media.config import MediaConfigError, media_config_from_env
 from personal_agent_core.write_switch import (
     WriteSwitchConfigError,
     load_write_switch,
@@ -145,6 +146,14 @@ def main() -> None:
     # is validated at composition.
     ledger_url = os.environ.get("PERSONAL_AGENT_LEDGER_URL", "").strip() or None
 
+    # `#18`: §4.3's media ceilings. Absence is a normal outcome -- images are
+    # off -- while an unreadable value stops the boot, because a typo in a unit
+    # file would otherwise surface as an upload failing for no visible reason.
+    try:
+        media = media_config_from_env()
+    except MediaConfigError as error:
+        raise SystemExit(str(error)) from error
+
     config = AgentServiceConfig(
         database=args.database,
         finance_mcp_url=args.finance_mcp_url,
@@ -154,6 +163,7 @@ def main() -> None:
             frozenset(args.allowed_tools) if args.allowed_tools else None
         ),
         ledger_url=ledger_url,
+        media=media,
     )
     try:
         asyncio.run(_serve(config, args, bind, write_switch=write_switch))

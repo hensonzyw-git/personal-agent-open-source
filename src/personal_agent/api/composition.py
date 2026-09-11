@@ -81,6 +81,7 @@ from personal_agent.keys import (
     load_identifier_key,
     load_service_signing_ring,
 )
+from personal_agent.media.config import MediaConfig
 from personal_agent.mcp_client.core import (
     McpClientCore,
     McpTimeoutError,
@@ -175,6 +176,12 @@ class AgentServiceConfig:
     #: configuration, not a secret; `None` omits the field from
     #: `/v1/capabilities` and the app then offers no jump.
     ledger_url: str | None = None
+    #: `#18`. §4.3's versioned ceilings and the storage root. `None` means the
+    #: media surface is not composed -- §5.4's "缺配置不启用图片" -- and the
+    #: five routes then refuse rather than running half-configured. The store
+    #: is built from it here, because it needs the data keyring and this is the
+    #: one place that has both.
+    media: MediaConfig | None = None
 
 
 @dataclass
@@ -808,6 +815,17 @@ async def agent_service(
                     sync_wait_seconds=config.sync_wait_seconds,
                     ledger_url=ledger_url,
                     recorder=recorder,
+                    # `#18`. Both or neither, which is why they are read off
+                    # one `config.media`: a store with no limits has no bound
+                    # to enforce, and limits with no store cannot store.
+                    media_store=(
+                        config.media.store(keyring)
+                        if config.media is not None
+                        else None
+                    ),
+                    media_limits=(
+                        config.media.limits() if config.media is not None else None
+                    ),
                 ),
                 bridge=bridge,
                 catalog_aliases=aliases,
