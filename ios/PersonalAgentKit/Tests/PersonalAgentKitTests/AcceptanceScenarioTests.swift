@@ -108,6 +108,54 @@ struct AcceptanceScenarioTests {
         #expect(checked == 3, "only \(checked) items declare an answerable card")
     }
 
+    /// The same class of defect as the review's first finding, caught one screen
+    /// over before it reached a person: `write-created` promised the event
+    /// identifier on a success card's face, and §3c deliberately keeps
+    /// identifiers off success cards. Following that item, a correct build would
+    /// have been marked wrong. The prose was the only place the identifier lived,
+    /// so nothing could notice.
+    @Test("the identifier an item names is the one its card carries")
+    func theNamedIdentifiersAreTheSeededOnes() throws {
+        var checked = 0
+        for item in AcceptanceChecklist.items {
+            guard let expected = item.expectedIdentifier else { continue }
+            let anchored = try #require(
+                event(item.anchorEventID),
+                "\(item.id) anchors \(item.anchorEventID), which is not seeded"
+            )
+            let operationID = try #require(anchored.operationID)
+            let receipt = try #require(
+                AcceptanceScenario.receipt(operationID, in: seed),
+                "\(operationID) has an event but no projection"
+            )
+            #expect(
+                receipt.recordID == expected,
+                "\(item.id) tells the person to expect \(expected), but \(operationID) carries \(receipt.recordID ?? "no identifier")"
+            )
+            checked += 1
+        }
+        // Four items are about a specific record. Fewer means one stopped
+        // declaring its identifier and is back to being prose.
+        #expect(checked == 4, "only \(checked) items declare an identifier")
+    }
+
+    /// A success card hides its identifiers by design (§3c), so an item about one
+    /// must not send the person looking at the card face for it.
+    @Test("an item about a success card says where the identifier actually is")
+    func theHiddenIdentifiersSayWhereTheyAre() throws {
+        for item in AcceptanceChecklist.items {
+            guard let expected = item.expectedIdentifier else { continue }
+            let anchored = try #require(event(item.anchorEventID))
+            let operationID = try #require(anchored.operationID)
+            let receipt = try #require(AcceptanceScenario.receipt(operationID, in: seed))
+            guard receipt.outcome.provesWrite else { continue }
+            #expect(
+                item.pass.contains("长按"),
+                "\(item.id) is about a success card, which keeps \(expected) off its face, but the item does not say where to find it"
+            )
+        }
+    }
+
     @Test("the answered shape is still in the walk-through")
     func theAnsweredCardsAreStillSeeded() throws {
         // The other half of the check above: a script where *nothing* is answered

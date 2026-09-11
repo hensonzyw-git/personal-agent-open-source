@@ -159,6 +159,15 @@ struct AcceptanceChecklistView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(item.title).font(.callout.weight(.medium))
                         Text(item.pass).font(.footnote)
+                        if let identifier = item.expectedIdentifier {
+                            // Printed rather than left to the prose: the person
+                            // is comparing this value against what the card
+                            // shows, and a value quoted in a sentence is one
+                            // transcription away from being unchecked.
+                            Text("标识符　\(identifier)")
+                                .font(.footnote.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(.vertical, 4)
                 }

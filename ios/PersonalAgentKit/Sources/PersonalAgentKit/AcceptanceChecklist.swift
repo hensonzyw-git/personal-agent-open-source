@@ -34,19 +34,30 @@ public struct AcceptanceChecklistItem: Sendable, Equatable, Identifiable {
     /// could notice. `AcceptanceScenarioTests` now fails if a flag here and the
     /// seeded script disagree.
     public let requiresAnswerableCard: Bool
+    /// The external identifier this item is about, when the person is expected
+    /// to compare one. A field rather than a sentence for the reason the flag
+    /// above is: the 2026-09-10 review found the checklist describing a state the
+    /// build could not produce, and the first draft of `write-created` did it
+    /// again in the other direction — it promised the event identifier on a
+    /// success card's face, which §3c deliberately keeps off it.
+    /// `AcceptanceScenarioTests` now ties this value to the operation the anchor
+    /// event carries, so the expected identifier cannot drift from the seed.
+    public let expectedIdentifier: String?
 
     public init(
         id: String,
         anchorEventID: String,
         title: String,
         pass: String,
-        requiresAnswerableCard: Bool = false
+        requiresAnswerableCard: Bool = false,
+        expectedIdentifier: String? = nil
     ) {
         self.id = id
         self.anchorEventID = anchorEventID
         self.title = title
         self.pass = pass
         self.requiresAnswerableCard = requiresAnswerableCard
+        self.expectedIdentifier = expectedIdentifier
     }
 }
 
@@ -69,23 +80,31 @@ public enum AcceptanceChecklist {
             id: "write-created",
             anchorEventID: "evt_accept_002",
             title: "日历写入成功（device_result = created）",
-            pass: "卡片说日程已写入，并给出事件标识符 EKA-ACCEPT-0001。"
-                + "卡面上**不能**出现「账本」两个字，也**不能**有「仍要创建」按钮。"
+            pass: "卡片写「已创建日程」和工具名；卡面上**不能**出现「账本」两个字，"
+                + "也**不能**有「仍要创建」按钮。标识符**不在卡面上**——成功卡按"
+                + "设计把它收进长按菜单：长按这张卡，点「复制记录 ID」，值应当是"
+                + "下面这一行。",
+            expectedIdentifier: "EKA-ACCEPT-0001"
         ),
         AcceptanceChecklistItem(
             id: "write-duplicate",
             anchorEventID: "evt_accept_004",
             title: "日历查重命中（device_result = duplicate）",
             pass: "卡片说日历里已有这条日程（不是「账本已存在此记录」），"
-                + "并且有一个「仍要创建」按钮。"
+                + "并且有一个「仍要创建」按钮。标识符**不在卡面上**（成功卡同"
+                + "上）：长按卡片点「复制记录 ID」，值应当是下面这一行。",
+            expectedIdentifier: "EKA-ACCEPT-0002"
         ),
         AcceptanceChecklistItem(
             id: "review-calendar",
             anchorEventID: "evt_accept_008",
             title: "人工核对（日历域）",
             pass: "卡片说「请打开 iPhone 日历…核对这条日程」，标识符一栏写"
-                + "「事件标识符」，两个按钮是「日历里有这条日程」和「日历里没有」。",
-            requiresAnswerableCard: true
+                + "「事件标识符」，两个按钮是「日历里有这条日程」和「日历里没有」。"
+                + "标识符一栏的值应当是下面这一行——这一张是未核对的卡，"
+                + "标识符**在卡面上**（核对卡才有这个入口）。",
+            requiresAnswerableCard: true,
+            expectedIdentifier: "EKA-ACCEPT-0003"
         ),
         AcceptanceChecklistItem(
             id: "confirm-dialog",
@@ -102,8 +121,10 @@ public enum AcceptanceChecklist {
             title: "人工核对（无 domain 的旧记录）",
             pass: "卡片回落到账本措辞（「请先在飞书账本里核对这一笔」），"
                 + "并且**两个结论按钮都在**——这一张还没有被核对过。"
-                + "这是旧记录的既定行为，不是缺陷。",
-            requiresAnswerableCard: true
+                + "这是旧记录的既定行为，不是缺陷。记录 ID 一栏的值应当是"
+                + "下面这一行，记下它——重启那一项要用的就是这张卡。",
+            requiresAnswerableCard: true,
+            expectedIdentifier: "REC-ACCEPT-0002"
         ),
         AcceptanceChecklistItem(
             id: "marker-calendar",
