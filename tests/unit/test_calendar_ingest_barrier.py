@@ -42,6 +42,7 @@ from personal_data_mcp.calendar import policy
 from personal_data_mcp.calendar.ingest import ingest_events
 from personal_data_mcp.storage import db
 from personal_data_mcp.storage.engine import (
+    DatabaseIntegrityError,
     create_all,
     create_database_engine,
     session_factory,
@@ -260,6 +261,53 @@ def test_a_schema_built_without_migrations_carries_the_policy_row(tmp_path) -> N
             assert (row.min_ingest_protocol, row.ingest_mode) == (1, "normal")
         result = _ingest(sessions, [_event("ev-1")])
         assert result["upserted"] == 1
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("missing", ["row", "table"])
+def test_create_all_never_repairs_a_lost_barrier(tmp_path: Path, missing: str) -> None:
+    engine = create_database_engine(tmp_path / "lost-barrier.sqlite")
+    try:
+        create_all(engine)
+        sessions = session_factory(engine)
+        _arm_rebuild(sessions)
+        with sessions() as session:
+            # A completed rebuild removes the redundant per-device refusal.
+            policy.complete_rebuild(session, device_id="dev-1")
+            session.execute(text(
+                "DELETE FROM calendar_ingest_policy" if missing == "row"
+                else "DROP TABLE calendar_ingest_policy"
+            ))
+            session.commit()
+        with pytest.raises(DatabaseIntegrityError):
+            create_all(engine)
+        with engine.connect() as connection:
+            tables = sa_inspect(connection).get_table_names()
+            if missing == "row":
+                assert connection.execute(text(
+                    "SELECT count(*) FROM calendar_ingest_policy"
+                )).scalar_one() == 0
+            else:
+                assert "calendar_ingest_policy" not in tables
+        if missing == "row":
+            assert _refusal(lambda: _ingest(sessions, version=1)).code is ErrorCode.INTERNAL_ERROR
+    finally:
+        engine.dispose()
+
+
+def test_create_all_preserves_a_live_barrier(tmp_path: Path) -> None:
+    engine = create_database_engine(tmp_path / "live-barrier.sqlite")
+    try:
+        create_all(engine)
+        sessions = session_factory(engine)
+        _arm_rebuild(sessions)
+        create_all(engine)
+        with sessions() as session:
+            row = policy.read_policy(session)
+            assert (row.min_ingest_protocol, row.ingest_mode) == (2, "maintenance")
+        for version in (1, 2):
+            assert _refusal(lambda: _ingest(sessions, version=version)).code is ErrorCode.SOURCE_UNAVAILABLE
     finally:
         engine.dispose()
 
