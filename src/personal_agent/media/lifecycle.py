@@ -509,11 +509,19 @@ def publish_upload(
         )
     )
 
-    # §5.3's order: the file first, the row second. `publish` is
-    # non-overwriting by construction, so a final file that already exists --
-    # evidence of an earlier attempt that crashed after installing it -- stops
-    # here instead of being replaced.
-    store.publish(media_id, row.current_attempt_number)
+    # §5.3: file before row; recover a crash in between by authenticating and
+    # adopting the exact sealed stream, never by overwriting an existing file.
+    if store.final_exists(media_id):
+        # A crash can leave the durable link ahead of the database commit.
+        # Existence alone is not evidence: authenticate the full sealed stream.
+        try:
+            store.verify_ready_final(media_id, row.current_attempt_number, seal)
+        except Exception:
+            store.quarantine_final(media_id)
+            raise
+        store.discard_staging(media_id, row.current_attempt_number)
+    else:
+        store.publish(media_id, row.current_attempt_number)
 
     session.execute(
         update(MediaAttempt)

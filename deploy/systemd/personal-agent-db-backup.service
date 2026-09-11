@@ -16,10 +16,10 @@ Group=personal-agent-api
 # staged file owner-only, so the offsite backup can stat them and open none.
 UMask=0027
 EnvironmentFile=/etc/personal-agent/api.env
-ExecStart=/bin/sh -ec 'test -n "$PERSONAL_AGENT_MEDIA_ROOT"; exec /opt/personal-agent/.venv/bin/personal-agent-media-backup-bundle prepare --database /var/lib/personal-agent-api/agent.sqlite --media-root "$PERSONAL_AGENT_MEDIA_ROOT" --stage-root /var/backups/personal-agent/api'
+ExecStart=/opt/personal-agent/.venv/bin/personal-agent-media-backup-bundle prepare --database /var/lib/personal-agent-api/agent.sqlite --stage-root /var/backups/personal-agent/api
 TimeoutStartSec=300s
 
-ReadWritePaths=/var/backups/personal-agent/api /var/lib/personal-agent-api/media
+ReadWritePaths=/var/backups/personal-agent/api
 ReadOnlyPaths=/var/lib/personal-agent-api
 
 NoNewPrivileges=yes

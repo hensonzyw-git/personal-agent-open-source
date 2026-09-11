@@ -341,12 +341,13 @@ public actor ChatTimeline {
     public func send(
         parts: [ChatInputPart],
         clarificationOf: String? = nil,
-        startNewSession: Bool = false
+        startNewSession: Bool = false,
+        idempotencyKey: String? = nil
     ) async throws -> OperationReceipt {
         let id = try requireConversation()
         if let pending = try loadPending() { throw ChatError.unresolvedSend(pending) }
         var pending = PendingSend(
-            idempotencyKey: IdempotencyKey.mint(),
+            idempotencyKey: idempotencyKey ?? IdempotencyKey.mint(),
             conversationID: id,
             text: ChatInput.parts(parts).textForDisplay,
             parts: parts,

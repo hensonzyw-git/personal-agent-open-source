@@ -156,7 +156,7 @@ from personal_agent.runtime.bookkeeping_intent import (
     is_finance_retry_request,
 )
 from personal_agent.runtime.modality import ImageCapability, image_capability
-from personal_agent.runtime.model_input import InputPart
+from personal_agent.runtime.model_input import InputPart, TextInputPart
 from personal_agent.diagnostics import transcript
 from personal_agent.diagnostics.transcript import NullRecorder, Recorder, TurnIdentity
 from personal_agent.storage.models import (
@@ -450,6 +450,11 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         await drain_background_tasks()
 
     app = FastAPI(lifespan=lifespan)
+    # The service composition runs one API process. Hold admission across both
+    # receive and the disk worker, including cancellation of the HTTP request.
+    upload_slots = threading.BoundedSemaphore(
+        (deps.media_limits.max_concurrent_uploads or 1) if deps.media_limits else 1
+    )
     # Tests and embedded hosts that do not drive ASGI lifespan can still perform
     # a truthful, deterministic drain instead of sleeping and guessing.
     app.state.drain_background_tasks = drain_background_tasks
@@ -669,10 +674,25 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         # reading for a caller that is entitled to upload at all.
         auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
         store, limits = _media_ready(deps)
-        raw = await _binary_body(request, ceiling=limits.max_content_bytes)
-        return await asyncio.to_thread(
-            _receive_media_content, deps, auth, media_id, raw
-        )
+        if not upload_slots.acquire(blocking=False):
+            raise AppError(ErrorCode.MEDIA_BUSY, internal_detail="upload concurrency limit")
+        handed_off = False
+        try:
+            raw = await asyncio.wait_for(
+                _binary_body(request, ceiling=limits.max_content_bytes),
+                timeout=limits.claim_ttl.total_seconds(),
+            )
+            def receive():
+                try:
+                    return _receive_media_content(deps, auth, media_id, raw)
+                finally:
+                    upload_slots.release()
+            worker = asyncio.create_task(asyncio.to_thread(receive))
+            handed_off = True
+            return await asyncio.shield(worker)
+        finally:
+            if not handed_off:
+                upload_slots.release()
 
     @app.post("/v1/media/uploads/{media_id}/complete")
     async def post_media_complete(media_id: str, request: Request):
@@ -2782,7 +2802,7 @@ def _authorized_images(
         )
     store, limits = _media_ready(deps)
     try:
-        return read_authorized_images(
+        images = read_authorized_images(
             session,
             store=store,
             keyring=deps.keyring,
@@ -2791,6 +2811,7 @@ def _authorized_images(
             operation_id=operation_id,
             media_ids=media_ids,
         )
+        return ((TextInputPart(payload.text),) if payload.text else ()) + images
     except MediaError as error:
         raise _media_read_refusal(error) from error
 

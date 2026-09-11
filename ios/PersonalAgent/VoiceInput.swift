@@ -23,6 +23,10 @@ final class VoiceInput {
     private var resultTask: Task<Void, Never>?
     private var analysisTask: Task<Void, Never>?
     private var finalSegments: [String] = []
+    private var hasVolatileTail = false
+    private var deadlineTask: Task<Void, Never>?
+    private var finalizationTask: Task<Void, Never>?
+    private var finishWaiter: CheckedContinuation<String, Never>?
     // The notification center owns this token; it is touched only in init and
     // deinit, which Swift runs outside this class's main-actor isolation.
     nonisolated(unsafe) private var interruptionObserver: NSObjectProtocol?
@@ -51,8 +55,12 @@ final class VoiceInput {
         errorMessage = nil
         transcript = ""
         finalSegments = []
+        hasVolatileTail = false
+        armDeadline(seconds: 60, generation: generation)
         guard await microphoneAllowed() else {
-            if state.permissionResult(false, generation: generation) {
+            if state.generation == generation, state.phase == .permission {
+                _ = state.permissionResult(false, generation: generation)
+                teardown(clearTranscript: true)
                 errorMessage = "未获得麦克风权限，无法开始语音输入。"
             }
             return
@@ -88,6 +96,7 @@ final class VoiceInput {
                let request = try await AssetInventory.assetInstallationRequest(supporting: modules) {
                 try await request.downloadAndInstall()
             }
+            guard state.generation == generation, state.phase == .preparing else { return }
 
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .measurement)
@@ -96,6 +105,7 @@ final class VoiceInput {
             let format = input.outputFormat(forBus: 0)
             let analyzer = SpeechAnalyzer(modules: modules)
             try await analyzer.prepareToAnalyze(in: format)
+            guard state.generation == generation, state.phase == .preparing else { return }
             let pair = AsyncStream<AnalyzerInput>.makeStream()
             continuation = pair.continuation
             self.analyzer = analyzer
@@ -107,6 +117,7 @@ final class VoiceInput {
                 teardown(clearTranscript: true)
                 return
             }
+            armDeadline(seconds: 120, generation: generation)
             analysisTask = Task { [weak self] in
                 do {
                     try await analyzer.start(inputSequence: pair.stream)
@@ -145,16 +156,37 @@ final class VoiceInput {
         engine.stop()
         continuation?.finish()
         continuation = nil
-        if let analyzer {
-            try? await analyzer.finalizeAndFinishThroughEndOfInput()
+        let currentAnalyzer = analyzer
+        let currentAnalysis = analysisTask
+        let currentResults = resultTask
+        armDeadline(seconds: 15, generation: generation)
+        return await withCheckedContinuation { waiter in
+            finishWaiter = waiter
+            finalizationTask = Task { [weak self] in
+                do {
+                    try await currentAnalyzer?.finalizeAndFinishThroughEndOfInput()
+                    await currentAnalysis?.value
+                    await currentResults?.value
+                    guard let self, self.state.generation == generation,
+                          self.state.phase == .finalizing else { return }
+                    guard let final = self.state.acceptFinalText(
+                            self.finalSegments.joined(separator: " "), generation: generation,
+                            hasVolatileTail: self.hasVolatileTail
+                          ) else {
+                        self.errorMessage = "没有完整的最终识别结果，请重新录制。"
+                        self.teardown(clearTranscript: true)
+                        return
+                    }
+                    let completion = self.finishWaiter
+                    self.finishWaiter = nil
+                    self.teardown(clearTranscript: true)
+                    self.state.resetEditable()
+                    completion?.resume(returning: final)
+                } catch {
+                    self?.fail("语音识别未能完成，请重新录制。", generation: generation)
+                }
+            }
         }
-        await analysisTask?.value
-        await resultTask?.value
-        analyzer = nil
-        analysisTask = nil
-        resultTask = nil
-        _ = state.acceptFinalText(finalSegments.joined(separator: " "), generation: generation)
-        return consumeTranscript()
     }
 
     func cancel() {
@@ -181,6 +213,12 @@ final class VoiceInput {
     }
 
     private func teardown(clearTranscript: Bool) {
+        deadlineTask?.cancel()
+        deadlineTask = nil
+        finalizationTask?.cancel()
+        finalizationTask = nil
+        finishWaiter?.resume(returning: "")
+        finishWaiter = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         continuation?.finish()
@@ -193,6 +231,20 @@ final class VoiceInput {
         if clearTranscript {
             transcript = ""
             finalSegments = []
+            hasVolatileTail = false
+        }
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    private func armDeadline(seconds: UInt64, generation: Int) {
+        deadlineTask?.cancel()
+        deadlineTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: seconds * 1_000_000_000) }
+            catch { return }
+            guard let self, self.state.generation == generation, self.isActive else { return }
+            _ = self.state.fail(.timedOut, generation: generation)
+            self.errorMessage = "语音输入超时，请重新录制。"
+            self.teardown(clearTranscript: true)
         }
     }
 
@@ -201,6 +253,7 @@ final class VoiceInput {
               state.phase == .recording || state.phase == .finalizing
         else { return }
         if result.isFinal {
+            hasVolatileTail = false
             // We do not fabricate a confidence threshold.  If the OS presents
             // alternatives, the contract requires the user to re-record rather
             // than silently choosing one interpretation.
@@ -211,12 +264,14 @@ final class VoiceInput {
             finalSegments.append(String(result.text.characters))
             transcript = finalSegments.joined(separator: " ")
         } else {
+            hasVolatileTail = true
             transcript = (finalSegments + [String(result.text.characters)])
                 .joined(separator: " ")
         }
     }
 
     private func fail(_ message: String, generation: Int) {
+        guard state.generation == generation, isActive else { return }
         guard state.fail(.interrupted, generation: generation) else { return }
         errorMessage = message
         teardown(clearTranscript: false)

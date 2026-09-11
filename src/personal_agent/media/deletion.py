@@ -298,7 +298,20 @@ def reap_media_object(
 
     try:
         with media_locks(store.roots.root, [media_id], blocking=False):
+            from personal_agent.storage.models import MediaAttempt
+            attempts = session.scalars(select(MediaAttempt.attempt_number).where(
+                MediaAttempt.media_id == media_id
+            )).all()
+            session.execute(update(MediaAttempt).where(MediaAttempt.media_id == media_id)
+                            .values(state="abandoned", updated_at=now))
+            session.commit()
+            for attempt in attempts:
+                store.discard_staging(media_id, attempt)
+            store.discard_object_staging(media_id)
             store.discard_final(media_id)
+            store.discard_quarantine(media_id)
+            session.execute(update(MediaAttempt).where(MediaAttempt.media_id == media_id)
+                            .values(cleaned_at=now))
             result = session.execute(
                 update(MediaObject)
                 .where(

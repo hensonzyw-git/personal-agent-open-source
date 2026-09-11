@@ -161,6 +161,12 @@ def test_the_authorized_image_reaches_the_wire_byte_for_byte(provider) -> None:
     assert _body_images(provider.requests[0].content) == [PNG]
 
 
+def test_image_only_through_real_sdk_composition(provider):
+    _ask((_part(),), messages=[{"role": "user", "content": ""}])
+    assert len(provider.requests) == 1
+    assert _body_images(provider.requests[0].content) == [PNG]
+
+
 def test_the_request_goes_to_the_pinned_endpoint(provider) -> None:
     """§8.1(4): supplying `client=` must not move the URL off the pinned host."""
     _ask((TextInputPart("hi"), _part()))

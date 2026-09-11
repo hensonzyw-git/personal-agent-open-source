@@ -546,6 +546,38 @@ class MediaStore:
         _fsync_directory(final.parent)
         return True
 
+    def discard_quarantine(self, media_id: str) -> bool:
+        path = self.quarantine_path(media_id)
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISREG(info.st_mode):
+            raise MediaStoreError("quarantine entry is not a regular file")
+        path.unlink()
+        _fsync_directory(path.parent)
+        return True
+
+    def discard_object_staging(self, media_id: str) -> None:
+        """After durable object deletion, remove even crash-orphaned attempts.
+
+        The object id is never reused. Do not traverse symlinks or unknown names.
+        """
+        directory = self.staging_path(media_id, 1).parent
+        if not directory.exists() and not directory.is_symlink():
+            return
+        if directory.is_symlink() or not directory.is_dir():
+            raise MediaStoreError("foreign staging directory")
+        for path in directory.iterdir():
+            if (path.suffix != ".part" or not path.stem.isdecimal()
+                    or int(path.stem) < 1 or str(int(path.stem)) != path.stem
+                    or not stat.S_ISREG(path.lstat().st_mode)):
+                raise MediaStoreError("foreign staging entry")
+            path.unlink()
+        _fsync_directory(directory)
+        directory.rmdir()
+        _fsync_directory(directory.parent)
+
     def _require_regular_file(self, path: Path, what: str) -> None:
         try:
             info = os.lstat(path)

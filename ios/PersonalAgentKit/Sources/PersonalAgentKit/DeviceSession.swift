@@ -589,7 +589,11 @@ extension DeviceSession: ChatBackend {}
 /// The media pipeline uses the same token and one-refresh policy as chat, but
 /// has its own narrow protocol so the upload helper cannot learn any of the
 /// operation or Timeline APIs.
-extension DeviceSession: MediaUploadBackend {}
+extension DeviceSession: MediaUploadBackend {
+    public func readMedia(mediaID: String) async throws -> Data {
+        try await authorized { try await self.client.readMedia(mediaID: mediaID, token: $0) }
+    }
+}
 
 /// `DEV-031`: the review surface, same reasoning as above.
 extension DeviceSession: ReviewBackend {}

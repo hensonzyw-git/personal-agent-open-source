@@ -1,0 +1,19 @@
+[Unit]
+Description=Personal Agent bounded media retention and deletion
+After=personal-agent-api.service
+
+[Service]
+Type=oneshot
+User=personal-agent-api
+Group=personal-agent-api
+EnvironmentFile=/etc/personal-agent/api.env
+ExecStart=/opt/personal-agent/.venv/bin/python -m personal_agent.media.cleanup --database /var/lib/personal-agent-api/agent.sqlite
+TimeoutStartSec=120s
+ReadWritePaths=/var/lib/personal-agent-api
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX
+

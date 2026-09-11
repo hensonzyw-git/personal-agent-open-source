@@ -38,7 +38,7 @@ UNIT_DIR=/etc/systemd/system
 # verification through restic, so the producer/GC cannot switch or reclaim the
 # run under a consumer that has already checked it.
 BUNDLE_STAGE="$STAGING/api"
-BUNDLE_LOCK="$BUNDLE_STAGE/media-bundle.lock"
+BUNDLE_LOCK="$STAGING/media-bundle.lock"
 
 # DEV-036 idempotency is one successful offsite snapshot per Shanghai calendar
 # day. systemd serialises starts of this unit, while flock also covers an

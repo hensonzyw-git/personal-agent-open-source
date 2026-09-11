@@ -2,6 +2,7 @@ import PersonalAgentKit
 import PhotosUI
 import SwiftUI
 import UIKit
+import AVFoundation
 
 /// `DEV-030`'s chat screen: one continuous Timeline, cursor-paged history, and a
 /// structured receipt under each message.
@@ -36,6 +37,7 @@ struct ChatView: View {
     @State private var copiedPrefix: String?
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var voiceInput = VoiceInput()
+    @State private var showingCamera = false
 
     struct ResolutionIntent: Equatable {
         let operationID: String
@@ -52,6 +54,12 @@ struct ChatView: View {
             composer
         }
         .background(Color.screenBackground)
+        .sheet(isPresented: $showingCamera) {
+            CameraInput { data in
+                showingCamera = false
+                if let data { model.preparePhoto(data) }
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             // Backgrounded audio is never kept as an implicit recording or
             // transformed into a partial draft after the user returns.
@@ -345,6 +353,9 @@ struct ChatView: View {
         switch event.kind {
         case .userMessage(let text, let clarificationOf):
             VStack(alignment: .trailing, spacing: 2) {
+                ForEach(event.imageMediaIDs, id: \.self) { mediaID in
+                    TimelinePhoto(mediaID: mediaID, model: model)
+                }
                 Text(text)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14)
@@ -1920,6 +1931,14 @@ struct ChatView: View {
                 // because the only actionable card was a screen away).
                 unresolvedCard(pending)
             }
+            if model.hasPendingPhotoSend && model.unresolved == nil {
+                HStack {
+                    Text("图片发送尚未完成").font(.caption)
+                    Button("继续") { Task { await model.resumeUnresolved() } }
+                    Button("放弃本地图片") { Task { await model.discardUnsentPhoto() } }
+                }
+                .disabled(model.busy)
+            }
             if let photo = model.preparedPhoto,
                let preview = UIImage(data: photo.data) {
                 HStack(spacing: 8) {
@@ -1940,6 +1959,23 @@ struct ChatView: View {
                 TextField("记一笔，或问一句", text: $model.draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
+                Button {
+                    Task {
+                        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+                            model.lastError = "当前设备没有可用相机。"
+                            return
+                        }
+                        guard await AVCaptureDevice.requestAccess(for: .video) else {
+                            model.lastError = "没有相机权限，请在系统设置中允许访问。"
+                            return
+                        }
+                        showingCamera = true
+                    }
+                } label: {
+                    Image(systemName: "camera").font(.title3)
+                }
+                .disabled(model.busy || writingInProgress || !model.imageCapability.enabled)
+                .accessibilityLabel("拍照")
                 PhotosPicker(selection: $selectedPhoto, matching: .images) {
                     Image(systemName: "paperclip")
                         .font(.title3)

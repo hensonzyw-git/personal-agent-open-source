@@ -97,6 +97,9 @@ def _media(root: Path):
         CLAIM_TTL_ENV: "600",
         RETENTION_TTL_ENV: "604800",
         IMAGE_PIXELS_PER_TOKEN_ENV: "750",
+        "PERSONAL_AGENT_MEDIA_MAX_TOTAL_BYTES": "1073741824",
+        "PERSONAL_AGENT_MEDIA_MAX_UNBOUND_OBJECTS": "20",
+        "PERSONAL_AGENT_MEDIA_MAX_CONCURRENT_UPLOADS": "2",
     }
     configured = media_config_from_env(environ)
     assert configured is not None

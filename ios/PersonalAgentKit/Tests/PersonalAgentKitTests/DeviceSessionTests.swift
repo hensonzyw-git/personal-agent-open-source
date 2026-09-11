@@ -166,7 +166,8 @@ struct DeviceSessionTests {
         store: CredentialStore = InMemoryCredentialStore(),
         clock: @escaping @Sendable () -> Date = { Date(timeIntervalSince1970: 1_000) }
     ) throws -> DeviceSession {
-        DeviceSession(client: try stubbedClient(), store: store, now: clock)
+        DeviceSession(client: try stubbedClient(), store: store,
+                      identityFactory: .softwareForTests, now: clock)
     }
 
     @Test("enrollment persists the device and a later launch restores it")

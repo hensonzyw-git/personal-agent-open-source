@@ -123,7 +123,16 @@ chgrp "$BACKUP_USER" /var/backups/personal-agent/api /var/backups/personal-agent
 # backup identity. The lock is installed by root: neither identity may replace
 # it, but both can open it through the group-readable staging directory.
 install -d -m 2750 -o "$API_USER" -g "$BACKUP_USER" /var/backups/personal-agent/api/media-runs
-install -m 0644 -o root -g root /dev/null /var/backups/personal-agent/api/media-bundle.lock
+chown root:root /var/backups/personal-agent
+chmod 0755 /var/backups/personal-agent
+# Never reinstall an existing lock: preserve its inode across upgrades.
+if [ ! -e /var/backups/personal-agent/media-bundle.lock ]; then
+  install -m 0444 -o root -g root /dev/null /var/backups/personal-agent/media-bundle.lock
+fi
+test ! -L /var/backups/personal-agent/media-bundle.lock
+test -f /var/backups/personal-agent/media-bundle.lock
+chown root:root /var/backups/personal-agent/media-bundle.lock
+chmod 0444 /var/backups/personal-agent/media-bundle.lock
 # The restic cache is the only path the backup unit writes.
 install -d -m 0700 -o "$BACKUP_USER" -g "$BACKUP_USER" /var/cache/restic
 # DEV-036: backup observation state. The backup unit writes the success marker
@@ -178,7 +187,9 @@ install -m 0644 -o root -g root \
   "$UNIT_SRC/personal-agent-review.service" \
   "$UNIT_SRC/personal-agent-review.timer" \
   "$UNIT_SRC/personal-agent-cleanup.service" \
-  "$UNIT_SRC/personal-agent-cleanup.timer" /etc/systemd/system/
+  "$UNIT_SRC/personal-agent-cleanup.timer" \
+  "$UNIT_SRC/personal-agent-media-cleanup.service" \
+  "$UNIT_SRC/personal-agent-media-cleanup.timer" /etc/systemd/system/
 # The backup script is executed by the backup user from /opt/personal-agent.
 # /opt/personal-agent exists (created above), but its deploy/ subdir does not
 # until the first DEV-035 install, so create it here.

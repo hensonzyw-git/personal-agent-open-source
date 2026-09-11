@@ -241,6 +241,20 @@ public struct AgentClient: Sendable {
         )
     }
 
+    public func readMedia(mediaID: String, token: String) async throws -> Data {
+        guard UUID(uuidString: mediaID) != nil,
+              let url = Self.url(path: "/v1/media/\(mediaID)", query: [], relativeTo: baseURL)
+        else { throw AgentClientError.malformedResponse }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw AgentClientError.malformedResponse }
+        guard http.statusCode == 200 else {
+            throw AgentClientError.from(status: http.statusCode, body: data)
+        }
+        return data
+    }
+
     /// Correct one recorded expense's 分类, from the receipt card's picker.
     ///
     /// `expectedCurrentCategory` is the compare-and-swap and is **not**

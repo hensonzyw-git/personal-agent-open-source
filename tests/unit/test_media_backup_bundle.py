@@ -64,7 +64,7 @@ def _media_root(tmp_path: Path, keyring: KeyRing) -> MediaStore:
 def _stage_root(tmp_path: Path) -> Path:
     root = tmp_path / "stage"
     (root / "media-runs").mkdir(parents=True)
-    (root / "media-bundle.lock").touch()
+    (root.parent / "media-bundle.lock").touch()
     return root
 
 
@@ -111,6 +111,66 @@ def test_bundle_captures_only_snapshot_referenced_ciphertext(tmp_path: Path, key
     assert check_media_bundle_media(prepared.path / "agent.sqlite", keyring, prepared.path) == {
         "name": "media_bundle", "ok": True, "detail": "authenticated_media=1"
     }
+    engine.dispose()
+
+
+def test_ready_media_without_current_attempt_fails_restore(tmp_path, keyring):
+    database = tmp_path / "agent.sqlite"
+    engine = _database(database)
+    store = _media_root(tmp_path, keyring)
+    media_id = _ready_media(engine, store, keyring)
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE media_objects SET current_attempt_number=99 WHERE media_id=:id"),
+                           {"id": media_id})
+    assert not check_media_bundle_media(database, keyring, tmp_path)["ok"]
+    engine.dispose()
+
+
+def test_text_only_backup_and_local_run_retention(tmp_path, keyring):
+    database = tmp_path / "agent.sqlite"
+    engine = _database(database)
+    stage = _stage_root(tmp_path)
+    first = prepare_media_bundle(database=database, media_root=None, stage_root=stage)
+    second = prepare_media_bundle(database=database, media_root=None, stage_root=stage)
+    assert not first.path.exists()
+    assert verify_published_media_bundle(stage) == second
+    engine.dispose()
+
+
+def test_restore_replays_new_manifest_and_physically_removes_deleted_media(tmp_path, keyring):
+    from personal_agent.media.deletion import mark_media_deleting
+    from personal_agent.backup.deletion_manifest import export_manifest
+    from personal_agent.backup.restore_verify import run_all
+    database = tmp_path / "agent.sqlite"
+    engine = _database(database)
+    store = _media_root(tmp_path, keyring)
+    media_id = _ready_media(engine, store, keyring)
+    stage = _stage_root(tmp_path)
+    bundle = prepare_media_bundle(database=database, media_root=store.roots.root, stage_root=stage)
+    with session_factory(engine)() as session:
+        mark_media_deleting(session, media_id=media_id, keyring=keyring, now=NOW)
+        session.commit()
+        latest = export_manifest(session)
+    results = run_all(bundle.path / "agent.sqlite", keyring,
+                      manifest_entries=latest, media_bundle=bundle.path)
+    assert all(result["ok"] for result in results), results
+    assert not (bundle.path / "media" / f"{media_id}.bin").exists()
+    restored = bundle.path.parent / ("restored-media-" + bundle.path.name)
+    assert not (restored / "final" / media_id[:2] / f"{media_id}.bin").exists()
+    engine.dispose()
+
+
+def test_publish_adopts_authenticated_final_after_database_rollback(tmp_path, keyring):
+    engine = _database(tmp_path / "agent.sqlite")
+    store = _media_root(tmp_path, keyring)
+    media_id = _ready_media(engine, store, keyring)
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE media_objects SET state='uploaded' WHERE media_id=:id"),
+                           {"id": media_id})
+    with session_factory(engine)() as session:
+        assert publish_upload(session, media_id=media_id, device_id="device",
+                              store=store, keyring=keyring, now=NOW).value == "published"
+        session.commit()
     engine.dispose()
 
 

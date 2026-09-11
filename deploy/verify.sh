@@ -280,10 +280,11 @@ expect_success "backup user can verify the published media bundle" \
     verify --stage-root /var/backups/personal-agent/api
 expect_success "backup user can OPEN staged mcp finance snapshot" \
   sudo -u "$BACKUP_USER" head -c 1 /var/backups/personal-agent/mcp/finance.latest.sqlite
-if [ "$(stat -c %U:%G:%a /var/backups/personal-agent/api/media-bundle.lock)" = "root:root:644" ]; then
+if [ "$(stat -c %U:%G:%a /var/backups/personal-agent/media-bundle.lock)" = "root:root:444" ] &&
+   [ "$(stat -c %U:%G:%a /var/backups/personal-agent)" = "root:root:755" ]; then
   pass "media bundle lock is root-owned and openable by both producer and consumer"
 else
-  fail "media bundle lock permissions are $(stat -c %U:%G:%a /var/backups/personal-agent/api/media-bundle.lock), want root:root:644"
+  fail "media bundle lock or parent is replaceable; run install.sh"
 fi
 # The API bundle's parent and run directory deliberately are not group-writable:
 # read access is enough for restic, while group write would let the backup
@@ -322,6 +323,11 @@ expect_success "personal-agent-cleanup.timer enabled" \
   systemctl is-enabled --quiet personal-agent-cleanup.timer
 expect_success "personal-agent-cleanup.timer active" \
   systemctl is-active --quiet personal-agent-cleanup.timer
+expect_success "personal-agent-media-cleanup.timer enabled" \
+  systemctl is-enabled --quiet personal-agent-media-cleanup.timer
+expect_success "personal-agent-media-cleanup.timer active" \
+  systemctl is-active --quiet personal-agent-media-cleanup.timer
+expect_oneshot_succeeded personal-agent-media-cleanup.service
 expect_oneshot_succeeded personal-agent-review.service
 expect_oneshot_succeeded personal-agent-cleanup.service
 expect_oneshot_succeeded personal-agent-backup.service

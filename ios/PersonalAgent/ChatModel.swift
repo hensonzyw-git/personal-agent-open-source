@@ -19,6 +19,7 @@ final class ChatModel {
         let text: String
         let clarificationOf: String?
         let startNewSession: Bool
+        var chatKey: String?
     }
     /// Oldest-to-newest, exactly as the server ordered it.
     var events: [TimelineEvent] = []
@@ -76,6 +77,7 @@ final class ChatModel {
     /// An unresolved message this launch inherited. Shown rather than hidden: it
     /// may hold a write nobody has confirmed yet.
     var unresolved: ChatTimeline.PendingSend?
+    private(set) var hasPendingPhotoSend = false
     /// `DEV-031`. Decisions submitted whose reply never arrived, keyed by check
     /// id so a card can show "已提交，待确认" instead of offering the choice
     /// again — offering it would be refused by the server anyway.
@@ -120,6 +122,7 @@ final class ChatModel {
 
     private let timeline: ChatTimeline
     private let mediaUploads: MediaUploadCoordinator
+    private let mediaBackend: any MediaUploadBackend
     private let store: CredentialStore
     private let describe: @MainActor (Error) -> String
 
@@ -131,6 +134,7 @@ final class ChatModel {
     ) {
         self.timeline = timeline
         self.mediaUploads = MediaUploadCoordinator(backend: mediaBackend)
+        self.mediaBackend = mediaBackend
         self.store = store
         self.describe = describe
         // The trail survives for exactly one round trip: it starts when a send
@@ -241,6 +245,16 @@ final class ChatModel {
     }
 
     func send() async {
+        guard !busy else { return }
+        do {
+            if try loadPendingPhotoSend() != nil {
+                await resumeUnresolved()
+                return
+            }
+        } catch {
+            lastError = describe(error)
+            return
+        }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let photo = preparedPhoto
         guard !text.isEmpty || photo != nil else { return }
@@ -310,8 +324,28 @@ final class ChatModel {
         }
     }
 
+    func readPhoto(_ mediaID: String) async throws -> Data {
+        try await mediaBackend.readMedia(mediaID: mediaID)
+    }
+
     func clearPreparedPhoto() {
         preparedPhoto = nil
+    }
+
+    func discardUnsentPhoto() async {
+        guard !busy else { return }
+        do {
+            guard try await timeline.pendingSend() == nil else {
+                lastError = "消息已提交，需先确认消息结果，不能放弃图片后重新发送。"
+                return
+            }
+            if let pending = try loadPendingPhotoSend() {
+                try clearPendingPhotoSend(pending)
+            }
+            preparedPhoto = nil
+            lastError = nil
+        } catch { lastError = describe(error) }
+        await mirrorPendingSlots()
     }
 
     func appendVoiceDraft(_ transcript: String) {
@@ -349,6 +383,10 @@ final class ChatModel {
     }
 
     private func continuePendingPhotoSend(_ pending: inout PendingPhotoSend) async throws -> OperationReceipt {
+        if pending.chatKey == nil {
+            pending.chatKey = IdempotencyKey.mint()
+            try savePendingPhotoSend(pending)
+        }
         let bytes = try PhotoStaging.read(pending.localPath)
         pending.upload = try await mediaUploads.create(pending.upload)
         try savePendingPhotoSend(pending)
@@ -363,7 +401,8 @@ final class ChatModel {
         let receipt = try await timeline.send(
             parts: parts,
             clarificationOf: pending.clarificationOf,
-            startNewSession: pending.startNewSession
+            startNewSession: pending.startNewSession,
+            idempotencyKey: pending.chatKey
         )
         try clearPendingPhotoSend(pending)
         return receipt
@@ -406,7 +445,12 @@ final class ChatModel {
         liveStages = []
         defer { busy = false; liveStages = [] }
         do {
-            liveReceipt = try await timeline.resume()
+            if let receipt = try await timeline.resume() {
+                liveReceipt = receipt
+                if let photo = try loadPendingPhotoSend() { try clearPendingPhotoSend(photo) }
+            } else {
+                liveReceipt = try await resumePendingPhotoSend()
+            }
             try await timeline.syncNewer()
             await mirror()
             lastError = nil
@@ -647,6 +691,7 @@ final class ChatModel {
     private func mirrorPendingSlots() async {
         do {
             unresolved = try await timeline.pendingSend()
+            hasPendingPhotoSend = try loadPendingPhotoSend() != nil
         } catch {
             report(error)
         }

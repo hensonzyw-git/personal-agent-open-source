@@ -19,7 +19,9 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="action", required=True)
     prepare = subparsers.add_parser("prepare")
     prepare.add_argument("--database", type=Path, required=True)
-    prepare.add_argument("--media-root", type=Path, required=True)
+    import os
+    prepare.add_argument("--media-root", type=Path,
+                         default=os.environ.get("PERSONAL_AGENT_MEDIA_ROOT") or None)
     prepare.add_argument("--stage-root", type=Path, required=True)
     verify = subparsers.add_parser("verify")
     group = verify.add_mutually_exclusive_group(required=True)

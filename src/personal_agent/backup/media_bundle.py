@@ -20,7 +20,7 @@ import stat
 import tempfile
 import uuid
 import fcntl
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -144,7 +144,9 @@ def _atomic_json(path: Path, body: dict[str, Any]) -> None:
 def _bundle_lock(stage_root: Path, mode: int) -> Iterator[None]:
     import fcntl
 
-    lock = stage_root / BUNDLE_LOCK_NAME
+    # The staging directory is API-owned. Its parent is root-owned in deploy,
+    # so neither producer nor consumer can replace this lock's inode.
+    lock = stage_root.parent / BUNDLE_LOCK_NAME
     fd = _open_regular_readonly(lock, label="bundle lock")
     try:
         fcntl.flock(fd, mode)
@@ -157,7 +159,7 @@ def _bundle_lock(stage_root: Path, mode: int) -> Iterator[None]:
 
 
 def prepare_media_bundle(
-    *, database: Path, media_root: Path, stage_root: Path
+    *, database: Path, media_root: Path | None, stage_root: Path
 ) -> PreparedMediaBundle:
     """Create and atomically publish one complete backup bundle.
 
@@ -177,9 +179,19 @@ def prepare_media_bundle(
         raise MediaBundleError(f"refusing to reuse bundle id {run_id}")
 
     with _bundle_lock(stage_root, fcntl.LOCK_EX):
+        # No producer or consumer can still use an incomplete run while we hold
+        # this lock. Only remove this tool's exact UUID namespace; never follow
+        # a symlink or recurse into an unknown directory.
+        for path in runs.iterdir():
+            suffix = path.name.removeprefix(".incomplete-")
+            if path.name.startswith(".incomplete-") and _RUN_ID.fullmatch(suffix):
+                if path.is_symlink() or not path.is_dir():
+                    raise MediaBundleError("foreign incomplete run entry")
+                shutil.rmtree(path)
         temporary.mkdir(mode=0o700)
         try:
-            with media_locks(Path(media_root), exclusive_storage=True):
+            with (media_locks(Path(media_root), exclusive_storage=True)
+                  if media_root is not None else nullcontext()):
                 snapshot = temporary / "agent.sqlite"
                 online_backup(database, snapshot, mode=STAGED_SNAPSHOT_MODE)
                 engine = create_database_engine(snapshot)
@@ -196,6 +208,8 @@ def prepare_media_bundle(
                 _atomic_json(temporary / "deletion-manifest.json", {"entries": manifest})
 
                 media_entries: list[dict[str, Any]] = []
+                if rows and media_root is None:
+                    raise MediaBundleError("live media exists but media root is unconfigured")
                 for media_id in rows:
                     source = Path(media_root) / "final" / media_id[:2] / f"{media_id}.bin"
                     relative = Path("media") / f"{media_id}.bin"
@@ -213,6 +227,21 @@ def prepare_media_bundle(
             os.rename(temporary, final)
             _fsync_directory(runs)
             _atomic_json(stage_root / LATEST_NAME, {"format": BUNDLE_FORMAT, "run_id": run_id})
+            # The consumer holds the same lock for the whole restic run.
+            # After publication only the new run is needed locally; offsite
+            # retention remains restic's separately governed policy.
+            for old in runs.iterdir():
+                if old.name != run_id and _RUN_ID.fullmatch(old.name):
+                    if old.is_symlink() or not old.is_dir():
+                        raise MediaBundleError("foreign old run entry")
+                    # A corrupted old snapshot must not block retention forever.
+                    # Ownership is its exact manifest/run-id, not checksum validity.
+                    _regular(old / "manifest.json", label="old run ownership marker")
+                    marker = json.loads((old / "manifest.json").read_text())
+                    if marker.get("run_id") != old.name or marker.get("format") != BUNDLE_FORMAT:
+                        raise MediaBundleError("old run ownership marker mismatch")
+                    shutil.rmtree(old)
+            _fsync_directory(runs)
             return PreparedMediaBundle(run_id=run_id, path=final)
         except BaseException:
             shutil.rmtree(temporary, ignore_errors=True)

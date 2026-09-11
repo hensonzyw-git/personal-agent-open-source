@@ -56,6 +56,9 @@ def _configured(root: Path, **overrides) -> dict[str, str]:
         CLAIM_TTL_ENV: "600",
         RETENTION_TTL_ENV: "604800",
         IMAGE_PIXELS_PER_TOKEN_ENV: "750",
+        "PERSONAL_AGENT_MEDIA_MAX_TOTAL_BYTES": "1073741824",
+        "PERSONAL_AGENT_MEDIA_MAX_UNBOUND_OBJECTS": "20",
+        "PERSONAL_AGENT_MEDIA_MAX_CONCURRENT_UPLOADS": "2",
     }
     environ.update(overrides)
     return environ

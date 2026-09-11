@@ -96,6 +96,11 @@ def _attempt(body: bytes) -> A2Witness:
     return witness
 
 
+def test_image_only_is_a_valid_wire_message():
+    verify(_attempt(_body(("image", "image/png"))),
+           expected_images=(_png_part(),), prompt_tokens=451)
+
+
 class _Request:
     """The parts of an httpx.Request the witness touches."""
 

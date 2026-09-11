@@ -135,6 +135,85 @@ def digest_of(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
+def test_quota_is_reserved_at_create_and_replay_does_not_reserve_twice(session, keyring):
+    from dataclasses import replace
+    bounded = replace(LIMITS, max_total_bytes=200000, max_unbound_objects=1)
+    declaration = UploadDeclaration(mime="image/jpeg", size=16, sha256=digest_of(jpeg(16)),
+                                    width=1, height=1)
+    kwargs = dict(keyring=keyring, device_id="dev", declaration=declaration,
+                  limits=bounded, now=NOW)
+    first = start_upload(session, client_request_id="quota-first", **kwargs)
+    session.commit()
+    assert start_upload(session, client_request_id="quota-first", **kwargs).media_id == first.media_id
+    with pytest.raises(MediaBusyError):
+        start_upload(session, client_request_id="quota-second", **kwargs)
+
+
+def test_disk_quota_refuses_before_creating_a_row(session, keyring):
+    from dataclasses import replace
+    bounded = replace(LIMITS, max_total_bytes=1, max_unbound_objects=10)
+    with pytest.raises(MediaBusyError):
+        start_upload(session, keyring=keyring, device_id="dev", client_request_id="no-space",
+                     declaration=UploadDeclaration(mime="image/jpeg", size=16,
+                         sha256=digest_of(jpeg(16)), width=1, height=1),
+                     limits=bounded, now=NOW)
+
+
+def test_concurrent_creates_cannot_overbook_unbound_quota(engine, keyring):
+    from concurrent.futures import ThreadPoolExecutor
+    from dataclasses import replace
+    from threading import Barrier
+    from personal_agent_core.sqlite import run_write_transaction
+    barrier = Barrier(2)
+    bounded = replace(LIMITS, max_unbound_objects=1, max_total_bytes=1000000)
+    def create(index):
+        barrier.wait(timeout=5)
+        with session_factory(engine)() as session:
+            try:
+                run_write_transaction(session, lambda: start_upload(
+                    session, keyring=keyring, device_id="dev", client_request_id=f"parallel-{index}",
+                    declaration=UploadDeclaration(mime="image/jpeg", size=16,
+                        sha256=digest_of(jpeg(16)), width=1, height=1),
+                    limits=bounded, now=NOW))
+                return "created"
+            except MediaBusyError:
+                return "refused"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(create, range(2))) == ["created", "refused"]
+
+
+def test_periodic_worker_expires_uploads_and_removes_all_bytes(engine, session, store, keyring):
+    from personal_agent.media.cleanup import cleanup_media
+    declaration = UploadDeclaration(mime="image/jpeg", size=16, sha256=digest_of(jpeg(16)),
+                                    width=1, height=1)
+    created = start_upload(session, keyring=keyring, device_id="dev",
+                           client_request_id="expire", declaration=declaration,
+                           limits=LIMITS, now=NOW)
+    session.commit()
+    receive_upload(session, store=store, keyring=keyring, media_id=created.media_id,
+                   device_id="dev", body=jpeg(16), limits=LIMITS, now=NOW)
+    session.commit()
+    outcome = cleanup_media(session_factory(engine), store=store, keyring=keyring,
+                            limits=LIMITS, now=NOW + timedelta(days=8))
+    assert outcome["processed"] == 1
+    assert not store.staging_path(created.media_id, 1).exists()
+    assert not store.final_path(created.media_id).exists()
+
+
+def test_retention_removes_staging_without_an_attempt_row(engine, session, store, keyring):
+    from personal_agent.media.cleanup import cleanup_media
+    created = start_upload(session, keyring=keyring, device_id="dev", client_request_id="orphan",
+        declaration=UploadDeclaration(mime="image/jpeg", size=16,
+            sha256=digest_of(jpeg(16)), width=1, height=1), limits=LIMITS, now=NOW)
+    session.commit()
+    # Simulates a historical process dying after writing but before claim commit.
+    store.write_staging(created.media_id, 1, [jpeg(16)])
+    result = cleanup_media(session_factory(engine), store=store, keyring=keyring,
+                           limits=LIMITS, now=NOW + timedelta(days=1))
+    assert result["processed"] == 1
+    assert not store.staging_path(created.media_id, 1).exists()
+
+
 def _declaration(body: bytes = b"", **overrides) -> UploadDeclaration:
     body = body or jpeg(16)
     kwargs = {
@@ -410,7 +489,7 @@ def test_an_expired_claim_is_taken_over_with_a_new_attempt(session, store, keyri
     ).all()
     # The abandoned attempt survives rather than being overwritten: it owns the
     # staging bytes the cleanup path has to find.
-    assert attempts == [(1, "claimed"), (2, "sealed")]
+    assert attempts == [(1, "abandoned"), (2, "sealed")]
 
 
 # --- upload: the happy path -----------------------------------------------

@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Final
 
-from sqlalchemy import select
+from sqlalchemy import select, func, update
 from sqlalchemy.orm import Session
 
 from personal_agent.media.container import DEFAULT_CHUNK_BYTES
@@ -67,7 +67,7 @@ from personal_agent.media.lifecycle import (
 from personal_agent.media.locking import MediaLockError, media_locks
 from personal_agent.media.probe import PROBE_BYTES, ProbeError, probe_header
 from personal_agent.media.store import MediaStore
-from personal_agent.storage.models import MediaObject
+from personal_agent.storage.models import MediaObject, MediaAttempt
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.ids import new_id
 
@@ -113,10 +113,9 @@ class MediaGoneError(MediaError):
 class MediaLimits:
     """The engineering ceilings of §4.3, as configuration rather than defaults.
 
-    No field has a default here on purpose. §4.3 makes these versioned
-    configuration, and a dataclass that invents a value for an unset one is a
-    policy nobody chose -- the failure mode the design names for the budget
-    coefficient in §8 applies to every one of these.
+    Production configuration supplies every ceiling, without invented resource
+    budgets. Optional quota fields preserve existing low-level fixture calls;
+    the production environment reader does not compose media without them.
     """
 
     max_content_bytes: int
@@ -141,6 +140,11 @@ class MediaLimits:
     #: the mode is the deployment's own, so it is folded into this one number
     #: rather than modelled as a second axis nothing can vary.
     image_pixels_per_token: int
+    # None is only for legacy library fixtures. Production config requires all
+    # three ceilings before composing the media surface.
+    max_total_bytes: int | None = None
+    max_unbound_objects: int | None = None
+    max_concurrent_uploads: int | None = None
 
     def __post_init__(self) -> None:
         if self.image_pixels_per_token < 1:
@@ -358,6 +362,20 @@ def start_upload(
         if replayed is not None:
             return replayed
 
+    # Reserve space at create, within the caller's retried write transaction.
+    # Conservative encrypted-container allowance, including interrupted staging.
+    reserved = session.scalar(select(func.coalesce(
+        func.sum((MediaObject.declared_size + 65536) * 2), 0
+    )).where(MediaObject.state != "deleted"))
+    if limits.max_total_bytes is not None and (
+        reserved + (declaration.size + 65536) * 2 > limits.max_total_bytes
+    ):
+        raise MediaBusyError("media storage quota exhausted")
+    unbound = session.scalar(select(func.count()).select_from(MediaObject).where(
+        MediaObject.state.not_in(("bound", "deleted"))
+    ))
+    if limits.max_unbound_objects is not None and unbound >= limits.max_unbound_objects:
+        raise MediaBusyError("unbound media quota exhausted")
     expires_at = now + limits.target_ttl
     created = create_upload(
         session,
@@ -446,6 +464,19 @@ def receive_upload(
     owner_token = new_id()
     try:
         with media_locks(store.roots.root, [media_id], blocking=False):
+            current = read_media_row(session, media_id)
+            if current is not None and current.state == "pending" and current.expires_at <= now:
+                raise MediaGoneError("upload target expired")
+            if (current is not None and current.state == "uploading"
+                    and current.claim_deadline is not None and current.claim_deadline <= now
+                    and current.current_attempt_number is not None):
+                old_attempt = current.current_attempt_number
+                session.execute(update(MediaAttempt).where(
+                    MediaAttempt.media_id == media_id,
+                    MediaAttempt.attempt_number == old_attempt,
+                ).values(state="abandoned", updated_at=now))
+                session.commit()
+                store.discard_staging(media_id, old_attempt)
             attempt = claim_upload(
                 session,
                 media_id=media_id,
@@ -454,6 +485,9 @@ def receive_upload(
                 now=now,
                 claim_deadline=now + limits.claim_ttl,
             )
+            # Persist ownership before writing bytes so a crashed process leaves
+            # a discoverable attempt rather than unowned encrypted staging.
+            session.commit()
             try:
                 mime = probe_header(
                     body[:PROBE_BYTES],
@@ -517,6 +551,21 @@ def _reject(session: Session, *, media_id: str, now: datetime) -> None:
 
 
 def complete_upload(
+    session: Session, *, store: MediaStore, keyring: KeyRing, media_id: str,
+    device_id: str, limits: MediaLimits, now: datetime,
+) -> CompletedUpload:
+    session.rollback()
+    try:
+        with media_locks(store.roots.root, [media_id], blocking=False):
+            return _complete_upload_locked(
+                session, store=store, keyring=keyring, media_id=media_id,
+                device_id=device_id, limits=limits, now=now,
+            )
+    except MediaLockError as exc:
+        raise MediaBusyError("media publication is busy") from exc
+
+
+def _complete_upload_locked(
     session: Session,
     *,
     store: MediaStore,

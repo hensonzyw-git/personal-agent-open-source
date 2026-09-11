@@ -34,7 +34,7 @@ def main() -> None:
         help="the deletion-manifest export JSON to replay",
     )
     parser.add_argument(
-        "--media-bundle", type=Path, required=True,
+        "--media-bundle", type=Path,
         help="the verified restored media run containing ciphertext files",
     )
     parser.add_argument(
@@ -47,6 +47,10 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    if args.media_bundle is not None and args.manifest.resolve().is_relative_to(
+        args.media_bundle.resolve()
+    ):
+        raise SystemExit("use an independently held latest deletion manifest, not the bundle copy")
 
     keyring = load_agent_data_keyring()
     manifest_payload = json.loads(args.manifest.read_text(encoding="utf-8"))

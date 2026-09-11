@@ -70,8 +70,14 @@ RETENTION_TTL_ENV = "PERSONAL_AGENT_MEDIA_RETENTION_TTL_SECONDS"
 #: cost has not decided to serve images, and a default here would be this
 #: module choosing that policy on the operator's behalf.
 IMAGE_PIXELS_PER_TOKEN_ENV = "PERSONAL_AGENT_MEDIA_IMAGE_PIXELS_PER_TOKEN"
+TOTAL_BYTES_ENV = "PERSONAL_AGENT_MEDIA_MAX_TOTAL_BYTES"
+UNBOUND_ENV = "PERSONAL_AGENT_MEDIA_MAX_UNBOUND_OBJECTS"
+CONCURRENT_ENV = "PERSONAL_AGENT_MEDIA_MAX_CONCURRENT_UPLOADS"
 
 _REQUIRED_ENV = (
+    TOTAL_BYTES_ENV,
+    UNBOUND_ENV,
+    CONCURRENT_ENV,
     MAX_CONTENT_ENV,
     MAX_DIMENSION_ENV,
     ALLOWED_MIMES_ENV,
@@ -104,6 +110,9 @@ class MediaConfig:
     claim_ttl: timedelta
     retention_ttl: timedelta
     image_pixels_per_token: int
+    max_total_bytes: int
+    max_unbound_objects: int
+    max_concurrent_uploads: int
 
     def limits(self) -> MediaLimits:
         return MediaLimits(
@@ -114,6 +123,9 @@ class MediaConfig:
             claim_ttl=self.claim_ttl,
             retention_ttl=self.retention_ttl,
             image_pixels_per_token=self.image_pixels_per_token,
+            max_total_bytes=self.max_total_bytes,
+            max_unbound_objects=self.max_unbound_objects,
+            max_concurrent_uploads=self.max_concurrent_uploads,
         )
 
     def store(self, keyring: KeyRing) -> MediaStore:
@@ -179,6 +191,9 @@ def media_config_from_env(
         claim_ttl=_positive_seconds(source, CLAIM_TTL_ENV),
         retention_ttl=_positive_seconds(source, RETENTION_TTL_ENV),
         image_pixels_per_token=_positive_int(source, IMAGE_PIXELS_PER_TOKEN_ENV),
+        max_total_bytes=_positive_int(source, TOTAL_BYTES_ENV),
+        max_unbound_objects=_positive_int(source, UNBOUND_ENV),
+        max_concurrent_uploads=_positive_int(source, CONCURRENT_ENV),
     )
 
 

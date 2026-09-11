@@ -102,7 +102,12 @@ BUNDLE_DIR="${BUNDLES[0]}"
 "$VENV/bin/personal-agent-media-backup-bundle" verify --run "$BUNDLE_DIR" \
   || { echo "FAIL: restored media bundle hash/shape verification" >&2; exit 1; }
 API_DB="$BUNDLE_DIR/agent.sqlite"
-MANIFEST="$BUNDLE_DIR/deletion-manifest.json"
+# Never use the snapshot's own manifest to claim that later deletions survived.
+: "${LATEST_DELETION_MANIFEST:?provide the independently held latest deletion manifest}"
+MANIFEST="$LATEST_DELETION_MANIFEST"
+case "$MANIFEST" in
+  "$RESTORE_DIR"/*) echo "FAIL: manifest must be independent of restored snapshot" >&2; exit 1 ;;
+esac
 for f in "$API_DB" "$MCP_DB" "$MANIFEST"; do
   if [ ! -s "$f" ]; then
     echo "FAIL: restored file missing or empty: $f" >&2

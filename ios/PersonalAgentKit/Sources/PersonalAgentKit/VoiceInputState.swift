@@ -44,9 +44,11 @@ public struct VoiceInputStateMachine: Sendable {
         return true
     }
 
-    public mutating func acceptFinalText(_ text: String, generation: Int) -> String? {
+    public mutating func acceptFinalText(
+        _ text: String, generation: Int, hasVolatileTail: Bool = false
+    ) -> String? {
         guard matches(generation), phase == .finalizing else { return nil }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = hasVolatileTail ? "" : text.trimmingCharacters(in: .whitespacesAndNewlines)
         phase = trimmed.isEmpty ? .empty : .editable
         return trimmed.isEmpty ? nil : trimmed
     }

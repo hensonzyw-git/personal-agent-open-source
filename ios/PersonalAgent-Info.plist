@@ -26,6 +26,8 @@
 	-->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>长按说话时录音，用于把语音转成文字。</string>
+	<key>NSCameraUsageDescription</key>
+	<string>拍摄要随消息发送的照片；仅点击发送后才上传。</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>用于把长按录入的语音转写成文字；识别在设备本地完成，音频不会上传。</string>
 </dict>

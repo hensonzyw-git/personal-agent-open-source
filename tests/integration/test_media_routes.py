@@ -202,6 +202,34 @@ def test_every_media_route_requires_a_device_token(engine, token_ring, keyring, 
 # --- composition ----------------------------------------------------------
 
 
+def test_concurrent_upload_is_refused_before_buffering(engine, token_ring, keyring, store, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from personal_agent.api import app as api
+    entered, release = Event(), Event()
+    original = api._receive_media_content
+    def blocked(*args):
+        entered.set()
+        assert release.wait(timeout=5)
+        return original(*args)
+    monkeypatch.setattr(api, "_receive_media_content", blocked)
+    with _client(engine, token_ring, keyring, store) as client:
+        headers = _auth(token_ring)
+        first = _create(client, headers, jpeg(16)).json()["media_id"]
+        second = _create(client, headers, jpeg(16)).json()["media_id"]
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            work = pool.submit(client.put, f"/v1/media/content/{first}",
+                               content=jpeg(16), headers=headers)
+            try:
+                assert entered.wait(timeout=5)
+                refused = client.put(f"/v1/media/content/{second}", content=jpeg(16), headers=headers)
+                assert refused.status_code == 409, refused.text
+            finally:
+                release.set()
+            assert work.result(timeout=5).status_code == 200
+        assert client.put(f"/v1/media/content/{second}", content=jpeg(16), headers=headers).status_code == 200
+
+
 def test_an_uncomposed_media_surface_refuses_rather_than_running_half(
     engine, token_ring, keyring, store
 ):

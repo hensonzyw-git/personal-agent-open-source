@@ -762,6 +762,16 @@ def _assembly_deps(engine, keyring, store, captured: dict, *, images_enabled=Tru
 
     def build_envelope(session, auth, **kwargs):
         captured.update(kwargs)
+        # Exercise the real envelope's cross-part invariant, not just capture.
+        from types import SimpleNamespace
+        from personal_agent.context.builder import ContextEnvelope
+        from personal_agent.context.budget import ComponentKind
+        images = [p for p in kwargs["input_parts"] if isinstance(p, ImageInputPart)]
+        ContextEnvelope._check_input_parts(SimpleNamespace(
+            input_parts=kwargs["input_parts"], user_text=kwargs["user_text"],
+            components=[SimpleNamespace(kind=ComponentKind.IMAGE_INPUT,
+                                        tokens=p.token_upper_bound) for p in images],
+        ))
         return _Envelope()
 
     from personal_agent.runtime.modality import ImageCapability
@@ -828,11 +838,30 @@ def test_the_turn_assembly_hands_the_authorized_bytes_to_the_envelope(
     )
     turn()
 
-    (part,) = captured["input_parts"]
+    text_part, part = captured["input_parts"]
+    assert text_part.text == payload.text
     assert part.data == payload_bytes
     assert part.content_sha256 == hashlib.sha256(payload_bytes).hexdigest()
     assert captured["current_event_id"] == event_id
     assert captured["user_text"] == "这张账单记一下"
+
+
+def test_image_turn_composes_with_the_real_context_builder(session, store, keyring, engine, timeline):
+    from dataclasses import replace
+    from envelope_factory import envelope_factory
+    media_id = _publish(session, store, keyring)
+    event_id, operation_id = _bind(session, keyring, timeline, media_id)
+    deps = replace(_assembly_deps(engine, keyring, store, {}),
+                   build_envelope=envelope_factory(keyring))
+    payload = ChatRequestPayload(conversation_id=timeline, text="这张账单记一下",
+        parts=parse_chat_parts([{"type": "text", "text": "这张账单记一下"},
+                                {"type": "image_ref", "media_id": media_id}]))
+    envelope = _context_factory(deps, AUTH, session, payload=payload,
+        anchor=_Anchor(conversation_id=timeline, session_id="s1",
+                       turn_id="turn-1", event_id=event_id),
+        operation_id=operation_id)()
+    assert envelope.input_parts[0].text == payload.text
+    assert envelope.input_parts[1].data == body()
 
 
 def test_the_turn_assembly_refuses_when_the_switch_closed_after_the_anchor(

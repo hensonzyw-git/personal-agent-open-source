@@ -85,7 +85,9 @@ enum PhotoPreparation {
                 width: max(1, floor(image.size.width * scale)),
                 height: max(1, floor(image.size.height * scale))
             )
-            let renderer = UIGraphicsImageRenderer(size: target)
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            let renderer = UIGraphicsImageRenderer(size: target, format: format)
             let flattened = renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: target)) }
             let quality = max(0.45, 0.88 - CGFloat(step) * 0.05)
             guard let encoded = flattened.jpegData(compressionQuality: quality) else { continue }

@@ -130,7 +130,8 @@ public struct CompletedMediaUpload: Decodable, Sendable, Equatable {
     }
 
     public var isReady: Bool {
-        outcome == "published" && state == "ready" && contentSHA256 != nil
+        ["published", "already_ready"].contains(outcome)
+            && ["ready", "bound"].contains(state) && contentSHA256 != nil
     }
 }
 
@@ -147,6 +148,13 @@ public protocol MediaUploadBackend: Sendable {
     ) async throws -> CreatedMediaUpload
     func putMediaContent(mediaID: String, body: Data) async throws -> MediaUploadReceipt
     func completeMediaUpload(mediaID: String) async throws -> CompletedMediaUpload
+    func readMedia(mediaID: String) async throws -> Data
+}
+
+public extension MediaUploadBackend {
+    func readMedia(mediaID: String) async throws -> Data {
+        throw AgentClientError.malformedResponse
+    }
 }
 
 /// A prepared upload whose key must survive a lost create response.  The app
@@ -156,9 +164,8 @@ public struct PendingMediaUpload: Codable, Sendable, Equatable {
     public let idempotencyKey: String
     public let declaration: MediaUploadDeclarationRecord
     public var mediaID: String?
-    /// Set only after the server answered the PUT.  It separates a crash before
-    /// sending bytes (safe to PUT) from a crash after a lost PUT response (safe
-    /// to poll complete, never blindly PUT a sealed target again).
+    /// A confirmed PUT checkpoint. False is ambiguous, not proof that no PUT
+    /// landed: the coordinator must query complete before trying that target.
     public var contentUploaded: Bool
 
     public init(
@@ -227,6 +234,17 @@ public actor MediaUploadCoordinator {
             return try await createThenPut(pending, bytes: bytes)
         }
         guard !pending.contentUploaded else { return pending }
+        // A persisted target does not tell us whether an earlier PUT reached
+        // the server. Ask its state before consuming the one-shot target.
+        let status = try await backend.completeMediaUpload(mediaID: mediaID)
+        if status.isReady {
+            var recovered = pending
+            recovered.contentUploaded = true
+            return recovered
+        }
+        guard status.outcome == "in_progress", status.state == "pending" else {
+            throw MediaUploadError.incompleteCompletion(status)
+        }
         _ = try await backend.putMediaContent(mediaID: mediaID, body: bytes)
         var updated = pending
         updated.contentUploaded = true

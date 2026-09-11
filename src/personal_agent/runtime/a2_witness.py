@@ -145,7 +145,7 @@ def body_images(body: bytes) -> list[tuple[str, bytes]]:
     return found
 
 
-def _text_precedes_image(body: bytes) -> bool:
+def _text_precedes_image(body: bytes, *, text_required: bool = False) -> bool:
     """Whether text comes before the image in the message that carries one."""
     try:
         document = json.loads(body)
@@ -159,7 +159,8 @@ def _text_precedes_image(body: bytes) -> bool:
             continue
         kinds = [block.get("type") for block in content if isinstance(block, dict)]
         if "image_url" in kinds:
-            return "text" in kinds and kinds.index("text") < kinds.index("image_url")
+            return (not text_required if "text" not in kinds
+                    else kinds.index("text") < kinds.index("image_url"))
     return False
 
 
@@ -168,6 +169,7 @@ def verify(
     *,
     expected_images: tuple[ImageInputPart, ...],
     prompt_tokens: int | None,
+    text_required: bool = False,
 ) -> None:
     """The §8 A2 check. Fails closed; never repairs, truncates or drops.
 
@@ -206,7 +208,7 @@ def verify(
                 "outbound image bytes are not the authorized bytes "
                 f"(sent {digest[:12]}…, authorized {expected.content_sha256[:12]}…)"
             )
-    if expected_images and not _text_precedes_image(attempt.body):
+    if expected_images and not _text_precedes_image(attempt.body, text_required=text_required):
         # §3.1's wire order is text then image, and §8 keeps that order at the
         # provider so the model reads the instruction before the picture.
         raise A2Violation("the outbound body places the image before its text")

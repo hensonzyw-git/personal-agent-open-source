@@ -966,6 +966,7 @@ def generate_with_adk(
                     witness,
                     expected_images=expected_images,
                     prompt_tokens=_prompt_tokens(response),
+                    text_required=any(isinstance(part, TextInputPart) for part in input_parts),
                 )
             return response
         except A2Violation as violation:
