@@ -48,11 +48,12 @@ OTHER = b"\x89PNG\r\n\x1a\n" + b"a-different-photo" * 8
 USAGE_OK = {"prompt_tokens": 451, "completion_tokens": 1, "total_tokens": 452}
 
 
-def _part(data: bytes = PNG) -> ImageInputPart:
+def _part(data: bytes = PNG, *, tokens: int = 512) -> ImageInputPart:
     return ImageInputPart(
         mime_type="image/png",
         data=data,
         content_sha256=hashlib.sha256(data).hexdigest(),
+        token_upper_bound=tokens,
     )
 
 
@@ -194,6 +195,49 @@ def test_a_turn_without_parts_keeps_the_message_it_always_sent(provider) -> None
     _ask((), messages=[{"role": "user", "content": "午饭 45"}])
 
     assert _last_content(provider.requests[0].content) == "午饭 45"
+
+
+def test_an_empty_part_tuple_is_the_pre_media_request_byte_for_byte(provider) -> None:
+    """The parameter's existence must not change what a text turn sends.
+
+    Every text turn in production now arrives with `input_parts=()`, so the
+    claim is not "the last message still reads the same" but "the whole request
+    is the one this composition built before parts existed". The second call
+    omits the argument entirely, which is that request.
+    """
+    _ask((), messages=[{"role": "user", "content": "午饭 45"}])
+    with_the_argument = provider.requests[0].content
+
+    generate_with_adk(
+        model=MODEL,
+        api_key=FAKE_KEY,
+        api_base=API_BASE,
+        system="You are a personal finance agent.",
+        messages=[{"role": "user", "content": "午饭 45"}],
+        declarations=[],
+        temperature=0.0,
+        max_tokens=512,
+        timeout=10.0,
+    )
+    without_it = provider.requests[1].content
+
+    assert with_the_argument == without_it
+
+
+def test_a_text_only_parts_request_sends_the_message_a_text_turn_sends(
+    provider,
+) -> None:
+    """§3.1 allows `[text]`; the parts form is not an image-only form.
+
+    It also has to be *the same request*: LiteLlm collapses a lone text part to
+    the plain-string content form, so both shapes converge. Compared body to
+    body rather than against the collapsed value, so a change in either path
+    shows up here instead of in production.
+    """
+    _ask((TextInputPart("午饭 45"),), messages=[{"role": "user", "content": "午饭 45"}])
+    _ask((), messages=[{"role": "user", "content": "午饭 45"}])
+
+    assert provider.requests[0].content == provider.requests[1].content
 
 
 # --- the checks actually stop a turn -----------------------------------------

@@ -473,3 +473,110 @@ def test_the_margin_is_exact_decimal_arithmetic() -> None:
     config = _config(CONTEXT_ESTIMATE_SAFETY_MARGIN="0.15")
     assert isinstance(config.estimate_safety_margin, Decimal)
     assert config.estimate_safety_margin == Decimal("0.15")
+
+
+# -- §8: an image is part of the message, and it is paid for -----------------
+
+
+def _image(tokens: int = 400) -> ContextComponent:
+    """An image component: priced by its own rule, carrying no text."""
+    return ContextComponent(
+        ComponentKind.IMAGE_INPUT, "", label="image_input", ordinal=0, tokens=tokens
+    )
+
+
+def _priced(**overrides) -> ContextBudgeter:
+    """A budgeter with the margin off, so the arithmetic in an assertion is exact."""
+    return _budgeter(CONTEXT_ESTIMATE_SAFETY_MARGIN="0", **overrides)
+
+
+def test_an_image_is_priced_by_its_bound_and_not_by_its_text() -> None:
+    """§8's "尺寸/细节模式…保守上界", as arithmetic.
+
+    The estimator has no way to price a photo: it counts characters, and the
+    only string here is the empty label. Without `tokens` a photo would be
+    charged nothing and every image turn would fit every budget on paper.
+    """
+    budgeter = _priced()
+    assert budgeter.cost(_image(400)) == 400
+    assert budgeter.total([*_mandatory(), _image(400)]) == 420
+
+
+def test_a_component_with_its_own_cost_is_not_also_estimated_from_its_text() -> None:
+    """Charged once. Adding the two would double an image's price."""
+    assert _priced().cost(
+        ContextComponent(ComponentKind.IMAGE_INPUT, "x" * 50, tokens=400)
+    ) == 400
+
+
+def test_a_component_may_not_cost_a_negative_number_of_tokens() -> None:
+    with pytest.raises(AppError) as excinfo:
+        _image(-1)
+    assert excinfo.value.code is ErrorCode.INTERNAL_ERROR
+
+
+def test_an_image_is_never_trimmed_to_make_a_turn_fit() -> None:
+    """Dropping the image would ask the model about a photo it cannot see.
+
+    Memory is what goes instead -- and the failure this rules out is silent:
+    nothing downstream can tell that the question changed, so there would be no
+    error to notice, only an answer about the wrong thing.
+    """
+    budgeter = _priced(
+        CONTEXT_SOFT_LIMIT_TOKENS=100,
+        CONTEXT_HARD_LIMIT_TOKENS=150,
+    )
+    outcome = budgeter.fit(
+        [
+            *_mandatory(10),
+            ContextComponent(ComponentKind.MEMORY, "m" * 50),
+            _image(100),
+        ]
+    )
+    kinds = [item.kind for item in outcome.components]
+    assert ComponentKind.IMAGE_INPUT in kinds
+    assert ComponentKind.MEMORY not in kinds
+    assert outcome.dropped_counts == {"memory": 1}
+
+
+def test_an_image_that_cannot_fit_refuses_the_turn_instead_of_being_dropped() -> None:
+    budgeter = _priced(
+        CONTEXT_SOFT_LIMIT_TOKENS=100,
+        CONTEXT_HARD_LIMIT_TOKENS=150,
+    )
+    with pytest.raises(AppError) as excinfo:
+        budgeter.fit([*_mandatory(10), _image(1_000_000)])
+    assert excinfo.value.code is ErrorCode.CONTEXT_BUDGET_EXCEEDED
+
+
+def test_a_photo_with_no_words_is_a_full_question() -> None:
+    """§8: 纯图片…不能被空文本校验…提前当空请求.
+
+    A photo sent with no text is a complete request, and refusing it here would
+    answer a legitimate turn with a budget error.
+    """
+    outcome = _priced().fit(
+        [
+            ContextComponent(ComponentKind.SYSTEM_POLICY, "p" * 10),
+            ContextComponent(ComponentKind.USER_INPUT, ""),
+            _image(400),
+        ]
+    )
+    assert ComponentKind.IMAGE_INPUT in [item.kind for item in outcome.components]
+
+
+def test_an_empty_message_without_a_photo_is_still_refused() -> None:
+    """The relaxation is reached by the counted image, not by asking for it.
+
+    There is no flag a caller can pass, so a turn that carries no image cannot
+    arrive at the exemption at all.
+    """
+    with pytest.raises(AppError) as excinfo:
+        _priced().fit(
+            [
+                ContextComponent(ComponentKind.SYSTEM_POLICY, "p" * 10),
+                ContextComponent(ComponentKind.USER_INPUT, "   "),
+                ContextComponent(ComponentKind.MEMORY, "m"),
+            ]
+        )
+    assert "non-empty" in (excinfo.value.internal_detail or "")

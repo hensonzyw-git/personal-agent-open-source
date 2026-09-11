@@ -32,17 +32,29 @@ from personal_agent_core.errors import AppError
 PNG = b"\x89PNG\r\n\x1a\n" + b"body-bytes" * 4
 JPEG = b"\xff\xd8\xff\xe0" + b"jpeg-body" * 4
 HOST = "api.example.invalid"
+#: What §8's coefficient would have made of these bytes' declared dimensions.
+#: The witness does not read it -- it checks bytes against a digest -- but the
+#: part cannot be built without one, because an unbudgeted image is the failure
+#: the field exists to prevent.
+PNG_TOKENS = 512
+JPEG_TOKENS = 384
 
 
 def _png_part() -> ImageInputPart:
     return ImageInputPart(
-        mime_type="image/png", data=PNG, content_sha256=hashlib.sha256(PNG).hexdigest()
+        mime_type="image/png",
+        data=PNG,
+        content_sha256=hashlib.sha256(PNG).hexdigest(),
+        token_upper_bound=PNG_TOKENS,
     )
 
 
 def _jpeg_part() -> ImageInputPart:
     return ImageInputPart(
-        mime_type="image/jpeg", data=JPEG, content_sha256=hashlib.sha256(JPEG).hexdigest()
+        mime_type="image/jpeg",
+        data=JPEG,
+        content_sha256=hashlib.sha256(JPEG).hexdigest(),
+        token_upper_bound=JPEG_TOKENS,
     )
 
 
@@ -275,6 +287,7 @@ def test_an_image_part_must_carry_the_digest_of_its_own_bytes() -> None:
             mime_type="image/png",
             data=PNG,
             content_sha256=hashlib.sha256(b"other").hexdigest(),
+            token_upper_bound=PNG_TOKENS,
         )
     assert "content_sha256" in (excinfo.value.internal_detail or "")
 
@@ -282,9 +295,41 @@ def test_an_image_part_must_carry_the_digest_of_its_own_bytes() -> None:
 def test_an_empty_image_part_is_refused() -> None:
     with pytest.raises(AppError) as excinfo:
         ImageInputPart(
-            mime_type="image/png", data=b"", content_sha256=hashlib.sha256(b"").hexdigest()
+            mime_type="image/png",
+            data=b"",
+            content_sha256=hashlib.sha256(b"").hexdigest(),
+            token_upper_bound=PNG_TOKENS,
         )
     assert "must carry bytes" in (excinfo.value.internal_detail or "")
+
+
+@pytest.mark.parametrize("bound", [0, -1, 512.5, True, None])
+def test_an_image_part_must_cost_at_least_one_token(bound) -> None:
+    """A photo that is sent but charged nothing is over budget in fact.
+
+    §8 puts the image "计入 mandatory input", which only means something if
+    there is a number to count. Zero, a fraction, a bool or a missing bound all
+    price it as free, so all four are refused rather than defaulted -- the same
+    fail-closed reading as "缺配置不启用图片" (§5.4).
+    """
+    with pytest.raises(AppError) as excinfo:
+        ImageInputPart(
+            mime_type="image/png",
+            data=PNG,
+            content_sha256=hashlib.sha256(PNG).hexdigest(),
+            token_upper_bound=bound,
+        )
+    assert "token" in (excinfo.value.internal_detail or "")
+
+
+def test_a_missing_token_bound_is_not_defaulted() -> None:
+    """The argument is required, so there is no default to inherit."""
+    with pytest.raises(TypeError):
+        ImageInputPart(  # type: ignore[call-arg]
+            mime_type="image/png",
+            data=PNG,
+            content_sha256=hashlib.sha256(PNG).hexdigest(),
+        )
 
 
 def test_text_parts_carry_no_bytes_to_record() -> None:

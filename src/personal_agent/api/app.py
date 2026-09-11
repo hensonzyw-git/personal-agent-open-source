@@ -3314,17 +3314,17 @@ def _chat_image_ids(parts: Parts) -> list[str]:
 #: is deleted by the change that lands it, and when the tuple is empty the
 #: guard below is a no-op that can go with them.
 #:
-#: `gateway_input_part` is the model-input half (§12, #12). Without it an
-#: anchored photo would be silently absent from the model's view -- accepted,
-#: acknowledged, and never seen, which §5.1 forbids outright.
 #: `media_capability` is §8's composed switch (#13): declared vision support,
-#: media/backup/deletion readiness, and the scanner exemption. §3.1 requires
-#: both to be settled "在任何模型调用前", and until they are, refusing is the
-#: only answer that does not lie to the user about what the system did.
-_MULTIMODAL_MISSING_LINKS: tuple[str, ...] = (
-    "gateway_input_part",
-    "media_capability",
-)
+#: media/backup/deletion readiness, and the scanner exemption. §3.1 requires it
+#: to be settled "在任何模型调用前", and until it is, refusing is the only answer
+#: that does not lie to the user about what the system did.
+#:
+#: `gateway_input_part` was the model-input half and is now landed (#12): a
+#: resolved part travels `InputPart -> ContextEnvelope -> gateway message ->
+#: ADK Part -> LiteLlm -> HTTP`, and the A2 witness checks the bytes that leave
+#: against the digest the server measured. It is deleted here rather than
+#: reworded, as the rule above requires of the change that lands a link.
+_MULTIMODAL_MISSING_LINKS: tuple[str, ...] = ("media_capability",)
 
 
 def _require_multimodal_ready() -> None:

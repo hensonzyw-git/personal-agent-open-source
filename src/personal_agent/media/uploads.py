@@ -125,11 +125,37 @@ class MediaLimits:
     #: How long a `pending` target may sit unconsumed before the reaper may
     #: expire it.
     target_ttl: timedelta
-    #: How long one `PUT` owns the object. §5.2: the deadline bounds *that
-    #: attempt*; past it a second writer takes over rather than waiting.
+    #: How long one `PUT` owns the object. §5.2: the deadline bounds *that*
+    #: attempt; past it a second writer takes over rather than waiting.
     claim_ttl: timedelta
     #: How long a `ready` image that no message bound may live.
     retention_ttl: timedelta
+    #: §8's budget coefficient: how many declared pixels this deployment will
+    #: concede to one token. A *larger* number prices images more cheaply, so
+    #: the operator sets it to the ratio the pinned model's vision encoder is
+    #: known to achieve and no more -- §8 asks for a "保守上界", and an
+    #: optimistic coefficient is the one way this bound can fail open.
+    #:
+    #: Detail mode is not a field here because it is not a field on the wire in
+    #: this version (§3.1's `image_ref` carries a `media_id` and nothing else):
+    #: the mode is the deployment's own, so it is folded into this one number
+    #: rather than modelled as a second axis nothing can vary.
+    image_pixels_per_token: int
+
+    def __post_init__(self) -> None:
+        if self.image_pixels_per_token < 1:
+            raise ValueError("image_pixels_per_token must be positive")
+
+    def image_token_upper_bound(self, width: int, height: int) -> int:
+        """§8's upper bound for one image, from the pixels the client declared.
+
+        Rounded up, and never below one: a declared-but-tiny image that came
+        out at zero tokens would be sent and charged nothing, which is the one
+        answer a *bound* may not give.
+        """
+        if width < 1 or height < 1:
+            raise ValueError("declared dimensions must be positive")
+        return max(1, -(-width * height // self.image_pixels_per_token))
 
 
 @dataclass(frozen=True)

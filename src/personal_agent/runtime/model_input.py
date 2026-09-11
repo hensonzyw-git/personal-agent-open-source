@@ -50,12 +50,32 @@ class ImageInputPart:
     mime_type: str
     data: bytes
     content_sha256: str
+    #: §8's upper bound on what this image may cost the model input, computed
+    #: when the part is built from the client's declared pixels and the
+    #: deployment's coefficient. It travels with the part because the budgeter
+    #: has no other way to price a photo, and because a value derived at the
+    #: point of construction cannot drift from the declaration it came from.
+    #:
+    #: It is a bound, not a measurement: the server never decodes (§5.4), so
+    #: the declared dimensions are the only figure that exists, and §8 asks for
+    #: "保守上界" precisely because it may overstate.
+    token_upper_bound: int
 
     def __post_init__(self) -> None:
         if not self.mime_type:
             raise _invalid("an image input part must declare a MIME type")
         if not self.data:
             raise _invalid("an image input part must carry bytes")
+        if not isinstance(self.token_upper_bound, int) or isinstance(
+            self.token_upper_bound, bool
+        ):
+            raise _invalid("an image input part must carry an integer token bound")
+        if self.token_upper_bound < 1:
+            # Zero is the dangerous value: the image is sent and charged
+            # nothing, so a turn that fits the budget on paper is over it in
+            # fact. A missing bound is refused rather than defaulted for the
+            # same reason a missing media configuration keeps images off.
+            raise _invalid("an image input part must cost at least one token")
         # The digest is the server's own measurement and the witness's only
         # independent basis for its check. A part whose declared digest does not
         # describe its own bytes is a defect in the caller, and repairing it here

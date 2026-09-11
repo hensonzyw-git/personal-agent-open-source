@@ -77,6 +77,12 @@ from personal_agent.runtime.bookkeeping_intent import (
     is_finance_retry_request,
     is_income_write_request,
 )
+from personal_agent.runtime.model_input import (
+    ImageInputPart,
+    InputPart,
+    TextInputPart,
+    image_parts,
+)
 from personal_agent.storage.models import (
     TERMINAL_OPERATION_STATES,
     ContextCheckpoint,
@@ -349,6 +355,16 @@ class ContextEnvelope:
     #: Estimated tokens per component kind, before the safety margin. §16.1
     #: requires the per-component numbers in trace, not only the total.
     component_tokens: Mapping[str, int] = field(default_factory=dict)
+    #: This turn's structured input: the user's words and the authorized image
+    #: bytes, in order (§8's chain from the sealed request to the provider).
+    #: Empty for every text-only turn, which is why the gateway can send those
+    #: exactly as it always has.
+    #:
+    #: The bytes live here and only here. They are not a component, not a trace
+    #: field and not part of `source_fingerprint`: an envelope is recorded in
+    #: evidence, and §8 forbids "raw base64、凭据、完整载荷" in a record. The
+    #: budget still knows what they cost -- that is `IMAGE_INPUT`'s `tokens`.
+    input_parts: tuple[InputPart, ...] = ()
     _budget_validation_witness: InitVar[object | None] = None
 
     def __post_init__(self, _budget_validation_witness: object | None) -> None:
@@ -446,6 +462,7 @@ class ContextEnvelope:
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail="a date-default retry needs a Finance turn",
             )
+        self._check_input_parts()
         # "Immutable" has to be true of the containers too, or a caller holding
         # the envelope could still edit what a model was told it may send.
         if not isinstance(self.components, tuple):
@@ -456,6 +473,57 @@ class ContextEnvelope:
         for name in ("dropped_counts", "component_tokens"):
             object.__setattr__(
                 self, name, MappingProxyType(dict(getattr(self, name)))
+            )
+
+    def _check_input_parts(self) -> None:
+        """Re-check that the parts are what this envelope was measured as.
+
+        Two things can go wrong here, and both fail silently at the provider.
+        An image the budget never counted is an input the hard limit does not
+        describe; a text part that is not the user input is a message the
+        budget measured one half of and the model is asked about the other.
+        Neither is visible downstream, so both are refused here.
+        """
+        if not isinstance(self.input_parts, tuple):
+            raise _envelope_error("envelope input parts must be a tuple")
+        texts = [p for p in self.input_parts if isinstance(p, TextInputPart)]
+        images = [p for p in self.input_parts if isinstance(p, ImageInputPart)]
+        if len(texts) + len(images) != len(self.input_parts):
+            raise _envelope_error("envelope carries an unknown input part")
+        # Empty parts mean a pre-media turn, whose whole message is `user_text`
+        # and whose request the gateway builds exactly as it always has. There
+        # is no second copy of the message for it to disagree with.
+        if self.input_parts:
+            if len(texts) > 1:
+                raise _envelope_error("an input may carry at most one text part")
+            if texts and self.input_parts[0] is not texts[0]:
+                # §3.1's order, held at the provider for the same reason: the
+                # instruction is read before the picture it is about.
+                raise _envelope_error("a text part must precede the images")
+            if texts:
+                if texts[0].text != self.user_text:
+                    raise _envelope_error(
+                        "the text part is not the user input this envelope measured"
+                    )
+            elif self.user_text:
+                # No text part and a non-empty message: the two disagree about
+                # what the user said, and only one of them was budgeted.
+                raise _envelope_error(
+                    "an input with no text part carries no user text"
+                )
+
+        counted = [
+            item for item in self.components if item.kind is ComponentKind.IMAGE_INPUT
+        ]
+        if len(counted) != len(images):
+            raise _envelope_error(
+                "an envelope must count exactly the images it carries"
+            )
+        if sum(item.tokens or 0 for item in counted) != sum(
+            part.token_upper_bound for part in images
+        ):
+            raise _envelope_error(
+                "the counted image cost is not the cost of the images carried"
             )
 
     # -- accessors ------------------------------------------------------
@@ -593,6 +661,7 @@ class ContextBuilder:
         essential_tools: Iterable[str] = (),
         preferences: Sequence[str] = (),
         memories: Sequence[MemoryCandidate] = (),
+        input_parts: tuple[InputPart, ...] = (),
     ) -> ContextEnvelope:
         session = db.get(ContextSession, session_id)
         if session is None or session.conversation_id != conversation_id:
@@ -600,6 +669,7 @@ class ContextBuilder:
                 ErrorCode.CONTEXT_UNAVAILABLE,
                 internal_detail="session does not belong to this Timeline",
             )
+        images = image_parts(input_parts)
         current_event = self._current_user_event(
             db,
             keyring,
@@ -607,6 +677,7 @@ class ContextBuilder:
             session_id=session_id,
             event_id=current_event_id,
             expected_text=user_text,
+            carries_image=bool(images),
         )
 
         checkpoint = self._compactor.active_checkpoint(
@@ -644,6 +715,22 @@ class ContextBuilder:
                 ErrorCode.CONTEXT_UNAVAILABLE,
                 internal_detail="a turn cannot carry two continuation contexts",
             )
+        # §8 counts every image in this turn into the mandatory input, at its
+        # own upper bound, before anything droppable is considered. One
+        # component per image rather than one for the turn: the count then
+        # reflects the request, and a trace says how many photos were charged
+        # for without naming any of them.
+        components.extend(
+            self._budgeter.component(
+                ComponentKind.IMAGE_INPUT,
+                "",
+                label="image_input",
+                ordinal=index,
+                tokens=part.token_upper_bound,
+            )
+            for index, part in enumerate(images)
+        )
+
         source_operation_ids = (
             clarification_context.source_operation_ids
             if clarification_context is not None
@@ -840,6 +927,7 @@ class ContextBuilder:
             trimmed=trimmed,
             dropped_counts=dict(outcome.dropped_counts),
             component_tokens=self._tokens_by_kind(outcome.components),
+            input_parts=input_parts,
             _budget_validation_witness=_BUDGET_VALIDATION_WITNESS,
         )
 
@@ -886,7 +974,7 @@ class ContextBuilder:
         for item in components:
             totals[item.kind.value] = totals.get(
                 item.kind.value, 0
-            ) + self._budgeter.estimate(item.text)
+            ) + self._budgeter.cost(item)
         return totals
 
     # -- sections -------------------------------------------------------
@@ -1023,6 +1111,7 @@ class ContextBuilder:
         session_id: str,
         event_id: str,
         expected_text: str,
+        carries_image: bool = False,
     ) -> ConversationEvent:
         """Return the persisted anchor for this turn, or refuse any mismatch.
 
@@ -1030,6 +1119,13 @@ class ContextBuilder:
         `USER_INPUT` component to that exact immutable event prevents both a
         free-floating caller string and the same message appearing once as raw
         history and once as current input.
+
+        `carries_image` relaxes one clause and no more. Equality with the
+        persisted event is required in every case -- a photo is not a licence to
+        answer about a message the user did not send -- but non-emptiness is not
+        required when an image is present: §8's "纯图片...不能被空文本校验...提前当
+        空请求". There is no flag a caller can pass; the builder derives it from
+        the parts it was given, exactly as the budgeter derives its own.
         """
         row = db.get(ConversationEvent, event_id)
         if (
@@ -1055,7 +1151,7 @@ class ContextBuilder:
         persisted_text = content.get("text") if isinstance(content, dict) else None
         if (
             not isinstance(expected_text, str)
-            or not expected_text.strip()
+            or (not carries_image and not expected_text.strip())
             or persisted_text != expected_text
         ):
             raise AppError(
@@ -1404,6 +1500,11 @@ class ContextBuilder:
             )
             for index, tool in enumerate(selected)
         ]
+
+
+def _envelope_error(detail: str) -> AppError:
+    """A malformed envelope. Never a caller's fault, and never retryable."""
+    return AppError(ErrorCode.INTERNAL_ERROR, internal_detail=detail)
 
 
 def _fingerprint(key: HmacKey | HmacKeyRing, body: Mapping[str, Any]) -> str:

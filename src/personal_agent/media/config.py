@@ -64,6 +64,12 @@ ALLOWED_MIMES_ENV = "PERSONAL_AGENT_MEDIA_ALLOWED_MIMES"
 TARGET_TTL_ENV = "PERSONAL_AGENT_MEDIA_TARGET_TTL_SECONDS"
 CLAIM_TTL_ENV = "PERSONAL_AGENT_MEDIA_CLAIM_TTL_SECONDS"
 RETENTION_TTL_ENV = "PERSONAL_AGENT_MEDIA_RETENTION_TTL_SECONDS"
+#: §8's budget coefficient, and part of the required set rather than an
+#: optional extra. §10 lists "预算缺失时均保持关闭" beside the scanner exemption
+#: and A2 unreachability: a deployment that has not said what an image may
+#: cost has not decided to serve images, and a default here would be this
+#: module choosing that policy on the operator's behalf.
+IMAGE_PIXELS_PER_TOKEN_ENV = "PERSONAL_AGENT_MEDIA_IMAGE_PIXELS_PER_TOKEN"
 
 _REQUIRED_ENV = (
     MAX_CONTENT_ENV,
@@ -72,6 +78,7 @@ _REQUIRED_ENV = (
     TARGET_TTL_ENV,
     CLAIM_TTL_ENV,
     RETENTION_TTL_ENV,
+    IMAGE_PIXELS_PER_TOKEN_ENV,
 )
 
 
@@ -96,6 +103,7 @@ class MediaConfig:
     target_ttl: timedelta
     claim_ttl: timedelta
     retention_ttl: timedelta
+    image_pixels_per_token: int
 
     def limits(self) -> MediaLimits:
         return MediaLimits(
@@ -105,6 +113,7 @@ class MediaConfig:
             target_ttl=self.target_ttl,
             claim_ttl=self.claim_ttl,
             retention_ttl=self.retention_ttl,
+            image_pixels_per_token=self.image_pixels_per_token,
         )
 
     def store(self, keyring: KeyRing) -> MediaStore:
@@ -169,6 +178,7 @@ def media_config_from_env(
         target_ttl=_positive_seconds(source, TARGET_TTL_ENV),
         claim_ttl=_positive_seconds(source, CLAIM_TTL_ENV),
         retention_ttl=_positive_seconds(source, RETENTION_TTL_ENV),
+        image_pixels_per_token=_positive_int(source, IMAGE_PIXELS_PER_TOKEN_ENV),
     )
 
 

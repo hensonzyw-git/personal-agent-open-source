@@ -16,7 +16,9 @@ CAP-001 H live evidence.
 
 from __future__ import annotations
 
+import hashlib
 import json
+from dataclasses import fields as dataclass_fields
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +35,7 @@ from personal_agent.context.builder import (
     ContextBuilder,
     ContextEnvelope,
     MemoryCandidate,
+    _BUDGET_VALIDATION_WITNESS as _BUDGET_WITNESS,
 )
 from personal_agent.context.compact_state import CheckpointCompactStateProvider
 from personal_agent.context.untrusted import UNTRUSTED_CLOSE
@@ -47,6 +50,7 @@ from personal_agent.context.config import (
 )
 from personal_agent.context.session_manager import SessionManager
 from personal_agent.policy.bridge import VisibleTool
+from personal_agent.runtime.model_input import ImageInputPart, TextInputPart
 from personal_agent.storage.engine import (
     create_all,
     create_database_engine,
@@ -1040,6 +1044,188 @@ def test_trace_carries_per_component_token_counts(db, keyring):
     assert all(count > 0 for count in tokens.values())
     # Unmargined parts against a margined total: the sum must be the smaller.
     assert sum(tokens.values()) <= envelope.estimated_input_tokens
+
+
+# -- §8: the structured input parts an image turn carries --------------------
+
+_PHOTO = b"\xff\xd8\xff\xe0" + b"synthetic-photo" * 8
+_MESSAGE = "这张账单记一下"
+
+
+def _photo(tokens: int = 400) -> ImageInputPart:
+    return ImageInputPart(
+        mime_type="image/jpeg",
+        data=_PHOTO,
+        content_sha256=hashlib.sha256(_PHOTO).hexdigest(),
+        token_upper_bound=tokens,
+    )
+
+
+def _with_parts(db, keyring, parts, *, text: str = _MESSAGE, **kwargs):
+    return _build(db, keyring, user_text=text, input_parts=parts, **kwargs)
+
+
+def _images(envelope: ContextEnvelope) -> list[ContextComponent]:
+    return [
+        item
+        for item in envelope.components
+        if item.kind is ComponentKind.IMAGE_INPUT
+    ]
+
+
+def test_an_image_turn_carries_its_parts_and_counts_them(db, keyring):
+    """§8's chain starts here: the envelope is where the parts become budget.
+
+    The parts travel whole -- bytes, MIME and the server's measured digest --
+    while what the *budget* sees is one countable component per image, at the
+    bound the deployment's coefficient produced.
+    """
+    parts = (TextInputPart(_MESSAGE), _photo(400))
+    envelope = _with_parts(db, keyring, parts)
+
+    assert envelope.input_parts == parts
+    assert envelope.user_text == _MESSAGE
+    counted = _images(envelope)
+    assert len(counted) == 1
+    assert counted[0].tokens == 400
+    assert envelope.trace()["component_tokens"]["image_input"] == 400
+    assert envelope.trace()["component_counts"]["image_input"] == 1
+
+
+def test_a_photo_with_no_words_is_a_full_question(db, keyring):
+    """§8: a pure-image request is legitimate, and its message is empty."""
+    envelope = _with_parts(db, keyring, (_photo(),), text="")
+
+    assert envelope.texts_of(ComponentKind.USER_INPUT) == ("",)
+    assert len(_images(envelope)) == 1
+
+
+def test_the_trace_never_carries_the_photo(db, keyring):
+    """Counts and costs, never content -- the trace is written on every turn."""
+    envelope = _with_parts(db, keyring, (TextInputPart(_MESSAGE), _photo()))
+    trace = canonical_json(envelope.trace())
+
+    assert _PHOTO not in trace.encode()
+    assert "image/jpeg" not in trace
+    assert hashlib.sha256(_PHOTO).hexdigest() not in trace
+    assert _MESSAGE not in trace
+
+
+@pytest.mark.parametrize(
+    ("parts", "text", "detail"),
+    [
+        # A text part that is not the message the envelope measured: the budget
+        # priced one string and the model would be asked about another.
+        (
+            (TextInputPart("另一句话"), _photo()),
+            _MESSAGE,
+            "not the user input this envelope measured",
+        ),
+        # §3.1's order, held here because a gateway that reordered would send
+        # the picture before the instruction it belongs to.
+        ((_photo(), TextInputPart(_MESSAGE)), _MESSAGE, "must precede the images"),
+        (
+            (TextInputPart(_MESSAGE), TextInputPart(_MESSAGE)),
+            _MESSAGE,
+            "at most one text part",
+        ),
+        # No text part and a non-empty message: the two disagree about what the
+        # user said, and only one of them was budgeted.
+        ((_photo(),), _MESSAGE, "carries no user text"),
+        # A bare string where a part belongs: counting it as text would send a
+        # part the budget never described.
+        ((_MESSAGE,), _MESSAGE, "unknown input part"),
+    ],
+)
+def test_a_turn_refuses_parts_that_disagree_with_its_message(
+    db, keyring, parts, text, detail
+):
+    with pytest.raises(AppError) as raised:
+        _with_parts(db, keyring, parts, text=text)
+    assert raised.value.code is ErrorCode.INTERNAL_ERROR
+    assert detail in (raised.value.internal_detail or "")
+
+
+def test_a_pre_media_turn_is_untouched_by_the_parts_check(db, keyring):
+    """No parts means the envelope it has always been: no second copy to check.
+
+    Every text turn in production has an empty `input_parts`, so a check that
+    insisted on a text part would refuse all of them.
+    """
+    envelope = _build(db, keyring, user_text=_MESSAGE)
+
+    assert envelope.input_parts == ()
+    assert envelope.texts_of(ComponentKind.USER_INPUT) == (_MESSAGE,)
+    assert _images(envelope) == []
+
+
+def test_a_turn_with_no_message_and_no_photo_is_still_refused(db, keyring):
+    """The empty-text relaxation is reached by an image, not by an empty message."""
+    with pytest.raises(AppError) as raised:
+        _build(db, keyring, user_text="")
+    assert raised.value.code is ErrorCode.CONTEXT_UNAVAILABLE
+
+
+# The one construction path that is not `build`. The count and the cost cannot
+# disagree through `build` -- it derives both from the same parts -- so the only
+# way to test that the type refuses a disagreement is to hold the witness
+# itself. That is what a test of a type-level re-check is for; nothing in
+# production may import it.
+def _revalidated(envelope: ContextEnvelope, **changes) -> ContextEnvelope:
+    fields = {
+        item.name: getattr(envelope, item.name)
+        for item in dataclass_fields(ContextEnvelope)
+    }
+    fields.update(changes)
+    return ContextEnvelope(**fields, _budget_validation_witness=_BUDGET_WITNESS)
+
+
+def test_an_image_the_budget_never_counted_is_refused(db, keyring):
+    """A photo the cost does not describe is a turn over a limit it "passed".
+
+    Reachable only by hand -- `build` counts what it carries -- but the check is
+    what makes "the image is mandatory" true of the type rather than of one
+    call site, and the trim path is exactly the one that could break it.
+    """
+    envelope = _with_parts(db, keyring, (TextInputPart(_MESSAGE), _photo()))
+    uncounted = tuple(
+        item
+        for item in envelope.components
+        if item.kind is not ComponentKind.IMAGE_INPUT
+    )
+    with pytest.raises(AppError) as raised:
+        _revalidated(envelope, components=uncounted)
+    assert raised.value.code is ErrorCode.INTERNAL_ERROR
+    assert "exactly the images" in (raised.value.internal_detail or "")
+
+
+def test_a_counted_image_that_is_not_carried_is_refused(db, keyring):
+    """The other direction: a cost with no image behind it is refused as well."""
+    envelope = _with_parts(db, keyring, (TextInputPart(_MESSAGE), _photo()))
+    with pytest.raises(AppError) as raised:
+        _revalidated(envelope, input_parts=(TextInputPart(_MESSAGE),))
+    assert "exactly the images" in (raised.value.internal_detail or "")
+
+
+def test_a_counted_image_cost_must_be_the_cost_of_the_image_carried(db, keyring):
+    """A component charged differently from the part is a budget over the fact.
+
+    §8's bound is conservative in one direction only when the number counted is
+    the number the part declares; a lower one would let the turn fit the hard
+    limit while sending more than it measured.
+    """
+    envelope = _with_parts(db, keyring, (TextInputPart(_MESSAGE), _photo(400)))
+    undercharged = tuple(
+        replace(item, tokens=1)
+        if item.kind is ComponentKind.IMAGE_INPUT
+        else item
+        for item in envelope.components
+    )
+    with pytest.raises(AppError) as raised:
+        _revalidated(envelope, components=undercharged)
+    assert "not the cost of the images carried" in (
+        raised.value.internal_detail or ""
+    )
 
 
 def test_the_reported_counts_cannot_be_edited_through_the_envelope(db, keyring):

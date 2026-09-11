@@ -55,6 +55,7 @@ LIMITS = MediaLimits(
     target_ttl=timedelta(minutes=30),
     claim_ttl=timedelta(minutes=10),
     retention_ttl=timedelta(days=7),
+    image_pixels_per_token=750,
 )
 
 

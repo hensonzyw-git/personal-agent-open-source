@@ -25,6 +25,7 @@ import pytest
 from personal_agent.media.config import (
     ALLOWED_MIMES_ENV,
     CLAIM_TTL_ENV,
+    IMAGE_PIXELS_PER_TOKEN_ENV,
     MAX_CONTENT_ENV,
     MAX_DIMENSION_ENV,
     RETENTION_TTL_ENV,
@@ -54,6 +55,7 @@ def _configured(root: Path, **overrides) -> dict[str, str]:
         TARGET_TTL_ENV: "1800",
         CLAIM_TTL_ENV: "600",
         RETENTION_TTL_ENV: "604800",
+        IMAGE_PIXELS_PER_TOKEN_ENV: "750",
     }
     environ.update(overrides)
     return environ
@@ -73,6 +75,11 @@ def test_nothing_configured_leaves_media_off():
         # one. Both are "not configured" rather than "misconfigured" for that
         # reason: there is no typo to report, only a decision not made.
         lambda environ: environ.update({RETENTION_TTL_ENV: ""}),
+        # §8's coefficient is part of the set, not a bonus on top of it. A
+        # deployment that has decided to store images but not what one may cost
+        # the context has not decided to *serve* them (§5.4's "缺配置不启用图片",
+        # §10's "预算缺失时均保持关闭").
+        lambda environ: environ.pop(IMAGE_PIXELS_PER_TOKEN_ENV),
     ],
 )
 def test_a_half_filled_set_leaves_media_off(tmp_path: Path, mutilate):
@@ -98,6 +105,8 @@ def test_a_half_filled_set_leaves_media_off(tmp_path: Path, mutilate):
         (TARGET_TTL_ENV, "half an hour"),
         (CLAIM_TTL_ENV, "0"),
         (RETENTION_TTL_ENV, "7d"),
+        (IMAGE_PIXELS_PER_TOKEN_ENV, "750.5"),
+        (IMAGE_PIXELS_PER_TOKEN_ENV, "0"),
     ],
 )
 def test_an_unreadable_value_stops_the_boot(tmp_path: Path, name, value):
@@ -151,6 +160,14 @@ def test_a_valid_set_reads_back_as_the_two_objects_it_configures(tmp_path: Path)
     assert limits.claim_ttl.total_seconds() == 600
     assert limits.target_ttl.total_seconds() == 1800
     assert limits.retention_ttl.total_seconds() == 604800
+
+    # §8's coefficient travels with the limits, which is where both the
+    # declaration check and the budgeter read it from. It reaches the budget as
+    # a per-image upper bound: the server never decodes (§5.4), so the declared
+    # pixels are the only dimensions that exist, and the bound rounds up.
+    assert limits.image_pixels_per_token == 750
+    assert limits.image_token_upper_bound(1500, 2000) == 4000
+    assert limits.image_token_upper_bound(1001, 1000) == 1335
 
     # The two objects come off one `MediaConfig` on purpose: the store enforces
     # the byte ceiling while receiving and the limits enforce it while

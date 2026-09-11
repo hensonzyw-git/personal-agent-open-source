@@ -600,10 +600,12 @@ def test_a_parts_request_is_refused_while_the_chain_is_incomplete(
 ) -> None:
     """A photo the model never receives must be refused, not acknowledged.
 
-    The gateway input half and the capability switch do not exist yet, so an
-    accepted parts request would be anchored and shown to the user as sent
-    while the model saw only the text. §3.1 requires the refusal instead, and
-    it must happen "在任何模型调用前" -- so nothing is persisted either.
+    The model-input half is landed (#12): the parts would reach the provider.
+    §8's composed switch is not (#13) -- declared vision support, media/backup/
+    deletion readiness and the scanner exemption -- so an accepted parts request
+    would be anchored and shown to the user as sent while the deployment has not
+    established that the model reads images. §3.1 requires the refusal instead,
+    and it must happen "在任何模型调用前" -- so nothing is persisted either.
     """
     client = _parts_client(engine, token_ring, keyring)
     resp = client.post(

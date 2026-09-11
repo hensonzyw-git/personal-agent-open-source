@@ -42,6 +42,7 @@ from personal_agent.runtime.model_input import (
     InputPart,
     TextInputPart,
     image_parts,
+    recorded_parts,
 )
 from personal_agent.runtime.model_providers import (
     PROVIDERS,
@@ -142,6 +143,12 @@ class GlmGateway:
                 "declarations": declarations,
                 "allowed_function_names": allowed_function_names,
                 "context": _recorded_context(envelope),
+                # Hashes, sizes and types -- `recorded_parts` is the only form
+                # of a part that may be written down (§8). The bytes themselves
+                # reach the provider and nothing else: a transcript is read by
+                # people and copied by backups, and §6's deletion fan-out does
+                # not know about a photo encoded into a log.
+                "input_parts": recorded_parts(envelope.input_parts),
             },
         )
         started = time.monotonic()
@@ -157,6 +164,12 @@ class GlmGateway:
                 max_tokens=self._max_tokens,
                 timeout=self._timeout,
                 allowed_function_names=allowed_function_names,
+                # §8's chain, its last link: the structured parts the budget
+                # counted are the parts the adapter turns into an ADK `Part`
+                # and the witness then finds in the serialized body. Dropping
+                # them here would leave an anchored photo that is accepted,
+                # acknowledged and never seen.
+                input_parts=envelope.input_parts,
             )
         except ModelGatewayError as exc:
             self._record_failure("provider_call", exc, started)
