@@ -193,7 +193,7 @@ def _anomalous_jump(
     return any(abs(c - p) > MAX_SCORE_DAY_JUMP for c, p in zip(cur, prev))
 
 
-def collect_breadth(client: TencentClient, tickers: list[str]) -> tuple[dict[str, float], dict, list]:
+def collect_breadth(client: TencentClient, tickers: list[str], *, as_of: str | None = None) -> tuple[dict[str, float], dict, list]:
     """Compute the two breadth metrics from per-ticker daily closes. Returns
     ``(metrics, meta, breadth_series)``; metrics are omitted (not zero) when
     breadth cannot be computed, and ``meta`` carries coverage so the job can
@@ -205,8 +205,11 @@ def collect_breadth(client: TencentClient, tickers: list[str]) -> tuple[dict[str
     emitted — the two MBS indicators become ``unavailable`` and MBS renormalises
     over the rest, rather than scoring a subset as if it were the whole market."""
     closes, errors = client.collect_closes(tickers)
+    if as_of is not None:
+        closes = {t: [(d, v) for d, v in series if d <= as_of] for t, series in closes.items()}
     bs = breadth_mod.breadth_series(closes)
-    signal_cov = breadth_mod.coverage(closes)  # fraction of pulled names with a 200dma signal
+    target_date = as_of or max((d for series in closes.values() for d, v in series if v is not None), default=None)
+    signal_cov = breadth_mod.coverage(closes, as_of=target_date)
     pull_cov = len(closes) / len(tickers) if tickers else 0.0  # fraction of requested names pulled
 
     # Fail closed on the *effective* coverage (ADR-0001): the fraction of
@@ -217,10 +220,13 @@ def collect_breadth(client: TencentClient, tickers: list[str]) -> tuple[dict[str
     effective_cov = pull_cov * signal_cov
     below_threshold = effective_cov < MIN_BREADTH_COVERAGE
     metrics: dict[str, float] = {}
+    prior_cov = None
+    if len(bs) > 20:
+        prior_cov = pull_cov * breadth_mod.coverage(closes, as_of=bs[-21][0])
     if not below_threshold:
         if bs:
             metrics["market.spx_pct_above_200dma"] = bs[-1][1]
-        if len(bs) > 20:
+        if len(bs) > 20 and prior_cov is not None and prior_cov >= MIN_BREADTH_COVERAGE:
             metrics["market.breadth_20d_change"] = round(bs[-1][1] - bs[-1 - 20][1], 4)
 
     meta = {
@@ -230,7 +236,9 @@ def collect_breadth(client: TencentClient, tickers: list[str]) -> tuple[dict[str
         "coverage": signal_cov,
         "pull_coverage": round(pull_cov, 4),
         "effective_coverage": round(effective_cov, 4),
-        "below_threshold": below_threshold,
+        "as_of": target_date,
+        "comparison_coverage": prior_cov,
+        "below_threshold": below_threshold or (prior_cov is not None and prior_cov < MIN_BREADTH_COVERAGE),
     }
     return metrics, meta, bs
 
@@ -273,6 +281,8 @@ def collect_afrs(client: EdgarClient) -> tuple[dict[str, dict[str, float]], dict
             "confidence": confidence,
             "flags": flags,
             "method": fund.get("method", {}),
+            "evidence": fund.get("evidence", {}),
+            "invalid": fund.get("invalid", []),
         }
     return per_company, details
 
@@ -353,7 +363,7 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
         # Breadth is self-computed (ADR-0001); a failed pull leaves the two
         # breadth metrics unavailable and renormalises MBS, never zero/green.
         tencent = TencentClient(load_tencent_codes())
-        breadth_metrics, breadth_meta, breadth_series = collect_breadth(tencent, load_tickers())
+        breadth_metrics, breadth_meta, breadth_series = collect_breadth(tencent, load_tickers(), as_of=as_of)
         mbs_values.update(breadth_metrics)
 
         # Qualitative CSS proxies (policy `proxies`): ai_basket <- six-name
@@ -388,6 +398,12 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
         company_scores: dict[str, float] = {}
         for entity_id, values in per_company.items():
             outcome = company_afrs(policy, values, company=entity_id)
+            afrs_details[entity_id]["covered_weight"] = outcome.covered_weight
+            afrs_details[entity_id]["applicable_weight"] = sum(r.weight for r in outcome.results)
+            afrs_details[entity_id]["unavailable"] = outcome.unavailable
+            afrs_details[entity_id]["missing_numeric"] = sorted(set(outcome.unavailable) & {
+                "company.capex_ocf_pct", "company.fcf_ocf_pct", "company.ar_dso_concentration",
+            })
             if outcome.score is not None:
                 company_scores[entity_id] = outcome.score
         afrs: Optional[float] = sector_afrs(policy, company_scores)
@@ -447,6 +463,8 @@ def run(db_path: Optional[str] = None, policy_path: Optional[str] = None) -> dic
             and rates_credit.score is not None
             and rates_credit_complete
             and afrs is not None
+            and not any(d.get("invalid") or d.get("missing_numeric") or d.get("error") or d.get("confidence") == "low"
+                        for d in afrs_details.values())
             and not fred_failures
             and not breadth_meta.get("below_threshold")
             and ai_label is not None
