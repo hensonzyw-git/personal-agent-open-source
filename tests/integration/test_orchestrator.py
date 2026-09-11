@@ -124,7 +124,7 @@ class FakeDispatcher:
         self.commit_calls: list[dict] = []
         self.resolve_calls: list[dict] = []
 
-    def resolve(self, *, tool, model_args):
+    def resolve(self, *, tool, model_args, idempotency_key=None):
         self.resolve_calls.append({"tool": tool, "model_args": model_args})
         return self._resolve
 

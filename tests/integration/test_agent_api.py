@@ -127,7 +127,7 @@ class FakeDispatcher:
         self._commit = commit
         self.commit_calls: list[dict] = []
 
-    def resolve(self, *, tool, model_args):
+    def resolve(self, *, tool, model_args, idempotency_key=None):
         return self._resolve
 
     def commit(self, *, intent, idempotency_key, duplicate_override):
@@ -830,7 +830,7 @@ def test_finance_commit_question_is_persisted_for_the_next_continuation(
                 Written("recCOMMITCLARIFICATION"),
             ]
 
-        def resolve(self, *, tool, model_args):
+        def resolve(self, *, tool, model_args, idempotency_key=None):
             return Resolved(WriteIntent(tool, model_args))
 
         def commit(self, *, intent, idempotency_key, duplicate_override):
@@ -884,7 +884,7 @@ def test_a_repeated_finance_commit_question_fails_safe_instead_of_reparking(
                 CommitClarificationZeroWrite("这笔支出属于哪个分类？"),
             ]
 
-        def resolve(self, *, tool, model_args):
+        def resolve(self, *, tool, model_args, idempotency_key=None):
             return Resolved(WriteIntent(tool, model_args))
 
         def commit(self, *, intent, idempotency_key, duplicate_override):
@@ -2080,6 +2080,10 @@ def test_the_resolution_lands_on_the_timeline_exactly_once(
     ]
     assert len(markers) == 1
     assert markers[0]["content"]["resolution"] == "confirmed_not_written"
+    # The domain travels with it, derived from the tool's own IR contract rather
+    # than a second list: the client's history line chooses its words by this
+    # value, and a marker appended without one can never be corrected.
+    assert markers[0]["content"]["domain"] == "finance"
 
 
 # --- `G1`: the category correction route -------------------------------------

@@ -40,13 +40,21 @@ class RecordingDispatcher:
         self._inner = inner
         self._recorder = recorder
 
-    def resolve(self, *, tool: str, model_args: dict[str, Any]) -> Any:
+    def resolve(
+        self,
+        *,
+        tool: str,
+        model_args: dict[str, Any],
+        idempotency_key: str | None = None,
+    ) -> Any:
         self._recorder.record(
             transcript.TOOL_CALL,
             {"phase": "resolve", "tool": tool, "model_args": model_args},
         )
         try:
-            outcome = self._inner.resolve(tool=tool, model_args=model_args)
+            outcome = self._inner.resolve(
+                tool=tool, model_args=model_args, idempotency_key=idempotency_key
+            )
         except Exception as exc:
             self._record_raised("resolve", tool, exc)
             raise

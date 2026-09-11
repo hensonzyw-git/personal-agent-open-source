@@ -32,6 +32,7 @@ from personal_agent.runtime.model_gateway import (
     ProposedClarification,
     ProposedFailure,
     ProposedToolCall,
+    ProposedToolCalls,
 )
 from personal_agent_core.errors import AppError, ErrorCode, ModelFailureReason
 
@@ -938,9 +939,14 @@ def test_date_default_retry_excludes_clarification_from_the_forced_set(envelope)
         _response(),
         _response(_text("   ")),
         _response(_call("finance.log_expense", [])),
+        # Several calls are no longer malformed by themselves (design 4.2);
+        # several calls with a *control* call among them still are.
         _response(
             _call("finance.log_expense", {}),
-            _call("finance.log_income", {}),
+            _call(
+                "agent.ask_clarification",
+                {"question": "个人还是家庭？", "reason": "other"},
+            ),
         ),
         _response(_text("ok"), error_code="MAX_TOKENS"),
     ],
@@ -1045,17 +1051,47 @@ def test_a_thought_part_with_an_unsupported_payload_still_fails_closed(
         _propose(gateway, envelope)
 
 
-def test_a_thought_part_that_carries_a_call_still_counts_toward_multiple_calls(
+def test_a_thought_part_that_carries_a_call_is_a_call_like_any_other(
     envelope,
 ) -> None:
+    """The reasoning part is validated and counted, never skipped: a call it
+    carries takes its place in the list, in the order the provider emitted it."""
     gateway, _ = _gateway(
         _response(
             _thinking_call("finance.log_expense", {"name": "午饭"}),
             _call("finance.log_expense", {"name": "咖啡"}),
         )
     )
-    with pytest.raises(ModelGatewayError, match="multiple tool calls"):
-        _propose(gateway, envelope)
+
+    proposal = _propose(gateway, envelope)
+
+    assert isinstance(proposal, ProposedToolCalls)
+    assert [call.tool for call in proposal.calls] == [
+        "finance.log_expense",
+        "finance.log_expense",
+    ]
+    assert [call.arguments["name"] for call in proposal.calls] == ["午饭", "咖啡"]
+
+
+def test_several_ordinary_calls_are_handed_on_whole_and_in_order(envelope) -> None:
+    """Design 4.2: one message may ask for several things, so several calls are
+    one answer, not a malformed one. The order is carried because it becomes a
+    position in the frozen list -- and prose beside them stays suppressed, never
+    merged into an argument."""
+    gateway, _ = _gateway(
+        _response(
+            _call("calendar.create_event", {"title": "牙医"}),
+            _text("这段话不得进入任何参数"),
+            _call("calendar.create_event", {"title": "理发"}),
+        )
+    )
+
+    proposal = _propose(gateway, envelope)
+
+    assert isinstance(proposal, ProposedToolCalls)
+    assert [call.arguments["title"] for call in proposal.calls] == ["牙医", "理发"]
+    assert proposal.suppressed_untrusted_text is True
+    assert "这段话" not in repr(proposal)
 
 
 def test_transport_failure_is_a_gateway_error(envelope) -> None:
@@ -1132,10 +1168,28 @@ def test_malformed_model_response_is_separate_from_provider_failures(
             "tool_arguments",
         ),
         (
+            # Several ordinary calls are one message asking for several things,
+            # and they are handed on whole (design 4.2). A *control* call beside
+            # them is different in kind -- "ask the user" or "fail" beside "do
+            # this" is two answers to what this turn should do -- and no reading
+            # of that is safe, so it keeps the refusal it always had.
             _response(
                 _call("finance.log_expense", {}),
-                _text("不要丢掉我"),
-                _call("finance.log_income", {}),
+                _call(
+                    "agent.ask_clarification",
+                    {"question": "个人还是家庭？", "reason": "other"},
+                ),
+            ),
+            ModelFailureReason.RESPONSE_AMBIGUOUS,
+            "multiple_tool_calls",
+        ),
+        (
+            _response(
+                _call("finance.log_expense", {}),
+                _call(
+                    "agent.fail_safely",
+                    {"reason": ErrorCode.UNSUPPORTED_OPERATION.value},
+                ),
             ),
             ModelFailureReason.RESPONSE_AMBIGUOUS,
             "multiple_tool_calls",

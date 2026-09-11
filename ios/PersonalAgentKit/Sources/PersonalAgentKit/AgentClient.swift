@@ -377,12 +377,117 @@ public struct AgentClient: Sendable {
         )
     }
 
+    // --- device actions and the calendar mirror ------------------------------
+
+    /// Report what this device did with a device-executed action.
+    ///
+    /// No `Idempotency-Key`: the action id IS the key. The server locates the
+    /// operation by it, and its CAS makes settlement exactly-once — a replay
+    /// returns the current projection with 200 rather than a second
+    /// transition, so re-sending the same report after a lost reply is safe.
+    public func reportDeviceActionResult(
+        actionID: String,
+        body: DeviceActionResultBody,
+        token: String
+    ) async throws -> OperationReceipt {
+        try await send(
+            method: "POST",
+            path: "/v1/device-actions/\(actionID)/result",
+            jsonBody: [
+                "result": body.result,
+                "event_id": body.eventID as Any?,
+                "detail": body.detail as Any?,
+            ],
+            token: token,
+            accepting: [200],
+            as: OperationReceipt.self
+        )
+    }
+
+    /// Answer 「仍要创建」 for a calendar write the device reported as a duplicate
+    /// (design §3.3).
+    ///
+    /// **A closed body and no `Idempotency-Key`, both on purpose.** The decision
+    /// carries no parameters — the server resumes the arguments the original
+    /// turn was already authorised to make — and it derives its own key from the
+    /// source operation (`uuid5(ns, "<operation_id>:calendar-override")`), so
+    /// the idempotency is in the derivation rather than in anything this client
+    /// sends. A second tap, a concurrent tap and a retry after a lost reply all
+    /// present the same endpoint and the same action id, and the server's
+    /// INSERT-or-get answers every one of them with the same derived operation.
+    /// Minting a key here would add a durable local slot with nothing to protect
+    /// and a second way for the client to be wrong.
+    ///
+    /// The reply is that operation's own projection, on the first tap and on
+    /// every replay: parked, it hands the re-issued action over the same
+    /// delivery door every other response uses — and the delivery gate is the
+    /// capability header, so a build too old to run the action is never handed
+    /// it. Settled, it reports what the phone did with it.
+    public func overrideDeviceAction(
+        actionID: String, token: String
+    ) async throws -> OperationReceipt {
+        try await send(
+            method: "POST",
+            path: "/v1/device-actions/\(actionID)/override",
+            // The route is closed: `{}` is the only accepted body, and an empty
+            // one is refused rather than defaulted, so the shape is sent
+            // explicitly rather than omitted.
+            jsonBody: [:],
+            token: token,
+            accepting: [200, 202],
+            as: OperationReceipt.self
+        )
+    }
+
+    /// Upload one mirror batch. The reply is the server's ingest summary;
+    /// a 400 means the whole batch was refused and the caller should fix its
+    /// window, never split the batch to sneak a bad event through.
+    ///
+    /// `snapshotAsOf` is the batch's *version*: identical across every batch
+    /// of one window, because EventKit exposes no per-event modification time
+    /// and the snapshot instant is the only thing the device can vouch for.
+    /// The server's schema makes it required — a request without it is
+    /// INVALID_ARGUMENT, not a defaulted snapshot (second review F1).
+    public func uploadCalendarSync(
+        windowStart: Date,
+        windowEnd: Date,
+        events: [CalendarMirrorEvent],
+        calendars: [CalendarDirectoryEntry],
+        windowComplete: Bool,
+        snapshotAsOf: Date,
+        syncEpoch: Int,
+        token: String
+    ) async throws -> CalendarSyncResponse {
+        try await send(
+            method: "POST",
+            path: "/v1/calendar/sync",
+            jsonBody: [
+                "window_start": RFC3339.string(from: windowStart) as Any?,
+                "window_end": RFC3339.string(from: windowEnd) as Any?,
+                // Always present, even when empty: the field is nullable in
+                // the schema, and an empty array says "this device has no
+                // ordinary event calendars" — a fact — where omitting the key
+                // says "this build does not know about directories" and would
+                // leave a stale one in place.
+                "calendars": calendars.map(CalendarMirrorWire.directoryEntry),
+                "events": events.map(CalendarMirrorWire.event),
+                "window_complete": windowComplete,
+                "snapshot_as_of": RFC3339.string(from: snapshotAsOf),
+                "sync_epoch": syncEpoch,
+            ],
+            token: token,
+            accepting: [200],
+            as: CalendarSyncResponse.self
+        )
+    }
+
     // --- transport -----------------------------------------------------------
 
     private func send<Response: Decodable>(
         method: String,
         path: String,
         body: [String: String?]? = nil,
+        jsonBody: [String: Any]? = nil,
         booleanBody: [String: Bool] = [:],
         token: String? = nil,
         headers: [String: String] = [:],
@@ -401,13 +506,30 @@ public struct AgentClient: Sendable {
         // first real-device chat send "failed" at 20.6s while the write
         // completed server-side (2026-08-01). Nginx allows 75s upstream.
         request.timeoutInterval = 45
+        // What this build can implement, on every request it sends (design
+        // §2.5). The calendar issuance and delivery gates read it per request,
+        // never from anything persisted, which is what makes a downgraded or
+        // restored device safe the moment it comes back. Set before the
+        // caller's own headers so a test can still override it deliberately.
+        request.setValue(
+            ClientWireVersion.value, forHTTPHeaderField: ClientWireVersion.header
+        )
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         for (name, value) in headers {
             request.setValue(value, forHTTPHeaderField: name)
         }
-        if let body {
+        // `jsonBody` carries the shapes `body` cannot express: nested arrays
+        // of objects (the calendar mirror batch) and JSON nulls inside them.
+        // At most one of the two is given; both would be an encoding bug here.
+        if jsonBody != nil {
+            precondition(body == nil, "use body or jsonBody, not both")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(
+                withJSONObject: jsonBody!
+            )
+        } else if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             var encoded = body.mapValues { $0 as Any? ?? NSNull() }
             for (field, value) in booleanBody {
@@ -576,6 +698,21 @@ public struct PushTokenState: Decodable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
         case hasPushToken = "has_push_token"
+    }
+}
+
+/// The ingest summary `POST /v1/calendar/sync` answers with — the server's
+/// output schema for `calendar.ingest_events`, projected to the device.
+public struct CalendarSyncResponse: Decodable, Sendable, Equatable {
+    public let status: String
+    public let upserted: Int
+    public let skipped: Int
+    public let markedDeleted: Int
+    public let syncEpoch: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case status, upserted, skipped
+        case markedDeleted = "marked_deleted", syncEpoch = "sync_epoch"
     }
 }
 

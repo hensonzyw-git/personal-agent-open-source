@@ -26,6 +26,72 @@ import Testing
 /// The counterparty is the **real** `AgentClient` and `DeviceSession` over the
 /// shared stubbed `URLProtocol` harness from `ChatTimelineTests.swift`. Only HTTP
 /// is fake.
+/// The confirmation dialog's words, which are the last thing a person reads
+/// before a conclusion becomes a human fact the server will not let them take
+/// back.
+///
+/// This is the same defect as the card's, one tap later: the card was fixed to
+/// send a calendar write's owner to the calendar, and the dialog that actually
+/// records the conclusion still asked them to confirm the *ledger*. The dialog
+/// is the screen where being sent to the wrong place is irreversible.
+@Suite("The manual-review confirmation dialog's words")
+struct ManualReviewConfirmCopyTests {
+
+    @Test("the dialog names the destination the card named")
+    func theDialogFollowsTheDomain() {
+        let ledger = ManualReviewCopy.ledger
+        let calendar = ManualReviewCopy.calendar
+
+        #expect(ledger.confirmButton != calendar.confirmButton)
+        #expect(!calendar.confirmButton.contains("账本"))
+        #expect(!calendar.confirmMessage.contains("账本"))
+        #expect(ledger.confirmButton.contains("账本"))
+        #expect(ledger.confirmMessage.contains("账本"))
+
+        for wire in [ManualResolution.confirmedWritten, .confirmedNotWritten] {
+            #expect(
+                ledger.confirmPrompt(forWire: wire.rawValue)
+                    != calendar.confirmPrompt(forWire: wire.rawValue)
+            )
+            #expect(!calendar.confirmPrompt(forWire: wire.rawValue).contains("账本"))
+        }
+    }
+
+    @Test("the two conclusions ask about opposite states in both domains")
+    func theTwoConclusionsAreDistinguishable() {
+        for copy in [ManualReviewCopy.ledger, .calendar] {
+            #expect(
+                copy.confirmPrompt(forWire: ManualResolution.confirmedWritten.rawValue)
+                    != copy.confirmPrompt(forWire: ManualResolution.confirmedNotWritten.rawValue)
+            )
+        }
+    }
+
+    @Test("a conclusion this build cannot name is asked about neutrally")
+    func anUnknownConclusionGetsNoGuess() {
+        // The buttons can only produce the two values above, so this is the
+        // case of a server that has learned a third. Offering the *written*
+        // wording would be an invention about a conclusion nobody has seen yet,
+        // and the person would confirm it.
+        let prompt = ManualReviewCopy.calendar.confirmPrompt(forWire: "confirmed_partially")
+        #expect(!prompt.contains("有"))
+        #expect(!prompt.contains("没有"))
+        #expect(!prompt.contains("日历"))
+        #expect(!prompt.contains("账本"))
+    }
+
+    @Test("an unknown domain on a card still draws the ledger's words")
+    func theCardKeepsItsFallback() {
+        // Unchanged from before this change, and deliberately not the neutral
+        // copy: a *card* with no domain is a projection from before the field
+        // existed, and every one of those is a ledger write. The marker's
+        // no-domain case is different — see `forResolvedMarker`.
+        #expect(ManualReviewCopy.forDomain(nil) == .ledger)
+        #expect(ManualReviewCopy.forDomain("wardrobe") == .ledger)
+        #expect(ManualReviewCopy.forDomain(OperationReceipt.calendarDomain) == .calendar)
+    }
+}
+
 @Suite("The DEV-040 manual-review resolution", .serialized)
 struct ManualReviewResolutionTests {
     private func newService() -> Service { Service() }
@@ -65,6 +131,7 @@ struct ManualReviewResolutionTests {
                 return .ok(
                     chatReceipt(
                         "needs_manual_review",
+                        domain: "finance",
                         recordID: "rec-42",
                         failureReason: "RECEIPT_MISMATCH"
                     )
@@ -80,7 +147,9 @@ struct ManualReviewResolutionTests {
         // The premise of every case below: parked, and holding the slot.
         #expect(
             receipt.outcome
-                == .needsManualReview(reason: "RECEIPT_MISMATCH", recordID: "rec-42")
+                == .needsManualReview(
+                    reason: "RECEIPT_MISMATCH", recordID: "rec-42", domain: "finance"
+                )
         )
         #expect(try store.read(CredentialKey.pendingChatSend) != nil)
         return (chat, store)
@@ -290,7 +359,10 @@ struct ManualReviewResolutionTests {
             content: ["resolution": .string("confirmed_not_written")]
         )
 
-        #expect(event.kind == .manualReviewResolved(resolution: "confirmed_not_written"))
+        #expect(
+            event.kind
+                == .manualReviewResolved(resolution: "confirmed_not_written", domain: nil)
+        )
     }
 
     @Test("a conclusion this build cannot name stays visible, not dropped")
@@ -306,7 +378,81 @@ struct ManualReviewResolutionTests {
         // Not `unrecognised`: the card must show that *something* was recorded,
         // or it will offer the buttons again and invite a `409`.
         #expect(
-            event.kind == .manualReviewResolved(resolution: "confirmed_partially_written")
+            event.kind
+                == .manualReviewResolved(
+                    resolution: "confirmed_partially_written", domain: nil
+                )
+        )
+    }
+
+    @Test("the marker's domain selects its words, and a missing one borrows nothing")
+    func theMarkersDomainSelectsItsWords() {
+        // A marker appended before the field existed has no domain, and the
+        // entry is frozen — it can never be backfilled. Rendering it in the
+        // ledger's words would put 账本 on a calendar resolution that was
+        // recorded when calendar writes already existed (step 5), which is the
+        // same misdirection the card was fixed for, one screen later and
+        // permanent.
+        let neutral = ManualReviewCopy.forResolvedMarker(nil)
+        #expect(!neutral.writtenConclusion.contains("账本"))
+        #expect(!neutral.writtenConclusion.contains("日历"))
+        #expect(!neutral.notWrittenConclusion.contains("账本"))
+        #expect(!neutral.notWrittenConclusion.contains("日历"))
+
+        // A domain this build has never heard of borrows nothing either: it is
+        // not a ledger write, and saying so would be an invention. It shares the
+        // neutral words with the no-domain case rather than getting a third copy,
+        // because the fork here is binary -- "the calendar" or "somewhere this
+        // build cannot name" -- and a per-domain copy for a domain that does not
+        // exist yet would be words written for nothing.
+        let unknown = ManualReviewCopy.forResolvedMarker("wardrobe")
+        #expect(!unknown.writtenConclusion.contains("账本"))
+        #expect(!unknown.writtenConclusion.contains("日历"))
+        #expect(unknown == neutral)
+
+        let calendar = ManualReviewCopy.forResolvedMarker(OperationReceipt.calendarDomain)
+        #expect(calendar.writtenConclusion.contains("日历"))
+        #expect(!calendar.writtenConclusion.contains("账本"))
+
+        // And the two branches are distinguishable in both conclusions and in the
+        // dialog behind them, or the fork is decorative.
+        #expect(calendar.writtenConclusion != neutral.writtenConclusion)
+        #expect(calendar.notWrittenConclusion != neutral.notWrittenConclusion)
+        #expect(calendar.confirmButton != neutral.confirmButton)
+        #expect(calendar.confirmMessage != neutral.confirmMessage)
+        for wire in [ManualResolution.confirmedWritten, .confirmedNotWritten] {
+            #expect(calendar.confirmPrompt(forWire: wire.rawValue) != neutral.confirmPrompt(forWire: wire.rawValue))
+        }
+    }
+
+    @Test("the marker's domain is read off the event, not assumed")
+    func theMarkerCarriesItsDomain() {
+        func kind(_ content: [String: JSONValue]) -> TimelineEntryKind {
+            TimelineEvent(
+                eventID: "e1",
+                eventType: "manual_review_resolved",
+                operationID: "op-1",
+                createdAt: "2026-08-04T09:00:00+00:00",
+                content: content
+            ).kind
+        }
+
+        #expect(
+            kind(["resolution": .string("confirmed_written"), "domain": .string("calendar")])
+                == .manualReviewResolved(resolution: "confirmed_written", domain: "calendar")
+        )
+        // The old shape: no domain at all is a *known* absence, not a
+        // malformed marker — the resolution is still readable and still keeps
+        // the buttons away.
+        #expect(
+            kind(["resolution": .string("confirmed_written")])
+                == .manualReviewResolved(resolution: "confirmed_written", domain: nil)
+        )
+        // A domain that is present but not a string is also no domain. It is
+        // not a reason to hide a conclusion that was recorded.
+        #expect(
+            kind(["resolution": .string("confirmed_written"), "domain": .number(1)])
+                == .manualReviewResolved(resolution: "confirmed_written", domain: nil)
         )
     }
 
@@ -341,6 +487,7 @@ struct ManualReviewResolutionTests {
             cancelRequested: false,
             clientDetached: false,
             tool: "finance.log_expense",
+            domain: "finance",
             recordID: "rec-42",
             failureReason: "RECEIPT_MISMATCH",
             duplicateCheckID: nil,
@@ -351,8 +498,83 @@ struct ManualReviewResolutionTests {
 
         #expect(
             receipt.outcome
-                == .needsManualReview(reason: "RECEIPT_MISMATCH", recordID: "rec-42")
+                == .needsManualReview(
+                    reason: "RECEIPT_MISMATCH", recordID: "rec-42", domain: "finance"
+                )
         )
         #expect(receipt.outcome.provesWrite == false)
+    }
+}
+
+/// The one statement of "is this card answered", shared by the view model that
+/// hides the buttons and the acceptance script that claims they are there.
+///
+/// The two used to be separate statements of the same rule — an inline fold in
+/// `ChatModel` and a turn of phrase in the checklist — and the 2026-09-10 review
+/// found the drift: the checklist asked a person to look for a 核对 prompt on a
+/// card the fold had already closed, on a build where every test was green.
+@Suite("The answered-operation index")
+struct ManualReviewResolutionIndexTests {
+
+    private func marker(
+        _ eventID: String, operation: String?, _ resolution: String
+    ) -> TimelineEvent {
+        TimelineEvent(
+            eventID: eventID,
+            eventType: "manual_review_resolved",
+            operationID: operation,
+            createdAt: "2026-08-04T09:00:00+00:00",
+            content: ["resolution": .string(resolution)]
+        )
+    }
+
+    @Test("only the operations that carry a marker are answered")
+    func onlyMarkedOperationsAreAnswered() {
+        let answered = ManualReviewResolutionIndex.answered(by: [
+            marker("e1", operation: "op-1", "confirmed_written"),
+            // A result event is not a conclusion and must not answer anything.
+            TimelineEvent(
+                eventID: "e2",
+                eventType: "operation_result",
+                operationID: "op-2",
+                createdAt: "2026-08-04T09:01:00+00:00",
+                content: [:]
+            ),
+        ])
+        #expect(answered == ["op-1": "confirmed_written"])
+    }
+
+    @Test("a marker with no operation answers nothing")
+    func aMarkerWithoutAnOperationAnswersNothing() {
+        // The field is optional on the wire, and an entry that did not name its
+        // operation cannot close a card. Dropping it is the safe direction: the
+        // card keeps its buttons rather than hiding behind someone else's
+        // conclusion.
+        #expect(ManualReviewResolutionIndex.answered(by: [
+            marker("e1", operation: nil, "confirmed_written")
+        ]).isEmpty)
+    }
+
+    @Test("a second conclusion on one operation is the one that stands")
+    func theLaterConclusionWins() {
+        // Timeline order, so the newest marker is the answer. A guard that kept
+        // the *first* would be equally plausible to write and would leave a card
+        // closed on a conclusion the person has since changed.
+        let answered = ManualReviewResolutionIndex.answered(by: [
+            marker("e1", operation: "op-1", "confirmed_written"),
+            marker("e2", operation: "op-1", "confirmed_not_written"),
+        ])
+        #expect(answered["op-1"] == "confirmed_not_written")
+    }
+
+    @Test("an unknown conclusion still counts as answered")
+    func anUnknownConclusionStillAnswers() {
+        // Paired with `anUnknownConclusionStaysVisible` above: the marker's
+        // wording is allowed to be unknown, but the card must still close. If
+        // this returned nothing, the build would offer the buttons again and
+        // invite a 409 on an operation the server has already settled.
+        #expect(ManualReviewResolutionIndex.answered(by: [
+            marker("e1", operation: "op-1", "confirmed_partially_written")
+        ]) == ["op-1": "confirmed_partially_written"])
     }
 }

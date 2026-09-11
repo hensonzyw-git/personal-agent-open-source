@@ -9,8 +9,12 @@ another to the connector.
 Two rules shape the model-visible schemas:
 
 - the model only ever sees business fields. Identity, scopes, idempotency keys,
-  duplicate overrides, resource identifiers and timezone are Host injected and
-  are dropped if they appear in model output;
+  duplicate overrides, resource identifiers and the Host Context's timezone are
+  Host injected and are dropped if they appear in model output. A contract may
+  re-declare one of those names as its own business field -- `timezone` on
+  `calendar.create_event` is the *event's* IANA zone -- and the strip then
+  exempts it, because the exemption is read from this contract rather than from
+  a list beside it (`host_context.declared_model_fields`);
 - a field with a default is a field the model can quietly omit. `is_family_expense`
   therefore has no default anywhere: a missing personal/family scope must stop and
   ask, never write.
@@ -33,9 +37,70 @@ from personal_agent_core.money import (
 )
 
 
-IR_VERSION: Final[str] = "0.1.0"
+IR_VERSION: Final[str] = "0.3.0"
 
 DATE_PATTERN: Final[str] = r"^\d{4}-\d{2}-\d{2}$"
+
+#: The header a device client uses to state the action semantics it implements
+#: (design §2.5). It is read per request and never persisted: a client that
+#: cannot honour a tool's action must be refused the action, not told about it
+#: later. Absent or unparseable means version 1.
+CLIENT_WIRE_VERSION_HEADER: Final[str] = "X-Client-Wire-Version"
+
+#: Every client that predates the calendar work implements version 1.
+DEFAULT_CLIENT_WIRE_VERSION: Final[int] = 1
+
+
+def parse_client_wire_version(raw: str | None) -> int:
+    """The action semantics a client claims, from its header value.
+
+    Absent or unparseable means version 1. That is deliberately not an error:
+    every client that predates this header implements version 1, and failing the
+    request would break those clients on endpoints that never carry an action
+    at all. The claim can only ever *narrow* what is delivered, because it is
+    compared against what the action requires -- a client cannot talk its way
+    into a newer contract, and it cannot talk its way into an older one either.
+    """
+    if not isinstance(raw, str):
+        return DEFAULT_CLIENT_WIRE_VERSION
+    try:
+        # `int` already tolerates the surrounding whitespace a header value may
+        # arrive with, so a padded "2" is a client that implements version 2 --
+        # reading it as unreadable would lock out a correctly-upgraded phone.
+        version = int(raw)
+    except ValueError:
+        return DEFAULT_CLIENT_WIRE_VERSION
+    # A version below 1 names no contract this codebase ever shipped, so it is
+    # an unreadable value rather than a client that implements less than
+    # nothing.
+    return version if version >= 1 else DEFAULT_CLIENT_WIRE_VERSION
+
+
+def client_supports_wire_version(*, client: int, required: int) -> bool:
+    """Whether a client at `client` may be handed an action requiring `required`.
+
+    One predicate for both capability gates (design §2.5): the issuance gate
+    asks it of the tool contract, the delivery gate of the sealed action's own
+    `wire_version`. Two copies of this comparison could drift into one of them
+    failing open, and failing open here is not a degraded hand-off -- it hands a
+    v2 action to a client that ignores `calendar_identifier` and writes the
+    event into its default calendar instead.
+    """
+    return client >= required
+
+
+#: The four calendars routing may target. 【飞行计划】 is managed by another app
+#: and is read-only; it stays in the enum so a flight request receives the
+#: honest refusal from the server instead of the model inventing a calendar or
+#: funnelling it into 【日常安排】. The server is the single refusal point.
+ALLOWED_CALENDARS: Final[tuple[str, ...]] = (
+    "日常安排",
+    "出游计划",
+    "演出&活动",
+    "飞行计划",
+)
+
+CALENDAR_FLIGHT_PLAN: Final[str] = "飞行计划"
 
 #: The only categories the 2026 ledger accepts. The connector must never create
 #: a new Feishu select option.
@@ -57,6 +122,8 @@ SCOPE_EXPENSE_WRITE: Final[str] = "finance.expense.write"
 SCOPE_INCOME_WRITE: Final[str] = "finance.income.write"
 SCOPE_FAMILY_FUND_WRITE: Final[str] = "finance.family_fund.write"
 SCOPE_META_READ: Final[str] = "meta.capabilities.read"
+SCOPE_CALENDAR_READ: Final[str] = "calendar.event.read"
+SCOPE_CALENDAR_WRITE: Final[str] = "calendar.event.write"
 
 
 Effect = Literal["read", "create", "update", "delete"]
@@ -121,6 +188,23 @@ class ToolContract(BaseModel):
     #: from the same expression twice.
     model_callable: bool = True
     disabled_reason: str | None = None
+    #: Where the tool's external effect actually happens. `"mcp"` (default) is
+    #: every connector-backed tool: the Host calls it through the governed MCP
+    #: bridge. `"device"` names a tool whose fact source lives in the calling
+    #: device's own sandbox — the Apple calendar is the first one — so the Host
+    #: can never execute it: dispatch returns a device action for the phone to
+    #: perform with EventKit, and the phone reports the outcome back. Like
+    #: `model_callable`, this is a contract field rather than a list beside the
+    #: IR, because the dispatch fork must be derived, not hand-maintained.
+    executor: Literal["mcp", "device"] = "mcp"
+    #: The action semantics a client must implement before it may be handed
+    #: this tool's device action (design §2.5, review R1-F1). A client that
+    #: ignores fields it does not know would perform a *different* write than
+    #: the one that was authorised, so issuance and delivery both gate on the
+    #: requester's `X-Client-Wire-Version`. It is a contract field for the same
+    #: reason `executor` is: the gate must be derived from the IR, and it
+    #: travels with the sealed action so the phone and the Host agree.
+    wire_version: int = DEFAULT_CLIENT_WIRE_VERSION
     summary: str
     model_input_schema: dict[str, Any]
     output_schema: dict[str, Any]
@@ -1053,6 +1137,678 @@ META_CAPABILITIES = ToolContract(
 )
 
 
+#: The Apple calendar is the *authoritative* calendar (Henson's 2026-09-07
+#: decision). Its events live in the iPhone's EventKit sandbox, which no server
+#: can reach, so the domain splits into a device-executed write and two
+#: mirror-backed reads: the phone performs `create_event` locally and reports
+#: back; it also uploads a mirror of its own calendar to the server, and
+#: `query_events` runs against that mirror — never against the model's own
+#: claims about what is on the calendar. Reminders, tasks, recurrence,
+#: edit and delete are non-goals for v1.
+_CALENDAR_EVENT_FIELDS: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "event_identifier",
+        "calendar_identifier",
+        "calendar_title",
+        "title",
+        "start",
+        "end",
+        "all_day",
+        "timezone",
+        "start_date",
+        "end_date",
+        "date_anchor_unknown",
+        "title_over_limit",
+        "location_over_limit",
+        "notes_over_limit",
+    ],
+    "properties": {
+        "event_identifier": {
+            "type": "string",
+            "minLength": 1,
+            "description": (
+                "设备端 EventKit 的事件标识（EKEvent.eventIdentifier）。重复日程的"
+                "每次实例共享同一标识，靠 start 区分。"
+            ),
+        },
+        "calendar_identifier": {
+            "type": "string",
+            "minLength": 1,
+            "description": "该事件所在日历的标识。",
+        },
+        "calendar_title": {
+            "type": ["string", "null"],
+            "maxLength": 200,
+            "description": (
+                "该事件所在日历的名字（设备名录里的 title），列表卡片显示用；"
+                "identifier 是 EventKit 的 UUID，对人没有意义。设备名录里没有"
+                "这个标识时（名录未上载过、或该日历已被删除）为 null——「不知道"
+                "名字」是事实，不要用 identifier 顶替。"
+            ),
+        },
+        "title": {
+            "type": ["string", "null"],
+            "maxLength": 200,
+            "description": (
+                "EventKit 允许无标题事件，null 是事实而非缺字段；title_over_limit "
+                "为 true 时 null 的含义是「过长未同步」，不是「没有标题」。"
+            ),
+        },
+        "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": (
+                "开始时刻（UTC 瞬间）。全天事件的展示日期一律取 start_date/"
+                "end_date，**不要**用本字段换算——它可能落在当地日期的前一天。"
+            ),
+        },
+        "end": {
+            "type": "string",
+            "format": "date-time",
+            "description": "结束时刻（UTC 瞬间）；全天事件同样以 end_date 为准。",
+        },
+        "all_day": {"type": "boolean"},
+        "timezone": {
+            "type": ["string", "null"],
+            "description": (
+                "timed 事件自身的 IANA 时区，按其当地时间 + 时区标注呈现，**不**"
+                "折算成上海时间；null 表示上载早于 v2 形状，按 Asia/Shanghai "
+                "呈现。全天事件恒为 null（全天只有日期语义，无归属时区）。"
+            ),
+        },
+        "start_date": {
+            "type": ["string", "null"],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "全天事件的开始日期；timed 事件为 null。",
+        },
+        "end_date": {
+            "type": ["string", "null"],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "全天事件的排他结束日期（最后一天 + 1）；timed 事件为 null。",
+        },
+        "date_anchor_unknown": {
+            "type": "boolean",
+            "description": (
+                "true 表示该全天事件的日期归属未经确认（外部 App 创建、或来自 "
+                "v1 形状的推导）：日期照常显示，但呈现时必须标注「日期归属未确认」。"
+            ),
+        },
+        "location": {"type": ["string", "null"], "maxLength": 500},
+        "notes": {"type": ["string", "null"], "maxLength": 4096},
+        "title_over_limit": {
+            "type": "boolean",
+            "description": "为 true 时 title 因超长未同步（其值为 null），呈现时须说明。",
+        },
+        "location_over_limit": {"type": "boolean"},
+        "notes_over_limit": {
+            "type": "boolean",
+            "description": "为 true 时 notes 因超长未同步（其值为 null），呈现时须说明。",
+        },
+        "created_by_agent": {
+            "type": "boolean",
+            "description": "该事件是否由本 Agent 的设备动作创建。",
+        },
+    },
+    # The whole point of the date columns (design 5.2, R1-F2): an all-day
+    # event's content is a date range, and a timed event never carries one.
+    # Pinned in the contract rather than left to the renderer's discipline.
+    "allOf": [
+        {
+            "if": {
+                "properties": {"all_day": {"const": True}},
+                "required": ["all_day"],
+            },
+            "then": {
+                "properties": {
+                    "start_date": {"type": "string"},
+                    "end_date": {"type": "string"},
+                    "timezone": {"type": "null"},
+                }
+            },
+            "else": {
+                "properties": {
+                    "start_date": {"type": "null"},
+                    "end_date": {"type": "null"},
+                    "date_anchor_unknown": {"const": False},
+                }
+            },
+        }
+    ],
+}
+
+_CALENDAR_CREATE_INPUT: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["title", "start", "end", "all_day", "calendar"],
+    "properties": {
+        "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "日程标题，使用用户口述的措辞。",
+        },
+        "calendar": {
+            "type": "string",
+            "enum": list(ALLOWED_CALENDARS),
+            "description": (
+                "目标日历，按参与语义选择，不看关键词："
+                "自己打网球→【日常安排】，看网球比赛→【演出&活动】，"
+                "出行/住宿/多日行程→【出游计划】。语义不明时必须先追问，"
+                "绝不落到任何默认日历。"
+            ),
+        },
+        "timezone": {
+            "type": ["string", "null"],
+            "default": None,
+            "description": (
+                "事件的 IANA 时区（如 Asia/Tokyo），跨时区时按目的地推断并"
+                "在回执中标注；不确定就先追问，绝不静默假设 Asia/Shanghai。"
+                "省略 = Asia/Shanghai。全天事件必须为 null：EventKit 的全天"
+                "事件是浮动日期，没有归属时区（2026-09-09 探针结论）。"
+            ),
+        },
+        "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": (
+                "开始时刻的绝对时间（如 2026-09-12T15:00:00+08:00，"
+                "跨时区时为 2027-01-01T00:00:00+09:00）。"
+                "all_day 时必须等于 start_date 在当地时区（timezone 为空时"
+                "为 Asia/Shanghai）的零点，服务端会校验，不一致直接拒绝。"
+                "用户只说了相对表达（明天下午）时必须先换算或追问，"
+                "绝不把没说清的时刻猜成整点写入。"
+            ),
+        },
+        "end": {
+            "type": "string",
+            "format": "date-time",
+            "description": (
+                "结束时刻的绝对时间；all_day 时为 end_date 当天零点"
+                "（end_date 已是最后一天 + 1，EventKit 全天事件结束排他）。"
+                "用户没说结束时刻时按一小时默认并如实告知。"
+            ),
+        },
+        "all_day": {
+            "type": "boolean",
+            "description": (
+                "是否为全天日程。全天事件只按日期表达：必须同时提供 "
+                "start_date/end_date，且 timezone 为 null。"
+            ),
+        },
+        "start_date": {
+            "type": ["string", "null"],
+            "pattern": DATE_PATTERN,
+            "description": (
+                "全天事件的开始日期（YYYY-MM-DD）；all_day=false 时必须缺省。"
+            ),
+        },
+        "end_date": {
+            "type": ["string", "null"],
+            "pattern": DATE_PATTERN,
+            "description": (
+                "全天事件的排他结束日 = 用户口述的最后一天 + 1"
+                "（「10-01 到 10-03」= 3 天 → end_date 2026-10-04）；"
+                "all_day=false 时必须缺省。"
+            ),
+        },
+        "location": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "可选地点。",
+        },
+        "notes": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "可选备注。",
+        },
+    },
+    # The two shapes are mutually exclusive by construction: an all-day event
+    # travels as dates and must not carry an owner timezone, a timed event
+    # travels as instants and must not carry dates. Both spellings of "not
+    # applicable" (absent or explicit null) are accepted, as the family-fund
+    # modes already do.
+    "allOf": [
+        {
+            "if": {
+                "properties": {"all_day": {"const": True}},
+                "required": ["all_day"],
+            },
+            "then": {
+                "required": ["start_date", "end_date"],
+                "properties": {
+                    "start_date": {"type": "string", "pattern": DATE_PATTERN},
+                    "end_date": {"type": "string", "pattern": DATE_PATTERN},
+                    "timezone": {"const": None},
+                },
+            },
+        },
+        {
+            "if": {
+                "properties": {"all_day": {"const": False}},
+                "required": ["all_day"],
+            },
+            "then": {
+                "properties": {
+                    "start_date": {"const": None},
+                    "end_date": {"const": None},
+                },
+            },
+        },
+    ],
+}
+
+_CALENDAR_CREATE_OUTPUT: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["status", "action_id", "event"],
+    "properties": {
+        # `issued` is the tool's direct output: the Host has prepared a signed
+        # device action and the phone performs it. The *receipt* (record_id =
+        # event identifier) arrives later from the device's own report, so the
+        # output schema must not claim a `record_id` that does not exist yet.
+        "status": {"const": "issued"},
+        "action_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "本次设备动作的幂等键，与宿主操作的幂等键相同。",
+        },
+        "event": {
+            "type": "object",
+            "required": ["title", "start", "end", "all_day", "calendar"],
+            "properties": {
+                "title": {"type": "string"},
+                "start": {"type": "string", "format": "date-time"},
+                "end": {"type": "string", "format": "date-time"},
+                "all_day": {"type": "boolean"},
+                "calendar": {"type": "string", "enum": list(ALLOWED_CALENDARS)},
+                "timezone": {"type": ["string", "null"]},
+                "start_date": {"type": ["string", "null"]},
+                "end_date": {"type": ["string", "null"]},
+                "location": {"type": ["string", "null"]},
+                "notes": {"type": ["string", "null"]},
+            },
+        },
+    },
+}
+
+_CALENDAR_QUERY_INPUT: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["start", "end"],
+    "properties": {
+        "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "窗口开始（含），Asia/Shanghai 绝对时间。",
+        },
+        "end": {
+            "type": "string",
+            "format": "date-time",
+            "description": "窗口结束（不含），Asia/Shanghai 绝对时间。",
+        },
+        "cursor": {
+            "type": ["string", "null"],
+            "default": None,
+            "description": "服务端不透明游标。不要构造或猜测它的内容。",
+        },
+    },
+}
+
+_CALENDAR_QUERY_OUTPUT: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "status",
+        "events",
+        "record_count",
+        "data_as_of",
+        "mirror_stale",
+        "source_system",
+    ],
+    "properties": {
+        "status": {"const": "ok"},
+        "events": {"type": "array", "items": _CALENDAR_EVENT_FIELDS},
+        "record_count": {"type": "integer", "minimum": 0},
+        "next_cursor": {"type": ["string", "null"]},
+        # "数据截至": the mirror's own freshness, not the model's confidence.
+        # `mirror_stale` is true when the newest sync is older than the query
+        # window by a margin, so the model must state the staleness instead of
+        # presenting the mirror as the live calendar.
+        "data_as_of": {
+            "type": "string",
+            "format": "date-time",
+            "description": (
+                "日历镜像最近一次完整快照的拍摄瞬间。从未完成过快照时，实现"
+                "以查询时刻占位并令 mirror_stale=true——该字段保证非 null。"
+            ),
+        },
+        "mirror_stale": {"type": "boolean"},
+        "source_system": {"const": "apple_calendar_mirror"},
+    },
+}
+
+_CALENDAR_INGEST_INPUT: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "window_start",
+        "window_end",
+        "events",
+        "window_complete",
+        "snapshot_as_of",
+    ],
+    "properties": {
+        "window_start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "本次快照窗口开始。",
+        },
+        "window_end": {
+            "type": "string",
+            "format": "date-time",
+            "description": "本次快照窗口结束。",
+        },
+        "snapshot_as_of": {
+            "type": "string",
+            "format": "date-time",
+            "description": (
+                "本次快照的拍摄瞬间（UTC）。同一窗口的每个分批必须携带同一值："
+                "它是镜像的唯一版本号——EventKit 没有逐事件修改时间，快照瞬间"
+                "就是设备能提供的全部版本证据。"
+            ),
+        },
+        "sync_epoch": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "本设备采集此窗口前保存的镜像代次；wire v3 必填。",
+        },
+        "calendars": {
+            "type": ["array", "null"],
+            "default": None,
+            "maxItems": 200,
+            "description": (
+                "本设备的日历名录（含订阅日历的元数据）：签发创建动作时服务端要用"
+                "它在名字与 EventKit identifier 之间解析，解析不了就转为追问，绝不"
+                "猜。幂等重复无害。旧版 App 不携带该字段，其名录保持上次所见。"
+            ),
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "calendar_identifier",
+                    "title",
+                    "allows_content_modifications",
+                    "is_subscribed",
+                ],
+                "properties": {
+                    "calendar_identifier": {"type": "string", "minLength": 1},
+                    "title": {"type": "string", "minLength": 1},
+                    "source_title": {"type": ["string", "null"]},
+                    "allows_content_modifications": {"type": "boolean"},
+                    "is_subscribed": {"type": "boolean"},
+                },
+            },
+        },
+        "events": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "event_identifier",
+                    "calendar_identifier",
+                    "start",
+                    "end",
+                    "all_day",
+                    "last_modified",
+                ],
+                "properties": {
+                    "event_identifier": {"type": "string", "minLength": 1},
+                    "calendar_identifier": {"type": "string", "minLength": 1},
+                    "start": {"type": "string", "format": "date-time"},
+                    "end": {"type": "string", "format": "date-time"},
+                    "all_day": {"type": "boolean"},
+                    "last_modified": {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "设备端该事件最后修改时间，乱序上载的仲裁依据。",
+                    },
+                    "created_by_agent": {
+                        "type": "boolean",
+                        "description": (
+                            "该事件是否由本 Agent 的设备动作创建（设备按自己持久化的"
+                            "自建事件集合判定）。缺省为 false——换机后集合丢失时如实"
+                            "退化为「无法证明」。"
+                        ),
+                    },
+                    "timezone": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "timed 事件的 IANA 时区。v2 形状下 timed 必填非 null；"
+                            "全天事件必须为 null（全天无归属时区）。"
+                        ),
+                    },
+                    "start_date": {
+                        "type": ["string", "null"],
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                        "description": (
+                            "全天事件的开始日期（设备冻结后的读回算法得出：自建事件"
+                            "= 动作日期；外部事件 = 设备日历投影）。"
+                        ),
+                    },
+                    "end_date": {
+                        "type": ["string", "null"],
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                        "description": "全天事件的排他结束日期（最后一天 + 1）。",
+                    },
+                    "date_anchor_unknown": {
+                        "type": "boolean",
+                        "description": (
+                            "设备能否确认该全天事件的日期归属（自建事件＝true 为否，"
+                            "外部事件＝无法确认）。该标记由证据决定，不由 wire 版本"
+                            "决定；省略视为未确认。"
+                        ),
+                    },
+                    "title": {
+                        "type": ["string", "null"],
+                        "maxLength": 200,
+                        "description": "超过 200 码点必须置 null 并令 title_over_limit=true。",
+                    },
+                    "location": {
+                        "type": ["string", "null"],
+                        "maxLength": 500,
+                        "description": "超过 500 码点必须置 null 并令 location_over_limit=true。",
+                    },
+                    "notes": {
+                        "type": ["string", "null"],
+                        "maxLength": 4096,
+                        "description": "超过 4096 码点必须置 null 并令 notes_over_limit=true。",
+                    },
+                    "title_over_limit": {"type": "boolean"},
+                    "location_over_limit": {"type": "boolean"},
+                    "notes_over_limit": {"type": "boolean"},
+                },
+            },
+        },
+        "window_complete": {
+            "type": "boolean",
+            "description": (
+                "本批是否已把窗口内全部事件送完。为 true 且快照版本新于该设备"
+                "水位时，窗口内不属于本次快照的既有镜像行会被标记删除——设备是"
+                "日历的事实源。"
+            ),
+        },
+    },
+}
+
+_CALENDAR_INGEST_OUTPUT: Final[dict[str, Any]] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["status", "upserted", "skipped", "marked_deleted", "sync_epoch"],
+    "properties": {
+        "status": {"const": "ok"},
+        "upserted": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0},
+        "marked_deleted": {"type": "integer", "minimum": 0},
+        "sync_epoch": {"type": "integer", "minimum": 1},
+    },
+}
+
+#: Device-executed writes audit the same governance fields as connector writes;
+#: there is no provider latency or source status to record because no external
+#: call happened at dispatch — the phone's own report is the evidence.
+_CALENDAR_WRITE_AUDIT: Final[Audit] = Audit(
+    recorded=(
+        "trace_id",
+        "device_id",
+        "tool",
+        "contract_version",
+        "risk_level",
+        "policy_outcome",
+        "argument_field_names",
+        "request_fingerprint",
+        "device_report_status",
+        "latency_ms",
+    ),
+    never_recorded=(
+        "raw_user_text",
+        "model_reasoning",
+        "event_title",
+        "event_location",
+        "event_notes",
+        "device_event_identifier",
+        "access_token",
+        "provider_response_body",
+    ),
+)
+
+
+CALENDAR_CREATE_EVENT = ToolContract(
+    name="calendar.create_event",
+    version="1.0.0",
+    domain="calendar",
+    effect="create",
+    risk_level="R2",
+    enabled=True,
+    executor="device",
+    # v2 carries the routing decision and the all-day date fields; a v1 client
+    # would perform a different write than the one that was authorised, so it
+    # is refused the action instead (design §2.5).
+    wire_version=2,
+    summary=(
+        "在用户 iPhone 的 Apple 日历中创建一条单次日程。"
+        "必须先按参与语义选定目标日历（calendar），语义不明就问，不要猜；"
+        "全天日程传 all_day 并给出 start_date/end_date（可选时区）；"
+        "不支持重复日程——用户要每周重复时如实说明暂不支持，不要建多条冒充。"
+    ),
+    model_input_schema={
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "CalendarCreateEventInput",
+        **_CALENDAR_CREATE_INPUT,
+    },
+    output_schema=_CALENDAR_CREATE_OUTPUT,
+    required_scopes=(SCOPE_CALENDAR_WRITE,),
+    confirmation="never",
+    idempotency=Idempotency(
+        key_source="host_injected_uuid4",
+        replay_result=(
+            "同一动作键只产生一个设备动作；设备端另有本地查重（同日历、"
+            "同标题、开始时刻 ±5 分钟）兜底重复创建。"
+        ),
+    ),
+    # An automatic retry would create a second event: the local dedup window is
+    # a mitigation, not a right. The device action itself is settled exactly
+    # once by its CAS; a lost report surfaces as needs_manual_review instead.
+    retry=Retry(retryable_errors=()),
+    audit=_CALENDAR_WRITE_AUDIT,
+    errors=(
+        *_GOVERNANCE_ERRORS,
+        ErrorCode.CLARIFICATION_REQUIRED,
+        ErrorCode.DEVICE_ACTION_DENIED,
+        ErrorCode.DEVICE_EXECUTION_FAILED,
+    ),
+)
+
+
+CALENDAR_QUERY_EVENTS = ToolContract(
+    name="calendar.query_events",
+    version="1.0.0",
+    domain="calendar",
+    effect="read",
+    risk_level="R1",
+    enabled=True,
+    summary=(
+        "查询日历镜像中的日程（日期窗口必填）。镜像由设备同步上载，"
+        "回答必须携带数据截至时间，镜像陈旧时如实说明。"
+    ),
+    model_input_schema={
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "CalendarQueryEventsInput",
+        **_CALENDAR_QUERY_INPUT,
+    },
+    output_schema=_CALENDAR_QUERY_OUTPUT,
+    required_scopes=(SCOPE_CALENDAR_READ,),
+    confirmation="never",
+    idempotency=Idempotency(
+        key_source="not_applicable",
+        replay_result="只读查询没有外部副作用。",
+    ),
+    retry=Retry(
+        retryable_errors=(ErrorCode.SOURCE_UNAVAILABLE,),
+        reuse_idempotency_key=False,
+    ),
+    audit=_READ_AUDIT,
+    errors=(
+        *_GOVERNANCE_ERRORS,
+        ErrorCode.CLARIFICATION_REQUIRED,
+        ErrorCode.INVALID_CURSOR,
+        ErrorCode.SOURCE_UNAVAILABLE,
+    ),
+)
+
+
+#: Mirror ingest. The phone uploads its own calendar so `calendar.query_events`
+#: has something truthful to read. It is service-facing (the API calls it inside
+#: the sync route with a signed Host Context) and never a model choice: a model
+#: that could write the mirror could fabricate the calendar the model itself
+#: would then be asked to summarise.
+CALENDAR_INGEST_EVENTS = ToolContract(
+    name="calendar.ingest_events",
+    version="1.0.0",
+    domain="calendar",
+    effect="update",
+    risk_level="R1",
+    enabled=True,
+    model_callable=False,
+    disabled_reason=(
+        "镜像上载是设备同步路由的确定性动作，不是模型推理的选择；"
+        "模型可写镜像等于模型可伪造日历。"
+    ),
+    summary="把设备上报的日历事件快照按 last_modified 仲裁合并进镜像。",
+    model_input_schema={
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "CalendarIngestEventsInput",
+        **_CALENDAR_INGEST_INPUT,
+    },
+    output_schema=_CALENDAR_INGEST_OUTPUT,
+    required_scopes=(SCOPE_CALENDAR_READ,),
+    confirmation="never",
+    idempotency=Idempotency(
+        key_source="not_applicable",
+        replay_result=(
+            "按 (calendar_identifier, event_identifier) upsert，同一批重放"
+            "结果不变；last_modified 相同的行跳过。"
+        ),
+    ),
+    retry=Retry(retryable_errors=(), reuse_idempotency_key=False),
+    audit=_READ_AUDIT,
+    errors=(ErrorCode.INVALID_ARGUMENT, ErrorCode.SCOPE_DENIED),
+)
+
+
 #: Declaration order is part of the generated artifact, so it stays fixed.
 TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
     LOG_EXPENSE,
@@ -1062,10 +1818,28 @@ TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
     UPDATE_FAMILY_FUND,
     QUERY_EXPENSES,
     META_CAPABILITIES,
+    CALENDAR_CREATE_EVENT,
+    CALENDAR_QUERY_EVENTS,
+    CALENDAR_INGEST_EVENTS,
+)
+
+CALENDAR_TOOL_NAMES: Final[tuple[str, ...]] = tuple(
+    contract.name for contract in TOOL_CONTRACTS if contract.domain == "calendar"
 )
 
 FINANCE_TOOL_NAMES: Final[tuple[str, ...]] = tuple(
     contract.name for contract in TOOL_CONTRACTS if contract.domain == "finance"
+)
+
+#: The tools whose effect happens in the calling device rather than behind the
+#: governed MCP bridge. Derived once, here, because three layers need the same
+#: answer and a second expression of it is a second thing to keep in step: the
+#: projection decides whether a parked row has an action to deliver, recovery
+#: decides whether a quiet row is waiting on a phone or on a connector, and the
+#: orchestrator decides whether a multi-call model turn may be frozen as a plan.
+#: Two of those three are safety properties, and they must not disagree.
+DEVICE_EXECUTED_TOOL_NAMES: Final[frozenset[str]] = frozenset(
+    contract.name for contract in TOOL_CONTRACTS if contract.executor == "device"
 )
 
 
@@ -1075,3 +1849,22 @@ def contract_by_name(name: str) -> ToolContract:
         if contract.name == name:
             return contract
     raise KeyError(f"no tool contract named {name!r}")
+
+
+def domain_of_tool(name: str | None) -> str | None:
+    """The domain a tool belongs to, or `None` when it is not a known tool.
+
+    The one expression of this question, so a card's wording, a marker frozen
+    into the Timeline and a projection read live cannot disagree about which
+    domain an operation is in. `None` is a real answer: an operation whose tool
+    was never recorded, or whose tool the IR has since dropped, has no domain,
+    and a caller must not read that as "finance" or as a default. A person sent
+    to the wrong destination by a guessed domain taps a conclusion that is then
+    recorded as a human fact the server refuses to contradict.
+    """
+    if not name:
+        return None
+    for contract in TOOL_CONTRACTS:
+        if contract.name == name:
+            return contract.domain
+    return None

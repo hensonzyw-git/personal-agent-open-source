@@ -75,6 +75,15 @@ class ControlAction(StrEnum):
     #: single-record route existed briefly and had no caller; a second
     #: authenticated endpoint for the same job is surface, not convenience.
     GET_RECORD_FIELDS_BATCH = "get_record_fields_batch"
+    #: "Which calendar on this device is the one named X?" The calendar
+    #: directory lives in the MCP database, which the Agent API may not read
+    #: directly, and routing is a policy decision -- not a model one -- so it
+    #: cannot be an MCP tool the model could call. It travels here instead.
+    #:
+    #: The resource binds both the device and the name: a token minted to
+    #: resolve one device's calendar cannot be replayed against another's, and
+    #: the directory is per-device by construction (design 2.1).
+    RESOLVE_CALENDAR = "resolve_calendar"
 
 
 class ControlTokenError(Exception):
@@ -88,6 +97,22 @@ def record_batch_resource(records: list[tuple[str, str]]) -> str:
             {"table_kind": table_kind, "record_id": record_id}
             for table_kind, record_id in records
         ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
+def calendar_lookup_resource(device_id: str, title: str) -> str:
+    """Bind a resolve token to one device asking about one calendar name.
+
+    Canonical JSON rather than an f-string join: a title may legally contain
+    any character, including whatever separator a join would pick, so
+    `("a", "b:c")` and `("a:b", "c")` would otherwise be the same resource and
+    one device's token could be replayed against another's lookup.
+    """
+    canonical = json.dumps(
+        {"device_id": device_id, "title": title},
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")

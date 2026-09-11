@@ -17,5 +17,15 @@
 	<!-- iOS 14+ asks the user before an app talks to the local network. -->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>用于连接你自己的 Personal Agent 后端服务（开发阶段在 Mac 上运行）。</string>
+	<!--
+	  The agent writes events you ask for into Apple Calendar (EventKit full
+	  access: reading is what the server-side 明天/本周 summaries need, writing is
+	  the device-executed create). iOS 17+ reads the FullAccess key; the legacy
+	  key covers iOS ≤16.
+	-->
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>允许 Personal Agent 把你指定的日程写入日历，并读取日历以回答“明天/本周有什么安排”。</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>允许 Personal Agent 把你指定的日程写入日历，并读取日历以回答“明天/本周有什么安排”。</string>
 </dict>
 </plist>

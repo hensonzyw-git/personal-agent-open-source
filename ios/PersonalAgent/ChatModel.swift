@@ -107,6 +107,30 @@ final class ChatModel {
 
     private let timeline: ChatTimeline
     private let describe: @MainActor (Error) -> String
+    /// The pre-send mirror top-up (review R5), owned by the composition and
+    /// optional so tests compose without one. Absent ⇒ no top-up is attempted.
+    /// Returns a handle whose `wait()` bounds how long the send path blocks on
+    /// the top-up: past the budget the send proceeds and the sync continues
+    /// in the background (second review F8 — a permission prompt or a slow
+    /// upload must never stop an unrelated 记账 message).
+    var onSyncMirror: (() -> MirrorSyncHandle)?
+
+    /// The client-local calendar query gate (design §9.1), owned by the
+    /// composition and optional so tests compose without one. Absent ⇒ the gate
+    /// reports clean, which is the honest reading of a device with no mirror
+    /// engine: there is nothing it has changed and failed to upload.
+    var onReadCalendarUnsynced: (@MainActor () async -> Bool)?
+
+    /// The last answer from `onReadCalendarUnsynced`.
+    ///
+    /// A read-only mirror of a client-local fact, never a server projection:
+    /// the server's `mirror_stale` is a different statement about a different
+    /// source, and neither substitutes for the other (design §9.1). It is
+    /// re-read on every `mirror()`, which is the one funnel every path that can
+    /// change the screen — open, refresh, pagination, a settled send — goes
+    /// through, so a card drawn from history is drawn against the flag as it is
+    /// now rather than as it was when the card arrived.
+    private(set) var calendarUnsynced = false
 
     init(timeline: ChatTimeline, describe: @escaping @MainActor (Error) -> String) {
         self.timeline = timeline
@@ -214,6 +238,15 @@ final class ChatModel {
         guard !text.isEmpty else { return }
         busy = true
         defer { busy = false }
+        // The pre-send mirror top-up (review R5), **bounded** (second review
+        // F8): a calendar question in this very message is answered against
+        // the mirror, so a stale one is topped up first — but a permission
+        // prompt, a slow network or a multi-batch upload is not allowed to
+        // stop an unrelated 记账 message. The wait has a budget; past it the
+        // send proceeds while the sync keeps running in the background, and
+        // the server labels a still-stale answer honestly.
+        let syncHandle = onSyncMirror?()
+        await syncHandle?.wait()
         let clarificationOf = answering?.operationID
         let startNewSession = startNewTopic
         // Out of the composer and onto the screen before the request leaves.
@@ -453,12 +486,93 @@ final class ChatModel {
         case .running:
             return "服务端仍在处理"
         case .needsClarification, .needsDuplicateDecision, .answered,
-             .answeredWithQuery, .recorded:
+             .answeredWithQuery, .answeredWithCalendarQuery, .recorded,
+             .calendarEventWritten:
             // None of these are reachable for this route — it dispatches one
             // governed update and never a model turn — but the switch stays
             // exhaustive so a new outcome fails to compile here rather than
             // silently rendering as an empty explanation.
             return "服务端未确认这次修改"
+        }
+    }
+
+    // --- overriding a duplicate calendar write ---------------------------------
+
+    /// The answers to 「仍要创建」 this client had to ask for, by operation id.
+    ///
+    /// Populated only for calendar receipts whose own frozen fields are silent —
+    /// a Timeline event appended before the server projected `device_result` and
+    /// `device_action_id`. Every receipt this build produces decides the question
+    /// by itself, so this map is empty in normal use and never consulted for a
+    /// live reply.
+    ///
+    /// Filled by `refreshOverrideDecisions()` once per page load, not per card
+    /// and not per redraw: a scroll through a year of calendar cards must not
+    /// become one request per row.
+    private(set) var overrideDecisions: [String: OverrideDecision] = [:]
+
+    /// Answer 「仍要创建」 for a calendar event the phone found already there.
+    ///
+    /// The action id comes from the server's projection, never from this
+    /// client's own reading of the receipt — the server derives the override's
+    /// idempotency key from it, which is what makes a double tap, a retry and a
+    /// concurrent pair converge on **one** created event instead of three. The
+    /// wait afterwards is `ChatTimeline`'s, and it carries no slot: the decision
+    /// is durable on the server, and a lost reply leaves the operation settleable
+    /// rather than repeatable.
+    ///
+    /// A refusal is reported as-is. The endpoint refuses for reasons the user
+    /// cannot see from the card — the operation was not a duplicate, it is not
+    /// settled, nothing was retained to resume — and inventing reassurance for
+    /// those would be the client claiming a decision the server did not make.
+    func overrideDeviceAction(actionID: String) async {
+        busy = true
+        defer { busy = false }
+        do {
+            _ = try await timeline.overrideDeviceAction(actionID: actionID)
+            try await timeline.syncNewer()
+            await mirror()
+            lastError = nil
+        } catch {
+            lastError = describe(error)
+        }
+        await mirrorPendingSlots()
+    }
+
+    /// What 「仍要创建」 may be answered on one card: the card's own answer when
+    /// its fields give one, and this map's when they do not.
+    ///
+    /// The `??` is the whole policy. An entry exists only where the card asked a
+    /// question it could not answer, so a missing entry means the card decided
+    /// for itself — never "the lookup failed", which stores `.notOffered`.
+    func overrideDecision(
+        for outcome: OperationOutcome, operationID: String?
+    ) -> OverrideDecision {
+        guard let operationID, let asked = overrideDecisions[operationID] else {
+            return outcome.overrideDecision
+        }
+        return asked
+    }
+
+    /// Ask the server about every calendar receipt on screen whose own fields
+    /// cannot say whether 「仍要创建」 belongs.
+    ///
+    /// Called after a page load, where "on screen" is "in the Timeline as
+    /// loaded" and the count is bounded by how many undecided calendar receipts
+    /// that page contains — normally the oldest few, and none at all once the
+    /// history in question was written by this build. Answers are kept, so a
+    /// later page load re-asks about nothing already answered.
+    ///
+    /// Deliberately not an error path: `ChatTimeline.overrideDecision` fails
+    /// closed to `.notOffered`, and a banner about a button that is not there
+    /// would report a problem the user cannot act on. The *tap* is where a
+    /// refusal matters, and `overrideDeviceAction` surfaces that one.
+    func refreshOverrideDecisions() async {
+        for (operationID, outcome) in await timeline.undecidedOverrideCandidates()
+        where overrideDecisions[operationID] == nil {
+            overrideDecisions[operationID] = await timeline.overrideDecision(
+                frozen: outcome, operationID: operationID
+            )
         }
     }
 
@@ -541,6 +655,20 @@ final class ChatModel {
     private func mirror() async {
         events = await timeline.events
         hasOlder = await timeline.hasOlder
+        // Same merge rule, same reason as the duplicate map below: the card that
+        // offered the buttons and the marker that closes it are different
+        // events, and a rebuild from `events` alone would re-offer a conclusion
+        // the server has already recorded — where the second tap is either a
+        // no-op or, if the user changes their mind, a `409` the screen would
+        // have invited. The rule itself is stated once, in the Kit, because the
+        // acceptance tests have to ask the screen's own question.
+        resolvedManualReviews.merge(
+            ManualReviewResolutionIndex.answered(by: events)
+        ) { _, newest in newest }
+        // The query gate is read here rather than at the card, for the same
+        // reason everything else on screen is re-derived here: one funnel, one
+        // statement of what this screen currently knows.
+        calendarUnsynced = await onReadCalendarUnsynced?() ?? false
         // Merge, never replace. `decideDuplicate` records its own choice as soon
         // as the server accepts it, but the permanent marker is only projected
         // here once it is inside the loaded window. Rebuilding this map from
@@ -553,15 +681,10 @@ final class ChatModel {
             if case .duplicateDecision(let checkID, let decision) = event.kind {
                 resolvedDuplicateDecisions[checkID] = decision
             }
-            // Same merge rule, same reason: the card that offered the buttons and
-            // the marker that closes it are different events, and a rebuild from
-            // `events` alone would re-offer a conclusion the server has already
-            // recorded — where the second tap is either a no-op or, if the user
-            // changes their mind, a `409` the screen would have invited.
-            if case .manualReviewResolved(let resolution) = event.kind,
-               let operationID = event.operationID {
-                resolvedManualReviews[operationID] = resolution
-            }
+            // (The manual-review map is folded below rather than in this loop:
+            // it is the same merge rule, and it is the one fold whose rule the
+            // acceptance tests also have to ask — see
+            // `ManualReviewResolutionIndex`.)
             if case .expenseCategoryCorrected(let recordID, let record) = event.kind {
                 currentRecords[recordID] = record
             }
@@ -587,6 +710,11 @@ final class ChatModel {
                 latestDailyReviewEventID[snapshot.reviewID] = event.eventID
             }
         }
+        // Last, because it is the only part of this that touches the network and
+        // it must not delay anything above. Self-limiting rather than
+        // rate-limited: it asks only about receipts with no entry yet, so the
+        // steady state makes no requests at all, whichever call site ran this.
+        await refreshOverrideDecisions()
     }
 
     /// `1j`. Whether a `daily_review` event has been superseded by a newer

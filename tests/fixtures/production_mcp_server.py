@@ -183,6 +183,38 @@ def write_fixture_registry(sessions):
     )
 
 
+def calendar_registry(sessions):
+    """Compose the credential-free calendar handlers over a real database.
+
+    The same shape `personal_data_mcp.server.composition` builds in production:
+    the mirror reads this process's own database and seals text with a real
+    keyring, so a bridge call that arrives over the socket exercises the
+    deployed ingest handler end to end.
+    """
+    from personal_agent_core.crypto import generate_key
+    from personal_data_mcp.server.app import build_registry
+    from personal_data_mcp.server.calendar_ingest import (
+        CalendarIngestDependencies,
+        build_handler as build_ingest_handler,
+    )
+    from personal_data_mcp.server.calendar_query import (
+        CalendarQueryDependencies,
+        build_handler as build_query_handler,
+    )
+
+    keyring = KeyRing([generate_key("loopback-calendar")], service="personal_data_mcp")
+    return build_registry(
+        calendar_query_handler=build_query_handler(
+            CalendarQueryDependencies(
+                sessions=sessions, keyring=keyring, cursor_secret=b"loopback" * 8
+            )
+        ),
+        calendar_ingest_handler=build_ingest_handler(
+            CalendarIngestDependencies(sessions=sessions, keyring=keyring)
+        ),
+    )
+
+
 def main() -> None:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8811
     config = ServerConfig(host="127.0.0.1", port=port)
@@ -197,11 +229,13 @@ def main() -> None:
         )
 
         engine = create_database_engine(Path(sys.argv[2]))
-        if len(sys.argv) > 3 and sys.argv[3] == "write-fixture":
+        if len(sys.argv) > 3 and sys.argv[3] in ("write-fixture", "calendar"):
             create_all(engine)
         sessions = make_session_factory(engine)
         if len(sys.argv) > 3 and sys.argv[3] == "write-fixture":
             registry = write_fixture_registry(sessions)
+        if len(sys.argv) > 3 and sys.argv[3] == "calendar":
+            registry = calendar_registry(sessions)
 
     # From the environment, exactly as the production entrypoint does: a test
     # that spawns this process is therefore also testing that the deployed

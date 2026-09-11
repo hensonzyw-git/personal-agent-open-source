@@ -1310,6 +1310,8 @@ def test_an_unknown_device_dispatches_nothing(keys, agent_db) -> None:
     The bridge and control plane are `None` on purpose -- touching either would
     raise rather than quietly fail safe, so this proves nothing is attempted.
     """
+    from personal_agent_core.tool_ir import DEFAULT_CLIENT_WIRE_VERSION
+
     dispatcher = DeviceBoundDispatcher(
         device_id="dev-does-not-exist",
         sessions=session_factory(create_database_engine(agent_db)),
@@ -1321,6 +1323,7 @@ def test_an_unknown_device_dispatches_nothing(keys, agent_db) -> None:
         trace_id="00-trace-span-01",
         enabled_tools=frozenset({"meta.capabilities"}),
         manifest_version=MANIFEST_VERSION,
+        client_wire_version=DEFAULT_CLIENT_WIRE_VERSION,
     )
 
     resolved = dispatcher.resolve(tool="meta.capabilities", model_args={})
@@ -1704,6 +1707,42 @@ def test_periodic_recovery_never_adopts_an_operation_a_worker_still_owns(
     assert operation.failure_reason is None
 
 
+def _seed_calendar_directory(database: Path, rows: list[dict]) -> None:
+    """Write the phone's reported calendars, as a sync batch would have.
+
+    The device is `DEVICE_ID`, the same identity the composition authenticates
+    as, because the directory is per-device by construction: a row under any
+    other device would make the lookup answer `directory_empty` and the test
+    would be exercising a different failure than the one it names.
+    """
+    from personal_data_mcp.storage.engine import (
+        create_all as finance_create_all,
+        create_database_engine as finance_engine,
+        session_factory as finance_sessions,
+    )
+    from personal_data_mcp.storage.models import CalendarDirectory
+
+    engine = finance_engine(database)
+    finance_create_all(engine)
+    with finance_sessions(engine)() as session:
+        for row in rows:
+            session.add(
+                CalendarDirectory(
+                    device_id=DEVICE_ID,
+                    calendar_identifier=row["calendar_identifier"],
+                    title=row["title"],
+                    source_title=row.get("source_title", "iCloud"),
+                    allows_content_modifications=row.get(
+                        "allows_content_modifications", True
+                    ),
+                    is_subscribed=row.get("is_subscribed", False),
+                    updated_at=utc_now(),
+                )
+            )
+        session.commit()
+    engine.dispose()
+
+
 def _seed_finance_success(database: Path, key: str) -> None:
     from personal_data_mcp.storage.engine import (
         create_all as finance_create_all,
@@ -1881,3 +1920,344 @@ def test_the_review_list_is_served_by_the_composed_app(
     assert [r["review_id"] for r in listed.json()["reviews"]] == [review_id]
     assert listed.json()["reviews"][0]["item_count"] == 2
     assert acked.json()["status"] == "reviewed"
+
+
+def test_calendar_sync_crosses_both_composition_roots_offline(
+    keys, agent_db, tmp_path: Path
+) -> None:
+    """The device-side data channel is composed, not just seam-tested.
+
+    The sync route must execute `calendar.ingest_events` through the real
+    governed bridge against a real MCP process over a loopback socket, under a
+    Host Context naming the authenticated caller. The mirror row is then
+    stamped with that signed device identity and the text is sealed with the
+    server's keyring -- the assertions read the Finance database through a
+    raw connection exactly as an operator would.
+    """
+    from personal_agent_core.tool_ir import SCOPE_CALENDAR_READ
+    from personal_data_mcp.storage.engine import (
+        create_database_engine as finance_engine,
+        session_factory as finance_sessions,
+    )
+    from personal_data_mcp.storage.models import CalendarEvent
+
+    finance_db = tmp_path / "finance-calendar.sqlite"
+    service = LoopbackFinanceService(
+        {
+            MCP_KID_ENV: "svc-test",
+            MCP_PEM_ENV: str(keys.service_public_pem),
+        },
+        database=finance_db,
+        calendar=True,
+    )
+    update_device(
+        agent_db,
+        scopes=json.dumps([CAPABILITY_SCOPE, SCOPE_CALENDAR_READ]),
+    )
+    body = {
+        "window_start": "2026-09-07T00:00:00+08:00",
+        "window_end": "2026-09-08T00:00:00+08:00",
+        "events": [
+            {
+                "event_identifier": "ek-loopback-1",
+                "calendar_identifier": "cal-1",
+                "title": "网球",
+                "start": "2026-09-07T15:00:00+08:00",
+                "end": "2026-09-07T16:30:00+08:00",
+                "all_day": False,
+                "location": None,
+                "notes": None,
+                "last_modified": "2026-09-06T20:00:00+08:00",
+            }
+        ],
+        "window_complete": True,
+        "snapshot_as_of": "2026-09-07T07:30:00+00:00",
+    }
+    try:
+
+        async def scenario():
+            async with agent_service(
+                config_for(agent_db, service),
+                build_gateway=lambda: FakeGateway(ProposedAnswer(text="hi")),
+                write_switch=shared_enabled_write_switch(),
+            ) as composed:
+                # The production composition must actually wire the route, or
+                # the endpoint below would answer INTERNAL_ERROR, not succeed.
+                assert composed.deps.sync_ingest is not None
+                async with http_for(composed.deps) as client:
+                    token = access_token(
+                        scopes=(CAPABILITY_SCOPE, SCOPE_CALENDAR_READ)
+                    )
+                    return await client.post(
+                        "/v1/calendar/sync",
+                        json=body,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+
+        response = asyncio.run(scenario())
+    finally:
+        service.stop()
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "status": "ok",
+        "upserted": 1,
+        "skipped": 0,
+        "marked_deleted": 0,
+        "sync_epoch": 1,
+    }
+
+    engine = finance_engine(finance_db)
+    with finance_sessions(engine)() as session:
+        row = session.query(CalendarEvent).one()
+        assert row.event_identifier == "ek-loopback-1"
+        # The device identity is the signed Host Context claim -- the caller's
+        # device id -- never a composition constant and never a payload field.
+        assert row.device_id == DEVICE_ID
+        assert row.is_deleted is False
+    engine.dispose()
+
+
+def test_calendar_sync_refuses_a_device_without_the_current_manifest(
+    keys, agent_db, tmp_path: Path
+) -> None:
+    """The stale-manifest gate lives in the bridge's `execute`, and the sync
+    route passes through it: a device enrolled against an old version is
+    refused by the real policy root even though its token is valid and its
+    scope present."""
+    from personal_agent_core.tool_ir import SCOPE_CALENDAR_READ
+
+    finance_db = tmp_path / "finance-calendar-stale.sqlite"
+    service = LoopbackFinanceService(
+        {
+            MCP_KID_ENV: "svc-test",
+            MCP_PEM_ENV: str(keys.service_public_pem),
+        },
+        database=finance_db,
+        calendar=True,
+    )
+    update_device(
+        agent_db,
+        scopes=json.dumps([CAPABILITY_SCOPE, SCOPE_CALENDAR_READ]),
+        allowed_tools_version="0.0.1-stale",
+    )
+    body = {
+        "window_start": "2026-09-07T00:00:00+08:00",
+        "window_end": "2026-09-08T00:00:00+08:00",
+        "events": [],
+        "window_complete": True,
+        "snapshot_as_of": "2026-09-07T07:30:00+00:00",
+    }
+    try:
+
+        async def scenario():
+            async with agent_service(
+                config_for(agent_db, service),
+                build_gateway=lambda: FakeGateway(ProposedAnswer(text="hi")),
+                write_switch=shared_enabled_write_switch(),
+            ) as composed:
+                async with http_for(composed.deps) as client:
+                    token = access_token(
+                        scopes=(CAPABILITY_SCOPE, SCOPE_CALENDAR_READ),
+                        version="0.0.1-stale",
+                    )
+                    return await client.post(
+                        "/v1/calendar/sync",
+                        json=body,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+
+        response = asyncio.run(scenario())
+    finally:
+        service.stop()
+
+    assert response.status_code == 403, response.text
+    # One opaque code for "not an effective tool" (not allowlisted, not
+    # discovered, drifted, or granted) by design: distinguishing them would map
+    # out the tool surface. The version gate denies through the same door.
+    assert response.json()["error"]["code"] == "TOOL_NOT_ALLOWLISTED"
+def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
+    keys, agent_db, tmp_path: Path
+) -> None:
+    """Review R6, reproduced end to end: the chat response used to be the
+    device action's only delivery channel, so a request that timed out at 202
+    handed the client an operation id and an action nobody would ever deliver
+    — the operation sat parked at `source_in_progress` until the sweep, with
+    the authorised write lost.
+
+    The production wiring runs here (real bridge, real dispatcher fork, real
+    seal), the model proposes `calendar.create_event`, and
+    `sync_wait_seconds=0.05` guarantees the 202. The client then polls the
+    operation by id — the exact thing the iOS client's `resume()` does — and
+    the projection must hand over the same authorised action the response
+    would have carried.
+    """
+    from personal_agent_core.tool_ir import (
+        CLIENT_WIRE_VERSION_HEADER,
+        SCOPE_CALENDAR_WRITE,
+    )
+
+    finance_db = tmp_path / "finance-device-action.sqlite"
+    # The phone's calendar directory, as a previous sync would have left it:
+    # the dispatcher resolves the model's calendar *name* against it before it
+    # may issue anything, and the model is never allowed to name an identifier.
+    _seed_calendar_directory(
+        finance_db,
+        [
+            {
+                "calendar_identifier": "uuid-ri-chang",
+                "title": "日常安排",
+            }
+        ],
+    )
+    # Calendar mode, and the device fork stops before any MCP *tool* call: the
+    # only thing it asks the Finance service is the directory read above.
+    service = LoopbackFinanceService(
+        {
+            MCP_KID_ENV: "svc-test",
+            MCP_PEM_ENV: str(keys.service_public_pem),
+        },
+        database=finance_db,
+        calendar=True,
+    )
+    update_device(
+        agent_db,
+        scopes=json.dumps([CAPABILITY_SCOPE, SCOPE_CALENDAR_WRITE]),
+    )
+    key = str(uuid.uuid4())
+    try:
+
+        async def scenario():
+            async with agent_service(
+                config_for(agent_db, service),
+                build_gateway=lambda: FakeGateway(
+                    ProposedToolCall(
+                        tool="calendar.create_event",
+                        arguments={
+                            "title": "网球",
+                            "start": "2026-09-12T15:00:00+08:00",
+                            "end": "2026-09-12T16:30:00+08:00",
+                            "all_day": False,
+                            "calendar": "日常安排",
+                            # The event's own timezone (Q11) is business data
+                            # and must reach the phone; the smuggled host field
+                            # next to it must not.
+                            "timezone": "Asia/Tokyo",
+                            "device_id": "someone-elses-device",
+                        },
+                    )
+                ),
+                write_switch=shared_enabled_write_switch(),
+            ) as composed:
+                # The composition under test must wire the action seal, or the
+                # device fork below would raise instead of parking.
+                assert composed.deps.action_keyring is not None
+                composed.deps.sync_wait_seconds = 0.05
+                app = build_app(composed.deps)
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://agent.local",
+                ) as client:
+                    token = access_token(
+                        scopes=(CAPABILITY_SCOPE, SCOPE_CALENDAR_WRITE)
+                    )
+                    headers = {
+                        "Authorization": f"Bearer {token}",
+                        "Idempotency-Key": key,
+                        "Content-Type": "application/json",
+                        # The capability the client claims, on every request
+                        # (design 2.5.1). Without it the issuance gate refuses
+                        # this write outright rather than letting a client that
+                        # cannot read `calendar_identifier` fall back to its
+                        # default calendar.
+                        CLIENT_WIRE_VERSION_HEADER: "2",
+                    }
+                    detached = await client.post(
+                        "/v1/chat/messages",
+                        json={"conversation_id": "c1", "text": "周六下午三点网球"},
+                        headers=headers,
+                    )
+                    # The fake model is fast, so either detached shape is
+                    # legitimate: the worker finished within the 50 ms wait and
+                    # the projection answered (202, parked), or the synthetic
+                    # timeout body answered first. Both carry the operation id;
+                    # the delivery door being fixed to the projection is
+                    # exactly why either shape converges on the same action.
+                    assert detached.status_code == 202, detached.text
+                    operation_id = detached.json()["operation_id"]
+                    # The worker finished its turn by the time the drain
+                    # returns; the poll then reads the parked operation.
+                    await app.state.drain_background_tasks()
+                    # Polled twice, by the same device, on the same parked
+                    # operation -- once as a client that cannot read the action
+                    # and once as one that can. This is the delivery gate over
+                    # real HTTP: the version is read from each request, so a
+                    # phone downgraded between issuing and delivering is
+                    # refused the action, while the operation stays parked for
+                    # the timeout sweep to settle honestly (design 2.5.3).
+                    downgraded = await client.get(
+                        f"/v1/operations/{operation_id}",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    polled = await client.get(
+                        f"/v1/operations/{operation_id}",
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            CLIENT_WIRE_VERSION_HEADER: "2",
+                        },
+                    )
+                    return detached, downgraded, polled
+
+        detached, downgraded, polled = asyncio.run(scenario())
+    finally:
+        service.stop()
+
+    # The v1 caller gets the parked state and nothing to execute -- the field
+    # is absent, not empty.
+    assert downgraded.status_code == 202, downgraded.text
+    assert downgraded.json()["state"] == "source_in_progress"
+    assert "device_actions" not in downgraded.json()
+
+    body = polled.json()
+    # Parked is still 202: the client settles by reaching a terminal state on
+    # a later poll (or the report endpoint's answer), and every one of those
+    # polls carried the action while the operation stayed parked.
+    assert polled.status_code == 202, polled.text
+    # The parked operation hands the action over — the attested arguments the
+    # bridge authorised, nothing re-derived and nothing the model invented.
+    assert body["state"] == "source_in_progress"
+    # A list, always — one action here, and the same field name would carry N
+    # of them. The client that received this request claimed version 2, so the
+    # delivery gate let it through.
+    assert body["device_actions"] == [
+        {
+            "action_id": key,
+            "tool": "calendar.create_event",
+            "wire_version": 2,
+            "event": {
+                "title": "网球",
+                "start": "2026-09-12T15:00:00+08:00",
+                "end": "2026-09-12T16:30:00+08:00",
+                "all_day": False,
+                "calendar": "日常安排",
+                "timezone": "Asia/Tokyo",
+                # The routing the server did, not anything the model said: the
+                # identifier comes from the directory and the title is the name
+                # the directory matched on. A client that picks its own calendar
+                # is the failure this field exists to prevent.
+                "calendar_identifier": "uuid-ri-chang",
+                "calendar_title": "日常安排",
+                "start_date": None,
+                "end_date": None,
+            },
+        }
+    ]
+
+    # The seal is on the row, in the database, sealed with the composition's
+    # keyring — not a test-side reconstruction.
+    engine = create_database_engine(agent_db)
+    with session_factory(engine)() as session:
+        operation = session.query(Operation).filter_by(idempotency_key=key).one()
+        assert operation.state == "source_in_progress"
+        assert operation.encrypted_device_action is not None
+    engine.dispose()
