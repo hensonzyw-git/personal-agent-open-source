@@ -195,7 +195,7 @@ struct ChatView: View {
                         EmptyTimelineView(tools: model.tools) { model.draft = $0 }
                     }
 
-                    ForEach(model.events) { event in
+                    ForEach(model.visibleEvents) { event in
                         entry(event).id(event.eventID)
                     }
 
@@ -941,7 +941,9 @@ struct ChatView: View {
             )
 
             if let tool, !tool.isEmpty {
-                Text(Capabilities.displayName(forAlias: tool, tools: model.tools))
+                Text(tool == "calendar.create_event"
+                     ? "Apple 日历"
+                     : Capabilities.displayName(forAlias: tool, tools: model.tools))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -1532,7 +1534,7 @@ struct ChatView: View {
                 // when the mirror is fresh enough to have a 截至 time worth
                 // showing. A stale mirror already said so above.
                 if !result.mirrorStale, !result.dataAsOf.isEmpty {
-                    fieldRow("数据截至", result.dataAsOf)
+                    fieldRow("数据截至", ChatView.editStamp(result.dataAsOf))
                 }
             }
             .padding(.horizontal, Metric.cardInset)
@@ -1576,6 +1578,7 @@ struct ChatView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, Metric.fieldRowPadding)
         .overlay(alignment: .top) { hairline }
     }

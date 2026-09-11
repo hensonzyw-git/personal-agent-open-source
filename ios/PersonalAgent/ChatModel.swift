@@ -263,11 +263,17 @@ final class ChatModel {
             answering = nil
             startNewTopic = false
             liveReceipt = receipt
+            // The POST and device execution have returned. History refresh is
+            // not another send and must not keep its progress indicator alive.
+            sending = nil
+            liveStages = []
             lastError = nil
             // The user message and the result are Timeline events, so the screen
             // reads them back from the server rather than inventing local copies.
             try await timeline.syncNewer()
-            await mirror()
+            // Resolving override buttons on older receipts is unrelated to
+            // this send. Refresh/open can perform those network lookups.
+            await mirror(refreshLegacyOverrides: false)
         } catch {
             lastError = describe(error)
         }
@@ -652,7 +658,7 @@ final class ChatModel {
         if lastError == nil { lastError = describe(error) }
     }
 
-    private func mirror() async {
+    private func mirror(refreshLegacyOverrides: Bool = true) async {
         events = await timeline.events
         hasOlder = await timeline.hasOlder
         // Same merge rule, same reason as the duplicate map below: the card that
@@ -714,7 +720,9 @@ final class ChatModel {
         // it must not delay anything above. Self-limiting rather than
         // rate-limited: it asks only about receipts with no entry yet, so the
         // steady state makes no requests at all, whichever call site ran this.
-        await refreshOverrideDecisions()
+        if refreshLegacyOverrides {
+            await refreshOverrideDecisions()
+        }
     }
 
     /// `1j`. Whether a `daily_review` event has been superseded by a newer
@@ -733,6 +741,25 @@ final class ChatModel {
         events.contains { event in
             event.operationID == receipt.operationID
                 && event.content["state"]?.stringValue == receipt.state.wire
+        }
+    }
+
+    /// Keep the archive intact, but replace obsolete running projections on
+    /// screen when the same operation has a newer server receipt.
+    var visibleEvents: [TimelineEvent] {
+        var newest: [String: String] = [:]
+        for event in events {
+            if case .operationResult = event.kind, let id = event.operationID {
+                newest[id] = event.eventID
+            }
+        }
+        return events.filter { event in
+            guard case .operationResult(let outcome, _, _) = event.kind,
+                  !outcome.isSettled, let id = event.operationID else { return true }
+            if newest[id] != event.eventID { return false }
+            if let liveReceipt, liveReceipt.operationID == id,
+               liveReceipt.outcome.isSettled { return false }
+            return true
         }
     }
 }
