@@ -1060,7 +1060,23 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 # Only the verdict travels -- the closed terms name internal
                 # controls, and a client needs to know whether it may send an
                 # image, not which of the deployment's approvals is missing.
-                body["images"] = {"enabled": deps.image_capability().enabled}
+                capability = deps.image_capability()
+                # The verdict remains the only approval information a device
+                # receives.  These bounds are not approval terms: they are the
+                # public limits a client needs to resize and encode before it
+                # makes an upload request.  Omitting them would force iOS to
+                # invent local ceilings, which is exactly the configuration
+                # drift §4.3 prohibits.
+                images: dict[str, Any] = {"enabled": capability.enabled}
+                if deps.media_limits is not None:
+                    images.update(
+                        {
+                            "max_content_bytes": deps.media_limits.max_content_bytes,
+                            "max_dimension": deps.media_limits.max_dimension,
+                            "allowed_mimes": sorted(deps.media_limits.allowed_mimes),
+                        }
+                    )
+                body["images"] = images
                 return JSONResponse(body)
 
             return _commit(session, work)

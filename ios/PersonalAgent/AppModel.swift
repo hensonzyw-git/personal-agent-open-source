@@ -119,6 +119,7 @@ final class AppModel {
             // a tool granted or withdrawn server-side appears without a reinstall.
             chat?.tools = read.tools
             chat?.ledgerURL = read.validatedLedgerURL
+            chat?.imageCapability = read.images
             await openReview(session: session, capabilities: read)
         } catch AgentClientError.deviceRejected {
             phase = .revoked
@@ -240,6 +241,8 @@ final class AppModel {
         if chat == nil {
             chat = ChatModel(
                 timeline: chatTimeline,
+                mediaBackend: session,
+                store: store,
                 describe: { [weak self] error in
                     self?.describe(error) ?? String(describing: error)
                 }

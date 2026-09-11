@@ -677,6 +677,36 @@ public struct Capabilities: Decodable, Sendable {
     /// client never invents the address, so "no jump offered" is the honest
     /// rendering of a missing value.
     public let ledgerURL: String?
+    /// The server's current photo verdict and the public bounds a client needs
+    /// to prepare one before it ever starts an upload.  A missing field is
+    /// closed for compatibility with an older server.
+    public let images: ImageInputCapability
+
+    public struct ImageInputCapability: Decodable, Sendable, Equatable {
+        public let enabled: Bool
+        public let maxContentBytes: Int?
+        public let maxDimension: Int?
+        public let allowedMIMEs: [String]
+
+        private enum CodingKeys: String, CodingKey {
+            case enabled
+            case maxContentBytes = "max_content_bytes"
+            case maxDimension = "max_dimension"
+            case allowedMIMEs = "allowed_mimes"
+        }
+
+        public init(
+            enabled: Bool = false,
+            maxContentBytes: Int? = nil,
+            maxDimension: Int? = nil,
+            allowedMIMEs: [String] = []
+        ) {
+            self.enabled = enabled
+            self.maxContentBytes = maxContentBytes
+            self.maxDimension = maxDimension
+            self.allowedMIMEs = allowedMIMEs
+        }
+    }
 
     public struct Tool: Decodable, Sendable {
         public let alias: String
@@ -695,6 +725,17 @@ public struct Capabilities: Decodable, Sendable {
         case tools
         case conversationID = "conversation_id"
         case ledgerURL = "ledger_url"
+        case images
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        allowedToolsVersion = try container.decode(String.self, forKey: .allowedToolsVersion)
+        tools = try container.decode([Tool].self, forKey: .tools)
+        conversationID = try container.decode(String.self, forKey: .conversationID)
+        ledgerURL = try container.decodeIfPresent(String.self, forKey: .ledgerURL)
+        images = try container.decodeIfPresent(ImageInputCapability.self, forKey: .images)
+            ?? .init()
     }
 }
 

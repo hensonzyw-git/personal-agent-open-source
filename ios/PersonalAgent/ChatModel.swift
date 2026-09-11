@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import PersonalAgentKit
+import UIKit
 
 /// The view state for `DEV-030`'s chat surface.
 ///
@@ -12,10 +13,22 @@ import PersonalAgentKit
 @MainActor
 @Observable
 final class ChatModel {
+    private struct PendingPhotoSend: Codable {
+        let localPath: String
+        var upload: PendingMediaUpload
+        let text: String
+        let clarificationOf: String?
+        let startNewSession: Bool
+    }
     /// Oldest-to-newest, exactly as the server ordered it.
     var events: [TimelineEvent] = []
     var hasOlder = false
     var draft: String = ""
+    /// The photo has only been prepared locally.  It is not a Timeline event,
+    /// not a server object and not an authorization to send until the user taps
+    /// the ordinary send action.
+    var preparedPhoto: PreparedPhoto?
+    var imageCapability = Capabilities.ImageInputCapability()
     /// The message that has left the composer but whose Timeline event has not come
     /// back yet.
     ///
@@ -106,10 +119,19 @@ final class ChatModel {
     var loadingOlder = false
 
     private let timeline: ChatTimeline
+    private let mediaUploads: MediaUploadCoordinator
+    private let store: CredentialStore
     private let describe: @MainActor (Error) -> String
 
-    init(timeline: ChatTimeline, describe: @escaping @MainActor (Error) -> String) {
+    init(
+        timeline: ChatTimeline,
+        mediaBackend: any MediaUploadBackend,
+        store: CredentialStore,
+        describe: @escaping @MainActor (Error) -> String
+    ) {
         self.timeline = timeline
+        self.mediaUploads = MediaUploadCoordinator(backend: mediaBackend)
+        self.store = store
         self.describe = describe
         // The trail survives for exactly one round trip: it starts when a send
         // starts and is wiped when that send ends. The sink is @Sendable, so it
@@ -150,7 +172,16 @@ final class ChatModel {
             // Resuming comes *after* history so the receipt lands under the
             // message it belongs to rather than above an empty screen.
             var needsSync = false
+            // A chat slot wins over the media slot. Once `ChatTimeline` has
+            // persisted the sealed parts/key, retrying upload would only trip
+            // its unresolved-send guard and hide the real recovery path.
             if let receipt = try await timeline.resume() {
+                liveReceipt = receipt
+                needsSync = true
+                if let photo = try loadPendingPhotoSend() {
+                    try clearPendingPhotoSend(photo)
+                }
+            } else if let receipt = try await resumePendingPhotoSend() {
                 liveReceipt = receipt
                 needsSync = true
             }
@@ -211,22 +242,37 @@ final class ChatModel {
 
     func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let photo = preparedPhoto
+        guard !text.isEmpty || photo != nil else { return }
         busy = true
         defer { busy = false }
         let clarificationOf = answering?.operationID
         let startNewSession = startNewTopic
         // Out of the composer and onto the screen before the request leaves.
         draft = ""
-        sending = text
+        sending = text.isEmpty ? "[图片]" : text
         liveStages = []
         defer { sending = nil; liveStages = [] }
         do {
-            let receipt = try await timeline.send(
-                text: text,
-                clarificationOf: clarificationOf,
-                startNewSession: startNewSession
-            )
+            let receipt: OperationReceipt
+            if let photo {
+                receipt = try await uploadAndSend(
+                    photo: photo,
+                    text: text,
+                    clarificationOf: clarificationOf,
+                    startNewSession: startNewSession
+                )
+                // The server has acknowledged a sealed media reference.  This
+                // draft bytes are no longer needed on device; the server copy is
+                // governed by Timeline retention and deletion instead.
+                preparedPhoto = nil
+            } else {
+                receipt = try await timeline.send(
+                    text: text,
+                    clarificationOf: clarificationOf,
+                    startNewSession: startNewSession
+                )
+            }
             answering = nil
             startNewTopic = false
             liveReceipt = receipt
@@ -252,6 +298,89 @@ final class ChatModel {
         if lastError != nil, unresolved == nil, draft.isEmpty {
             draft = text
         }
+    }
+
+    func preparePhoto(_ data: Data) {
+        do {
+            preparedPhoto = try PhotoPreparation.prepare(data, capability: imageCapability)
+            lastError = nil
+        } catch {
+            preparedPhoto = nil
+            lastError = "照片无法安全处理，请重新选择或重拍。"
+        }
+    }
+
+    func clearPreparedPhoto() {
+        preparedPhoto = nil
+    }
+
+    func appendVoiceDraft(_ transcript: String) {
+        guard !transcript.isEmpty else { return }
+        draft = draft.isEmpty ? transcript : "\(draft) \(transcript)"
+    }
+
+    /// Every network phase is preceded by a durable record. On restart we resume
+    /// the exact upload state, or `ChatTimeline` resumes the sealed chat request.
+    private func uploadAndSend(
+        photo: PreparedPhoto,
+        text: String,
+        clarificationOf: String?,
+        startNewSession: Bool
+    ) async throws -> OperationReceipt {
+        let localPath = try PhotoStaging.write(photo).path
+        let declaration = MediaUploadDeclaration(
+            mime: "image/jpeg", size: photo.data.count, sha256: photo.sha256,
+            width: photo.width, height: photo.height
+        )
+        var pending = PendingPhotoSend(
+            localPath: localPath,
+            upload: await mediaUploads.begin(declaration: declaration),
+            text: text,
+            clarificationOf: clarificationOf,
+            startNewSession: startNewSession
+        )
+        try savePendingPhotoSend(pending)
+        return try await continuePendingPhotoSend(&pending)
+    }
+
+    private func resumePendingPhotoSend() async throws -> OperationReceipt? {
+        guard var pending = try loadPendingPhotoSend() else { return nil }
+        return try await continuePendingPhotoSend(&pending)
+    }
+
+    private func continuePendingPhotoSend(_ pending: inout PendingPhotoSend) async throws -> OperationReceipt {
+        let bytes = try PhotoStaging.read(pending.localPath)
+        pending.upload = try await mediaUploads.create(pending.upload)
+        try savePendingPhotoSend(pending)
+        pending.upload = try await mediaUploads.put(pending.upload, bytes: bytes)
+        try savePendingPhotoSend(pending)
+        let completed = try await mediaUploads.complete(pending.upload)
+        var parts: [ChatInputPart] = []
+        if !pending.text.isEmpty { parts.append(.text(pending.text)) }
+        parts.append(.imageReference(mediaID: completed.mediaID))
+        // `ChatTimeline.send` synchronously persists its full parts/key before
+        // issuing the first chat POST. Keep media recovery until that succeeds.
+        let receipt = try await timeline.send(
+            parts: parts,
+            clarificationOf: pending.clarificationOf,
+            startNewSession: pending.startNewSession
+        )
+        try clearPendingPhotoSend(pending)
+        return receipt
+    }
+
+    private func loadPendingPhotoSend() throws -> PendingPhotoSend? {
+        guard let data = try store.read(CredentialKey.pendingMediaSend) else { return nil }
+        return try JSONDecoder().decode(PendingPhotoSend.self, from: data)
+    }
+
+    private func savePendingPhotoSend(_ pending: PendingPhotoSend) throws {
+        try store.write(CredentialKey.pendingMediaSend, value: JSONEncoder().encode(pending))
+    }
+
+    private func clearPendingPhotoSend(_ pending: PendingPhotoSend) throws {
+        try store.delete(CredentialKey.pendingMediaSend)
+        PhotoStaging.remove(pending.localPath)
     }
 
     /// Ask the server to cancel. Past a possible submit this only records the

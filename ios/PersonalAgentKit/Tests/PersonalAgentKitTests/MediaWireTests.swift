@@ -38,6 +38,25 @@ struct MediaWireTests {
         #expect(await backend.completeIDs == ["media_1"])
     }
 
+    @Test("a restored PUT checkpoint never uploads the same sealed target twice")
+    func restoredPutCheckpointSkipsSecondPut() async throws {
+        let backend = MediaBackendStub()
+        let coordinator = MediaUploadCoordinator(backend: backend)
+        let declaration = MediaUploadDeclaration(
+            mime: "image/jpeg", size: 3,
+            sha256: String(repeating: "d", count: 64), width: 1, height: 3
+        )
+        let initial = await coordinator.begin(declaration: declaration)
+        let created = try await coordinator.create(initial)
+        let uploaded = try await coordinator.put(created, bytes: Data([1, 2, 3]))
+        let restored = try JSONDecoder().decode(
+            PendingMediaUpload.self, from: JSONEncoder().encode(uploaded)
+        )
+        let resumed = try await coordinator.put(restored, bytes: Data([1, 2, 3]))
+        #expect(resumed == restored)
+        #expect(await backend.putIDs == ["media_1"])
+    }
+
     @Test("in-progress completion is never an image reference")
     func incompleteCompletionRefuses() async throws {
         let backend = MediaBackendStub(ready: false)

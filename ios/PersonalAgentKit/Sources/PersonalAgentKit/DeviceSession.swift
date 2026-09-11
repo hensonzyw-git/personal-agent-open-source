@@ -183,6 +183,7 @@ public actor DeviceSession {
             CredentialKey.pendingChatSend,
             // `DEV-031`: same reasoning for unconfirmed duplicate decisions.
             CredentialKey.pendingDuplicateDecisions,
+            CredentialKey.pendingMediaSend,
             // Delete the authoritative envelope last. If removing a legacy item
             // fails, the complete enrollment remains recoverable.
             CredentialKey.enrollment,

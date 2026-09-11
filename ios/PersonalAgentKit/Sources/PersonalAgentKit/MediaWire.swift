@@ -156,15 +156,21 @@ public struct PendingMediaUpload: Codable, Sendable, Equatable {
     public let idempotencyKey: String
     public let declaration: MediaUploadDeclarationRecord
     public var mediaID: String?
+    /// Set only after the server answered the PUT.  It separates a crash before
+    /// sending bytes (safe to PUT) from a crash after a lost PUT response (safe
+    /// to poll complete, never blindly PUT a sealed target again).
+    public var contentUploaded: Bool
 
     public init(
         idempotencyKey: String,
         declaration: MediaUploadDeclaration,
-        mediaID: String? = nil
+        mediaID: String? = nil,
+        contentUploaded: Bool = false
     ) {
         self.idempotencyKey = idempotencyKey
         self.declaration = MediaUploadDeclarationRecord(declaration)
         self.mediaID = mediaID
+        self.contentUploaded = contentUploaded
     }
 }
 
@@ -204,25 +210,45 @@ public actor MediaUploadCoordinator {
         PendingMediaUpload(idempotencyKey: IdempotencyKey.mint(), declaration: declaration)
     }
 
-    public func upload(
-        _ pending: PendingMediaUpload, bytes: Data
-    ) async throws -> (pending: PendingMediaUpload, completed: CompletedMediaUpload) {
+    public func create(_ pending: PendingMediaUpload) async throws -> PendingMediaUpload {
         var pending = pending
-        let mediaID: String
-        if let existing = pending.mediaID {
-            mediaID = existing
-        } else {
+        if pending.mediaID == nil {
             let created = try await backend.createMediaUpload(
                 declaration: pending.declaration.declaration,
                 idempotencyKey: pending.idempotencyKey
             )
-            mediaID = created.mediaID
-            pending.mediaID = mediaID
+            pending.mediaID = created.mediaID
         }
+        return pending
+    }
+
+    public func put(_ pending: PendingMediaUpload, bytes: Data) async throws -> PendingMediaUpload {
+        guard let mediaID = pending.mediaID else {
+            return try await createThenPut(pending, bytes: bytes)
+        }
+        guard !pending.contentUploaded else { return pending }
         _ = try await backend.putMediaContent(mediaID: mediaID, body: bytes)
-        let completed = try await backend.completeMediaUpload(mediaID: mediaID)
-        guard completed.isReady else { throw MediaUploadError.incompleteCompletion(completed) }
-        return (pending, completed)
+        var updated = pending
+        updated.contentUploaded = true
+        return updated
+    }
+
+    private func createThenPut(
+        _ pending: PendingMediaUpload, bytes: Data
+    ) async throws -> PendingMediaUpload {
+        // This convenience is only for an in-memory caller. A durable caller
+        // must call `create`, persist its return value, then call `put`.
+        let created = try await create(pending)
+        return try await put(created, bytes: bytes)
+    }
+
+    public func upload(
+        _ pending: PendingMediaUpload, bytes: Data
+    ) async throws -> (pending: PendingMediaUpload, completed: CompletedMediaUpload) {
+        let target = try await create(pending)
+        let uploaded = try await put(target, bytes: bytes)
+        let completed = try await complete(uploaded)
+        return (uploaded, completed)
     }
 
     public func complete(_ pending: PendingMediaUpload) async throws -> CompletedMediaUpload {
@@ -232,6 +258,15 @@ public actor MediaUploadCoordinator {
             throw MediaUploadError.incompleteCompletion(
                 .init(
                     mediaID: "", state: "pending", outcome: "in_progress", retryAt: nil,
+                    contentSHA256: nil, mime: nil, size: nil,
+                    declaredWidth: nil, declaredHeight: nil
+                )
+            )
+        }
+        guard pending.contentUploaded else {
+            throw MediaUploadError.incompleteCompletion(
+                .init(
+                    mediaID: mediaID, state: "pending", outcome: "in_progress", retryAt: nil,
                     contentSHA256: nil, mime: nil, size: nil,
                     declaredWidth: nil, declaredHeight: nil
                 )
