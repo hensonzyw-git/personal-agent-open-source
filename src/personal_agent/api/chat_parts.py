@@ -167,6 +167,36 @@ def open_chat_parts(raw: object, *, schema_version: object) -> Parts:
     return parse_chat_parts(raw)
 
 
+def same_parts(left: Parts, right: Parts) -> bool:
+    """Whether two `parts` lists name the same request, order included.
+
+    §3.2's replay rule compares an arriving request against a stored one. It
+    cannot recompute
+    :func:`~personal_agent.api.operation_store.chat_request_fingerprint`,
+    because that input carries the measured digest and reading a digest back is
+    a read of live media -- which the same sentence forbids ("不访问活媒体"). The
+    comparison costs nothing to lose: a media object's digest is written once
+    when the object is published and never changes, so the ordered `media_id`s
+    already determine the ordered digests. What it keeps is everything the text
+    alone loses, including the difference between an absent text part and an
+    empty one.
+
+    Comparison is on `(type, value)` and nothing else. A sealed part never
+    carries a digest (see :func:`seal_chat_parts`) and a part off the wire
+    cannot supply one, so there is no third field for the two sides to disagree
+    about.
+    """
+
+    def identity(part: ChatPart) -> tuple[str, str]:
+        if isinstance(part, TextPart):
+            return (_TEXT_TYPE, part.text)
+        return (_IMAGE_TYPE, part.media_id)
+
+    if len(left) != len(right):
+        return False
+    return [identity(part) for part in left] == [identity(part) for part in right]
+
+
 def parts_text(parts: Parts) -> str:
     """The effective user text: the text part's text, or "" when there is none.
 

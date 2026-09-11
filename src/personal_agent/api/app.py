@@ -28,8 +28,8 @@ import json
 import logging
 import threading
 import uuid
-from collections.abc import Callable
-from contextlib import asynccontextmanager
+from collections.abc import Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Protocol
@@ -41,7 +41,17 @@ from sqlalchemy import text as text_clause
 from sqlalchemy.exc import IntegrityError
 
 from personal_agent.api import events
-from personal_agent.api.chat_parts import parse_chat_parts, parts_text
+from personal_agent.api.chat_anchor import (
+    bind_chat_images,
+    resolve_chat_images,
+    resolved_parts,
+)
+from personal_agent.api.chat_parts import (
+    ImageRefPart,
+    Parts,
+    parse_chat_parts,
+    parts_text,
+)
 from personal_agent.api.finance_query_projection import (
     FinanceQueryProjectionError,
     decode_finance_query_projection,
@@ -93,6 +103,7 @@ from personal_agent.api.review_view import (
 from personal_agent.api.request_payload import (
     ChatRequestPayload,
     continuation_context,
+    describes_request,
     open_chat_request,
     seal_chat_request,
     with_clarification_question,
@@ -115,6 +126,7 @@ from personal_agent.context.session_manager import (
     SessionManager,
 )
 from personal_agent.keys import HmacKey, HmacKeyRing
+from personal_agent.media.locking import MediaLockError, media_locks
 from personal_agent.media.store import MediaStore
 from personal_agent.media.uploads import (
     CHAT_IMAGE_PURPOSE,
@@ -657,7 +669,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         body = await _json_body(request)
         key = idempotency_key(request)
         conversation_id = _required(body, "conversation_id")
-        text = _chat_text(body)
+        parts, text = _chat_request(body)
         clarification_of = _optional_operation_id(body, "clarification_of")
         start_new_session = _optional_bool(body, "start_new_session", default=False)
         if start_new_session and clarification_of is not None:
@@ -676,6 +688,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             key,
             conversation_id,
             text,
+            parts,
             clarification_of,
             start_new_session,
         )
@@ -712,6 +725,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 key,
                 conversation_id,
                 text,
+                parts,
                 clarification_of,
                 start_new_session,
                 resolved_classification,
@@ -1660,10 +1674,19 @@ def _preflight_chat_replay(
     key: str,
     conversation_id: str,
     text: str,
+    parts: Parts,
     clarification_of: str | None,
     start_new_session: bool,
 ) -> _AnchoredChat | None:
-    """Return an existing idempotent chat before spending a classifier call."""
+    """Return an existing idempotent chat before spending a classifier call.
+
+    Two ways to recognise the request, because a parts request cannot be
+    fingerprinted here: §3.2's fingerprint input carries the measured digest of
+    every image, and reading one back would be a read of live media -- which the
+    same sentence forbids on the replay path ("不访问活媒体"). So a parts request is
+    compared against the sealed structure instead, which is the same comparison
+    with an immutable value standing in for a re-readable one.
+    """
 
     with deps.session_factory() as session:
         try:
@@ -1672,12 +1695,6 @@ def _preflight_chat_replay(
                 deps.identifier_key,
                 client_conversation_id=conversation_id,
                 now=deps.now(),
-            )
-            fingerprint = chat_request_fingerprint(
-                conversation_id=timeline_id,
-                text=text,
-                clarification_of=clarification_of,
-                start_new_session=start_new_session,
             )
             request_row = (
                 session.query(ApiRequest)
@@ -1690,7 +1707,29 @@ def _preflight_chat_replay(
             if request_row is None:
                 session.commit()
                 return None
-            if request_row.request_fingerprint != fingerprint:
+            if parts:
+                sealed = open_chat_request(
+                    deps.keyring,
+                    request_id=request_row.request_id,
+                    envelope=request_row.encrypted_request_payload,
+                )
+                matches = describes_request(
+                    sealed,
+                    conversation_id=timeline_id,
+                    text=text,
+                    parts=parts,
+                    clarification_of=clarification_of,
+                    start_new_session=start_new_session,
+                )
+            else:
+                fingerprint = chat_request_fingerprint(
+                    conversation_id=timeline_id,
+                    text=text,
+                    clarification_of=clarification_of,
+                    start_new_session=start_new_session,
+                )
+                matches = request_row.request_fingerprint == fingerprint
+            if not matches:
                 raise AppError(
                     ErrorCode.IDEMPOTENCY_CONFLICT,
                     internal_detail=(
@@ -1810,6 +1849,7 @@ def _anchor_chat(
     key: str,
     conversation_id: str,
     text: str,
+    parts: Parts,
     clarification_of: str | None,
     start_new_session: bool,
     resolved_classification: ResolvedClassification,
@@ -1818,36 +1858,38 @@ def _anchor_chat(
 
     with deps.session_factory() as session:
         try:
-            for claim_attempt in range(2):
-                try:
-                    return run_write_transaction(
-                        session,
-                        lambda: _anchor_chat_in_transaction(
+            with _chat_media_locks(deps, parts):
+                for claim_attempt in range(2):
+                    try:
+                        return run_write_transaction(
                             session,
-                            deps,
-                            auth,
-                            key,
-                            conversation_id,
-                            text,
-                            clarification_of,
-                            start_new_session,
-                            resolved_classification,
-                        ),
-                        attempts=8,
-                    )
-                except IntegrityError as exc:
-                    # Usually SQLite serialises this as a snapshot conflict. If
-                    # both consumers instead reach the unique retry-lineage
-                    # constraint, the loser gets one fresh-state pass and then
-                    # anchors an unbound retry. Do not mask other constraints.
-                    retry_claim_conflict = (
-                        is_finance_retry_request(text)
-                        and "operations.retry_of_operation_id" in str(exc.orig)
-                    )
-                    if claim_attempt == 0 and retry_claim_conflict:
-                        continue
-                    raise
-            raise AssertionError("unreachable")  # pragma: no cover
+                            lambda: _anchor_chat_in_transaction(
+                                session,
+                                deps,
+                                auth,
+                                key,
+                                conversation_id,
+                                text,
+                                parts,
+                                clarification_of,
+                                start_new_session,
+                                resolved_classification,
+                            ),
+                            attempts=8,
+                        )
+                    except IntegrityError as exc:
+                        # Usually SQLite serialises this as a snapshot conflict. If
+                        # both consumers instead reach the unique retry-lineage
+                        # constraint, the loser gets one fresh-state pass and then
+                        # anchors an unbound retry. Do not mask other constraints.
+                        retry_claim_conflict = (
+                            is_finance_retry_request(text)
+                            and "operations.retry_of_operation_id" in str(exc.orig)
+                        )
+                        if claim_attempt == 0 and retry_claim_conflict:
+                            continue
+                        raise
+                raise AssertionError("unreachable")  # pragma: no cover
         except StaleOperationVersionError as exc:
             raise AppError(
                 ErrorCode.INVALID_ARGUMENT,
@@ -1860,6 +1902,34 @@ def _anchor_chat(
             raise
 
 
+@contextmanager
+def _chat_media_locks(deps: AgentApiDeps, parts: Parts) -> Iterator[None]:
+    """§4.1's lock set for the images this message names, or nothing at all.
+
+    Entered **outside** the write transaction and released after it, because
+    that is the order §4.1 gives: the lock is what makes the transaction's
+    read-and-compare-and-swap atomic against a concurrent deleter, and CLAUDE.md
+    §5.2 forbids holding a database transaction while waiting on a file lock.
+    Holding it across the retry loop is deliberate -- the retries re-read state
+    under the same protection.
+
+    Non-blocking, like the upload path's use of the same lock: a message that
+    would have to queue behind a slow reader is refused and retried by the
+    client, and §6 gives the reader that holds the stripe a bounded grace rather
+    than a queue.
+    """
+    media_ids = _chat_image_ids(parts)
+    if not media_ids:
+        yield
+        return
+    store, _ = _media_ready(deps)
+    try:
+        with media_locks(store.roots.root, media_ids, blocking=False):
+            yield
+    except MediaLockError as exc:
+        raise MediaBusyError("the media store is busy; retry shortly") from exc
+
+
 def _anchor_chat_in_transaction(
     session,
     deps: AgentApiDeps,
@@ -1867,22 +1937,38 @@ def _anchor_chat_in_transaction(
     key: str,
     conversation_id: str,
     text: str,
+    parts: Parts,
     clarification_of: str | None,
     start_new_session: bool,
     resolved_classification: ResolvedClassification,
 ) -> _AnchoredChat:
-    """Anchor one chat against the transaction's current database snapshot."""
+    """Anchor one chat against the transaction's current database snapshot.
+
+    §3.2's first anchoring runs here, in the order the design gives: resolve the
+    request's images, fingerprint them with the measured digests, create the
+    request/operation under one key, and only then -- once the user event exists
+    to hang them on -- record the bindings and move each object to `bound`.
+    """
     timeline_id = events.resolve_timeline(
         session,
         deps.identifier_key,
         client_conversation_id=conversation_id,
         now=deps.now(),
     )
+    # Resolution precedes the fingerprint because the fingerprint's input *is*
+    # the resolved image (§3.2: ordered (media_id, content_sha256), digest
+    # server-measured). It also precedes `open_operation`, which costs a reader
+    # one extra live read in the rare race where this request turns out to be a
+    # duplicate -- the loser of that race returns the winner's operation without
+    # ever binding anything, and a client whose retry lands in that window is
+    # answered by the preflight above, which never reads live media.
+    images = _resolve_chat_images(session, deps, auth, parts)
     fingerprint = chat_request_fingerprint(
         conversation_id=timeline_id,
         text=text,
         clarification_of=clarification_of,
         start_new_session=start_new_session,
+        parts=resolved_parts(parts, images),
     )
     opened = open_operation(
         session,
@@ -1958,6 +2044,10 @@ def _anchor_chat_in_transaction(
         clarification_context=context,
         finance_retry_context=retry_context,
         start_new_session=start_new_session,
+        # The *unresolved* parts: §3.2 seals the original structure, and the
+        # measured digest belongs to the fingerprint and the media table, not to
+        # the sealed copy of what the client sent.
+        parts=parts,
     )
     operation.api_request.encrypted_request_payload = seal_chat_request(
         deps.keyring,
@@ -1995,7 +2085,7 @@ def _anchor_chat_in_transaction(
             operation_id=None,
             now=deps.now(),
         )
-    events.append_event(
+    event_id = events.append_event(
         session,
         deps.keyring,
         conversation_id=timeline_id,
@@ -2013,11 +2103,64 @@ def _anchor_chat_in_transaction(
         operation_id=operation.operation_id,
         now=deps.now(),
     )
+    if images:
+        bind_chat_images(
+            session,
+            images=images,
+            event_id=event_id,
+            operation_id=operation.operation_id,
+            reuse_lineage=_reuse_lineage(clarification_of, retry_source),
+            now=deps.now(),
+        )
     logger.info(
         "session boundary %s",
         json.dumps(decision.audit_record(), sort_keys=True),
     )
     return _AnchoredChat(operation.operation_id, operation.state)
+
+
+def _resolve_chat_images(
+    session,
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    parts: Parts,
+) -> tuple:
+    """Resolve every image this message names, or refuse the request.
+
+    A text-only request resolves nothing and does not need a media store at all,
+    which matters: §5.4's "缺配置不启用图片" means a deployment with images off is
+    still a working deployment, and only the requests that actually name an
+    image may require the media configuration to exist.
+    """
+    if not _chat_image_ids(parts):
+        return ()
+    _, limits = _media_ready(deps)
+    return resolve_chat_images(
+        session,
+        keyring=deps.keyring,
+        device_id=auth.device_id,
+        parts=parts,
+        limits=limits,
+    )
+
+
+def _reuse_lineage(
+    clarification_of: str | None, retry_source: Operation | None
+) -> tuple[str, ...]:
+    """The operations whose recorded use of an image this message may re-establish.
+
+    §5.1 allows exactly two, and both are server-side facts by the time this
+    runs: the clarification source has been checked to be waiting for
+    clarification in this conversation, and the retry source has been checked to
+    be the newest unconsumed failure that provably made no call. Neither is
+    taken from the request's own shape, which is what §3.2's "服务端验证 source
+    lineage" rules out.
+    """
+    if clarification_of is not None:
+        return (clarification_of,)
+    if retry_source is not None:
+        return (retry_source.operation_id,)
+    return ()
 
 
 def _abandon_pre_submit_operations_in_open_session(
@@ -3126,8 +3269,8 @@ def _operation_event_content(
     return content
 
 
-def _chat_text(body: dict[str, Any]) -> str:
-    """The request's effective text, from exactly one of `text` and `parts`.
+def _chat_request(body: dict[str, Any]) -> tuple[Parts, str]:
+    """The request's parts and effective text, from exactly one of `text` and `parts`.
 
     §3.1: "text 与 parts 恰有一个". A parts request carries its text inside the
     parts, so the two are not merged and not defaulted: sending both is a
@@ -3136,7 +3279,9 @@ def _chat_text(body: dict[str, Any]) -> str:
 
     For a parts request the effective text is :func:`parts_text`, which is `""`
     when the user sent images and nothing else -- a legitimate request, and the
-    reason this cannot simply delegate to `_required`.
+    reason this cannot simply delegate to `_required`. The parts themselves
+    travel on rather than being reduced to that text: they are what the request
+    *is*, from the fingerprint (§3.2) through to the sealed payload.
     """
     has_parts = "parts" in body
     has_text = "text" in body
@@ -3146,10 +3291,22 @@ def _chat_text(body: dict[str, Any]) -> str:
             internal_detail="text and parts are mutually exclusive",
         )
     if not has_parts:
-        return _required(body, "text")
+        return (), _required(body, "text")
     parts = parse_chat_parts(body["parts"])
     _require_multimodal_ready()
-    return parts_text(parts)
+    return parts, parts_text(parts)
+
+
+def _chat_image_ids(parts: Parts) -> list[str]:
+    """The media ids this message names, in order and once each.
+
+    Duplicates cannot arrive from the wire (`parse_chat_parts` allows one image
+    part), and the lock helper dedupes independently -- this is a list of what
+    to lock, not a claim about the request.
+    """
+    return [
+        part.media_id for part in parts if isinstance(part, ImageRefPart)
+    ]
 
 
 #: The links an image must traverse to reach the model, and which do not exist

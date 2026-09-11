@@ -17,6 +17,7 @@ from personal_agent.api.chat_parts import (
     PARTS_SCHEMA_VERSION,
     Parts,
     open_chat_parts,
+    same_parts,
     seal_chat_parts,
 )
 from personal_agent.context.continuation import (
@@ -189,6 +190,42 @@ def _open_parts(data: dict[str, Any]) -> Parts:
     if raw_parts is None:
         return ()
     return open_chat_parts(raw_parts, schema_version=data.get("parts_schema_version"))
+
+
+def describes_request(
+    payload: ChatRequestPayload,
+    *,
+    conversation_id: str,
+    text: str,
+    parts: Parts,
+    clarification_of: str | None,
+    start_new_session: bool,
+) -> bool:
+    """Whether a sealed payload describes the request now in hand (§3.2).
+
+    This is the parts request's counterpart to comparing
+    :func:`~personal_agent.api.operation_store.chat_request_fingerprint`, and it
+    exists because the fingerprint cannot be computed on a replay: its input
+    carries the measured digest, and re-reading a digest is a read of live media
+    that §3.2 forbids there. Everything the fingerprint covers is covered here
+    -- the same fields, and the parts compared as an ordered structure -- with
+    the digest standing in for its (immutable) `media_id`.
+
+    A payload with no parts is not a match, whatever the wire says: a request
+    that arrived as `text` and is retried as `parts` (or the reverse) is a
+    changed request under a reused key, which is a conflict rather than a
+    replay. Text-only requests never reach here; they keep the frozen
+    fingerprint comparison they have always had.
+    """
+    if not payload.parts:
+        return False
+    return (
+        payload.conversation_id == conversation_id
+        and payload.text == text
+        and payload.clarification_of == clarification_of
+        and payload.start_new_session == start_new_session
+        and same_parts(payload.parts, parts)
+    )
 
 
 def with_clarification_question(

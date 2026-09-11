@@ -521,6 +521,33 @@ def publish_upload(
     return CompleteOutcome.PUBLISHED
 
 
+# --- bind -----------------------------------------------------------------
+
+
+def bind_upload(session: Session, *, media_id: str, version: int, now: datetime) -> None:
+    """Move a ``ready`` object to ``bound``: a message is using it (§5.1).
+
+    ``ready`` means "usable", ``bound`` means "used", and only ``ready`` is
+    authored here -- a first use is a one-way move, so the guard is the state
+    itself rather than a caller's promise not to repeat it. ``version`` is the
+    one the caller read while resolving the image, so a request that lost a race
+    refuses here instead of binding an object another message has already taken;
+    the unique index on ``role = 'origin'`` backs the same rule in the table.
+
+    **This function does not commit**, for the same reason
+    :func:`publish_upload` does not: the caller owns the transaction, and §3.2
+    makes the first anchoring one unit.
+    """
+    _cas_state(
+        session,
+        media_id=media_id,
+        from_states=("ready",),
+        version=version,
+        to_state="bound",
+        now=now,
+    )
+
+
 class MediaDeclarationMismatchError(MediaLifecycleError):
     """What arrived is not what the client declared.
 
