@@ -357,6 +357,149 @@ class Lease(Base):
     )
 
 
+WORKFLOW_ATTEMPT_STATES: Final[tuple[str, ...]] = (
+    "prepared",
+    "dispatching",
+    "result_recorded",
+    "unknown",
+    "superseded",
+)
+
+EXECUTION_GATE_MODES: Final[tuple[str, ...]] = (
+    "open",
+    "paused",
+    "cancelled",
+    "delivered",
+)
+
+
+class WorkflowAction(Base):
+    """One version-bound action a feature may dispatch exactly once per key.
+
+    This is the P0-02 persistent boundary before a provider/commit/GitHub
+    call.  ``active_attempt_id`` deliberately has no database foreign key:
+    creating an Action and its first ProviderAttempt is a two-row lifecycle,
+    and a circular FK would either make the action uncreatable or defer SQLite
+    integrity.  The owning action service must CAS-bind it to an attempt whose
+    ``action_id`` is this row; tests for that composition land with the driver.
+    """
+
+    __tablename__ = "workflow_actions"
+
+    action_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    feature_id: Mapped[str] = mapped_column(
+        ForeignKey("features.feature_id"), nullable=False
+    )
+    #: Stage is introduced by a later P0-02 unit, so it is an opaque optional
+    #: identity now rather than a forward FK to a table that does not exist.
+    stage_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    action_key: Mapped[str] = mapped_column(Text, nullable=False)
+    input_binding_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    execution_snapshot_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    active_attempt_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("length(kind) > 0", name="kind_non_empty"),
+        CheckConstraint("length(action_key) > 0", name="action_key_non_empty"),
+        CheckConstraint(_hex_of_length("input_binding_sha256", 64, nullable=False),
+                        name="input_binding_sha256_hex"),
+        CheckConstraint(
+            _hex_of_length("execution_snapshot_sha256", 64, nullable=False),
+            name="execution_snapshot_sha256_hex",
+        ),
+        CheckConstraint("version >= 1", name="version_positive"),
+        UniqueConstraint(
+            "feature_id", "action_key", name="uq_workflow_actions_feature_action_key"
+        ),
+        Index("ix_workflow_actions_feature_id", "feature_id"),
+    )
+
+
+class ProviderAttempt(Base):
+    """One pre-reserved provider attempt, including every authority fence."""
+
+    __tablename__ = "provider_attempts"
+
+    attempt_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    action_id: Mapped[str] = mapped_column(
+        ForeignKey("workflow_actions.action_id"), nullable=False
+    )
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    owner_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fence: Mapped[int] = mapped_column(Integer, nullable=False)
+    dispatch_started_at: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
+    job_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_id: Mapped[str | None] = mapped_column(
+        ForeignKey("leases.lease_id"), nullable=True
+    )
+    job_lease_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    policy_lease_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    approval_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    result_digest: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_recorded_at: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
+    result_consumed_at: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(_in_set("state", WORKFLOW_ATTEMPT_STATES), name="state"),
+        CheckConstraint("attempt_no >= 1", name="attempt_no_positive"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint("fence >= 0", name="fence_non_negative"),
+        CheckConstraint(
+            "job_lease_epoch IS NULL OR job_lease_epoch >= 0",
+            name="job_lease_epoch_non_negative",
+        ),
+        CheckConstraint(
+            "policy_lease_epoch IS NULL OR policy_lease_epoch >= 0",
+            name="policy_lease_epoch_non_negative",
+        ),
+        CheckConstraint(
+            "approval_epoch IS NULL OR approval_epoch >= 0",
+            name="approval_epoch_non_negative",
+        ),
+        CheckConstraint(_hex_of_length("result_digest", 64, nullable=True),
+                        name="result_digest_hex"),
+        UniqueConstraint(
+            "action_id", "attempt_no", name="uq_provider_attempts_action_attempt"
+        ),
+        Index("ix_provider_attempts_action_id", "action_id"),
+    )
+
+
+class ExecutionGate(Base):
+    """Per-feature CAS gate for cancellation, pause, delivery and approval epoch."""
+
+    __tablename__ = "execution_gates"
+
+    feature_id: Mapped[str] = mapped_column(
+        ForeignKey("features.feature_id"), primary_key=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint(_in_set("mode", EXECUTION_GATE_MODES), name="mode"),
+        CheckConstraint("approval_epoch >= 0", name="approval_epoch_non_negative"),
+    )
+
+
 class ExternalEffect(Base):
     """One attempt to change something outside this database (§3.6).
 
