@@ -303,8 +303,13 @@ conflict instead of silently choosing an old default.
 - `docs/Agent横向能力技术方案_v1.0.md` — frozen framework-neutral architecture,
   versioned data/API contracts, failure boundaries and CAP acceptance gates for
   those capabilities.
-- `docs/开发Agent闭环PRD_v1.0.md` — confirmed product and Human-in-the-loop
-  baseline for feature intake through reviewed PR, with manual high-risk gates.
+- `docs/开发Agent闭环PRD_v1.0.md` — **PRD v1.1, approved 2026-09-12 (P0-01)**;
+  configurable end-to-end development workflow. 13 business actions; two daily
+  human gates (PRD then delivery) with merge approval, the GitHub manual merge
+  and the project design gate counted separately; an authorized-repository and
+  local-project scope; per-role runtime/provider/model/placement configuration.
+  Approval migrates no existing runtime contract, and the same-model review
+  exception stays unapproved.
 - `docs/开发Agent闭环技术方案_v1.0.md` — graph-orchestrated deterministic
   workflow, GitHub and Home Mac Worker architecture, provider routing, security
   and recovery design.
