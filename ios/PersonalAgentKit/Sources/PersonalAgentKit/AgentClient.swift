@@ -168,6 +168,79 @@ public struct AgentClient: Sendable {
         )
     }
 
+    /// Post a structured chat request.  This overload is intentionally not a
+    /// replacement for the text-only method above: text-only callers preserve
+    /// the old `text` wire shape and therefore the old request fingerprint.
+    public func sendChatMessage(
+        conversationID: String,
+        parts: [ChatInputPart],
+        clarificationOf: String? = nil,
+        startNewSession: Bool = false,
+        idempotencyKey: String,
+        token: String
+    ) async throws -> OperationReceipt {
+        try await sendEncoded(
+            method: "POST",
+            path: "/v1/chat/messages",
+            body: StructuredChatRequest(
+                conversationID: conversationID,
+                parts: parts,
+                clarificationOf: clarificationOf,
+                startNewSession: startNewSession
+            ),
+            token: token,
+            headers: ["Idempotency-Key": idempotencyKey],
+            accepting: [200, 202],
+            as: OperationReceipt.self
+        )
+    }
+
+    // --- media upload (`CAP-003`, design §5.2) ------------------------------
+
+    public func createMediaUpload(
+        declaration: MediaUploadDeclaration,
+        idempotencyKey: String,
+        token: String
+    ) async throws -> CreatedMediaUpload {
+        try await sendEncoded(
+            method: "POST",
+            path: "/v1/media/uploads",
+            body: declaration,
+            token: token,
+            headers: ["Idempotency-Key": idempotencyKey],
+            accepting: [200, 201],
+            as: CreatedMediaUpload.self
+        )
+    }
+
+    /// Upload the already-prepared bytes.  The binary body is deliberately not
+    /// passed through the JSON helper: there is no base64 expansion, and the
+    /// server's independent binary ceiling remains the one that governs it.
+    public func putMediaContent(
+        mediaID: String, body: Data, token: String
+    ) async throws -> MediaUploadReceipt {
+        try await sendData(
+            method: "PUT",
+            path: "/v1/media/content/\(mediaID)",
+            body: body,
+            contentType: "application/octet-stream",
+            token: token,
+            as: MediaUploadReceipt.self
+        )
+    }
+
+    public func completeMediaUpload(
+        mediaID: String, token: String
+    ) async throws -> CompletedMediaUpload {
+        try await send(
+            method: "POST",
+            path: "/v1/media/uploads/\(mediaID)/complete",
+            token: token,
+            accepting: [200, 202],
+            as: CompletedMediaUpload.self
+        )
+    }
+
     /// Correct one recorded expense's 分类, from the receipt card's picker.
     ///
     /// `expectedCurrentCategory` is the compare-and-swap and is **not**
@@ -443,6 +516,78 @@ public struct AgentClient: Sendable {
         throw AgentClientError.from(status: http.statusCode, body: data)
     }
 
+    private func sendEncoded<Response: Decodable, Body: Encodable>(
+        method: String,
+        path: String,
+        body: Body,
+        token: String? = nil,
+        headers: [String: String] = [:],
+        accepting: Set<Int> = [200, 201],
+        as type: Response.Type
+    ) async throws -> Response {
+        let encoded: Data
+        do {
+            encoded = try JSONEncoder().encode(body)
+        } catch {
+            throw AgentClientError.malformedResponse
+        }
+        return try await sendData(
+            method: method,
+            path: path,
+            body: encoded,
+            contentType: "application/json",
+            token: token,
+            headers: headers,
+            accepting: accepting,
+            as: type
+        )
+    }
+
+    private func sendData<Response: Decodable>(
+        method: String,
+        path: String,
+        body: Data,
+        contentType: String,
+        token: String? = nil,
+        headers: [String: String] = [:],
+        accepting: Set<Int> = [200, 201],
+        as type: Response.Type
+    ) async throws -> Response {
+        guard let url = Self.url(path: path, query: [], relativeTo: baseURL) else {
+            throw AgentClientError.invalidBaseURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 45
+        request.httpBody = body
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+        return try await receive(request, accepting: accepting, as: type)
+    }
+
+    private func receive<Response: Decodable>(
+        _ request: URLRequest, accepting: Set<Int>, as type: Response.Type
+    ) async throws -> Response {
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw AgentClientError.transport(
+                "\(request.url?.absoluteString ?? "<unknown>"): \(error.localizedDescription)"
+            )
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw AgentClientError.malformedResponse
+        }
+        if accepting.contains(http.statusCode) {
+            do { return try JSONDecoder().decode(Response.self, from: data) }
+            catch { throw AgentClientError.malformedResponse }
+        }
+        throw AgentClientError.from(status: http.statusCode, body: data)
+    }
+
     private static func url(
         path: String, query: [URLQueryItem], relativeTo base: URL
     ) -> URL? {
@@ -452,6 +597,18 @@ public struct AgentClient: Sendable {
         else { return nil }
         components.queryItems = query
         return components.url
+    }
+}
+
+private struct StructuredChatRequest: Encodable {
+    let conversationID: String
+    let parts: [ChatInputPart]
+    let clarificationOf: String?
+    let startNewSession: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case conversationID = "conversation_id", parts
+        case clarificationOf = "clarification_of", startNewSession = "start_new_session"
     }
 }
 
