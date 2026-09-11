@@ -91,9 +91,18 @@ restic restore latest --target "$RESTORE_DIR"
 
 # Locate the restored snapshots. restic restores the full path tree, so the
 # files land under $RESTORE_DIR/var/backups/personal-agent/.
-API_DB="$RESTORE_DIR/var/backups/personal-agent/api/agent.latest.sqlite"
 MCP_DB="$RESTORE_DIR/var/backups/personal-agent/mcp/finance.latest.sqlite"
-MANIFEST="$RESTORE_DIR/var/backups/personal-agent/api/deletion-manifest.json"
+RUNS="$RESTORE_DIR/var/backups/personal-agent/api/media-runs"
+mapfile -t BUNDLES < <(find "$RUNS" -mindepth 1 -maxdepth 1 -type d -name '????????-????-4???-[89ab]???-????????????' -print 2>/dev/null)
+if [ "${#BUNDLES[@]}" -ne 1 ]; then
+  echo "FAIL: restore must contain exactly one immutable media bundle run, found ${#BUNDLES[@]}" >&2
+  exit 1
+fi
+BUNDLE_DIR="${BUNDLES[0]}"
+"$VENV/bin/personal-agent-media-backup-bundle" verify --run "$BUNDLE_DIR" \
+  || { echo "FAIL: restored media bundle hash/shape verification" >&2; exit 1; }
+API_DB="$BUNDLE_DIR/agent.sqlite"
+MANIFEST="$BUNDLE_DIR/deletion-manifest.json"
 for f in "$API_DB" "$MCP_DB" "$MANIFEST"; do
   if [ ! -s "$f" ]; then
     echo "FAIL: restored file missing or empty: $f" >&2
@@ -117,6 +126,7 @@ fi
   --agent-database "$API_DB" \
   --finance-database "$MCP_DB" \
   --manifest "$MANIFEST" \
+  --media-bundle "$BUNDLE_DIR" \
   "${SAMPLE_ARGS[@]}" \
   || { echo "FAIL: library restore checks" >&2; exit 1; }
 

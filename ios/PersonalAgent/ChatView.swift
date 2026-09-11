@@ -13,6 +13,7 @@ import UIKit
 /// model wrote.
 struct ChatView: View {
     @Bindable var model: ChatModel
+    @Environment(\.scenePhase) private var scenePhase
     /// `1j`. The daily-review surface, now a card inside this Timeline. `nil`
     /// only before the first refresh has opened it; the review card draws from
     /// it for the live status and the ack/defer calls, while the frozen values
@@ -51,6 +52,13 @@ struct ChatView: View {
             composer
         }
         .background(Color.screenBackground)
+        .onChange(of: scenePhase) { _, phase in
+            // Backgrounded audio is never kept as an implicit recording or
+            // transformed into a partial draft after the user returns.
+            if phase != .active, voiceInput.isActive {
+                voiceInput.interrupt()
+            }
+        }
         // No title of its own: §1a makes the Timeline the whole surface, so the
         // navigation bar belongs to the app rather than to this view. `RootView`
         // sets it, together with the status entry.
@@ -1954,16 +1962,16 @@ struct ChatView: View {
                     }
                 }
                 Button {
-                    if voiceInput.isRecording {
+                    if voiceInput.isActive {
                         voiceInput.cancel()
                     }
                 } label: {
-                    Image(systemName: voiceInput.isRecording ? "mic.fill" : "mic")
+                    Image(systemName: voiceInput.isActive ? "mic.fill" : "mic")
                         .font(.title3)
-                        .foregroundStyle(voiceInput.isRecording ? .danger : .primary)
+                        .foregroundStyle(voiceInput.isActive ? .danger : .primary)
                 }
                 .disabled(model.busy || writingInProgress)
-                .accessibilityLabel(voiceInput.isRecording ? "取消语音输入" : "长按语音输入")
+                .accessibilityLabel(voiceInput.isActive ? "取消语音输入" : "长按语音输入")
                 .onLongPressGesture(minimumDuration: 0.2, pressing: { holding in
                     if holding {
                         Task { await voiceInput.start() }
@@ -1971,6 +1979,8 @@ struct ChatView: View {
                         Task {
                             model.appendVoiceDraft(await voiceInput.finish())
                         }
+                    } else if voiceInput.isActive {
+                        voiceInput.cancel()
                     }
                 }, perform: {})
                 if writingInProgress {
@@ -2005,6 +2015,10 @@ struct ChatView: View {
             }
             if voiceInput.isRecording {
                 Text("正在本机转写；松开后可编辑再发送。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if voiceInput.isPreparing {
+                Text("正在准备本机语音识别；松开或点麦克风可取消。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if let message = voiceInput.errorMessage {

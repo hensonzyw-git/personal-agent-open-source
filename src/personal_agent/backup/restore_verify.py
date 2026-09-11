@@ -30,6 +30,52 @@ from personal_agent.storage.engine import (
 )
 
 
+def check_media_bundle_media(database: Path, keyring, bundle: Path) -> dict[str, Any]:
+    """Authenticate every restored ready/bound media ciphertext before reads open."""
+    from personal_agent.media.container import ContainerError, SealRecord, read_container
+    from personal_agent.media.lifecycle import ATTEMPT_TABLE, SEAL_RECORD_COLUMN
+
+    engine = create_read_only_database_engine(database)
+    checked = 0
+    try:
+        with session_factory(engine)() as session:
+            rows = session.execute(
+                text(
+                    "SELECT m.media_id, m.current_attempt_number, a.attempt_id, "
+                    "a.encrypted_seal_record FROM media_objects m "
+                    "JOIN media_attempts a ON a.media_id = m.media_id "
+                    "AND a.attempt_number = m.current_attempt_number "
+                    "WHERE m.state IN ('ready', 'bound') ORDER BY m.media_id"
+                )
+            ).all()
+        for media_id, attempt, attempt_id, envelope in rows:
+            if not isinstance(media_id, str) or not isinstance(attempt, int) or envelope is None:
+                return {"name": "media_bundle", "ok": False, "detail": "ready media row lacks sealed attempt"}
+            try:
+                raw = keyring.decrypt(
+                    json.loads(envelope) if isinstance(envelope, str) else envelope,
+                    table=ATTEMPT_TABLE, column=SEAL_RECORD_COLUMN, row_id=attempt_id,
+                )
+                seal = SealRecord.from_dict(json.loads(raw.decode("utf-8")))
+                path = Path(bundle) / "media" / f"{media_id}.bin"
+                # Fully consume the generator: authentication of a chunk is not
+                # proof that later chunks exist or that the whole-stream hash matches.
+                for _ in read_container(
+                    path, seal, keyring=keyring, media_id=media_id,
+                    attempt_number=attempt, role="chat_image",
+                ):
+                    pass
+                checked += 1
+            except Exception as exc:
+                return {
+                    "name": "media_bundle", "ok": False,
+                    "detail": f"media ciphertext verification failed for {media_id}: {type(exc).__name__}",
+                }
+        return {"name": "media_bundle", "ok": True, "detail": f"authenticated_media={checked}"}
+    finally:
+        engine.dispose()
+
+
 def check_integrity(
     database: Path, *, name: str = "integrity_check"
 ) -> dict[str, Any]:
@@ -304,6 +350,7 @@ def run_all(
     finance_database: Path | None = None,
     manifest_entries: list[dict[str, Any]] | None = None,
     aead_sample_entry_id: str | None = None,
+    media_bundle: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Run the library-side restore checks in order and return all results.
 
@@ -330,6 +377,8 @@ def run_all(
         )
     if aead_sample_entry_id is not None:
         results.append(check_aead_sample(database, keyring, entry_id=aead_sample_entry_id))
+    if media_bundle is not None:
+        results.append(check_media_bundle_media(database, keyring, media_bundle))
     if manifest_entries is not None:
         results.append(
             check_replay_deletion_manifest(database, keyring, manifest_entries)

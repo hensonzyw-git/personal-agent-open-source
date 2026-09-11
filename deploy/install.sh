@@ -101,22 +101,29 @@ fi
 # Application code: owned by the deploy user; services only read and execute.
 install -d -m 0755 -o "$DEPLOY_USER" -g "$DEPLOY_USER" /opt/personal-agent
 
-# DEV-035: staging dirs for the daily snapshots. Each is 2770 owned by its
-# service user with the backup user in the group, so the service writes the
-# snapshot and the backup user reads it -- and nobody else can. The live data
-# dirs above stay 0700, so group membership here grants no access to them.
+# DEV-035: staging dirs for the daily snapshots. The MCP timer still stages a
+# file directly, so its directory is setgid 2770. The API media bundle is
+# different: only the API may publish or replace its pointer/run, while the
+# backup identity can only read it (2750). The live data dirs above stay 0700,
+# so membership here grants no access to them.
 #
 # The setgid bit is load-bearing, not tidiness: without it a file created here
 # takes the writer's own primary group (personal-agent-api / personal-data-mcp),
 # and the backup user -- who is in neither -- can list the directory but open
 # nothing in it. Group inheritance plus the units' UMask=0027 is what actually
 # makes the staged files readable; the directory mode alone never did.
-install -d -m 2770 -o "$API_USER" -g "$BACKUP_USER" /var/backups/personal-agent/api
+install -d -m 2750 -o "$API_USER" -g "$BACKUP_USER" /var/backups/personal-agent/api
 install -d -m 2770 -o "$MCP_USER" -g "$BACKUP_USER" /var/backups/personal-agent/mcp
 # `install -d` on an existing directory does not reapply the mode, so make the
-# setgid bit and group explicit for boxes provisioned before this change.
-chmod 2770 /var/backups/personal-agent/api /var/backups/personal-agent/mcp
+# permissions and group explicit for boxes provisioned before this change.
+chmod 2750 /var/backups/personal-agent/api
+chmod 2770 /var/backups/personal-agent/mcp
 chgrp "$BACKUP_USER" /var/backups/personal-agent/api /var/backups/personal-agent/mcp
+# Multimodal media bundles are prepared by the API identity and consumed by the
+# backup identity. The lock is installed by root: neither identity may replace
+# it, but both can open it through the group-readable staging directory.
+install -d -m 2750 -o "$API_USER" -g "$BACKUP_USER" /var/backups/personal-agent/api/media-runs
+install -m 0644 -o root -g root /dev/null /var/backups/personal-agent/api/media-bundle.lock
 # The restic cache is the only path the backup unit writes.
 install -d -m 0700 -o "$BACKUP_USER" -g "$BACKUP_USER" /var/cache/restic
 # DEV-036: backup observation state. The backup unit writes the success marker

@@ -1,9 +1,8 @@
 # DEV-035: snapshot the Agent API database (Online Backup API) into staging.
 #
 # Runs as the Agent service user against its own 0700 data dir. The backup user
-# cannot read the live DB, so the service produces the snapshot itself; the
-# backup user only reads the staged file. Also exports the deletion manifest
-# (sealed ids only) so a restore can replay it independently of the snapshot.
+# cannot read the live DB or media root, so this service prepares one immutable
+# bundle itself; the backup user only verifies and ships that bundle.
 [Unit]
 Description=Personal Agent API DB snapshot for offsite backup
 After=personal-agent-api.service
@@ -16,18 +15,11 @@ Group=personal-agent-api
 # which reaches them through the setgid staging dir's group. 0077 makes every
 # staged file owner-only, so the offsite backup can stat them and open none.
 UMask=0027
-ExecStart=/opt/personal-agent/.venv/bin/personal-agent-db \
-    --database /var/lib/personal-agent-api/agent.sqlite \
-    backup --out /var/backups/personal-agent/api/agent.latest.sqlite
-# Export the deletion manifest the restore must replay. Sealed ids only; the
-# output is its own small file the restic backup carries separately from the
-# DB snapshot, so replay does not depend on the snapshot's own table copy.
-ExecStartPost=/opt/personal-agent/.venv/bin/personal-agent-export-deletion-manifest \
-    --database /var/lib/personal-agent-api/agent.sqlite \
-    --out /var/backups/personal-agent/api/deletion-manifest.json
+EnvironmentFile=/etc/personal-agent/api.env
+ExecStart=/bin/sh -ec 'test -n "$PERSONAL_AGENT_MEDIA_ROOT"; exec /opt/personal-agent/.venv/bin/personal-agent-media-backup-bundle prepare --database /var/lib/personal-agent-api/agent.sqlite --media-root "$PERSONAL_AGENT_MEDIA_ROOT" --stage-root /var/backups/personal-agent/api'
 TimeoutStartSec=300s
 
-ReadWritePaths=/var/backups/personal-agent/api
+ReadWritePaths=/var/backups/personal-agent/api /var/lib/personal-agent-api/media
 ReadOnlyPaths=/var/lib/personal-agent-api
 
 NoNewPrivileges=yes
