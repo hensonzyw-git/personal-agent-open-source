@@ -35,6 +35,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.manifest import canonical_json
 from personal_agent_core.timeutil import utc_now
+from personal_agent_core.tool_ir import DEFAULT_CLIENT_WIRE_VERSION
 
 
 ALGORITHM: Final[str] = "ES256"
@@ -60,6 +61,13 @@ HOST_ONLY_FIELDS: Final[frozenset[str]] = frozenset(
         "timezone",
         "trace_id",
         "duplicate_override",
+        # The client protocol version the Host read off the request. A device
+        # stating its own version in its *payload* is the shape design 14.2's
+        # ingest barrier must not believe: the version decides whether that
+        # same payload may write at all, so it travels as a signed Host claim
+        # (`HostContext.client_wire_version`) and this entry is what makes a
+        # device-supplied copy get stripped before the argument hash.
+        "client_wire_version",
         "arguments_hash",
         "request_fingerprint",
         "allowed_tools_version",
@@ -158,6 +166,16 @@ class HostContext:
     #: model-facing channel, and `duplicate_override` is in `HOST_ONLY_FIELDS`
     #: precisely so a model-emitted copy is stripped before the hash is taken.
     duplicate_override: str | None = None
+    #: The client protocol version this call is being made on behalf of, read
+    #: from the request's `X-Client-Wire-Version` header (design §2.5). It is a
+    #: claim for the same reason `duplicate_override` is one, and for one
+    #: additional one: the value decides whether the *arguments* of this very
+    #: call may be written at all (design 14.2's ingest barrier), so a caller
+    #: able to state its own version in the payload would be grading its own
+    #: paper. The default is the version every client that predates the header
+    #: implements, which is also the version the barrier refuses first -- the
+    #: unset direction fails closed.
+    client_wire_version: int = DEFAULT_CLIENT_WIRE_VERSION
 
     def claims(
         self, arguments: dict[str, Any], *, declared: frozenset[str] = frozenset()
@@ -175,6 +193,11 @@ class HostContext:
             "arguments_hash": arguments_hash(arguments, declared=declared),
             "allowed_tools_version": self.allowed_tools_version,
             "timezone": self.timezone,
+            # Always present, unlike `duplicate_override` below: a version is
+            # not something a call can be without, so "absent" would be a third
+            # state meaning either "version 1" or "the Host forgot to say", and
+            # the two must not be the same shape on the wire.
+            "client_wire_version": self.client_wire_version,
         }
         # Emitted only when there is one, so a plain call's token carries no
         # override claim at all and cannot be confused with one that does.
@@ -348,6 +371,16 @@ def verify_host_context(
     for claim in BOUND_CLAIMS:
         if claim not in claims:
             raise mismatch(f"missing bound claim {claim}")
+
+    # Deliberately not a bound claim: nothing arrives at this boundary that a
+    # verifier could compare it against, because the version comes from a
+    # header only the Agent API receives. The signature is the whole guarantee
+    # -- but a claim of the wrong *type* is not a version at all, and a string
+    # would later compare against an integer in a way that is easy to get
+    # wrong, so it is refused here rather than at each reader.
+    client_version = claims.get("client_wire_version", DEFAULT_CLIENT_WIRE_VERSION)
+    if not isinstance(client_version, int) or isinstance(client_version, bool):
+        raise mismatch("client_wire_version is not an integer")
 
     # Compare against what was actually received, not against the token's own
     # copy of it.

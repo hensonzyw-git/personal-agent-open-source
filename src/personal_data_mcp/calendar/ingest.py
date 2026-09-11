@@ -57,10 +57,21 @@ coherent one, rather than having the server guess which half was intended.
 That includes a field longer than the mirror's threshold (design 6): the
 device is supposed to upload it as null *and* raise the over-limit flag, so a
 too-long field is a device bug, not something to truncate.
+
+Before any of that, a gate (design 14.2): a mirror that was **rebuilt** must
+never be written by a batch captured before the rebuild, and since nothing the
+server says can recall a request that is already in flight, an old window has
+to have no writable entry point at all rather than be recognised and refused.
+The channel therefore carries a one-way protocol floor and a per-device
+rebuild flag, both read here -- inside the write unit, against the database's
+current state, never from a value the caller supplied in its payload.
+`calendar.policy` owns those states and the argument for why the floor never
+returns to 1.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -77,8 +88,12 @@ from personal_agent_core.timeutil import (
     parse_ledger_date,
     parse_rfc3339,
 )
+from personal_data_mcp.calendar import policy as ingest_policy
 from personal_data_mcp.calendar.directory import upsert_calendars
 from personal_data_mcp.storage.models import CalendarDeviceSync, CalendarEvent
+
+
+logger = logging.getLogger(__name__)
 
 
 TABLE: Final[str] = "calendar_events"
@@ -388,15 +403,72 @@ def _take_fields(existing: CalendarEvent, row: CalendarEvent) -> None:
     existing.row_key = row.row_key
 
 
+def _enforce_ingest_barrier(
+    session,
+    *,
+    device_id: str,
+    client_wire_version: int,
+    snapshot_ts: int,
+    watermark_row: CalendarDeviceSync | None,
+) -> None:
+    """Refuse a batch the barrier closes the channel to, and warn on old ones.
+
+    The warning is emitted **before** the refusal, and that order is the point
+    of having it: its subject is "an old window is still arriving", and a
+    refused arrival is precisely the observation an operator needs -- it says
+    the controlled recovery worked, while silence would leave them unable to
+    tell that from the device having gone quiet. It is logged, never acted on.
+    Time is not a safety predicate here and must not become one: under zero
+    clock skew the tolerance in `snapshot_as_of > rebuild_instant - tolerance`
+    admits a window captured seconds before the rebuild, so no tolerance both
+    admits the new window and refuses the old one (design 14.2, R6-F20).
+
+    The design asks the warning to name whether the batch carried an epoch.
+    Nothing on the wire does -- there is no epoch field in any schema, which is
+    the open contract gap the delivery notes record -- so what is logged is the
+    carrier the design was replaced with: the client's declared protocol
+    version. A v1 batch that reaches here at all is the shape the epoch would
+    have separated.
+    """
+    rebuild_instant = (
+        watermark_row.rebuild_instant if watermark_row is not None else None
+    )
+    if rebuild_instant is not None and snapshot_ts <= rebuild_instant:
+        logger.warning(
+            "calendar ingest: a batch captured at or before this device's "
+            "rebuild is arriving (device=%s snapshot_ts=%s rebuild_instant=%s "
+            "client_wire_version=%s)",
+            device_id,
+            snapshot_ts,
+            rebuild_instant,
+            client_wire_version,
+        )
+    policy = ingest_policy.read_policy(session)
+    ingest_policy.check_ingest_allowed(
+        policy,
+        rebuild_pending=(
+            watermark_row.rebuild_pending if watermark_row is not None else False
+        ),
+        client_wire_version=client_wire_version,
+    )
+
+
 def ingest_events(
     arguments: dict[str, Any],
     *,
     sessions,
     keyring: KeyRing,
     device_id: str,
+    client_wire_version: int,
     now: datetime,
 ) -> dict[str, Any]:
-    """Merge one snapshot batch. Structural idempotency: replays skip."""
+    """Merge one snapshot batch. Structural idempotency: replays skip.
+
+    `client_wire_version` is the version the **signed Host Context** reports
+    (design §2.5), not anything read from `arguments`: the barrier decides from
+    it whether this batch may be written at all, so a value the caller could
+    set in its own payload would be the caller deciding its own admission.
+    """
     window_start, window_end, window_complete, snapshot_as_of, calendars = _validate(
         arguments, now
     )
@@ -410,6 +482,20 @@ def ingest_events(
 
         watermark_row = session.get(CalendarDeviceSync, device_id)
         watermark_ts = watermark_row.watermark_ts if watermark_row else None
+
+        # The barrier, read here rather than before the unit: a concurrent
+        # rebuild commits outside this session, and a value read outside the
+        # transaction would let a batch through on the strength of a state that
+        # no longer holds (CLAUDE.md §5.2). Inside it, SQLite's snapshot rules
+        # make the write fail and `run_write_transaction` re-run this unit
+        # against the fresh state, where the gate then refuses.
+        _enforce_ingest_barrier(
+            session,
+            device_id=device_id,
+            client_wire_version=client_wire_version,
+            snapshot_ts=snapshot_ts,
+            watermark_row=watermark_row,
+        )
         #: A snapshot **strictly older** than the watermark is a *late
         #: packet*: it has no standing to speak for events the completed
         #: snapshots never saw — so it may not insert an unknown row and may
@@ -610,6 +696,12 @@ def ingest_events(
                 watermark_row.window_start_ts = _epoch(window_start)
                 watermark_row.window_end_ts = _epoch(window_end)
                 watermark_row.updated_at = now
+            # A completed window is what ends "mid-rebuild": the mirror now
+            # holds a whole snapshot again, so the prompt stops being true.
+            # This clears the *presentation* flag and nothing else -- the
+            # protocol floor that refused the old client stays exactly where it
+            # was, which is the asymmetry `calendar.policy` exists to keep.
+            ingest_policy.complete_rebuild(session, device_id=device_id)
 
         return {
             "status": "ok",

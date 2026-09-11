@@ -43,6 +43,12 @@ def build_handler(dependencies: CalendarIngestDependencies) -> ToolHandler:
             sessions=dependencies.sessions,
             keyring=dependencies.keyring,
             device_id=invocation.verified_call.device_id,
+            # Same source as the device identity above and for the same reason:
+            # the client protocol version is what the signed Host Context says
+            # it is (design §2.5). The barrier refuses a client below the
+            # channel's floor, so believing a copy out of the payload would let
+            # the payload decide whether it may be written.
+            client_wire_version=invocation.verified_call.client_wire_version,
             now=utc_now(),
         )
 

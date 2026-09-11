@@ -106,6 +106,11 @@ def _ingest(sessions, events, *, window_complete=True, device_id="dev-1",
         sessions=sessions,
         keyring=_keyring(),
         device_id=device_id,
+        # A v1 client: the shape these tests upload carries no zone and no
+        # dates, and the barrier's floor is what the declared version is
+        # compared against -- so the two have to agree for the test to be
+        # exercising the shape it says it is.
+        client_wire_version=1,
         now=NOW,
     )
 
@@ -285,6 +290,7 @@ def test_ingest_rejects_a_window_wider_than_the_cap(sessions) -> None:
             sessions=sessions,
             keyring=_keyring(),
             device_id="dev-1",
+            client_wire_version=1,
             now=NOW,
         )
     assert excinfo.value.code is ErrorCode.INVALID_ARGUMENT
@@ -302,6 +308,7 @@ def test_ingest_end_before_start_is_rejected(sessions) -> None:
             sessions=sessions,
             keyring=_keyring(),
             device_id="dev-1",
+            client_wire_version=1,
             now=NOW,
         )
     assert excinfo.value.code is ErrorCode.INVALID_ARGUMENT
@@ -378,6 +385,7 @@ def test_query_window_is_overlap_semantics(sessions) -> None:
             sessions=sessions,
             keyring=_keyring(),
             device_id="dev-1",
+            client_wire_version=1,
             now=NOW,
         )
 
@@ -774,6 +782,7 @@ def _ingest_as_of(sessions, events, *, as_of, window_complete=True, device_id="d
         sessions=sessions,
         keyring=_keyring(),
         device_id=device_id,
+        client_wire_version=1,
         now=NOW,
     )
 
@@ -994,6 +1003,7 @@ def test_ingest_without_snapshot_as_of_is_refused(sessions) -> None:
             sessions=sessions,
             keyring=_keyring(),
             device_id="dev-1",
+            client_wire_version=1,
             now=NOW,
         )
     assert excinfo.value.code is ErrorCode.INVALID_ARGUMENT

@@ -90,6 +90,7 @@ def _ingest_as_of(
         sessions=sessions,
         keyring=_keyring(),
         device_id=device_id,
+        client_wire_version=1,
         now=NOW,
     )
 

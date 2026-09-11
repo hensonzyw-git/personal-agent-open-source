@@ -874,6 +874,13 @@ async def agent_service(
                     ),
                     allowed_tools_version=device.allowed_tools_version,
                     timezone="Asia/Shanghai",
+                    # The barrier's protocol version is the header the device
+                    # already sends on every request, read once at the edge and
+                    # signed here. It is never a payload field: the ingest gate
+                    # decides from `client_wire_version` whether this call's own
+                    # arguments may be written, so a device able to state it in
+                    # the payload would be grading its own paper.
+                    client_wire_version=auth.client_wire_version,
                 )
                 execution = asyncio.run(
                     bridge.execute(

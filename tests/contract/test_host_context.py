@@ -23,6 +23,7 @@ from personal_agent_core.host_context import (
     strip_host_only_fields,
     verify_host_context,
 )
+from personal_agent_core.tool_ir import DEFAULT_CLIENT_WIRE_VERSION
 
 
 NOW = datetime(2026, 7, 23, 7, 0, tzinfo=timezone.utc)
@@ -165,6 +166,72 @@ def test_a_forged_duplicate_override_does_not_survive_verification(ring) -> None
     token = sign_host_context(ring, context(), ARGUMENTS, now=NOW)
     claims = verify(ring, token, arguments={**ARGUMENTS, "duplicate_override": True})
     assert "duplicate_override" not in claims
+
+
+# --- the wire version the Host observed, not the one the payload claims -----
+
+
+def _resign(ring: ServiceKeyRing, token: str, **changes) -> str:
+    """Re-mint an honest token with claims replaced, as a buggy Host would.
+
+    Used only to reach shapes the real `sign_host_context` never produces.
+    """
+    claims = jwt.decode(token, options={"verify_signature": False})
+    claims.update(changes)
+    return jwt.encode(
+        claims,
+        ring.signing_key(),
+        algorithm=ALGORITHM,
+        headers={"kid": ring.active_kid, "typ": "JWT"},
+    )
+
+
+def test_the_client_wire_version_travels_as_a_signed_claim(ring) -> None:
+    token = sign_host_context(
+        ring, context(client_wire_version=2), ARGUMENTS, now=NOW
+    )
+    assert verify(ring, token)["client_wire_version"] == 2
+
+
+def test_a_payload_supplied_client_wire_version_cannot_change_the_hash() -> None:
+    # Same rule as every Host field: a device must not upgrade itself by
+    # rewriting what it sends as business arguments.
+    forged = {**ARGUMENTS, "client_wire_version": 2}
+    assert arguments_hash(forged) == arguments_hash(ARGUMENTS)
+
+
+def test_a_forged_client_wire_version_does_not_survive_verification(ring) -> None:
+    token = sign_host_context(ring, context(), ARGUMENTS, now=NOW)
+    claims = verify(ring, token, arguments={**ARGUMENTS, "client_wire_version": 2})
+    assert claims["client_wire_version"] == 1
+
+
+def test_a_host_older_than_the_claim_is_read_as_the_oldest_protocol(ring) -> None:
+    # Absence has to fail closed. If an absent claim defaulted to the newest
+    # protocol, every pre-claim Host would silently pass the ingest barrier.
+    token = _resign(ring, sign_host_context(ring, context(), ARGUMENTS, now=NOW))
+    claims = jwt.decode(token, options={"verify_signature": False})
+    del claims["client_wire_version"]
+    token = jwt.encode(
+        claims,
+        ring.signing_key(),
+        algorithm=ALGORITHM,
+        headers={"kid": ring.active_kid, "typ": "JWT"},
+    )
+    assert verify(ring, token).get(
+        "client_wire_version", DEFAULT_CLIENT_WIRE_VERSION
+    ) == DEFAULT_CLIENT_WIRE_VERSION
+
+
+@pytest.mark.parametrize("bad", ["2", 2.0, True, None, [2]])
+def test_a_client_wire_version_that_is_not_an_integer_is_refused(ring, bad) -> None:
+    token = _resign(
+        ring, sign_host_context(ring, context(), ARGUMENTS, now=NOW),
+        client_wire_version=bad,
+    )
+    with pytest.raises(AppError) as excinfo:
+        verify(ring, token)
+    assert excinfo.value.code is ErrorCode.HOST_CONTEXT_MISMATCH
 
 
 # --- a contract may declare a host-only name for itself ---------------------

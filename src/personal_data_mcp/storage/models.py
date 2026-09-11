@@ -575,5 +575,68 @@ class CalendarDeviceSync(Base):
     sync_epoch: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
     )
+    #: Whether this device's mirror is mid-rebuild (design 14.2). Presentation
+    #: state, not a safety predicate: it drives the 「正在重建 / 未同步」 line the
+    #: query renders, and it is cleared by a completed window of the current
+    #: epoch. While it is set this device's v1-shaped uploads are refused as a
+    #: redundant second line; after it clears, that refusal is still carried by
+    #: `CalendarIngestPolicy.min_ingest_protocol`, which clearing does not touch.
+    rebuild_pending: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    #: The instant the rebuild that set `rebuild_pending` ran, epoch seconds UTC.
+    #: Used for one thing only: a batch whose `snapshot_as_of` is at or before it
+    #: is logged as an old window still arriving, so an operator can see that the
+    #: controlled recovery did not take. It is **never** a refusal predicate --
+    #: a clock with zero skew lets an old window through any tolerance-based test
+    #: (design 14.2, R6-F20).
+    rebuild_instant: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: When this device last completed a snapshot (upload wall clock).
     updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class CalendarIngestPolicy(Base):
+    """The mirror's ingest policy — one row, and it is never absent.
+
+    This is the *channel's* policy rather than any one device's, which is why it
+    is not a column on `calendar_device_sync`: a rebuild empties that table, and
+    a ratchet that disappears when the rows it governed are wiped is not a
+    ratchet. The migration that created this table also inserted its row, so
+    "no row" is an implementation bug and the reader raises rather than
+    defaulting — defaulting is the one way this could fail open, and failing
+    open here means the old App's late packets write into a mirror that was
+    rebuilt without them.
+
+    `min_ingest_protocol` is the lowest client protocol version the ingest
+    channel still accepts. It is **one-way**: a rebuild raises it to 2, and
+    nothing lowers it — not a successful v2 window, not a failed one, not an
+    operator. The design's reason is that the premise for safely re-opening v1
+    ("confirm no v1 request is still in flight") has no executable proof (design
+    14.2, R6-F21/R7-F22), so the entry point is not built rather than built and
+    left unused.
+
+    `ingest_mode` is the maintenance switch the rollback runbook throws before
+    the data reset: `maintenance` refuses every calendar upload, both shapes.
+    """
+
+    __tablename__ = "calendar_ingest_policy"
+
+    policy_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    min_ingest_protocol: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    ingest_mode: Mapped[str] = mapped_column(
+        Text, nullable=False, default="normal", server_default="normal"
+    )
+    #: When the row last changed. Written by every policy transition, so an
+    #: operator reading the table after an incident can tell when the last one
+    #: happened.
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("policy_id = 1", name="singleton"),
+        CheckConstraint("min_ingest_protocol >= 1", name="min_ingest_protocol_positive"),
+        CheckConstraint(
+            "ingest_mode IN ('normal', 'maintenance')", name="ingest_mode_known"
+        ),
+    )

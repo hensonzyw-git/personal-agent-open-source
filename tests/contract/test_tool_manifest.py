@@ -49,6 +49,9 @@ HOST_ONLY_FIELDS = (
     "timezone",
     "trace_id",
     "duplicate_override",
+    # The ingest barrier's protocol version (design §14.2). A contract that
+    # declared it would be offering the model a field the Host alone may set.
+    "client_wire_version",
 )
 
 #: Host-only names a contract may re-declare as one of its own business fields.

@@ -31,6 +31,7 @@ from personal_agent_core.host_context import (
     verify_host_context,
 )
 from personal_agent_core.manifest import load_manifest
+from personal_agent_core.tool_ir import DEFAULT_CLIENT_WIRE_VERSION
 
 
 AUTHORIZATION_HEADER = "authorization"
@@ -67,6 +68,13 @@ class VerifiedCall:
     #: The duplicate check this call is authorised to release, if any. It comes
     #: from the verified Host Context, never from the arguments.
     duplicate_override: str | None = None
+    #: The client protocol version the Host read off the request
+    #: (`X-Client-Wire-Version`, design §2.5), carried through for the handlers
+    #: whose behaviour depends on it -- the calendar ingest barrier refuses a
+    #: client below the channel's floor. A token minted before the claim
+    #: existed reads as version 1, which is the version the barrier refuses
+    #: first, so the default is the fail-closed one.
+    client_wire_version: int = DEFAULT_CLIENT_WIRE_VERSION
 
 
 class Authorizer:
@@ -187,4 +195,9 @@ class Authorizer:
             scopes=tuple(sorted(granted)),
             allowed_tools_version=str(claims["allowed_tools_version"]),
             duplicate_override=duplicate_override,
+            # `verify_host_context` has already refused a claim of the wrong
+            # type, so this reads without re-checking shape.
+            client_wire_version=claims.get(
+                "client_wire_version", DEFAULT_CLIENT_WIRE_VERSION
+            ),
         )

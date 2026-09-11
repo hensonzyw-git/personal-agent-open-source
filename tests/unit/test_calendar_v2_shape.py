@@ -102,6 +102,10 @@ def _ingest(
         sessions=sessions,
         keyring=_keyring(),
         device_id=device_id,
+        # A v2 client, and the suites below are about the v2 shape: the
+        # barrier compares the *declared* version, so a v2-shaped body sent by
+        # a client declaring 1 would be a test of a client that does not exist.
+        client_wire_version=2,
         now=NOW,
     )
 
