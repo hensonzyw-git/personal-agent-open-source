@@ -1227,7 +1227,7 @@ def test_from_env_requires_a_key_and_rejects_a_credential_exfiltration_host(
         glm_gateway_from_env()
 
     monkeypatch.setenv("ZAI_API_KEY", "secret")
-    monkeypatch.setenv("GLM_OPENAI_BASE_URL", "https://attacker.invalid/v1")
+    monkeypatch.setenv("MODEL_API_BASE", "https://attacker.invalid/v1")
     with pytest.raises(ModelGatewayError):
         glm_gateway_from_env()
 
@@ -1428,8 +1428,8 @@ def test_deepseek_gateway_from_env_uses_its_own_credential_and_pin(
 ) -> None:
     monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    monkeypatch.setenv("GLM_MODEL", "DeepSeek-V4-Flash-Vision-Exp")
-    monkeypatch.delenv("GLM_OPENAI_BASE_URL", raising=False)
+    monkeypatch.setenv("MODEL_ID", "DeepSeek-V4-Flash-Vision-Exp")
+    monkeypatch.delenv("MODEL_API_BASE", raising=False)
     monkeypatch.delenv("ZAI_API_KEY", raising=False)
     gateway = glm_gateway_from_env()
     assert gateway._model == "openai/DeepSeek-V4-Flash-Vision-Exp"
@@ -1449,7 +1449,7 @@ def test_a_deepseek_credential_is_never_sent_to_zhipu(monkeypatch) -> None:
     monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     monkeypatch.setenv(
-        "GLM_OPENAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"
+        "MODEL_API_BASE", "https://open.bigmodel.cn/api/paas/v4/"
     )
     with pytest.raises(ModelGatewayError):
         glm_gateway_from_env()
@@ -1464,7 +1464,7 @@ def test_deepseek_pin_rejects_host_and_path_variants(monkeypatch) -> None:
         "http://api.deepseek.com/",
         "https://api.deepseek.com/v1",
     ):
-        monkeypatch.setenv("GLM_OPENAI_BASE_URL", hostile)
+        monkeypatch.setenv("MODEL_API_BASE", hostile)
         with pytest.raises(ModelGatewayError):
             glm_gateway_from_env()
 
@@ -1565,7 +1565,7 @@ def test_chat_gateway_round_trips_dotted_names_through_deepseek(
     )
     # Point the gateway at the DeepSeek endpoint so the mapper sanitizes.
     gateway._api_base = "https://api.deepseek.com/"
-    gateway._model = "openai/deepseek-v4-flash"
+    gateway._model = "openai/deepseek-flash"
     mapper_chars = PROVIDERS["deepseek"].illegal_tool_name_chars
     assert mapper_chars is not None
 
@@ -1609,9 +1609,9 @@ def test_structured_client_maps_expected_name_on_deepseek(monkeypatch) -> None:
 
     monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    monkeypatch.delenv("GLM_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("MODEL_API_BASE", raising=False)
     client = StructuredModelClient(
-        model="openai/deepseek-v4-flash",
+        model="openai/deepseek-flash",
         api_key="sk-test",
         input_budget_tokens=32_768,
         api_base="https://api.deepseek.com/",

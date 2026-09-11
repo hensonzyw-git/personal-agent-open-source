@@ -384,12 +384,12 @@ class AdkEvaluator:
                 timeout=5.0,
             )
         )
-        model_name = os.environ["GLM_MODEL"]
+        model_name = os.environ["MODEL_ID"]
         self.model_name = model_name
         model = LiteLlm(
             model=f"openai/{model_name}",
             api_key=os.environ["ZAI_API_KEY"],
-            api_base=os.environ["GLM_OPENAI_BASE_URL"],
+            api_base=os.environ["MODEL_API_BASE"],
             timeout=60,
             num_retries=0,
             temperature=0.1,
@@ -822,7 +822,7 @@ def write_outputs(
 async def run(args: argparse.Namespace) -> int:
     required = ["ZAI_API_KEY"]
     if args.framework == "adk":
-        required.extend(["GLM_MODEL", "GLM_OPENAI_BASE_URL"])
+        required.extend(["MODEL_ID", "MODEL_API_BASE"])
     else:
         required.extend(
             [

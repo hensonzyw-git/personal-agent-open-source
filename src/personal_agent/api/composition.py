@@ -13,7 +13,7 @@ The refusals here are the ones that keep a credential from leaving this host:
   A URL pointing anywhere else would send those off the machine, so it is
   refused at composition, before a socket exists;
 - **the model endpoint is pinned inside the gateway**, and the gateway is built
-  at boot, so a tampered `GLM_OPENAI_BASE_URL` fails at startup rather than on
+  at boot, so a tampered `MODEL_API_BASE` fails at startup rather than on
   Henson's first message;
 - **an empty tool catalog is a refusal**, because it is what a URL pointing at
   the wrong server looks like.

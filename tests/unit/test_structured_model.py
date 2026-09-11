@@ -292,9 +292,9 @@ def test_two_clients_do_not_share_one_in_flight_slot() -> None:
 def test_the_classifier_may_run_on_its_own_model(monkeypatch) -> None:
     """An unset override changes nothing; a set one is used verbatim."""
     monkeypatch.setenv("ZAI_API_KEY", "k")
-    monkeypatch.setenv("GLM_MODEL", "glm-5.3-flash")
+    monkeypatch.setenv("MODEL_ID", "glm-5.3-flash")
     monkeypatch.delenv(CLASSIFIER_MODEL_ENV, raising=False)
-    monkeypatch.delenv("GLM_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("MODEL_API_BASE", raising=False)
 
     default = structured_client_from_env(
         input_budget_tokens=32_768, model_env=CLASSIFIER_MODEL_ENV
@@ -645,8 +645,8 @@ def test_the_structured_client_follows_the_provider_registry(monkeypatch) -> Non
     """MODEL_PROVIDER=deepseek swaps endpoint and credential for aux calls."""
     monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    monkeypatch.setenv("GLM_MODEL", "DeepSeek-V4-Flash-Vision-Exp")
-    monkeypatch.delenv("GLM_OPENAI_BASE_URL", raising=False)
+    monkeypatch.setenv("MODEL_ID", "DeepSeek-V4-Flash-Vision-Exp")
+    monkeypatch.delenv("MODEL_API_BASE", raising=False)
     monkeypatch.delenv("ZAI_API_KEY", raising=False)
 
     client = structured_client_from_env(input_budget_tokens=32_768)
@@ -661,7 +661,7 @@ def test_the_structured_client_refuses_a_cross_provider_base(monkeypatch) -> Non
     monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     monkeypatch.setenv(
-        "GLM_OPENAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"
+        "MODEL_API_BASE", "https://open.bigmodel.cn/api/paas/v4/"
     )
     with pytest.raises(ModelGatewayError):
         structured_client_from_env(input_budget_tokens=32_768)

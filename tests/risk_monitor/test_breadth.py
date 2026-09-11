@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import pytest
+from datetime import date, timedelta
 
 from risk_monitor import breadth as b
 
 
 def _series(values):
-    # Dates must not collide across ticks that share a length; length is the
-    # only thing that matters here since the date axis is the union.
-    return [(f"2026-01-{i+1:02d}", v) for i, v in enumerate(values)]
+    # Real ascending dates: invalid January day 201 masked freshness bugs.
+    return [((date(2026, 1, 1) + timedelta(days=i)).isoformat(), v) for i, v in enumerate(values)]
 
 
 def _flat(n, value):
@@ -52,7 +52,7 @@ def test_breadth_today():
     down = _flat(201, 100.0)
     d, pct = b.breadth_today({"UP": up, "DOWN": down})
     assert pct == 50.0
-    assert d == "2026-01-201"
+    assert d == (date(2026, 1, 1) + timedelta(days=200)).isoformat()
 
 
 def test_breadth_change_flat_is_zero():
