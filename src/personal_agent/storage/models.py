@@ -856,6 +856,12 @@ class MediaObject(Base):
         ForeignKey("devices.device_id", ondelete="RESTRICT"), nullable=False
     )
 
+    #: The `Idempotency-Key` of the request that created this object, or NULL
+    #: for a row no keyed request made (a test, a restore, a future server-side
+    #: producer). `api_requests` calls the same value `client_request_id`; this
+    #: is that key, and the partial unique index below keeps one key from one
+    #: device naming two objects.
+    client_request_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     purpose: Mapped[str] = mapped_column(Text, nullable=False)
     retention_class: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -972,6 +978,13 @@ class MediaObject(Base):
         CheckConstraint(
             "current_attempt_number IS NULL OR current_attempt_number >= 1",
             name="current_attempt_number_positive",
+        ),
+        Index(
+            "uq_media_objects_client_request",
+            "device_id",
+            "client_request_id",
+            unique=True,
+            sqlite_where=text("client_request_id IS NOT NULL"),
         ),
         Index("ix_media_objects_device_id", "device_id"),
         Index("ix_media_objects_state", "state"),

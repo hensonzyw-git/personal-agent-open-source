@@ -59,7 +59,20 @@ SEAL_RECORD_COLUMN = "encrypted_seal_record"
 CHAT_IMAGE_PURPOSE = "chat_image"
 
 
-class MediaLifecycleError(RuntimeError):
+class MediaError(RuntimeError):
+    """The base of every refusal the media domain raises at a client.
+
+    Defined here rather than in the endpoint layer because the state machine is
+    where most refusals originate, and a route layer that had to catch one type
+    per module would eventually miss one -- catching the base and mapping it to
+    a status is the whole point. Subclasses in
+    :mod:`personal_agent.media.uploads` carry the request-level distinctions
+    (busy, rejected, incomplete); this class carries only "the request was
+    refused, and the message is safe to show the user".
+    """
+
+
+class MediaLifecycleError(MediaError):
     """A transition was refused. The object is unchanged and the caller may retry."""
 
 
@@ -97,7 +110,7 @@ class MediaRow:
     claim_deadline: datetime | None
 
 
-def _read_object(session: Session, media_id: str) -> MediaRow | None:
+def read_media_row(session: Session, media_id: str) -> MediaRow | None:
     """Read state with a plain ``SELECT`` (CLAUDE.md §5.2).
 
     Not the ORM identity map: every one of these reads is followed by a
@@ -174,6 +187,7 @@ def create_upload(
     declared_height: int | None = None,
     media_id: str | None = None,
     purpose: str = CHAT_IMAGE_PURPOSE,
+    client_request_id: str | None = None,
 ) -> str:
     """Create a ``pending`` object and return its media id.
 
@@ -196,6 +210,7 @@ def create_upload(
         insert(MediaObject).values(
             media_id=media_id,
             device_id=device_id,
+            client_request_id=client_request_id,
             purpose=purpose,
             retention_class="timeline_media",
             state="pending",
@@ -256,7 +271,7 @@ def claim_upload(
     and §5.2's answer to that is "过期/不完整明确失败并新建上传", not a retry of
     the same attempt.
     """
-    row = _read_object(session, media_id)
+    row = read_media_row(session, media_id)
     if row is None:
         raise MediaLifecycleError(f"no media object {media_id}")
     if row.device_id != device_id:
@@ -336,7 +351,7 @@ def seal_upload(
     column is one of them. The AAD binds the attempt row, so a record copied to
     another attempt refuses to open rather than adopting someone else's bytes.
     """
-    row = _read_object(session, media_id)
+    row = read_media_row(session, media_id)
     if row is None:
         raise MediaLifecycleError(f"no media object {media_id}")
     if row.state != "uploading":
@@ -434,7 +449,7 @@ def publish_upload(
     on disk by then, so committing the row is the only thing left that can
     fail, and it must not be deferred past the caller's own commit.
     """
-    row = _read_object(session, media_id)
+    row = read_media_row(session, media_id)
     if row is None:
         raise MediaLifecycleError(f"no media object {media_id}")
     if row.device_id != device_id:
@@ -504,6 +519,109 @@ def publish_upload(
         claim_deadline=None,
     )
     return CompleteOutcome.PUBLISHED
+
+
+class MediaDeclarationMismatchError(MediaLifecycleError):
+    """What arrived is not what the client declared.
+
+    §5.4: "声明 MIME/magic、size/hash、Content-Length 与实测不符，整对象拒绝".
+    The refusal is terminal rather than a retryable failure on purpose -- a
+    client that declared a 4 MiB JPEG and sent 3 MiB of something else has not
+    had a bad network, it has told the server something untrue, and the object
+    it named must not later become a `ready` image whose metadata still carries
+    the untrue declaration.
+    """
+
+
+def reject_upload(session: Session, *, media_id: str, now: datetime) -> bool:
+    """Terminally refuse one object. Returns whether this call refused it.
+
+    ``rejected`` is a tombstone like ``deleted``: the id is never reused and the
+    row outlives whatever bytes were staged. Reached from every state an upload
+    can be interrupted in, because the mismatch may be found at the header probe
+    (a declared MIME the bytes disagree with) or at `complete` (a declared hash
+    the sealed stream disagrees with), and neither is discoverable before the
+    other.
+
+    A no-op on an object that is already terminal. Unlike
+    :func:`~personal_agent.media.deletion.mark_media_deleting` it writes no
+    manifest entry: nothing was ever published for a restore to bring back, so
+    an entry here would only add a row to the one list that has to replay
+    correctly.
+    """
+    row = read_media_row(session, media_id)
+    if row is None:
+        return False
+    if row.state in ("rejected", "deleted", "deleting", "reaping", "expired"):
+        return False
+    _cas_state(
+        session,
+        media_id=media_id,
+        from_states=(row.state,),
+        version=row.state_version,
+        to_state="rejected",
+        now=now,
+        # The claim is released with the state, so a later `PUT` is refused by
+        # the *state* rather than by a live claim that would expire into a
+        # takeover of a terminal object.
+        owner_token=None,
+        claim_deadline=None,
+    )
+    return True
+
+
+def seal_record(
+    session: Session,
+    *,
+    keyring: KeyRing,
+    media_id: str,
+    attempt_number: int,
+) -> SealRecord | None:
+    """The sealed record of one attempt, or ``None`` if it has not sealed.
+
+    The record a `GET` authenticates the persisted file against, and the one
+    `complete` compares the declaration to. Both callers need the same value, so
+    it is read here once rather than twice with two chances to pick a different
+    attempt.
+    """
+    row = session.execute(
+        select(MediaAttempt.attempt_id, MediaAttempt.encrypted_seal_record).where(
+            MediaAttempt.media_id == media_id,
+            MediaAttempt.attempt_number == attempt_number,
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    attempt_id, envelope = row
+    if envelope is None:
+        return None
+    return SealRecord.from_dict(
+        json.loads(
+            keyring.decrypt(
+                envelope,
+                table=ATTEMPT_TABLE,
+                column=SEAL_RECORD_COLUMN,
+                row_id=attempt_id,
+            ).decode("utf-8")
+        )
+    )
+
+
+def declared_sha256(session: Session, *, keyring: KeyRing, media_id: str) -> str | None:
+    """The client's declared digest, or ``None`` if it declared none.
+
+    The value every "声明与实际不符即整对象拒绝" check compares against, and the
+    reason it is stored sealed: it is a fingerprint of the image, and this row
+    outlives the file.
+    """
+    envelope = session.execute(
+        select(MediaObject.encrypted_declared_sha256).where(
+            MediaObject.media_id == media_id
+        )
+    ).scalar_one_or_none()
+    if envelope is None:
+        return None
+    return _open(keyring, envelope, media_id, DECLARED_SHA_COLUMN)
 
 
 def content_sha256(session: Session, *, keyring: KeyRing, media_id: str) -> str | None:
