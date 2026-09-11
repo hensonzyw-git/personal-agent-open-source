@@ -113,6 +113,7 @@ from personal_agent.context.session_manager import SessionManager
 from personal_agent.runtime.compactor_provider import GlmCompactorProvider
 from personal_agent.runtime.model_gateway import ModelGatewayError
 from personal_agent.runtime.interpreter import ModelInterpreter
+from personal_agent.runtime.model_input import InputPart
 from personal_agent.runtime.prompt import build_system_prompt
 from personal_agent.runtime.session_classifier import GlmBoundaryClassifier
 from personal_agent.runtime.structured import (
@@ -728,6 +729,7 @@ async def agent_service(
                 user_text: str,
                 clarification_context: ClarificationContext | None,
                 finance_retry_context: FinanceRetryContext | None,
+                input_parts: tuple[InputPart, ...] = (),
             ) -> ContextEnvelope:
                 """Assemble this turn's context (`CAP-001` design §9).
 
@@ -736,6 +738,13 @@ async def agent_service(
                 between anchoring and the model turn therefore sees an envelope
                 with no declarations rather than the catalog it had a moment
                 earlier -- and the write would still be refused downstream.
+
+                `input_parts` are already-authorized bytes (§6) handed down
+                from the caller that read them under the media lock. They
+                travel through this seam rather than being read here for the
+                same reason the tool set is: this function owns assembly, not
+                authorization, and a media read performed inside it would run
+                outside the lock discipline `media_read` exists to keep.
                 """
                 device = device_for(auth)
                 tools = (
@@ -761,6 +770,7 @@ async def agent_service(
                     effective_tools=tools,
                     clarification_context=clarification_context,
                     finance_retry_context=finance_retry_context,
+                    input_parts=input_parts,
                 )
 
             def compact_session(session, session_id: str) -> None:

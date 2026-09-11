@@ -150,11 +150,13 @@ from personal_agent.media.uploads import (
     receive_upload,
     start_upload,
 )
+from personal_agent.api.media_read import read_authorized_images
 from personal_agent.runtime.bookkeeping_intent import (
     is_bookkeeping_write_request,
     is_finance_retry_request,
 )
 from personal_agent.runtime.modality import ImageCapability, image_capability
+from personal_agent.runtime.model_input import InputPart
 from personal_agent.diagnostics import transcript
 from personal_agent.diagnostics.transcript import NullRecorder, Recorder, TurnIdentity
 from personal_agent.storage.models import (
@@ -206,6 +208,7 @@ class EnvelopeFactory(Protocol):
         user_text: str,
         clarification_context: ClarificationContext | None,
         finance_retry_context: FinanceRetryContext | None,
+        input_parts: tuple[InputPart, ...] = (),
     ) -> ContextEnvelope: ...
 
 
@@ -2337,6 +2340,7 @@ def _run_chat_turn(
         session,
         payload=payload,
         anchor=anchor,
+        operation_id=operation.operation_id,
     )
     result = run_operation(
         session,
@@ -2698,15 +2702,24 @@ def _context_factory(
     *,
     payload: ChatRequestPayload,
     anchor: _Anchor,
+    operation_id: str,
 ) -> _TurnContext:
     """Bind this turn's assembly, to be run when the model is about to be asked.
 
     The envelope is built from the persisted anchor event rather than from the
     request body: the archived message is the one the model must answer, and a
     caller-supplied string that disagrees with it is refused by the builder.
+
+    §6's read happens here and nowhere else, because "here" is the moment the
+    design names: the last point before the model sees anything, where the
+    stripe lock can be held for one read and released before the call. A turn
+    that names no image never enters the media store at all.
     """
 
     def build() -> ContextEnvelope:
+        input_parts = _authorized_images(
+            deps, session, payload=payload, anchor=anchor, operation_id=operation_id
+        )
         return deps.build_envelope(
             session,
             auth,
@@ -2716,9 +2729,77 @@ def _context_factory(
             user_text=payload.text,
             clarification_context=payload.clarification_context,
             finance_retry_context=payload.finance_retry_context,
+            input_parts=input_parts,
         )
 
     return _TurnContext(build)
+
+
+def _authorized_images(
+    deps: AgentApiDeps,
+    session,
+    *,
+    payload: ChatRequestPayload,
+    anchor: _Anchor,
+    operation_id: str,
+) -> tuple[InputPart, ...]:
+    """§6's read for this turn, or a refusal the orchestrator can classify.
+
+    §8's switch is asked once more here. The entry guard and the anchor have
+    both asked it already, and asking a third time is the point rather than
+    duplication: this is the last moment at which refusing costs nothing -- no
+    bytes have left the store, no model has been called -- and §8 requires the
+    server to re-validate rather than honour a client's cached capability.
+    """
+    media_ids = _chat_image_ids(payload.parts)
+    if not media_ids:
+        return ()
+    capability = deps.image_capability()
+    if not capability.enabled:
+        # The same refusal the entry guard gives, reached by a different route:
+        # a switch that closed between the message being accepted and the model
+        # being asked. `UNSUPPORTED_OPERATION` is what the client saw then, so
+        # it is what the client sees now.
+        raise AppError(
+            ErrorCode.UNSUPPORTED_OPERATION,
+            internal_detail=capability.refusal(),
+        )
+    store, limits = _media_ready(deps)
+    try:
+        return read_authorized_images(
+            session,
+            store=store,
+            keyring=deps.keyring,
+            limits=limits,
+            event_id=anchor.event_id,
+            operation_id=operation_id,
+            media_ids=media_ids,
+        )
+    except MediaError as error:
+        raise _media_read_refusal(error) from error
+
+
+def _media_read_refusal(error: MediaError) -> AppError:
+    """Map one §6 read refusal onto the code the orchestrator acts on.
+
+    The four classified refusals keep the door's own mapping
+    (`_media_refusal`), because they mean the same thing at both ends and a
+    client should read the same answer either way -- including `MEDIA_BUSY`,
+    which stays *out* of `_CONTEXT_FAILURES` so the idempotency key remains
+    re-runnable (§4.1's "每次等待有界，任务可重试").
+
+    What differs is the unclassified rest. At the door those refusals are the
+    client's own mistake and `INVALID_ARGUMENT` is honest; here, after §3.2 has
+    already accepted the message, the same refusal can only be a server-side
+    integrity failure -- a `ready` object with no seal record, or one whose
+    measured type is no longer allowed. Blaming the request for that would send
+    the client looking in the wrong place, so it becomes the loud code instead:
+    the operation stays re-runnable and the failure is a 500 the operator sees.
+    """
+    mapped = _media_refusal(error)
+    if mapped.code is ErrorCode.INVALID_ARGUMENT:
+        return AppError(ErrorCode.INTERNAL_ERROR, internal_detail=str(error))
+    return mapped
 
 
 _SAFE_FINANCE_RETRY_FAILURES = frozenset(
@@ -3358,44 +3439,23 @@ def _chat_image_ids(parts: Parts) -> list[str]:
     ]
 
 
-#: The links an image must traverse to reach the model, and which do not exist
-#: yet. This is a fact about this build, not a policy anyone chose: each entry
-#: is deleted by the change that lands it, and when the tuple is empty the
-#: guard below is a no-op that can go with them.
-#:
-#: `media_capability` has left the list (#13): §8's switch -- master switch,
-#: (provider, model id) vision declaration, composed media surface, scanner
-#: exemption and G1 -- is now one verdict read by the entry, the anchor and
-#: `/v1/capabilities`.
-#:
-#: `authorized_read` is §6: the lock-scoped step that re-validates an image's
-#: use, registers it, and only then decrypts it into the `InputPart` the gateway
-#: sends. Nothing produces that part yet, so a parts request that got past this
-#: guard would reach assembly with no image at all and be refused there -- later,
-#: and with a message about the wrong thing. The guard stays until the read
-#: exists, and the tuple is what makes "the switch is open but the road is not
-#: built" impossible to ship by accident.
-_MULTIMODAL_MISSING_LINKS: tuple[str, ...] = ("authorized_read",)
-
-
 def _require_multimodal_ready(deps: AgentApiDeps) -> None:
-    """Refuse a parts request while the chain it needs is still incomplete.
+    """Refuse a parts request this deployment may not serve.
 
-    Two different questions, kept apart on purpose. §8's switch answers whether
-    this *deployment* may serve images -- a policy, made of decisions people
-    made and facts about what is composed. The link list answers whether this
-    *build* can, which no configuration can move. A refusal names whichever are
-    closed, so an operator is never reading about the wrong one.
+    The whole chain an image needs now exists -- §8's switch (#13) and §6's
+    lock-scoped authorized read (`media_read.read_authorized_images`) -- so what
+    is left to ask is §8's question and only that: may this deployment serve
+    images at all. It is a policy made of decisions people made and facts about
+    what is composed, and a refusal names every term that closed it rather than
+    the first, so an operator does not have to restart the service to find out
+    there was a second reason.
     """
     capability = deps.image_capability()
-    if capability.enabled and not _MULTIMODAL_MISSING_LINKS:
+    if capability.enabled:
         return
-    reasons = list(capability.closed_by) + list(_MULTIMODAL_MISSING_LINKS)
     raise AppError(
         ErrorCode.UNSUPPORTED_OPERATION,
-        internal_detail=(
-            "multimodal chat is not available yet: missing " + ", ".join(reasons)
-        ),
+        internal_detail=capability.refusal(),
     )
 
 

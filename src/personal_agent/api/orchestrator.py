@@ -308,11 +308,26 @@ class RunResult:
 
 Clock = datetime | Callable[[], datetime]
 
-#: Context failures that are the operation's own safe outcome rather than a bug:
-#: the mandatory input does not fit the budget, or the Timeline/Session state
-#: cannot be read consistently. Both mean zero model calls and zero writes.
+#: Input failures that are the operation's own safe outcome rather than a bug:
+#: the mandatory input does not fit the budget, the Timeline/Session state
+#: cannot be read consistently, or §6's authorized read found an image that can
+#: no longer be served (deleted, no longer bound to this message, no longer
+#: usable). All of them mean zero model calls and zero writes, and all of them
+#: are the *operation's* answer: the user has to be told, because no retry of
+#: this message will produce a different result.
+#:
+#: `MEDIA_BUSY` is deliberately absent. A contended stripe is a fact about the
+#: moment, not about the message, and §4.1 requires the task stay retryable --
+#: so it keeps raising, the idempotency key stays re-runnable, and the client
+#: gets `MEDIA_BUSY` instead of a terminal `failed_safe`.
 _CONTEXT_FAILURES: frozenset[ErrorCode] = frozenset(
-    {ErrorCode.CONTEXT_BUDGET_EXCEEDED, ErrorCode.CONTEXT_UNAVAILABLE}
+    {
+        ErrorCode.CONTEXT_BUDGET_EXCEEDED,
+        ErrorCode.CONTEXT_UNAVAILABLE,
+        ErrorCode.MEDIA_GONE,
+        ErrorCode.MEDIA_NOT_FOUND,
+        ErrorCode.MEDIA_NOT_READY,
+    }
 )
 
 

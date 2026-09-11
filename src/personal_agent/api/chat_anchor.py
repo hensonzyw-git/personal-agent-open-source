@@ -53,6 +53,8 @@ from sqlalchemy.orm import Session
 from personal_agent.api.chat_parts import ImageRefPart, Parts
 from personal_agent.media.lifecycle import (
     CHAT_IMAGE_PURPOSE,
+    DELETION_STATES,
+    USABLE_STATES,
     MediaError,
     bind_upload,
     content_sha256,
@@ -73,15 +75,9 @@ from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.ids import new_id
 
-#: The states a message may use an image from. Everything else is either
-#: terminal or a deletion already decided: §5.2's tombstone is not revived by a
-#: message that arrives afterwards.
-_USABLE_STATES = ("ready", "bound")
-
-#: Not terminal, but past the point where a use is safe to record. §5.2 marks
-#: the object `deleting` before any bytes move, and a binding created after that
-#: mark would be a use the fan-out has already been decided without.
-_DELETION_STATES = ("deleting", "reaping")
+# The state vocabulary is the state machine's, not this module's: §6's read
+# re-checks the same two sets on the same object seconds later, and two copies
+# of "which states may be used" would be two answers. See `media.lifecycle`.
 
 
 @dataclass(frozen=True)
@@ -245,9 +241,9 @@ def _resolve_one(
     # message path so a media id cannot be probed by chatting with it.
     if row is None or row.device_id != device_id or row.purpose != CHAT_IMAGE_PURPOSE:
         raise MediaNotFoundError("no such media object")
-    if row.state in MEDIA_OBJECT_TERMINAL_STATES or row.state in _DELETION_STATES:
+    if row.state in MEDIA_OBJECT_TERMINAL_STATES or row.state in DELETION_STATES:
         raise MediaGoneError("this image was deleted")
-    if row.state not in _USABLE_STATES:
+    if row.state not in USABLE_STATES:
         raise MediaNotReadyError(f"this image is not ready ({row.state})")
 
     actual_mime = session.execute(

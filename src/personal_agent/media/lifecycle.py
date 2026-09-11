@@ -58,6 +58,24 @@ SEAL_RECORD_COLUMN = "encrypted_seal_record"
 #: object kinds.
 CHAT_IMAGE_PURPOSE = "chat_image"
 
+#: The states a message may use an image from. Everything else is either
+#: terminal or a deletion already decided: §5.2's tombstone is not revived by a
+#: message that arrives afterwards.
+#:
+#: These two sets live here rather than in the caller that first needed them
+#: because two callers need them now and must agree. §3.2's resolve decides
+#: whether a message may *become* a use, and §6's read decides whether that use
+#: may still be *served* -- seconds apart, on the same object, with a deletion
+#: able to land in between. A copy of the vocabulary in each place would be a
+#: pair that is correct alone and wrong together.
+USABLE_STATES: tuple[str, ...] = ("ready", "bound")
+
+#: Not terminal, but past the point where a use is safe to record or serve.
+#: §5.2 marks the object `deleting` before any bytes move, so a use created --
+#: or granted -- after that mark is one the fan-out has already been decided
+#: without.
+DELETION_STATES: tuple[str, ...] = ("deleting", "reaping")
+
 
 class MediaError(RuntimeError):
     """The base of every refusal the media domain raises at a client.
