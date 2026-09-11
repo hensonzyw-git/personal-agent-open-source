@@ -2004,6 +2004,7 @@ def test_calendar_sync_crosses_both_composition_roots_offline(
         "upserted": 1,
         "skipped": 0,
         "marked_deleted": 0,
+        "sync_epoch": 1,
     }
 
     engine = finance_engine(finance_db)

@@ -169,7 +169,7 @@ def test_a_repeated_triple_is_refused(sessions) -> None:
 
 def test_ingest_upserts_a_new_event_and_seals_text(sessions) -> None:
     result = _ingest(sessions, [_event("ev-1", title="网球", notes="带球拍")])
-    assert result == {"status": "ok", "upserted": 1, "skipped": 0, "marked_deleted": 0}
+    assert result == {"status": "ok", "upserted": 1, "skipped": 0, "marked_deleted": 0, "sync_epoch": 1}
 
     with sessions() as session:
         row = session.execute(select(CalendarEvent)).scalar_one()
@@ -228,7 +228,7 @@ def test_window_complete_marks_absent_rows_deleted(sessions) -> None:
     _ingest(sessions, [_event("ev-1"), _event("ev-2")])
     # The phone now reports the window holds only ev-2: ev-1 was deleted there.
     result = _ingest(sessions, [_event("ev-2")], window_complete=True)
-    assert result == {"status": "ok", "upserted": 0, "skipped": 1, "marked_deleted": 1}
+    assert result == {"status": "ok", "upserted": 0, "skipped": 1, "marked_deleted": 1, "sync_epoch": 1}
 
     with sessions() as session:
         rows = session.execute(select(CalendarEvent)).scalars().all()

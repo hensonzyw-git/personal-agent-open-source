@@ -494,6 +494,7 @@ public actor CalendarMirrorSyncEngine {
         // change that lands after it belongs to the next pass, and a pass that
         // claimed it would mark uploaded rows it never saw (review R3-F13).
         let capturedSeq = try lastChangeSeq()
+        let epoch = try mirrorEpoch()
         let instant = now()
         let events: [CalendarMirrorEvent]
         let directory: [CalendarDirectoryEntry]
@@ -536,9 +537,17 @@ public actor CalendarMirrorSyncEngine {
                     events: chunk.events,
                     calendars: directory,
                     windowComplete: chunk.lastBatch,
-                    snapshotAsOf: instant
+                    snapshotAsOf: instant,
+                    syncEpoch: epoch
                 )
             } catch {
+                if (error as? AgentClientError)?.errorCode == "CALENDAR_SYNC_RESET_REQUIRED" {
+                    // Discard this captured window. The next pass creates a new
+                    // EventKit snapshot under the next server epoch; never
+                    // relabel these chunks and retry them.
+                    try writeEpoch(epoch + 1)
+                    try storage.delete(CredentialKey.calendarMirrorSyncedAt)
+                }
                 lastError = error
             }
         }
@@ -611,6 +620,17 @@ public actor CalendarMirrorSyncEngine {
 
     private func writeSeq(_ value: Int, _ key: String) throws {
         try storage.write(key, value: Data(String(value).utf8))
+    }
+
+    private func mirrorEpoch() throws -> Int {
+        guard let data = try storage.read(CredentialKey.calendarMirrorEpoch),
+              let text = String(data: data, encoding: .utf8),
+              let value = Int(text), value >= 1 else { return 1 }
+        return value
+    }
+
+    private func writeEpoch(_ value: Int) throws {
+        try storage.write(CredentialKey.calendarMirrorEpoch, value: Data(String(value).utf8))
     }
 
     // --- §9.1's increment triggers -------------------------------------------

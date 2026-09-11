@@ -52,6 +52,10 @@ public enum CredentialKey {
     /// lives in the same durable store so a restart neither re-syncs for
     /// nothing nor believes a sync that never finished.
     public static let calendarMirrorSyncedAt = "calendar-mirror-synced-at-v1"
+    /// The epoch attached to the next captured mirror window. It advances only
+    /// after the server rejects an old window, so a cached batch is never
+    /// relabelled and resent as post-rebuild data.
+    public static let calendarMirrorEpoch = "calendar-mirror-epoch-v1"
     /// Design §9.1's change sequence: how much the local calendar has moved
     /// since this device last completed a whole mirror window, and how much of
     /// that movement has been uploaded.

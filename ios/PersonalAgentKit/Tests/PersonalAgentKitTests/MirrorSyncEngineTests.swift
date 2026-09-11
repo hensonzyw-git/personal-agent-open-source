@@ -55,7 +55,7 @@ private final class StubMirrorBackend: ChatBackend, @unchecked Sendable {
     func uploadCalendarSync(
         windowStart: Date, windowEnd: Date, events: [CalendarMirrorEvent],
         calendars: [CalendarDirectoryEntry],
-        windowComplete: Bool, snapshotAsOf: Date
+        windowComplete: Bool, snapshotAsOf: Date, syncEpoch: Int
     ) async throws -> CalendarSyncResponse {
         let (shouldFail, index) = lock.withLock {
             _uploads.append((windowStart, windowEnd, events, calendars, windowComplete))
@@ -65,7 +65,7 @@ private final class StubMirrorBackend: ChatBackend, @unchecked Sendable {
         if shouldFail {
             throw AgentClientError.transport("network lost mid-window")
         }
-        return CalendarSyncResponse(status: "ok", upserted: events.count, skipped: 0, markedDeleted: 0)
+        return CalendarSyncResponse(status: "ok", upserted: events.count, skipped: 0, markedDeleted: 0, syncEpoch: syncEpoch)
     }
 
     /// Fired after the Nth batch (1-based) is recorded, *outside* the lock, so a
@@ -324,6 +324,7 @@ struct MirrorSyncEngineTests {
                 box.append(call.rawBody)
                 return .ok([
                     "status": "ok", "upserted": 0, "skipped": 0, "marked_deleted": 0,
+                    "sync_epoch": 1,
                 ])
             default:
                 return .error(404, "NOT_FOUND")
@@ -346,13 +347,13 @@ struct MirrorSyncEngineTests {
             windowStart: window.start, windowEnd: window.end,
             events: Array(events.prefix(2)), calendars: [],
             windowComplete: false,
-            snapshotAsOf: instant, token: "token"
+            snapshotAsOf: instant, syncEpoch: 1, token: "token"
         )
         _ = try await client.uploadCalendarSync(
             windowStart: window.start, windowEnd: window.end,
             events: Array(events.suffix(1)), calendars: [],
             windowComplete: true,
-            snapshotAsOf: instant, token: "token"
+            snapshotAsOf: instant, syncEpoch: 1, token: "token"
         )
         let bodies = box.all
             .compactMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
@@ -360,6 +361,7 @@ struct MirrorSyncEngineTests {
         for body in bodies {
             #expect(body["snapshot_as_of"] != nil)
             #expect(body["window_complete"] != nil)
+            #expect(body["sync_epoch"] as? Int == 1)
         }
         #expect(
             bodies[0]["snapshot_as_of"] as? String == bodies[1]["snapshot_as_of"] as? String

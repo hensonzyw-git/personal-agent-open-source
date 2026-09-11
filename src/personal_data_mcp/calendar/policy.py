@@ -50,8 +50,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Final
 
+from sqlalchemy import delete
+
 from personal_agent_core.errors import AppError, ErrorCode
-from personal_data_mcp.storage.models import CalendarDeviceSync, CalendarIngestPolicy
+from personal_data_mcp.storage.models import CalendarDeviceSync, CalendarEvent, CalendarIngestPolicy, CalendarDirectory
 
 
 #: The single policy row's primary key. The migration writes it and nothing
@@ -61,7 +63,7 @@ POLICY_ID: Final[int] = 1
 PROTOCOL_BEFORE_REBUILD: Final[int] = 1
 #: What a rebuild raises the ratchet to, and the highest version the wire
 #: currently defines. A client that declares 2 or more is past the barrier.
-PROTOCOL_AFTER_REBUILD: Final[int] = 2
+PROTOCOL_AFTER_REBUILD: Final[int] = 3
 
 MODE_NORMAL: Final[str] = "normal"
 MODE_MAINTENANCE: Final[str] = "maintenance"
@@ -109,6 +111,8 @@ def check_ingest_allowed(
     *,
     rebuild_pending: bool,
     client_wire_version: int,
+    sync_epoch: int | None,
+    expected_sync_epoch: int,
 ) -> None:
     """Refuse this upload if the barrier says so, before anything is written.
 
@@ -157,6 +161,11 @@ def check_ingest_allowed(
                 "calendar ingest refuses a pre-rebuild client shape while this "
                 "device's mirror is mid-rebuild"
             ),
+        )
+    if client_wire_version >= PROTOCOL_AFTER_REBUILD and sync_epoch != expected_sync_epoch:
+        raise AppError(
+            ErrorCode.CALENDAR_SYNC_RESET_REQUIRED,
+            internal_detail="calendar upload epoch is stale or absent; capture a fresh window",
         )
 
 
@@ -216,6 +225,7 @@ def begin_rebuild(session, *, device_id: str, now: datetime) -> None:
             watermark_ts=NO_WATERMARK_TS,
             window_start_ts=None,
             window_end_ts=None,
+            sync_epoch=2,
             updated_at=now,
         )
         session.add(row)
@@ -228,6 +238,12 @@ def begin_rebuild(session, *, device_id: str, now: datetime) -> None:
         row.window_start_ts = None
         row.window_end_ts = None
         row.updated_at = now
+        row.sync_epoch += 1
+    # This project has one iPhone calendar fact source and one mirror. Query
+    # reads event rows directly, so logical reset through watermarks would
+    # leave stale appointments visible; rebuild physically empties the cache.
+    session.execute(delete(CalendarEvent))
+    session.execute(delete(CalendarDirectory))
     row.rebuild_pending = True
     row.rebuild_instant = int(now.timestamp())
 

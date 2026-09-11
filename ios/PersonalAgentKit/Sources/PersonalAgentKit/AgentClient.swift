@@ -455,6 +455,7 @@ public struct AgentClient: Sendable {
         calendars: [CalendarDirectoryEntry],
         windowComplete: Bool,
         snapshotAsOf: Date,
+        syncEpoch: Int,
         token: String
     ) async throws -> CalendarSyncResponse {
         try await send(
@@ -472,6 +473,7 @@ public struct AgentClient: Sendable {
                 "events": events.map(CalendarMirrorWire.event),
                 "window_complete": windowComplete,
                 "snapshot_as_of": RFC3339.string(from: snapshotAsOf),
+                "sync_epoch": syncEpoch,
             ],
             token: token,
             accepting: [200],
@@ -706,10 +708,11 @@ public struct CalendarSyncResponse: Decodable, Sendable, Equatable {
     public let upserted: Int
     public let skipped: Int
     public let markedDeleted: Int
+    public let syncEpoch: Int
 
     private enum CodingKeys: String, CodingKey {
         case status, upserted, skipped
-        case markedDeleted = "marked_deleted"
+        case markedDeleted = "marked_deleted", syncEpoch = "sync_epoch"
     }
 }
 

@@ -408,6 +408,7 @@ def _enforce_ingest_barrier(
     *,
     device_id: str,
     client_wire_version: int,
+    sync_epoch: int | None,
     snapshot_ts: int,
     watermark_row: CalendarDeviceSync | None,
 ) -> None:
@@ -450,6 +451,8 @@ def _enforce_ingest_barrier(
             watermark_row.rebuild_pending if watermark_row is not None else False
         ),
         client_wire_version=client_wire_version,
+        sync_epoch=sync_epoch,
+        expected_sync_epoch=watermark_row.sync_epoch if watermark_row else 1,
     )
 
 
@@ -474,6 +477,13 @@ def ingest_events(
     )
     events = arguments["events"]
     snapshot_ts = _epoch(snapshot_as_of)
+    supplied_epoch = arguments.get("sync_epoch")
+    if supplied_epoch is not None and (
+        not isinstance(supplied_epoch, int)
+        or isinstance(supplied_epoch, bool)
+        or supplied_epoch < 1
+    ):
+        raise _invalid("calendar ingest sync_epoch must be a positive integer")
 
     def work() -> dict[str, Any]:
         upserted = 0
@@ -493,6 +503,7 @@ def ingest_events(
             session,
             device_id=device_id,
             client_wire_version=client_wire_version,
+            sync_epoch=supplied_epoch,
             snapshot_ts=snapshot_ts,
             watermark_row=watermark_row,
         )
@@ -708,6 +719,7 @@ def ingest_events(
             "upserted": upserted,
             "skipped": skipped,
             "marked_deleted": marked_deleted,
+            "sync_epoch": watermark_row.sync_epoch if watermark_row else 1,
         }
 
     # No external call happens inside this unit, so a lost snapshot may retry.

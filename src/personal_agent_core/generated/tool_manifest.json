@@ -87,7 +87,7 @@
     "calendar.create_event",
     "calendar.query_events"
   ],
-  "allowed_tools_version": "b948448ddb35634eb052819796f60c8986aad19ded7f1dbbe10bb343fe495d75",
+  "allowed_tools_version": "91d0b6a300f199b84be755a9155a51e32776a0f480d1cc039ff376ea56f46152",
   "tools": [
     {
       "name": "finance.log_expense",
@@ -2254,6 +2254,11 @@
             "format": "date-time",
             "description": "本次快照的拍摄瞬间（UTC）。同一窗口的每个分批必须携带同一值：它是镜像的唯一版本号——EventKit 没有逐事件修改时间，快照瞬间就是设备能提供的全部版本证据。"
           },
+          "sync_epoch": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "本设备采集此窗口前保存的镜像代次；wire v3 必填。"
+          },
           "calendars": {
             "type": [
               "array",
@@ -2414,7 +2419,8 @@
           "status",
           "upserted",
           "skipped",
-          "marked_deleted"
+          "marked_deleted",
+          "sync_epoch"
         ],
         "properties": {
           "status": {
@@ -2431,6 +2437,10 @@
           "marked_deleted": {
             "type": "integer",
             "minimum": 0
+          },
+          "sync_epoch": {
+            "type": "integer",
+            "minimum": 1
           }
         }
       },
@@ -2472,8 +2482,8 @@
         "INVALID_ARGUMENT",
         "SCOPE_DENIED"
       ],
-      "input_schema_hash": "6964d536abb770b76083c76abc6a5a1cd5f8a2208a0c42c220e9023469027ee0",
-      "contract_hash": "736f22685f1339ab931aa1af54c9616d2819bed744fb85c782044ecbd34dc1e2"
+      "input_schema_hash": "da7cd7296cba40f893a1ce2fd526e10ca8a5339422451bcae9598b8d9aa74ccb",
+      "contract_hash": "5acd564a926d1e170d9f33ebad4f329f8f53bb4d9c6ec7f7eb4f3ce874de11f3"
     }
   ]
 }

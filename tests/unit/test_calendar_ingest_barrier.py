@@ -49,6 +49,7 @@ from personal_data_mcp.storage.engine import (
 )
 from personal_data_mcp.storage.models import (
     CalendarDeviceSync,
+    CalendarDirectory,
     CalendarEvent,
     CalendarIngestPolicy,
 )
@@ -134,15 +135,19 @@ def _ingest(
     device_id: str = "dev-1",
     as_of: datetime | None = None,
     window_complete: bool = True,
+    epoch: int | None = None,
 ):
+    arguments = {
+        "window_start": WINDOW_START,
+        "window_end": WINDOW_END,
+        "events": list(events),
+        "window_complete": window_complete,
+        "snapshot_as_of": to_rfc3339(as_of if as_of is not None else REBUILD_AT),
+    }
+    if epoch is not None:
+        arguments["sync_epoch"] = epoch
     return ingest_events(
-        {
-            "window_start": WINDOW_START,
-            "window_end": WINDOW_END,
-            "events": list(events),
-            "window_complete": window_complete,
-            "snapshot_as_of": to_rfc3339(as_of if as_of is not None else REBUILD_AT),
-        },
+        arguments,
         sessions=sessions,
         keyring=_keyring(),
         device_id=device_id,
@@ -305,7 +310,7 @@ def test_create_all_preserves_a_live_barrier(tmp_path: Path) -> None:
         create_all(engine)
         with sessions() as session:
             row = policy.read_policy(session)
-            assert (row.min_ingest_protocol, row.ingest_mode) == (2, "maintenance")
+            assert (row.min_ingest_protocol, row.ingest_mode) == (3, "maintenance")
         for version in (1, 2):
             assert _refusal(lambda: _ingest(sessions, version=version)).code is ErrorCode.SOURCE_UNAVAILABLE
     finally:
@@ -372,15 +377,36 @@ def test_a_rebuilt_mirror_refuses_everything_until_it_is_reopened(sessions) -> N
     assert _event_count(sessions) == 0
 
 
-def test_after_a_rebuild_a_declared_v2_client_is_accepted(sessions) -> None:
+def test_after_a_rebuild_only_the_current_v3_epoch_is_accepted(sessions) -> None:
     """The floor closes v1 and *opens* nothing else: v2 is what the rebuilt
     mirror is meant to be rebuilt from, so a floor that refused it too would
     be a mirror nothing can repopulate."""
     _arm_rebuild(sessions)
     _reopen(sessions)
-    result = _ingest(sessions, [_event("ev-1", timezone_name="Asia/Shanghai")], version=2)
+    assert _refusal(lambda: _ingest(sessions, [_event("old-v2")], version=2)).code is ErrorCode.SOURCE_UNAVAILABLE
+    assert _refusal(lambda: _ingest(sessions, [_event("old-v3")], version=3, epoch=1)).code is ErrorCode.CALENDAR_SYNC_RESET_REQUIRED
+    result = _ingest(sessions, [_event("ev-1", timezone_name="Asia/Shanghai")], version=3, epoch=2)
     assert result["status"] == "ok"
     assert _event_count(sessions) == 1
+
+
+def test_rebuild_physically_empties_the_single_phone_mirror_and_rejects_old_v3_tail(sessions) -> None:
+    _ingest(sessions, [_event("pre-rebuild")], version=3, epoch=1)
+    with sessions() as session:
+        session.add(CalendarDirectory(
+            device_id="dev-1", calendar_identifier="cal-1", title="旧名录",
+            source_title=None, allows_content_modifications=True, is_subscribed=False,
+            updated_at=NOW, snapshot_ts=1, retired_at=None,
+        ))
+        session.commit()
+    _arm_rebuild(sessions)
+    assert _event_count(sessions) == 0
+    with sessions() as session:
+        assert session.execute(text("SELECT COUNT(*) FROM calendar_directory")).scalar_one() == 0
+    _reopen(sessions)
+    error = _refusal(lambda: _ingest(sessions, [_event("old-tail")], version=3, epoch=1))
+    assert error.code is ErrorCode.CALENDAR_SYNC_RESET_REQUIRED
+    assert _event_count(sessions) == 0
 
 
 def test_the_payload_cannot_upgrade_a_client(sessions) -> None:
@@ -548,7 +574,7 @@ def test_every_policy_transition_is_in_the_ratchet_test() -> None:
     assert public == set(TRANSITIONS) | {"read_policy", "check_ingest_allowed"}
 
 
-def test_a_successful_v2_first_batch_does_not_reopen_v1(sessions) -> None:
+def test_a_successful_v3_first_batch_does_not_reopen_old_epochs(sessions) -> None:
     """R7-F22, first must-add.
 
     The legal sequence the earlier revision got wrong: rebuild, a v2 batch that
@@ -561,7 +587,8 @@ def test_a_successful_v2_first_batch_does_not_reopen_v1(sessions) -> None:
     _ingest(
         sessions,
         [_event("ev-new", timezone_name="Asia/Shanghai")],
-        version=2,
+        version=3,
+        epoch=2,
         window_complete=False,
     )
     error = _refusal(lambda: _ingest(sessions, [_event("ev-old")], version=1))
@@ -585,7 +612,8 @@ def test_a_completed_rebuild_does_not_reopen_v1(sessions) -> None:
     _ingest(
         sessions,
         [_event("ev-new", timezone_name="Asia/Shanghai")],
-        version=2,
+        version=3,
+        epoch=2,
         as_of=NOW - timedelta(minutes=2),
     )
     device = _device(sessions)
@@ -671,7 +699,8 @@ def test_the_warning_does_not_block_an_admitted_batch(sessions, caplog) -> None:
         result = _ingest(
             sessions,
             [_event("ev-new", timezone_name="Asia/Shanghai")],
-            version=2,
+            version=3,
+            epoch=2,
             as_of=REBUILD_AT,
         )
     assert result["status"] == "ok"
@@ -703,7 +732,8 @@ def test_a_batch_after_the_rebuild_is_not_warned_about(sessions, caplog) -> None
         _ingest(
             sessions,
             [_event("ev-new", timezone_name="Asia/Shanghai")],
-            version=2,
+            version=3,
+            epoch=2,
             as_of=NOW,
         )
     assert not [

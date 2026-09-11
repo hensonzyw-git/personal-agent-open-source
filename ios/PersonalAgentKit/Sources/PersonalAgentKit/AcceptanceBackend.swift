@@ -387,7 +387,8 @@ public actor AcceptanceTimeline: ChatBackend {
         events: [CalendarMirrorEvent],
         calendars: [CalendarDirectoryEntry],
         windowComplete: Bool,
-        snapshotAsOf: Date
+        snapshotAsOf: Date,
+        syncEpoch: Int
     ) async throws -> CalendarSyncResponse {
         throw AcceptanceHarnessError.noMirror
     }

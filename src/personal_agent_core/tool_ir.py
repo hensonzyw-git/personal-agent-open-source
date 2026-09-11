@@ -1519,6 +1519,11 @@ _CALENDAR_INGEST_INPUT: Final[dict[str, Any]] = {
                 "就是设备能提供的全部版本证据。"
             ),
         },
+        "sync_epoch": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "本设备采集此窗口前保存的镜像代次；wire v3 必填。",
+        },
         "calendars": {
             "type": ["array", "null"],
             "default": None,
@@ -1642,12 +1647,13 @@ _CALENDAR_INGEST_INPUT: Final[dict[str, Any]] = {
 _CALENDAR_INGEST_OUTPUT: Final[dict[str, Any]] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["status", "upserted", "skipped", "marked_deleted"],
+    "required": ["status", "upserted", "skipped", "marked_deleted", "sync_epoch"],
     "properties": {
         "status": {"const": "ok"},
         "upserted": {"type": "integer", "minimum": 0},
         "skipped": {"type": "integer", "minimum": 0},
         "marked_deleted": {"type": "integer", "minimum": 0},
+        "sync_epoch": {"type": "integer", "minimum": 1},
     },
 }
 

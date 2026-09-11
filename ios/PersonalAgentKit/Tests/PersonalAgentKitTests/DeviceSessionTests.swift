@@ -641,6 +641,7 @@ struct ClientWireVersionTests {
             calendars: [],
             windowComplete: true,
             snapshotAsOf: Date(timeIntervalSince1970: 0),
+            syncEpoch: 1,
             token: "t"
         )
 

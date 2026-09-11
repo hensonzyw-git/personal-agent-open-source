@@ -306,6 +306,7 @@ _STATUS_BY_CODE = {
     ErrorCode.TOOL_NOT_ALLOWLISTED: 403,
     ErrorCode.HOST_CONTEXT_MISMATCH: 403,
     ErrorCode.INVALID_ARGUMENT: 400,
+    ErrorCode.CALENDAR_SYNC_RESET_REQUIRED: 400,
     # `CAP-001`: an id that names no Timeline here. A `404` says so without
     # confirming whether that id exists anywhere, and without ever being read as
     # "so create it".

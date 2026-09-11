@@ -1566,6 +1566,7 @@ public protocol ChatBackend: Sendable {
         events: [CalendarMirrorEvent],
         calendars: [CalendarDirectoryEntry],
         windowComplete: Bool,
-        snapshotAsOf: Date
+        snapshotAsOf: Date,
+        syncEpoch: Int
     ) async throws -> CalendarSyncResponse
 }

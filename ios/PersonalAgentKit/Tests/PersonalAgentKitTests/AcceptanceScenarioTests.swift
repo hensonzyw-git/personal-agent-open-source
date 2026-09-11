@@ -568,7 +568,8 @@ struct AcceptanceHarnessTests {
                 windowEnd: Date(timeIntervalSince1970: 0),
                 events: [], calendars: [],
                 windowComplete: true,
-                snapshotAsOf: Date(timeIntervalSince1970: 0)
+                snapshotAsOf: Date(timeIntervalSince1970: 0),
+                syncEpoch: 1
             )
         }
         await #expect(throws: AcceptanceHarnessError.unknownOperation("op-nope")) {

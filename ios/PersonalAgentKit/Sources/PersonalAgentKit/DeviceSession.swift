@@ -379,7 +379,8 @@ public actor DeviceSession {
         events: [CalendarMirrorEvent],
         calendars: [CalendarDirectoryEntry],
         windowComplete: Bool,
-        snapshotAsOf: Date
+        snapshotAsOf: Date,
+        syncEpoch: Int
     ) async throws -> CalendarSyncResponse {
         try await authorized {
             try await self.client.uploadCalendarSync(
@@ -389,6 +390,7 @@ public actor DeviceSession {
                 calendars: calendars,
                 windowComplete: windowComplete,
                 snapshotAsOf: snapshotAsOf,
+                syncEpoch: syncEpoch,
                 token: $0
             )
         }
