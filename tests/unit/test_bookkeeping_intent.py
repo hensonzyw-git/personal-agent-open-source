@@ -111,6 +111,9 @@ def test_ambiguous_or_question_income_phrases_do_not_select_the_income_tool(
         # not a claim of a write -- the single 一 in 记一下 is not an amount.
         "帮我记一下这个月的支出",
         "记一下午饭",
+        # Calendar creation with time and duration must not become bookkeeping
+        # merely because “验收” contains the Chinese character 收.
+        "明天上午 10 点，在日常安排创建一个名为“Personal Agent 验收”的 30 分钟日程",
     ],
 )
 def test_non_bookkeeping_messages_are_left_alone(text: str) -> None:

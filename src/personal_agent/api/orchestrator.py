@@ -674,6 +674,18 @@ def _run_operation(
                 state="failed_safe",
                 failure_reason=required_reason,
             )
+        if envelope.calendar_create_intent_required:
+            # A calendar entry exists only after the device reports an EventKit
+            # result. Prose has no side effect or receipt and cannot be success.
+            required_reason = ErrorCode.CALENDAR_TOOL_REQUIRED.value
+            _step(
+                session,
+                operation,
+                "failed_safe",
+                now,
+                failure_reason=required_reason,
+            )
+            return RunResult(state="failed_safe", failure_reason=required_reason)
         _step(session, operation, "succeeded", now, safe_result=interpretation.text)
         return RunResult(state="succeeded", answer=interpretation.text)
 

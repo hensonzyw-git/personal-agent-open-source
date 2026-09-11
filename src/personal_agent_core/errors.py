@@ -35,6 +35,9 @@ class ErrorCode(StrEnum):
     BOOKKEEPING_TOOL_REQUIRED = "BOOKKEEPING_TOOL_REQUIRED"
     #: A Finance read was answered from model text instead of the fact source.
     FINANCE_TOOL_REQUIRED = "FINANCE_TOOL_REQUIRED"
+    #: An explicit calendar-create request was answered with prose and no
+    #: EventKit-backed device action was issued.
+    CALENDAR_TOOL_REQUIRED = "CALENDAR_TOOL_REQUIRED"
 
     # Finance semantics
     CLARIFICATION_REQUIRED = "CLARIFICATION_REQUIRED"
@@ -154,6 +157,9 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ),
     ErrorCode.FINANCE_TOOL_REQUIRED: (
         "这是账务查询，但未调用 Finance 工具，未返回账本结果"
+    ),
+    ErrorCode.CALENDAR_TOOL_REQUIRED: (
+        "这是创建日程请求，但未调用日历工具，没有创建任何日程"
     ),
     ErrorCode.CLARIFICATION_REQUIRED: "信息不完整，需要先确认后才能记账",
     ErrorCode.CLARIFICATION_REPEATED: (
