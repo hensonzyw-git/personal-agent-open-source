@@ -106,11 +106,14 @@ def _delete_conversation(session: Session, object_id: str) -> int:
     The media fan-out runs **before** the events are deleted. The bindings that
     say which images this conversation owned carry ``ON DELETE CASCADE`` against
     ``conversation_events``, so deleting the events first would take them with
-    it and leave nothing to ask. That cascade fires only when
-    ``PRAGMA foreign_keys`` is on for the connection -- the same conditional this
-    function already refuses to lean on for the child deletes below -- so the
-    order is defensive rather than currently load-bearing, and it is kept
-    because it is the order that is correct under either setting.
+    it and leave nothing to ask. On the connections this service opens the
+    cascade does fire -- ``db.upgrade`` restores ``PRAGMA foreign_keys`` and it
+    stays on for every connection the engine hands out afterwards -- so that
+    order is load-bearing here, not merely defensive. On a connection where the
+    pragma is off, as a bare ``sqlite3`` shell has it, the bindings survive and
+    the fan-out still asks the right question. The order is correct either way,
+    which is why it is stated as a rule rather than as a consequence of the
+    current pragma.
 
     Returns the number of conversation rows removed, so a replay can tell a
     successful delete from an id that was already absent (a re-replay, or a

@@ -26,9 +26,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Final
 
+import enum
+
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from personal_agent.media.locking import MediaLockError, media_locks
+from personal_agent.media.store import MediaStore
 from personal_agent.storage.deletion import write_manifest_entry
 from personal_agent.storage.models import ConversationEvent, MediaBinding, MediaObject
 from personal_agent_core.crypto import KeyRing
@@ -65,6 +69,25 @@ NEVER_PUBLISHED_STATES: Final[frozenset[str]] = frozenset({"expired", "rejected"
 #: is owed. Writing the union out rather than deriving it in the guard keeps the
 #: decision readable at the point it is enforced.
 DECIDABLE_STATES: Final[frozenset[str]] = DELETABLE_STATES | NEVER_PUBLISHED_STATES
+
+
+class ReapOutcome(enum.Enum):
+    """What one reaper pass did, in the four shapes a caller must tell apart.
+
+    An enum rather than a bool because "did not remove the bytes" has three
+    different meanings and only one of them is a failure. Collapsing them is how
+    a deferred deletion gets counted as a completed one (§6's explicit
+    prohibition): ``REAPED`` is the only member that means the bytes are gone.
+    """
+
+    #: The persisted image is removed (or was already) and the row says ``deleted``.
+    REAPED = "reaped"
+    #: Someone else holds the lock. The deletion is authorised and not done.
+    DEFERRED = "deferred"
+    #: An earlier pass finished. Nothing to do.
+    ALREADY_DELETED = "already_deleted"
+    #: No such row. Nothing to do.
+    ABSENT = "absent"
 
 
 class StaleMediaStateError(RuntimeError):
@@ -112,7 +135,12 @@ def _decide_deletion(session: Session, *, media_id: str, now: datetime) -> str |
             # state must not silently make it deletable.
             MediaObject.state.in_(tuple(DECIDABLE_STATES)),
         )
-        .values(state="deleting", state_version=version + 1, deleted_at=now)
+        .values(
+            state="deleting",
+            state_version=version + 1,
+            deleted_at=now,
+            updated_at=now,
+        )
     )
     if result.rowcount != 1:
         raise StaleMediaStateError(
@@ -166,6 +194,133 @@ def replay_media_deletion(session: Session, *, media_id: str, now: datetime) -> 
     reintroduce exactly the resurrection this manifest exists to prevent.
     """
     return _decide_deletion(session, media_id=media_id, now=now) is not None
+
+
+#: States the reaper may act on: a deletion has been decided and committed, and
+#: the bytes are still expected to be there. ``deleting`` is the ordinary entry
+#: point; ``reaping`` is a previous attempt that stopped between clearing the
+#: files and committing the terminal state (§5.3's "reaping 中断").
+REAPABLE_STATES: Final[frozenset[str]] = frozenset({"deleting", "reaping"})
+
+
+class MediaNotDeletableError(RuntimeError):
+    """The reaper was pointed at an object no deletion was ever decided for.
+
+    A refusal rather than an outcome value on purpose. ``bound``, ``ready`` and
+    the rest are healthy objects, and a caller that hands one to the reaper has
+    a bug or a corrupted deployment; both want a loud failure, and returning a
+    quotable result would let a loop treat it as routine and move on.
+    """
+
+
+def reap_media_object(
+    session: Session,
+    *,
+    store: MediaStore,
+    media_id: str,
+    now: datetime,
+) -> ReapOutcome:
+    """Physically remove one decided object's persisted image (design §6).
+
+    The order here *is* the contract, so it is worth stating plainly:
+
+    1. Read the state, and refuse unless a deletion was committed for it. The
+       "durable deletion intent" §6 asks for is the committed ``deleting`` row
+       itself -- the manifest entry cannot be looked up by id, because the id
+       is sealed in it by design, and it does not need to be: the decision
+       writes the state change and the entry in one transaction, so a visible
+       ``deleting`` means the entry committed with it.
+    2. Compare-and-swap to ``reaping`` and commit, **before** touching a byte.
+       §4's rule is "对象清理先 CAS reaping 并 commit"; a crash after this point
+       leaves a row that says "authorised, not yet removed", which the next pass
+       resumes.
+    3. Take the lock. Non-blocking, and outside any transaction -- a reader that
+       holds the stripe past its deadline defers this reap (§6: "不能按租约到期
+       强删"), and a deferral leaves the row at ``reaping`` and reports itself as
+       :attr:`ReapOutcome.DEFERRED`, never as a completed removal.
+    4. Clear the files, then compare-and-swap ``reaping`` → ``deleted``.
+
+    **This function owns its transaction boundaries**, which is unusual here and
+    is why it is called out rather than left for a reader to infer: it commits
+    twice with file I/O and a lock acquisition in between, so a caller must not
+    wrap it in :func:`~personal_agent_core.sqlite.run_write_transaction` or in a
+    unit of work of its own. Every step is idempotent, so re-running it after a
+    crash, a deferral or an exception resumes rather than corrupts.
+
+    Only the persisted image is removed. The upload pieces under ``staging``
+    belong to the attempt GC -- §4.2 gives them a per-attempt cleanup marker and
+    §5.3 has the ready-with-residue row remove them under the same intent -- and
+    a quarantined file is a diagnostic copy of something that was never adopted.
+    Neither is this function's to remove, and both are open questions rather than
+    settled scope.
+    """
+    row = session.execute(
+        select(MediaObject.state, MediaObject.state_version).where(
+            MediaObject.media_id == media_id
+        )
+    ).one_or_none()
+    if row is None:
+        # §5.3's reaping-interrupted row reads "缺文件视为已完成"; the same
+        # applies to a row that is gone entirely, which is what a replayed
+        # manifest against an already-pruned database produces.
+        return ReapOutcome.ABSENT
+    state, version = row
+    if state == "deleted":
+        return ReapOutcome.ALREADY_DELETED
+    if state not in REAPABLE_STATES:
+        raise MediaNotDeletableError(
+            f"{media_id} is {state}; the reaper only removes an object whose "
+            "deletion was decided and committed"
+        )
+
+    expected_version = version
+    if state == "deleting":
+        result = session.execute(
+            update(MediaObject)
+            .where(
+                MediaObject.media_id == media_id,
+                MediaObject.state == "deleting",
+                MediaObject.state_version == version,
+            )
+            .values(state="reaping", state_version=version + 1, updated_at=now)
+        )
+        if result.rowcount != 1:
+            raise StaleMediaStateError(
+                f"{media_id} is no longer deleting/v{version}; another writer moved it first"
+            )
+        expected_version = version + 1
+        session.commit()
+    else:
+        # End the read transaction before taking the lock. §5.2: a session that
+        # has read cannot upgrade its snapshot to a write once another session
+        # has committed, and the lock is to be taken with no transaction open.
+        session.rollback()
+
+    try:
+        with media_locks(store.roots.root, [media_id], blocking=False):
+            store.discard_final(media_id)
+            result = session.execute(
+                update(MediaObject)
+                .where(
+                    MediaObject.media_id == media_id,
+                    MediaObject.state == "reaping",
+                    MediaObject.state_version == expected_version,
+                )
+                .values(state="deleted", state_version=expected_version + 1, updated_at=now)
+            )
+            if result.rowcount != 1:
+                raise StaleMediaStateError(
+                    f"{media_id} is no longer reaping/v{expected_version}; "
+                    "another writer moved it first"
+                )
+            session.commit()
+    except MediaLockError:
+        # Deliberately not an error return and deliberately not fatal: the lock
+        # holder is a reader doing its job, and §6 says to warn or defer. The
+        # row keeps saying ``reaping``, which is the honest description -- the
+        # deletion is authorised and has not happened.
+        return ReapOutcome.DEFERRED
+    return ReapOutcome.REAPED
 
 
 def _origin_media_ids(session: Session, condition) -> list[str]:
