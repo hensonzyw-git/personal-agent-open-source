@@ -59,9 +59,12 @@ struct VoiceHoldButton: UIViewRepresentable {
         @objc func changed(_ gesture: UILongPressGestureRecognizer) {
             switch gesture.state {
             case .began:
-                if owner.enabled, hold.begin() { owner.began() }
+                if owner.enabled, hold.begin(atY: Double(gesture.location(in: nil).y)) { owner.began() }
+            case .changed:
+                if hold.cancelIfMoved(toY: Double(gesture.location(in: nil).y)) { owner.cancelled() }
             case .ended:
-                if hold.end() { owner.released() }
+                if hold.cancelIfMoved(toY: Double(gesture.location(in: nil).y)) { owner.cancelled() }
+                else if hold.end() { owner.released() }
             case .cancelled, .failed:
                 cancel()
             default: break

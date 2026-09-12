@@ -21,6 +21,7 @@ final class VoiceInput {
     private let engine = AVAudioEngine()
     private var continuation: AsyncStream<AnalyzerInput>.Continuation?
     private var analyzer: SpeechAnalyzer?
+    private var audioSession: VoiceAudioTap.Session?
     private var resultTask: Task<Void, Never>?
     private var analysisTask: Task<Void, Never>?
     private var finalSegments: [String] = []
@@ -114,10 +115,12 @@ final class VoiceInput {
             guard state.generation == generation, state.phase == .preparing else { return }
             let pair = AsyncStream<AnalyzerInput>.makeStream()
             continuation = pair.continuation
+            let audioSession = VoiceAudioTap.Session(continuation: pair.continuation, converter: converter)
+            self.audioSession = audioSession
             self.analyzer = analyzer
             input.installTap(onBus: 0, bufferSize: 1_024, format: format,
                              block: VoiceAudioTap.make(
-                                continuation: pair.continuation, converter: converter,
+                                session: audioSession,
                                 onFailure: { [weak self] in
                                     Task { @MainActor [weak self] in
                                         self?.fail("录音格式转换失败，请重新录制。", generation: generation)
@@ -165,7 +168,12 @@ final class VoiceInput {
         guard state.beginFinalizing(generation: generation) else { return "" }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        continuation?.finish()
+        do {
+            try audioSession?.finish()
+        } catch {
+            fail("录音收尾转换失败，请重新录制。", generation: generation)
+            return ""
+        }
         continuation = nil
         let currentAnalyzer = analyzer
         let currentAnalysis = analysisTask
@@ -234,6 +242,8 @@ final class VoiceInput {
         finishWaiter = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        audioSession?.cancel()
+        audioSession = nil
         continuation?.finish()
         continuation = nil
         analysisTask?.cancel()
@@ -278,7 +288,7 @@ final class VoiceInput {
                 fail(message, generation: generation)
                 return
             }
-            finalSegments.append(text)
+            if !text.isEmpty { finalSegments.append(text) }
             transcript = finalSegments.joined(separator: " ")
         } else {
             hasVolatileTail = true

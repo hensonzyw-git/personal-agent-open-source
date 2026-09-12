@@ -23,7 +23,9 @@ public struct VoiceInputStateMachine: Sendable {
     public static func soleFinalCandidate(_ alternatives: [String]) -> String? {
         guard alternatives.count == 1 else { return nil }
         let text = alternatives[0].trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : text
+        // An empty segment denotes silence; only the complete utterance must
+        // contain text. nil is reserved for absent/ambiguous candidates.
+        return text
     }
 
     @discardableResult
