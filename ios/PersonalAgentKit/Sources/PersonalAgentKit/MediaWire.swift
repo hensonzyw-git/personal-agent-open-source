@@ -208,9 +208,14 @@ public struct MediaUploadDeclarationRecord: Codable, Sendable, Equatable {
 /// only `ready` can flow into chat parts.
 public actor MediaUploadCoordinator {
     private let backend: any MediaUploadBackend
+    private let now: @Sendable () -> Date
 
-    public init(backend: any MediaUploadBackend) {
+    public init(
+        backend: any MediaUploadBackend,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.backend = backend
+        self.now = now
     }
 
     public func begin(declaration: MediaUploadDeclaration) -> PendingMediaUpload {
@@ -242,13 +247,29 @@ public actor MediaUploadCoordinator {
             recovered.contentUploaded = true
             return recovered
         }
-        guard status.outcome == "in_progress", status.state == "pending" else {
+        // An interrupted unsealed attempt is reclaimable only after the
+        // advertised deadline. Server-side locking/CAS remains authoritative:
+        // a fast client clock may attempt early, but cannot steal a live claim.
+        let expiredClaim = status.state == "uploading"
+            && status.retryAt.flatMap(Self.retryDeadline).map { $0 <= now() } == true
+        guard status.outcome == "in_progress",
+              status.state == "pending" || expiredClaim else {
             throw MediaUploadError.incompleteCompletion(status)
         }
         _ = try await backend.putMediaContent(mediaID: mediaID, body: bytes)
         var updated = pending
         updated.contentUploaded = true
         return updated
+    }
+
+    private static func retryDeadline(_ value: String) -> Date? {
+        // Agent timestamps use fixed-width microseconds; the Calendar mirror
+        // formatter accepts second-only timestamps and is not this contract.
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
     }
 
     private func createThenPut(

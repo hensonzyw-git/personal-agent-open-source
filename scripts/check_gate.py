@@ -154,12 +154,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--base", required=True, help="ref to diff against, e.g. origin/main")
     parser.add_argument("--head", required=True, help="branch under test, e.g. feat/x")
+    parser.add_argument(
+        "--head-ref", help="commit/ref to diff; defaults to --head for local use"
+    )
     parser.add_argument("--root", default=".", help="repository root (default: cwd)")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
     try:
-        files = changed_files(args.base, args.head, root)
+        files = changed_files(args.base, args.head_ref or args.head, root)
         reasons = judge(args.head, files, gate_records(root))
     except GateError as error:
         print(f"gate-check: {error}", file=sys.stderr)

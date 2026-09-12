@@ -10,6 +10,9 @@ import UIKit
 /// validation for option 1 -- the server only performs a bounded header probe,
 /// so the producer must prove that the bytes it just encoded are decodable.
 struct PreparedPhoto: Sendable {
+    /// Selection identity, not content identity: reselecting identical bytes is
+    /// still a newer composer edit that an older send must not clear.
+    let selectionID = UUID()
     let data: Data
     let width: Int
     let height: Int

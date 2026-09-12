@@ -309,10 +309,8 @@ final class ChatModel {
                     clarificationOf: clarificationOf,
                     startNewSession: startNewSession
                 )
-                // The server has acknowledged a sealed media reference.  This
-                // draft bytes are no longer needed on device; the server copy is
-                // governed by Timeline retention and deletion instead.
-                preparedPhoto = nil
+                // The composer selection was consumed at durable preparation,
+                // not here: a newer selection may have arrived during upload.
             } else {
                 receipt = try await timeline.send(
                     text: text,
@@ -348,7 +346,7 @@ final class ChatModel {
         // cleared only when the server proved it never anchored, and that is
         // exactly the case where the message is genuinely gone and the user should
         // find their words still in the box.
-        if lastError != nil, unresolved == nil, draft.isEmpty {
+        if lastError != nil, unresolved == nil, !hasPendingPhotoSend, draft.isEmpty {
             draft = text
         }
     }
@@ -413,6 +411,12 @@ final class ChatModel {
             startNewSession: startNewSession
         )
         try savePendingPhotoSend(pending)
+        // Ownership moves to the durable recovery slot before the first
+        // network call. Keep genuinely newer selections/edits untouched, and
+        // never put this consumed image back into the composer on recovery.
+        if preparedPhoto?.selectionID == photo.selectionID {
+            preparedPhoto = nil
+        }
         return try await continuePendingPhotoSend(&pending)
     }
 
