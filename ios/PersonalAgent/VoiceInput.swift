@@ -109,9 +109,8 @@ final class VoiceInput {
             let pair = AsyncStream<AnalyzerInput>.makeStream()
             continuation = pair.continuation
             self.analyzer = analyzer
-            input.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self] buffer, _ in
-                self?.continuation?.yield(AnalyzerInput(buffer: buffer))
-            }
+            input.installTap(onBus: 0, bufferSize: 1_024, format: format,
+                             block: VoiceAudioTap.make(continuation: pair.continuation))
             try engine.start()
             guard state.beganRecording(generation: generation) else {
                 teardown(clearTranscript: true)
