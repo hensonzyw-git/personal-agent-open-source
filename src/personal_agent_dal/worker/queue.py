@@ -25,6 +25,7 @@ from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import utc_now
 
 from personal_agent_dal.storage.engine import session_factory
+from personal_agent_dal.storage.machine_models import ProviderAttempt
 from personal_agent_dal.storage.worker_models import (
     FeatureIntakeRequest,
     WorkerJob,
@@ -303,9 +304,19 @@ def claim_job(
 
     def _body(session: Session) -> str | None:
         table = _jobs_table()
+        # A transport lease is not permission to repeat a provider effect.
+        # Any durable dispatch marker blocks automatic re-claim, including the
+        # crash window before a recovery observer has parked it as unknown.
+        # An explicitly approved future replacement must get a new execution
+        # episode; never erase the old marker to make this predicate pass.
+        provider_not_dispatched = ~select(ProviderAttempt.attempt_id).where(
+            ProviderAttempt.job_id == table.c.job_id,
+            ProviderAttempt.dispatch_started_at.is_not(None),
+        ).correlate(table).exists()
         candidate = session.execute(
             select(table.c.job_id)
             .where(table.c.state == "pending")
+            .where(provider_not_dispatched)
             .order_by(table.c.created_at)
             .limit(1)
         ).scalar_one_or_none()
@@ -315,6 +326,7 @@ def claim_job(
             update(table)
             .where(table.c.job_id == candidate)
             .where(table.c.state == "pending")
+            .where(provider_not_dispatched)
             .values(
                 state="leased",
                 lease_epoch=table.c.lease_epoch + 1,

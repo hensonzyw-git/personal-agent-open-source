@@ -479,6 +479,7 @@ class ProviderAttempt(Base):
             "action_id", "attempt_no", name="uq_provider_attempts_action_attempt"
         ),
         Index("ix_provider_attempts_action_id", "action_id"),
+        Index("ix_provider_attempts_job_id", "job_id"),
     )
 
 
@@ -497,6 +498,31 @@ class ProviderResultObservation(Base):
     __table_args__ = (
         CheckConstraint(_hex_of_length("digest", 64, nullable=False), name="digest_hex"),
         Index("ix_provider_result_observations_attempt_id", "attempt_id"),
+    )
+
+
+class ProviderRecoveryReceipt(Base):
+    """Immutable readback evidence and the outcome of a recovery command."""
+
+    __tablename__ = "provider_recovery_receipts"
+    receipt_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    command_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    attempt_id: Mapped[str] = mapped_column(ForeignKey("provider_attempts.attempt_id"), nullable=False)
+    expected_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    requested_by: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, nullable=False)
+    fence: Mapped[int] = mapped_column(Integer, nullable=False)
+    probe_status: Mapped[str] = mapped_column(Text, nullable=False)
+    probe_code: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    code: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        CheckConstraint(_hex_of_length("request_sha256", 64, nullable=False), name="request_sha256_hex"),
+        CheckConstraint(_hex_of_length("evidence_sha256", 64, nullable=True), name="evidence_sha256_hex"),
+        CheckConstraint("probe_status IN ('unavailable', 'running', 'stopped', 'partial', 'complete')", name="probe_status"),
+        Index("ix_provider_recovery_receipts_attempt_id", "attempt_id"),
     )
 
 

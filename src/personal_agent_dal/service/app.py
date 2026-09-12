@@ -38,6 +38,7 @@ from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import utc_now
 
 from personal_agent_dal.github import executor
+from personal_agent_dal.machine.action_recovery import recover_attempt
 from personal_agent_dal.service.intake import IntakeRefusal, intake_task
 from personal_agent_dal.service.operator_tokens import (
     OperatorTokenError,
@@ -475,6 +476,15 @@ class EffectWakeRequest(_Closed):
         "intent_recorded", "claimed", "unknown", "reconciling"
     ]
     expected_version: int = Field(ge=1)
+
+
+class ProviderRecoveryRequest(_Closed):
+    """An operator can request observation, never assert provider success."""
+
+    schema_version: Literal["dal.operator-transport/1.0"]
+    request_id: _Id
+    attempt_id: _Id
+    expected_version: int = Field(ge=1, strict=True)
 
 
 class IntakeRequest(_Closed):
@@ -943,6 +953,42 @@ def create_app(
             "job_id": job_id,
             "action": action,
             "state": "cancelled",
+        }
+
+    @app.post("/operator/provider-attempts/{attempt_id}/recover")
+    def operator_recover_provider_attempt(
+        attempt_id: str,
+        body: ProviderRecoveryRequest,
+        operator_id: str = Depends(operator_control),
+        _: None = Depends(transport_body_guard),
+    ) -> dict[str, Any]:
+        if body.attempt_id != attempt_id:
+            raise _http(400, "attempt_mismatch")
+        if service.kill_switch:
+            raise _http(503, "kill_switch_active")
+        # No provider probe is composed yet. The recovery boundary explicitly
+        # records that absence and only parks abandoned dispatches as unknown.
+        # Neither the request nor this route has a redispatch/success knob.
+        outcome = recover_attempt(
+            engine, attempt_id=attempt_id, expected_version=body.expected_version,
+            command_id=body.request_id, requested_by=operator_id,
+        )
+        if outcome.code == "ATTEMPT_NOT_FOUND":
+            raise _http(404, outcome.code)
+        if outcome.code not in ("ATTEMPT_UNKNOWN", "RECOVERY_NOT_NEEDED"):
+            raise _http(409, outcome.code)
+        _append_redacted_audit(
+            engine, event_type="operator.provider_recover",
+            outcome=f"{operator_id}:{outcome.code}",
+        )
+        return {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "attempt_id": attempt_id,
+            "code": outcome.code,
+            "receipt_id": outcome.receipt_id,
+            "duplicate": outcome.duplicate,
+            "probe_status": outcome.probe_status,
+            "probe_code": outcome.probe_code,
         }
 
     # --- effect wake + reconciliation sweep (R09-B F5) ------------------------
