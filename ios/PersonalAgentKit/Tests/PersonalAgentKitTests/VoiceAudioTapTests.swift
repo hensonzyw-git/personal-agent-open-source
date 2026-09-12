@@ -6,6 +6,10 @@ import Testing
 
 @Suite("Voice audio callback isolation")
 struct VoiceAudioTapTests {
+    private nonisolated static func converter() throws -> VoiceAudioConverter {
+        let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
+        return try VoiceAudioConverter(source: format, destination: format)
+    }
     private nonisolated static func isBackgroundThread() -> Bool {
         !Thread.isMainThread
     }
@@ -15,7 +19,7 @@ struct VoiceAudioTapTests {
     func backgroundDelivery() async throws {
         guard #available(macOS 26.0, iOS 26.0, *) else { return }
         let pair = AsyncStream<AnalyzerInput>.makeStream()
-        let tap = VoiceAudioTap.make(continuation: pair.continuation)
+        let tap = VoiceAudioTap.make(continuation: pair.continuation, converter: try Self.converter())
         let ranOffMain = await Task.detached {
             let format = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1)!
             let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16)!
@@ -32,10 +36,10 @@ struct VoiceAudioTapTests {
 
     @MainActor
     @Test("late callbacks after finish cannot enter a new recording")
-    func finishedGeneration() async {
+    func finishedGeneration() async throws {
         guard #available(macOS 26.0, iOS 26.0, *) else { return }
         let old = AsyncStream<AnalyzerInput>.makeStream()
-        let tap = VoiceAudioTap.make(continuation: old.continuation)
+        let tap = VoiceAudioTap.make(continuation: old.continuation, converter: try Self.converter())
         old.continuation.finish()
         let next = AsyncStream<AnalyzerInput>.makeStream()
         await Task.detached {

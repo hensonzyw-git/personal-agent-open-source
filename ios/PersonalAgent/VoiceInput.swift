@@ -103,14 +103,25 @@ final class VoiceInput {
             try session.setActive(true)
             let input = engine.inputNode
             let format = input.outputFormat(forBus: 0)
+            guard let analysisFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
+                compatibleWith: modules
+            ) else { throw VoiceAudioConverter.Failure.invalidFormat }
+            guard state.generation == generation, state.phase == .preparing else { return }
+            let converter = try VoiceAudioConverter(source: format, destination: analysisFormat)
             let analyzer = SpeechAnalyzer(modules: modules)
-            try await analyzer.prepareToAnalyze(in: format)
+            try await analyzer.prepareToAnalyze(in: analysisFormat)
             guard state.generation == generation, state.phase == .preparing else { return }
             let pair = AsyncStream<AnalyzerInput>.makeStream()
             continuation = pair.continuation
             self.analyzer = analyzer
             input.installTap(onBus: 0, bufferSize: 1_024, format: format,
-                             block: VoiceAudioTap.make(continuation: pair.continuation))
+                             block: VoiceAudioTap.make(
+                                continuation: pair.continuation, converter: converter,
+                                onFailure: { [weak self] in
+                                    Task { @MainActor [weak self] in
+                                        self?.fail("录音格式转换失败，请重新录制。", generation: generation)
+                                    }
+                                }))
             try engine.start()
             guard state.beganRecording(generation: generation) else {
                 teardown(clearTranscript: true)
