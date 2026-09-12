@@ -14,7 +14,16 @@ import PackageDescription
 
 let package = Package(
     name: "PersonalAgentKit",
-    platforms: [.iOS(.v17), .macOS(.v14)],
+    // iOS 26 is required by the app target, and it is what lets this package use
+    // the iOS 26 `SpeechAnalyzer` transcription API without `@available` guards.
+    // macOS deliberately stays at 14: `swift test` builds this package for the
+    // host, and raising it would be a decision about where the ASR code lives,
+    // not a consequence of the iOS target.
+    // `"26.0"` is a string rather than `.v26` on purpose: the `.vNN` enum cases
+    // are pinned to the manifest's tools-version, and this toolchain's
+    // `swift-tools-version: 6.0` surface has no `.v26` case (SourceKit rejects
+    // it). The string form is version-agnostic and accepted here.
+    platforms: [.iOS("26.0"), .macOS(.v14)],
     products: [
         .library(name: "PersonalAgentKit", targets: ["PersonalAgentKit"])
     ],

@@ -63,6 +63,10 @@ public actor ChatTimeline {
         public let idempotencyKey: String
         public let conversationID: String
         public let text: String
+        /// Nil is the legacy text-only request.  A non-nil sequence is sealed
+        /// before its first POST so recovery cannot retry the same key without
+        /// the image reference it originally carried.
+        public let parts: [ChatInputPart]?
         public let clarificationOf: String?
         /// Nil preserves decoding of pending sends written by older app builds.
         public let startNewSession: Bool?
@@ -107,6 +111,7 @@ public actor ChatTimeline {
             idempotencyKey: String,
             conversationID: String,
             text: String,
+            parts: [ChatInputPart]? = nil,
             clarificationOf: String?,
             startNewSession: Bool? = nil,
             operationID: String? = nil,
@@ -117,6 +122,7 @@ public actor ChatTimeline {
             self.idempotencyKey = idempotencyKey
             self.conversationID = conversationID
             self.text = text
+            self.parts = parts
             self.clarificationOf = clarificationOf
             self.startNewSession = startNewSession
             // A caller that knows the message's own operation (the anchor merge,
@@ -129,7 +135,7 @@ public actor ChatTimeline {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case idempotencyKey, conversationID, text, clarificationOf
+            case idempotencyKey, conversationID, text, parts, clarificationOf
             case startNewSession, operationID, operationIDs, deliveredActionIDs
             case releasedOperationIDs
             /// The one-action marker builds before design §4.2 wrote. Read as
@@ -144,6 +150,7 @@ public actor ChatTimeline {
             idempotencyKey = try container.decode(String.self, forKey: .idempotencyKey)
             conversationID = try container.decode(String.self, forKey: .conversationID)
             text = try container.decode(String.self, forKey: .text)
+            parts = try container.decodeIfPresent([ChatInputPart].self, forKey: .parts)
             clarificationOf = try container.decodeIfPresent(
                 String.self, forKey: .clarificationOf
             )
@@ -183,6 +190,7 @@ public actor ChatTimeline {
             try container.encode(idempotencyKey, forKey: .idempotencyKey)
             try container.encode(conversationID, forKey: .conversationID)
             try container.encode(text, forKey: .text)
+            try container.encodeIfPresent(parts, forKey: .parts)
             try container.encodeIfPresent(clarificationOf, forKey: .clarificationOf)
             try container.encodeIfPresent(startNewSession, forKey: .startNewSession)
             try container.encode(operationIDs, forKey: .operationIDs)
@@ -494,13 +502,7 @@ public actor ChatTimeline {
         defer { trail.cancel() }
         let receipt: OperationReceipt
         do {
-            receipt = try await backend.sendChatMessage(
-                conversationID: pending.conversationID,
-                text: pending.text,
-                clarificationOf: pending.clarificationOf,
-                startNewSession: pending.startNewSession == true,
-                idempotencyKey: pending.idempotencyKey
-            )
+            receipt = try await sendPending(pending)
         } catch let error as AgentClientError where Self.provesNotAnchored(error) {
             // The server refused before it could create an operation, so there is
             // nothing to resume and keeping the record would block every later
@@ -535,6 +537,46 @@ public actor ChatTimeline {
         return try await runDeviceActionIfAny(receipt, pending: anchored)
     }
 
+    /// Send a previously completed image reference (optionally with text).
+    /// The caller must have the server's `ready` receipt already; this method
+    /// neither uploads bytes nor accepts a raw image payload.
+    public func send(
+        parts: [ChatInputPart],
+        clarificationOf: String? = nil,
+        startNewSession: Bool = false,
+        idempotencyKey: String? = nil
+    ) async throws -> OperationReceipt {
+        let id = try requireConversation()
+        if let pending = try loadPending() { throw ChatError.unresolvedSend(pending) }
+        let pending = PendingSend(
+            idempotencyKey: idempotencyKey ?? IdempotencyKey.mint(),
+            conversationID: id,
+            text: ChatInput.parts(parts).textForDisplay,
+            parts: parts,
+            clarificationOf: clarificationOf,
+            startNewSession: startNewSession ? true : nil,
+            operationID: nil
+        )
+        try savePending(pending)
+        let trail = startTrailRunner(key: pending.idempotencyKey)
+        defer { trail.cancel() }
+        let receipt: OperationReceipt
+        do {
+            receipt = try await sendPending(pending)
+        } catch let error as AgentClientError where Self.provesNotAnchored(error) {
+            try? releaseSlotIfStillOwned(
+                key: pending.idempotencyKey, operationID: nil
+            )
+            throw error
+        }
+        guard let anchored = try mergeAnchoredOperation(
+            receipt.operationID, forKey: pending.idempotencyKey
+        ) else {
+            return receipt
+        }
+        return try await runDeviceActionIfAny(receipt, pending: anchored)
+    }
+
     /// Finish whatever was left unresolved, if anything.
     ///
     /// This is the reconnect path, and it is the reason a lost reply is not a lost
@@ -550,13 +592,7 @@ public actor ChatTimeline {
         }
         let receipt: OperationReceipt
         do {
-            receipt = try await backend.sendChatMessage(
-                conversationID: pending.conversationID,
-                text: pending.text,
-                clarificationOf: pending.clarificationOf,
-                startNewSession: pending.startNewSession == true,
-                idempotencyKey: pending.idempotencyKey
-            )
+            receipt = try await sendPending(pending)
         } catch let error as AgentClientError where Self.provesNotAnchored(error) {
             // Same rule as the send path (fifth review I1): a refusal landing
             // after this message was discarded and replaced must not delete
@@ -649,6 +685,25 @@ public actor ChatTimeline {
     /// to have shown the operation id first.
     public func discardPending() throws {
         try clearPending()
+    }
+
+    private func sendPending(_ pending: PendingSend) async throws -> OperationReceipt {
+        if let parts = pending.parts {
+            return try await backend.sendChatMessage(
+                conversationID: pending.conversationID,
+                parts: parts,
+                clarificationOf: pending.clarificationOf,
+                startNewSession: pending.startNewSession == true,
+                idempotencyKey: pending.idempotencyKey
+            )
+        }
+        return try await backend.sendChatMessage(
+            conversationID: pending.conversationID,
+            text: pending.text,
+            clarificationOf: pending.clarificationOf,
+            startNewSession: pending.startNewSession == true,
+            idempotencyKey: pending.idempotencyKey
+        )
     }
 
     // --- duplicate decisions (`DEV-031`) --------------------------------------
@@ -1487,6 +1542,14 @@ public protocol ChatBackend: Sendable {
     func sendChatMessage(
         conversationID: String,
         text: String,
+        clarificationOf: String?,
+        startNewSession: Bool,
+        idempotencyKey: String
+    ) async throws -> OperationReceipt
+
+    func sendChatMessage(
+        conversationID: String,
+        parts: [ChatInputPart],
         clarificationOf: String?,
         startNewSession: Bool,
         idempotencyKey: String

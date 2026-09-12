@@ -30,6 +30,53 @@ from personal_agent.storage.engine import (
 )
 
 
+def check_media_bundle_media(database: Path, keyring, bundle: Path, *, materialized=False) -> dict[str, Any]:
+    """Authenticate every restored ready/bound media ciphertext before reads open."""
+    from personal_agent.media.container import ContainerError, SealRecord, read_container
+    from personal_agent.media.lifecycle import ATTEMPT_TABLE, SEAL_RECORD_COLUMN
+
+    engine = create_read_only_database_engine(database)
+    checked = 0
+    try:
+        with session_factory(engine)() as session:
+            rows = session.execute(
+                text(
+                    "SELECT m.media_id, m.current_attempt_number, a.attempt_id, "
+                    "a.encrypted_seal_record FROM media_objects m "
+                    "LEFT JOIN media_attempts a ON a.media_id = m.media_id "
+                    "AND a.attempt_number = m.current_attempt_number "
+                    "WHERE m.state IN ('ready', 'bound') ORDER BY m.media_id"
+                )
+            ).all()
+        for media_id, attempt, attempt_id, envelope in rows:
+            if not isinstance(media_id, str) or not isinstance(attempt, int) or envelope is None:
+                return {"name": "media_bundle", "ok": False, "detail": "ready media row lacks sealed attempt"}
+            try:
+                raw = keyring.decrypt(
+                    json.loads(envelope) if isinstance(envelope, str) else envelope,
+                    table=ATTEMPT_TABLE, column=SEAL_RECORD_COLUMN, row_id=attempt_id,
+                )
+                seal = SealRecord.from_dict(json.loads(raw.decode("utf-8")))
+                path = (Path(bundle) / "final" / media_id[:2] / f"{media_id}.bin"
+                        if materialized else Path(bundle) / "media" / f"{media_id}.bin")
+                # Fully consume the generator: authentication of a chunk is not
+                # proof that later chunks exist or that the whole-stream hash matches.
+                for _ in read_container(
+                    path, seal, keyring=keyring, media_id=media_id,
+                    attempt_number=attempt, role="chat_image",
+                ):
+                    pass
+                checked += 1
+            except Exception as exc:
+                return {
+                    "name": "media_bundle", "ok": False,
+                    "detail": f"media ciphertext verification failed for {media_id}: {type(exc).__name__}",
+                }
+        return {"name": "media_bundle", "ok": True, "detail": f"authenticated_media={checked}"}
+    finally:
+        engine.dispose()
+
+
 def check_integrity(
     database: Path, *, name: str = "integrity_check"
 ) -> dict[str, Any]:
@@ -297,6 +344,76 @@ def check_replay_deletion_manifest(
         engine.dispose()
 
 
+def restore_media_files(database, keyring, bundle):
+    """Materialize restored ciphertext, finish replayed deletions, then verify.
+
+    Only the restored copy is changed; the source backup repository is untouched.
+    """
+    import os
+    import stat
+    from sqlalchemy import select
+    from personal_agent.backup.media_bundle import _copy_ciphertext
+    from personal_agent.media.store import MediaStore
+    from personal_agent.media.locking import ensure_lock_files
+    from personal_agent.media.deletion import mark_media_deleting, reap_media_object
+    from personal_agent.storage.models import MediaObject
+    from personal_agent_core.timeutil import utc_now
+    root = Path(bundle).parent / ("restored-media-" + Path(bundle).name)
+    engine = create_database_engine(database)
+    try:
+        for directory in (root, *(root / n for n in ("staging", "final", "quarantine", "locks"))):
+            if directory.is_symlink():
+                raise ValueError("restore media directory is a symlink")
+            directory.mkdir(mode=0o700, exist_ok=True)
+        ensure_lock_files(root)
+        store = MediaStore(root, keyring)
+        with session_factory(engine)() as session:
+            rows = session.execute(select(MediaObject.media_id, MediaObject.state)).all()
+            known = {media_id for media_id, _ in rows}
+            source_dir = Path(bundle) / "media"
+            if source_dir.exists():
+                if source_dir.is_symlink():
+                    raise ValueError("media input directory is a symlink")
+                for source in source_dir.iterdir():
+                    if source.suffix != ".bin" or source.stem not in known:
+                        raise ValueError("unowned ciphertext in restored input")
+            for media_id, state in rows:
+                source = source_dir / f"{media_id}.bin"
+                if state in ("ready", "bound") and (source.exists() or source.is_symlink()):
+                    destination = store.final_path(media_id)
+                    if not destination.exists():
+                        _copy_ciphertext(source, destination)
+                if state not in ("ready", "bound"):
+                    if state == "deleted":
+                        # Re-entry after the tombstone commit must also remove
+                        # any leftover materialized copy.
+                        from personal_agent.media.locking import media_locks
+                        session.rollback()
+                        with media_locks(root, [media_id], blocking=False):
+                            store.discard_final(media_id)
+                    mark_media_deleting(session, media_id=media_id, keyring=keyring, now=utc_now())
+                    session.commit()
+                    outcome = reap_media_object(session, store=store, media_id=media_id, now=utc_now())
+                    if outcome.value == "deferred":
+                        raise ValueError("restored deletion was deferred")
+                    if source.exists() or source.is_symlink():
+                        if not stat.S_ISREG(source.lstat().st_mode):
+                            raise ValueError("foreign restored ciphertext")
+                        source.unlink()
+                        fd = os.open(source_dir, os.O_RDONLY)
+                        try:
+                            os.fsync(fd)
+                        finally:
+                            os.close(fd)
+            session.commit()
+        return check_media_bundle_media(database, keyring, root, materialized=True)
+    except Exception as exc:
+        return {"name": "media_restore", "ok": False,
+                "detail": f"media restore refused: {type(exc).__name__}"}
+    finally:
+        engine.dispose()
+
+
 def run_all(
     database: Path,
     keyring,
@@ -304,6 +421,7 @@ def run_all(
     finance_database: Path | None = None,
     manifest_entries: list[dict[str, Any]] | None = None,
     aead_sample_entry_id: str | None = None,
+    media_bundle: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Run the library-side restore checks in order and return all results.
 
@@ -330,8 +448,36 @@ def run_all(
         )
     if aead_sample_entry_id is not None:
         results.append(check_aead_sample(database, keyring, entry_id=aead_sample_entry_id))
+    if any(not result["ok"] for result in results):
+        return results
+    if media_bundle is None:
+        # "Optional" is the text-only compatibility path, not permission to
+        # skip ciphertext checks for a populated media database. Check before
+        # replay so deletion cannot erase the very evidence requiring a bundle.
+        engine = create_read_only_database_engine(database)
+        try:
+            with engine.connect() as connection:
+                has_media = bool(connection.execute(text(
+                    "SELECT EXISTS (SELECT 1 FROM media_objects)"
+                )).scalar_one())
+            if has_media:
+                results.append({
+                    "name": "media_restore", "ok": False,
+                    "detail": "media bundle required for a database with media lifecycle records",
+                })
+                return results
+        finally:
+            engine.dispose()
     if manifest_entries is not None:
         results.append(
             check_replay_deletion_manifest(database, keyring, manifest_entries)
         )
+    if any(not result["ok"] for result in results):
+        return results
+    if media_bundle is not None:
+        if manifest_entries is None:
+            results.append({"name": "media_restore", "ok": False,
+                            "detail": "latest independent deletion manifest required"})
+        else:
+            results.append(restore_media_files(database, keyring, media_bundle))
     return results

@@ -313,8 +313,8 @@ struct DeviceActionFlowTests {
         }
     }
 
-    @Test("a handed action is executed and its report settles the operation")
-    func actionExecutedAndReported() async throws {
+    @Test("a handed action is executed for text and image sends", arguments: [false, true])
+    func actionExecutedAndReported(withImage: Bool) async throws {
         let service = Service()
         answerWithAction(service)
         let executor = StubDeviceActionExecutor()
@@ -323,7 +323,15 @@ struct DeviceActionFlowTests {
         )
         executor.backend = session
 
-        let final = try await chat.send(text: "周六下午三点网球")
+        let final: OperationReceipt
+        if withImage {
+            final = try await chat.send(parts: [
+                .text("周六下午三点网球"),
+                .imageReference(mediaID: "synthetic-image"),
+            ])
+        } else {
+            final = try await chat.send(text: "周六下午三点网球")
+        }
 
         #expect(executor.actions.count == 1)
         #expect(executor.actions.first?.actionID == Self.actionPayload()["action_id"] as? String)

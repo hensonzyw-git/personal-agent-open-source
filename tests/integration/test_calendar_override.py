@@ -509,9 +509,14 @@ def test_the_overridden_write_lands_on_the_messages_own_turn(
     assert report.status_code == 200, report.text
     entries = _result_entries(engine, keyring)
     assert [entry.operation_id for entry in entries] == [
+        "op_1",  # preserved issuing projection
         "op_1",
         issued["operation_id"],
     ]
+    assert [entry.content["state"] for entry in entries] == [
+        "source_in_progress", "succeeded", "succeeded",
+    ]
+    assert entries[1].content["device_result"] == "duplicate"
     assert {entry.turn_id for entry in entries} == {turn_id}
     assert entries[-1].content["record_id"] == "EK-2"
 

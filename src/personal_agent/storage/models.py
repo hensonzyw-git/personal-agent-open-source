@@ -168,6 +168,64 @@ CHECKPOINT_STATUSES: Final[tuple[str, ...]] = (
     "invalid",
 )
 
+#: Media object lifecycle (multimodal design 5.2, option-1 revision). A media
+#: object is one persisted image; the state names the *upload* progress, not
+#: processing, because under option 1 the server never derives content. The
+#: `normalizing` state the pre-revision design carried was deleted with the
+#: decoder: nothing recomputes the object, so there is no step to name.
+MEDIA_OBJECT_STATES: Final[tuple[str, ...]] = (
+    "pending",
+    "uploading",
+    "uploaded",
+    "ready",
+    "bound",
+    "deleting",
+    "reaping",
+    "deleted",
+    "expired",
+    "rejected",
+)
+
+#: States a client may still make progress from. Everything else is either
+#: terminal or waits on the reaper, and `create` must not reuse the id.
+MEDIA_OBJECT_LIVE_STATES: Final[tuple[str, ...]] = (
+    "pending",
+    "uploading",
+    "uploaded",
+    "ready",
+    "bound",
+)
+
+#: Terminal states: tombstoned, never revived, never re-issued.
+MEDIA_OBJECT_TERMINAL_STATES: Final[frozenset[str]] = frozenset(
+    {"deleted", "expired", "rejected"}
+)
+
+#: One upload attempt's own lifecycle (design 5.3). Attempts exist so a lost
+#: response, a failed validation or a superseded writer can be cleaned up
+#: idempotently without touching the persisted image; they are *not* a second
+#: lease system -- the real mutual exclusion is the §4.1 lock, and §5.1 says
+#: explicitly not to copy it into the database.
+#:
+#: `sealed` is the point of no return for content: the seal record (chunk
+#: count, total bytes, whole-stream hash) is stored and the staging file has
+#: been fsynced, so this attempt's bytes are complete and comparable. Publishing
+#: is a separate step and may be done by a later attempt after a crash.
+MEDIA_ATTEMPT_STATES: Final[tuple[str, ...]] = (
+    "claimed",
+    "sealed",
+    "published",
+    "abandoned",
+    "cleaned",
+)
+
+#: How a media object is used by a message. `origin` is the message that first
+#: used the object; `reuse` is a later legitimate use (design §5.1 terminology).
+#: This describes the *use relation* only -- it says nothing about storage, and
+#: at most one `origin` binding may exist per object.
+MEDIA_BINDING_ROLES: Final[tuple[str, ...]] = ("origin", "reuse")
+
+
 def _in_set(column: str, values: tuple[str, ...]) -> str:
     joined = ", ".join(f"'{value}'" for value in values)
     return f"{column} IN ({joined})"
@@ -903,4 +961,305 @@ class DeletionManifest(Base):
     deleted_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     backup_expiry_after: Mapped[datetime | None] = mapped_column(
         UtcTimestamp, nullable=True
+    )
+
+
+class MediaObject(Base):
+    """One persisted image from a chat message (multimodal design 5.1).
+
+    Under the adopted option 1 the server never decodes and never derives
+    content: the bytes it seals during `PUT` *are* the persisted image. That
+    single fact drives most of this table's shape, and every place it shows is
+    marked below, because the pre-revision design carried fields that only made
+    sense next to a normalizer.
+
+    Ownership is the device, as everywhere else in this schema. The system is
+    single-user by construction, so no user column exists here or anywhere
+    else; `device_id` is what an authorization check actually tests.
+
+    Sealed-versus-plaintext split (§5.1): hashes and the storage reference are
+    sealed, because a photo's digest is a fingerprint of that photo and a
+    storage path names it. State, relationship keys, MIME and sizes stay in
+    plaintext -- they are what the state machine and the reaper must query
+    without opening envelopes.
+    """
+
+    __tablename__ = "media_objects"
+
+    media_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("devices.device_id", ondelete="RESTRICT"), nullable=False
+    )
+
+    #: The `Idempotency-Key` of the request that created this object, or NULL
+    #: for a row no keyed request made (a test, a restore, a future server-side
+    #: producer). `api_requests` calls the same value `client_request_id`; this
+    #: is that key, and the partial unique index below keeps one key from one
+    #: device naming two objects.
+    client_request_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    retention_class: Mapped[str] = mapped_column(Text, nullable=False)
+
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Compare-and-swap guard, same contract as `operations.state_version`: a
+    #: writer that lost its claim must not transition newer state.
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    #: Which writer currently holds the upload claim, and until when. The
+    #: deadline bounds *this attempt*; the real mutual exclusion is the §4.1
+    #: lock, so an expired deadline lets a new attempt take over rather than
+    #: being a lease the reaper trusts on its own.
+    owner_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_attempt_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    claim_deadline: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
+
+    #: When an unbound object stops being resumable. `uploaded` past this
+    #: deadline may be taken over by a new attempt or terminated; it is never
+    #: retried forever (§5.2).
+    expires_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
+
+    #: What the client declared at `create`, and what the bounded header probe
+    #: actually read. Both are plaintext: an image MIME type is not personal
+    #: data, and the whole point of keeping them apart is that a mismatch
+    #: rejects the object, which the API must be able to test cheaply.
+    declared_mime: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actual_mime: Mapped[str | None] = mapped_column(Text, nullable=True)
+    declared_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    #: Measured by the server while streaming, never taken from the client.
+    #: **Option-1 revision**: this is the size of the sealed upload's plaintext,
+    #: which is also the persisted image's size. The pre-revision design kept a
+    #: separate "upload" pair beside this one; with no normalizer those two
+    #: measured the same bytes, so they are one pair here. See the migration for
+    #: the note that the field list in design §5.1 still reads as two.
+    content_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    #: **Client-declared, not server-measured** (option-1 revision). The design
+    #: deleted the decoder, so the server has no way to read real pixel
+    #: dimensions; these are the values from the client's declaration and must
+    #: never be presented as a server measurement. They are still checked
+    #: against the configured pixel ceiling -- that check is on the declaration,
+    #: and the server does not claim to have verified it.
+    declared_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    declared_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    #: Which key version sealed this object. Recovery needs the right one.
+    key_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    #: Sealed: the client's declared content hash, the server-measured content
+    #: hash, and where the persisted image lives. The measured hash is over the
+    #: plaintext bytes of the sealed upload (§5.1 option-1 revision); backup
+    #: transport uses a different, ciphertext-side SHA-256 and the two must not
+    #: be mixed.
+    encrypted_declared_sha256: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
+    encrypted_content_sha256: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
+    encrypted_storage_ref: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    #: When the upload was sealed (staging fsynced, seal record stored).
+    uploaded_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
+    #: When the persisted image was published to its final path.
+    ready_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
+    #: Tombstone time. Never reused, and the row outlives the bytes so a reader
+    #: sees a tombstone rather than an absence.
+    deleted_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
+
+    device: Mapped["Device"] = relationship()
+    #: `passive_deletes` on both children because the delete semantics are
+    #: declared on the foreign keys, and they differ on purpose: attempts
+    #: cascade with the object, bindings refuse to let it go while a message
+    #: still uses it. Without this the ORM loads the children and tries to null
+    #: their foreign key instead, which turns the RESTRICT into an incidental
+    #: NOT NULL failure and leaves the real rule unstated in the model.
+    attempts: Mapped[list["MediaAttempt"]] = relationship(
+        back_populates="media_object",
+        order_by="MediaAttempt.attempt_number",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    bindings: Mapped[list["MediaBinding"]] = relationship(
+        back_populates="media_object", passive_deletes=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(_in_set("purpose", ("chat_image",)), name="purpose"),
+        CheckConstraint(
+            _in_set("retention_class", ("timeline_media",)), name="retention_class"
+        ),
+        CheckConstraint(_in_set("state", MEDIA_OBJECT_STATES), name="state"),
+        CheckConstraint("state_version >= 1", name="state_version_positive"),
+        CheckConstraint(
+            "declared_size IS NULL OR declared_size >= 0", name="declared_size_non_negative"
+        ),
+        CheckConstraint(
+            "content_size IS NULL OR content_size >= 0", name="content_size_non_negative"
+        ),
+        CheckConstraint(
+            "declared_width IS NULL OR declared_width > 0", name="declared_width_positive"
+        ),
+        CheckConstraint(
+            "declared_height IS NULL OR declared_height > 0",
+            name="declared_height_positive",
+        ),
+        CheckConstraint(
+            "current_attempt_number IS NULL OR current_attempt_number >= 1",
+            name="current_attempt_number_positive",
+        ),
+        Index(
+            "uq_media_objects_client_request",
+            "device_id",
+            "client_request_id",
+            unique=True,
+            sqlite_where=text("client_request_id IS NOT NULL"),
+        ),
+        Index("ix_media_objects_device_id", "device_id"),
+        Index("ix_media_objects_state", "state"),
+        # The reaper's two scans: unbound objects past their deadline, and
+        # tombstones whose bytes have not been reaped yet.
+        Index("ix_media_objects_expires_at", "expires_at"),
+    )
+
+
+class MediaAttempt(Base):
+    """One upload attempt for a media object (design 5.3).
+
+    Attempts are the cleanup unit. A lost `PUT` response, a rejected object, a
+    superseded writer and a crash between seal and publish all leave staging
+    bytes behind, and each of those is owned by exactly one attempt -- so
+    cleanup can be idempotent per attempt without ever touching the persisted
+    image.
+
+    The seal record is what makes recovery safe rather than trusting: it is
+    stored when the staging file is fsynced, and a later attempt that finds an
+    already-published final file adopts it only if the final bytes authenticate
+    and match this record's whole-stream hash. Different ciphertext for the
+    same plaintext is normal (random nonces) and must not read as corruption.
+    """
+
+    __tablename__ = "media_attempts"
+
+    attempt_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    media_id: Mapped[str] = mapped_column(
+        ForeignKey("media_objects.media_id", ondelete="CASCADE"), nullable=False
+    )
+    #: Monotonic per object. Referenced by `media_objects.current_attempt_number`
+    #: rather than by a foreign key, which would make the two tables mutually
+    #: dependent and leave SQLite unable to build either.
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    owner_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claim_deadline: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
+
+    #: Sealed: where this attempt's staging bytes live, and the seal record
+    #: (authenticated chunk count, total bytes, order and whole-stream hash).
+    encrypted_staging_ref: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
+    encrypted_seal_record: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    sealed_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
+    #: When this attempt's staging bytes were confirmed gone (or found gone).
+    cleaned_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
+
+    media_object: Mapped["MediaObject"] = relationship(back_populates="attempts")
+
+    __table_args__ = (
+        CheckConstraint(_in_set("state", MEDIA_ATTEMPT_STATES), name="state"),
+        CheckConstraint("attempt_number >= 1", name="attempt_number_positive"),
+        CheckConstraint("state_version >= 1", name="state_version_positive"),
+        # A sealed attempt without a seal record would be adoptable-looking but
+        # unverifiable, and the recovery path would have nothing to compare.
+        CheckConstraint(
+            "state IN ('claimed', 'abandoned') OR encrypted_seal_record IS NOT NULL",
+            name="sealed_attempt_has_record",
+        ),
+        UniqueConstraint("media_id", "attempt_number", name="media_id_attempt_number"),
+        # §5.3: at most one adopted content per object. Publishing is the
+        # adoption, so at most one published attempt may exist.
+        Index(
+            "uq_media_attempts_published",
+            "media_id",
+            unique=True,
+            sqlite_where=text("state = 'published'"),
+        ),
+        Index("ix_media_attempts_state", "state"),
+    )
+
+
+class MediaBinding(Base):
+    """How a message uses a media object (design §5.1 and §6).
+
+    `origin` is the message that first used the object, `reuse` a later
+    legitimate use (a clarification chain, or a controlled safety retry). The
+    role describes the *use relation* only: deleting the origin message fans
+    out to the media object, while deleting a reuse message removes just that
+    relation and leaves the persisted image alone. That asymmetry is why these
+    are rows rather than a column on either side.
+
+    `event_id` cascades, because a use relation cannot outlive the message that
+    makes it; `media_id` does not, because destroying the object is a decision
+    the fan-out makes explicitly, under the §6 lock, with a manifest entry.
+    """
+
+    __tablename__ = "media_bindings"
+
+    binding_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    media_id: Mapped[str] = mapped_column(
+        ForeignKey("media_objects.media_id", ondelete="RESTRICT"), nullable=False
+    )
+    event_id: Mapped[str] = mapped_column(
+        ForeignKey("conversation_events.event_id", ondelete="CASCADE"), nullable=False
+    )
+    operation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("operations.operation_id", ondelete="RESTRICT"), nullable=True
+    )
+
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Position in the message's ordered `parts` array. The ordering is part of
+    #: the contract (text before image), so two bindings may not claim the same
+    #: slot.
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: For a `reuse`, the operation whose use this one re-establishes. The
+    #: server verifies the lineage before accepting it.
+    source_operation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("operations.operation_id", ondelete="RESTRICT"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    media_object: Mapped["MediaObject"] = relationship(back_populates="bindings")
+    event: Mapped["ConversationEvent"] = relationship()
+
+    __table_args__ = (
+        CheckConstraint(_in_set("role", MEDIA_BINDING_ROLES), name="role"),
+        CheckConstraint("ordinal >= 0", name="ordinal_non_negative"),
+        # Exactly one origin per object: "首次使用该对象的那条消息" is singular
+        # by definition, and a second origin would make the deletion fan-out
+        # ambiguous about which message owns the object.
+        Index(
+            "uq_media_bindings_origin",
+            "media_id",
+            unique=True,
+            sqlite_where=text("role = 'origin'"),
+        ),
+        UniqueConstraint("event_id", "ordinal", name="event_id_ordinal"),
+        Index("ix_media_bindings_event_id", "event_id"),
+        Index("ix_media_bindings_media_id", "media_id"),
+        Index("ix_media_bindings_operation_id", "operation_id"),
     )

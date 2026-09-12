@@ -34,6 +34,10 @@ def main() -> None:
         help="the deletion-manifest export JSON to replay",
     )
     parser.add_argument(
+        "--media-bundle", type=Path,
+        help="verified restored media run; may be omitted only when the DB has no media lifecycle rows",
+    )
+    parser.add_argument(
         "--aead-sample-entry-id",
         default=None,
         help=(
@@ -43,9 +47,20 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    if args.media_bundle is not None and args.manifest.resolve().is_relative_to(
+        args.media_bundle.resolve()
+    ):
+        raise SystemExit("use an independently held latest deletion manifest, not the bundle copy")
 
     keyring = load_agent_data_keyring()
-    manifest_entries = json.loads(args.manifest.read_text(encoding="utf-8"))
+    manifest_payload = json.loads(args.manifest.read_text(encoding="utf-8"))
+    manifest_entries = (
+        manifest_payload["entries"]
+        if isinstance(manifest_payload, dict) and isinstance(manifest_payload.get("entries"), list)
+        else manifest_payload
+    )
+    if not isinstance(manifest_entries, list):
+        raise SystemExit("deletion manifest is neither a legacy list nor a bundle entries object")
 
     results = run_all(
         args.agent_database,
@@ -53,6 +68,7 @@ def main() -> None:
         finance_database=args.finance_database,
         manifest_entries=manifest_entries,
         aead_sample_entry_id=args.aead_sample_entry_id,
+        media_bundle=args.media_bundle,
     )
 
     failed = 0

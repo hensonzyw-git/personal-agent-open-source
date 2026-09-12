@@ -32,8 +32,8 @@ import Foundation
 /// belongs here, and it is a single named mint rather than a `.lowercased()` at
 /// each call site: adapting at the call site leaves the next write path to
 /// rediscover this by being refused in production.
-enum IdempotencyKey {
-    static func mint() -> String {
+public enum IdempotencyKey {
+    public static func mint() -> String {
         UUID().uuidString.lowercased()
     }
 
@@ -1313,6 +1313,17 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
         self.operationID = operationID
         self.createdAt = createdAt
         self.content = content
+    }
+
+    public var imageMediaIDs: [String] {
+        guard eventType == "user_message" else { return [] }
+        return (content["parts"]?.arrayValue ?? []).compactMap { part in
+            guard let fields = part.objectValue,
+                  fields["type"]?.stringValue == "image_ref",
+                  let id = fields["media_id"]?.stringValue,
+                  UUID(uuidString: id) != nil else { return nil }
+            return id
+        }
     }
 
     public var kind: TimelineEntryKind {

@@ -38,6 +38,10 @@ public enum CredentialKey {
     /// outcome instead of starting a second decision, so they belong in the same
     /// durable store as the chat send slot.
     public static let pendingDuplicateDecisions = "pending-duplicate-decisions-v1"
+    /// A local-only image send that has crossed the upload boundary but has not
+    /// yet been sealed into `pendingChatSend`. It points only at an app-private,
+    /// no-backup staging file; image bytes never enter the Keychain.
+    public static let pendingMediaSend = "pending-media-send-v1"
     /// The device actions a 「仍要创建」 override has already claimed. The server
     /// derives *one* operation per override, so the second tap of a double tap
     /// reads the same parked projection back and is handed the same action —

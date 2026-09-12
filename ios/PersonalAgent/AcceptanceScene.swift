@@ -106,7 +106,9 @@ struct AcceptanceScene: View {
                 store: InMemoryCredentialStore(),
                 deviceActionExecutor: AcceptanceDeviceExecutor()
             )
-            let chatModel = ChatModel(timeline: chat) { $0.localizedDescription }
+            let chatModel = ChatModel(
+                timeline: chat, mediaBackend: backend, store: InMemoryCredentialStore()
+            ) { $0.localizedDescription }
             timeline = backend
             model = chatModel
             await chatModel.open(conversationID: AcceptanceScenario.conversationID)

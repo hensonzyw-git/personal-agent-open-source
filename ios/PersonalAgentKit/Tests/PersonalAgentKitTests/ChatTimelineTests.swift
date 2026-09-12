@@ -403,7 +403,7 @@ func makeChatSession(
         baseURL: service.baseURL,
         session: URLSession(configuration: configuration)
     )
-    return DeviceSession(client: client, store: store, now: {
+    return DeviceSession(client: client, store: store, identityFactory: .softwareForTests, now: {
         Date(timeIntervalSince1970: 1_000)
     })
 }

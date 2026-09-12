@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Final
@@ -32,6 +33,7 @@ from typing import Any, Final
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
+from personal_agent.api.chat_parts import ChatPart, TextPart
 from personal_agent.api.operation_state import (
     StaleOperationVersionError,
     assert_transition,
@@ -50,22 +52,63 @@ def chat_request_fingerprint(
     text: str,
     clarification_of: str | None = None,
     start_new_session: bool = False,
+    parts: Sequence[ChatPart] = (),
 ) -> str:
     """A canonical fingerprint of one chat request's meaning.
 
     Only the fields that define what the user asked are included; transport and
     diagnostic fields (`client_sent_at`, headers) are deliberately excluded, so a
     genuine retry of the same message matches and a changed message does not.
+
+    **The payload for a text-only request is frozen.** Every chat request sealed
+    before media existed is compared against this exact construction on replay,
+    so the `parts` key is added only when parts are present: an always-present
+    empty key would change every one of those fingerprints and turn every
+    existing sealed request into a spurious `IDEMPOTENCY_CONFLICT`. The literal
+    values are pinned by `test_the_pre_media_fingerprint_is_frozen`.
+
+    `text` is the request's *effective* text -- for a parts request that is
+    :func:`~personal_agent.api.chat_parts.parts_text`, which is `""` when the
+    user sent images and nothing else.
+
+    The parts carry the ordered `(media_id, content_sha256)` of §3.2, and the
+    digest must be the server's measured one: the client submits only media ids
+    and never declares an authoritative hash (§5.1). Requiring it rather than
+    defaulting it means no caller can fingerprint a request using a value the
+    client supplied, because there is nothing to supply.
     """
-    payload = {
+    payload: dict[str, Any] = {
         "conversation_id": conversation_id,
         "text": text,
         "clarification_of": clarification_of,
         "start_new_session": start_new_session,
     }
+    if parts:
+        payload["parts"] = [_fingerprint_part(part) for part in parts]
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+def _fingerprint_part(part: ChatPart) -> dict[str, str]:
+    """One part as the fingerprint sees it, the measured digest included.
+
+    Order is meaning, not presentation: the same image before and after a text
+    part are different requests, and so are two different images under one id.
+    """
+    if isinstance(part, TextPart):
+        return {"type": "text", "text": part.text}
+    if part.content_sha256 is None:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=(
+                "a media part must carry the server's measured sha256 before it "
+                "can be fingerprinted"
+            ),
+        )
+    return {
+        "type": "image_ref",
+        "media_id": part.media_id,
+        "content_sha256": part.content_sha256,
+    }
 #: The namespace every frozen plan item's key is derived in. Fixed and
 #: published for the same reason the override's is: the derivation *is* the
 #: idempotency mechanism, so it cannot depend on anything that varies between

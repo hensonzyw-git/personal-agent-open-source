@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -18,7 +21,10 @@ from personal_agent.context.continuation import (
     FinanceRetryContext,
 )
 from personal_agent.context.config import CAP001_PROVISIONAL_VALUES, ContextConfig
+from personal_agent.diagnostics import transcript
+from personal_agent.diagnostics.transcript import TranscriptRecorder
 from personal_agent.policy.bridge import VisibleTool
+from personal_agent.runtime.model_input import ImageInputPart, TextInputPart
 from personal_agent.runtime.glm_gateway import (
     GlmGateway,
     generate_with_adk,
@@ -109,7 +115,7 @@ def _call_with_unsupported_content(name, args):
     )
 
 
-def _gateway(response=None, *, raises=None):
+def _gateway(response=None, *, raises=None, recorder=None):
     def generate(**kwargs):
         generate.kwargs = kwargs
         if raises is not None:
@@ -123,6 +129,7 @@ def _gateway(response=None, *, raises=None):
             api_key="k",
             api_base=_PINNED,
             generate=generate,
+            recorder=recorder,
         ),
         generate,
     )
@@ -700,6 +707,11 @@ def test_every_envelope_data_component_reaches_the_provider_in_fixed_order() -> 
         ComponentKind.SYSTEM_POLICY,
         ComponentKind.USER_INPUT,
         ComponentKind.TOOL_DECLARATION,
+        # Counted, never rendered. An image component is how the budgeter sees
+        # a photo's cost; the photo itself travels as an `ImageInputPart`, and
+        # if its `text` ever reached the message it would be a stand-in string
+        # for the picture, sent to a model that also receives the picture.
+        ComponentKind.IMAGE_INPUT,
     }
     components = (
         ContextComponent(ComponentKind.SYSTEM_POLICY, "DO-NOT-SEND-AS-DATA"),
@@ -709,8 +721,13 @@ def test_every_envelope_data_component_reaches_the_provider_in_fixed_order() -> 
             ComponentKind.TOOL_DECLARATION,
             "DO-NOT-SEND-AS-MESSAGE",
         ),
+        ContextComponent(
+            ComponentKind.IMAGE_INPUT, "DO-NOT-SEND-AS-TEXT", tokens=512
+        ),
     )
-    envelope = SimpleNamespace(components=components, user_text="CURRENT")
+    envelope = SimpleNamespace(
+        components=components, user_text="CURRENT", input_parts=()
+    )
 
     messages = _messages(envelope)
 
@@ -724,6 +741,129 @@ def test_every_envelope_data_component_reaches_the_provider_in_fixed_order() -> 
     assert "DO-NOT-SEND-AS-DATA" not in leading
     assert "DO-NOT-DUPLICATE" not in leading
     assert "DO-NOT-SEND-AS-MESSAGE" not in leading
+    assert "DO-NOT-SEND-AS-TEXT" not in leading
+
+
+# -- §8: the parts reach the adapter, and only their hashes reach the record --
+
+
+_PHOTO = b"\xff\xd8\xff\xe0" + b"synthetic-photo" * 8
+_MESSAGE = "这张账单记一下"
+
+
+def _transcript(tmp_path: Path) -> TranscriptRecorder:
+    """The production recorder, writing to a throwaway directory.
+
+    The real one rather than a capturing stand-in: what §8 requires is what
+    reaches the *file*, and an in-memory copy of the payload would pass just as
+    well if the writer rendered a mapping as a repr string.
+    """
+    return TranscriptRecorder(tmp_path / "transcript", service="api")
+
+
+def _model_request(recorder: TranscriptRecorder) -> dict:
+    (path,) = sorted(recorder.directory.glob("*.jsonl"))
+    records = [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    bodies = [
+        record["payload"]
+        for record in records
+        if record["kind"] == transcript.MODEL_REQUEST
+    ]
+    assert len(bodies) == 1
+    return bodies[0]
+
+
+def _photo(tokens: int = 400) -> ImageInputPart:
+    return ImageInputPart(
+        mime_type="image/jpeg",
+        data=_PHOTO,
+        content_sha256=hashlib.sha256(_PHOTO).hexdigest(),
+        token_upper_bound=tokens,
+    )
+
+
+def _image_envelope(tmp_path, *, tokens: int = 400):
+    return envelope_for(
+        tmp_path,
+        system="SYS",
+        user_text=_MESSAGE,
+        tools=[_EXPENSE],
+        input_parts=(TextInputPart(_MESSAGE), _photo(tokens)),
+    )
+
+
+def test_the_envelopes_parts_are_handed_to_the_adapter(tmp_path) -> None:
+    """§8's chain would end here if the gateway dropped them.
+
+    The envelope is the only holder of the authorized bytes, so a `propose` that
+    called the adapter without them would leave the photo anchored, accepted and
+    never seen -- the silent failure §5.1 forbids outright.
+    """
+    gateway, generate = _gateway(_response(_text("ok")))
+    built = _image_envelope(tmp_path)
+
+    _propose(gateway, built)
+
+    assert generate.kwargs["input_parts"] == built.input_parts
+    assert generate.kwargs["input_parts"][1].data == _PHOTO
+
+
+def test_a_text_turn_hands_the_adapter_no_parts(tmp_path) -> None:
+    """The pre-media request, unchanged: no parts and the plain message list."""
+    gateway, generate = _gateway(_response(_text("ok")))
+    built = envelope_for(
+        tmp_path, system="SYS", user_text="午饭 45 个人", tools=[_EXPENSE]
+    )
+
+    _propose(gateway, built)
+
+    assert generate.kwargs["input_parts"] == ()
+    assert generate.kwargs["messages"][-1] == {"role": "user", "content": "午饭 45 个人"}
+
+
+def test_the_recorded_request_carries_the_image_as_a_hash_and_a_size(
+    tmp_path,
+) -> None:
+    """§8: "记录 hash/计数/目标/attempt，不把 raw base64、凭据、完整载荷写普通日志"."""
+    recorder = _transcript(tmp_path)
+    gateway, _ = _gateway(_response(_text("ok")), recorder=recorder)
+    built = _image_envelope(tmp_path)
+
+    _propose(gateway, built)
+
+    request = _model_request(recorder)
+    assert request["input_parts"] == [
+        {"type": "text", "chars": len(_MESSAGE)},
+        {
+            "type": "image",
+            "mime_type": "image/jpeg",
+            "bytes": len(_PHOTO),
+            "content_sha256": hashlib.sha256(_PHOTO).hexdigest(),
+        },
+    ]
+    written = json.dumps(request)
+    assert _PHOTO not in written.encode()
+    assert base64.b64encode(_PHOTO).decode() not in written
+
+
+def test_the_recorded_request_carries_the_count_the_budget_charged(tmp_path) -> None:
+    """The count and the cost are the two facts an operator can check afterwards."""
+    recorder = _transcript(tmp_path)
+    gateway, _ = _gateway(_response(_text("ok")), recorder=recorder)
+    built = _image_envelope(tmp_path, tokens=400)
+
+    _propose(gateway, built)
+
+    request = _model_request(recorder)
+    # A number, not a rendered mapping: §8 asks for the cost to be *recorded*,
+    # and a repr string is a record no tool can read.
+    assert request["context"]["component_tokens"]["image_input"] == 400
+    # The count comes from the parts themselves rather than a second field that
+    # could disagree with them.
+    assert sum(1 for part in request["input_parts"] if part["type"] == "image") == 1
+    assert request["context"]["dropped_counts"] == {}
 
 
 def test_only_the_budgeted_unresolved_turn_is_sent_for_clarification(

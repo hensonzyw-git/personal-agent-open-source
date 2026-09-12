@@ -168,6 +168,93 @@ public struct AgentClient: Sendable {
         )
     }
 
+    /// Post a structured chat request.  This overload is intentionally not a
+    /// replacement for the text-only method above: text-only callers preserve
+    /// the old `text` wire shape and therefore the old request fingerprint.
+    public func sendChatMessage(
+        conversationID: String,
+        parts: [ChatInputPart],
+        clarificationOf: String? = nil,
+        startNewSession: Bool = false,
+        idempotencyKey: String,
+        token: String
+    ) async throws -> OperationReceipt {
+        try await sendEncoded(
+            method: "POST",
+            path: "/v1/chat/messages",
+            body: StructuredChatRequest(
+                conversationID: conversationID,
+                parts: parts,
+                clarificationOf: clarificationOf,
+                startNewSession: startNewSession
+            ),
+            token: token,
+            headers: ["Idempotency-Key": idempotencyKey],
+            accepting: [200, 202],
+            as: OperationReceipt.self
+        )
+    }
+
+    // --- media upload (`CAP-003`, design §5.2) ------------------------------
+
+    public func createMediaUpload(
+        declaration: MediaUploadDeclaration,
+        idempotencyKey: String,
+        token: String
+    ) async throws -> CreatedMediaUpload {
+        try await sendEncoded(
+            method: "POST",
+            path: "/v1/media/uploads",
+            body: declaration,
+            token: token,
+            headers: ["Idempotency-Key": idempotencyKey],
+            accepting: [200, 201],
+            as: CreatedMediaUpload.self
+        )
+    }
+
+    /// Upload the already-prepared bytes.  The binary body is deliberately not
+    /// passed through the JSON helper: there is no base64 expansion, and the
+    /// server's independent binary ceiling remains the one that governs it.
+    public func putMediaContent(
+        mediaID: String, body: Data, token: String
+    ) async throws -> MediaUploadReceipt {
+        try await sendData(
+            method: "PUT",
+            path: "/v1/media/content/\(mediaID)",
+            body: body,
+            contentType: "application/octet-stream",
+            token: token,
+            as: MediaUploadReceipt.self
+        )
+    }
+
+    public func completeMediaUpload(
+        mediaID: String, token: String
+    ) async throws -> CompletedMediaUpload {
+        try await send(
+            method: "POST",
+            path: "/v1/media/uploads/\(mediaID)/complete",
+            token: token,
+            accepting: [200, 202],
+            as: CompletedMediaUpload.self
+        )
+    }
+
+    public func readMedia(mediaID: String, token: String) async throws -> Data {
+        guard UUID(uuidString: mediaID) != nil,
+              let url = Self.url(path: "/v1/media/\(mediaID)", query: [], relativeTo: baseURL)
+        else { throw AgentClientError.malformedResponse }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw AgentClientError.malformedResponse }
+        guard http.statusCode == 200 else {
+            throw AgentClientError.from(status: http.statusCode, body: data)
+        }
+        return data
+    }
+
     /// Correct one recorded expense's 分类, from the receipt card's picker.
     ///
     /// `expectedCurrentCategory` is the compare-and-swap and is **not**
@@ -565,6 +652,78 @@ public struct AgentClient: Sendable {
         throw AgentClientError.from(status: http.statusCode, body: data)
     }
 
+    private func sendEncoded<Response: Decodable, Body: Encodable>(
+        method: String,
+        path: String,
+        body: Body,
+        token: String? = nil,
+        headers: [String: String] = [:],
+        accepting: Set<Int> = [200, 201],
+        as type: Response.Type
+    ) async throws -> Response {
+        let encoded: Data
+        do {
+            encoded = try JSONEncoder().encode(body)
+        } catch {
+            throw AgentClientError.malformedResponse
+        }
+        return try await sendData(
+            method: method,
+            path: path,
+            body: encoded,
+            contentType: "application/json",
+            token: token,
+            headers: headers,
+            accepting: accepting,
+            as: type
+        )
+    }
+
+    private func sendData<Response: Decodable>(
+        method: String,
+        path: String,
+        body: Data,
+        contentType: String,
+        token: String? = nil,
+        headers: [String: String] = [:],
+        accepting: Set<Int> = [200, 201],
+        as type: Response.Type
+    ) async throws -> Response {
+        guard let url = Self.url(path: path, query: [], relativeTo: baseURL) else {
+            throw AgentClientError.invalidBaseURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 45
+        request.httpBody = body
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+        return try await receive(request, accepting: accepting, as: type)
+    }
+
+    private func receive<Response: Decodable>(
+        _ request: URLRequest, accepting: Set<Int>, as type: Response.Type
+    ) async throws -> Response {
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw AgentClientError.transport(
+                "\(request.url?.absoluteString ?? "<unknown>"): \(error.localizedDescription)"
+            )
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw AgentClientError.malformedResponse
+        }
+        if accepting.contains(http.statusCode) {
+            do { return try JSONDecoder().decode(Response.self, from: data) }
+            catch { throw AgentClientError.malformedResponse }
+        }
+        throw AgentClientError.from(status: http.statusCode, body: data)
+    }
+
     private static func url(
         path: String, query: [URLQueryItem], relativeTo base: URL
     ) -> URL? {
@@ -574,6 +733,18 @@ public struct AgentClient: Sendable {
         else { return nil }
         components.queryItems = query
         return components.url
+    }
+}
+
+private struct StructuredChatRequest: Encodable {
+    let conversationID: String
+    let parts: [ChatInputPart]
+    let clarificationOf: String?
+    let startNewSession: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case conversationID = "conversation_id", parts
+        case clarificationOf = "clarification_of", startNewSession = "start_new_session"
     }
 }
 
@@ -642,6 +813,36 @@ public struct Capabilities: Decodable, Sendable {
     /// client never invents the address, so "no jump offered" is the honest
     /// rendering of a missing value.
     public let ledgerURL: String?
+    /// The server's current photo verdict and the public bounds a client needs
+    /// to prepare one before it ever starts an upload.  A missing field is
+    /// closed for compatibility with an older server.
+    public let images: ImageInputCapability
+
+    public struct ImageInputCapability: Decodable, Sendable, Equatable {
+        public let enabled: Bool
+        public let maxContentBytes: Int?
+        public let maxDimension: Int?
+        public let allowedMIMEs: [String]
+
+        private enum CodingKeys: String, CodingKey {
+            case enabled
+            case maxContentBytes = "max_content_bytes"
+            case maxDimension = "max_dimension"
+            case allowedMIMEs = "allowed_mimes"
+        }
+
+        public init(
+            enabled: Bool = false,
+            maxContentBytes: Int? = nil,
+            maxDimension: Int? = nil,
+            allowedMIMEs: [String] = []
+        ) {
+            self.enabled = enabled
+            self.maxContentBytes = maxContentBytes
+            self.maxDimension = maxDimension
+            self.allowedMIMEs = allowedMIMEs
+        }
+    }
 
     public struct Tool: Decodable, Sendable {
         public let alias: String
@@ -660,6 +861,17 @@ public struct Capabilities: Decodable, Sendable {
         case tools
         case conversationID = "conversation_id"
         case ledgerURL = "ledger_url"
+        case images
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        allowedToolsVersion = try container.decode(String.self, forKey: .allowedToolsVersion)
+        tools = try container.decode([Tool].self, forKey: .tools)
+        conversationID = try container.decode(String.self, forKey: .conversationID)
+        ledgerURL = try container.decodeIfPresent(String.self, forKey: .ledgerURL)
+        images = try container.decodeIfPresent(ImageInputCapability.self, forKey: .images)
+            ?? .init()
     }
 }
 

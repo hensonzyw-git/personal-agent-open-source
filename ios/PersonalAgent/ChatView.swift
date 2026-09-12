@@ -1,6 +1,8 @@
 import PersonalAgentKit
+import PhotosUI
 import SwiftUI
 import UIKit
+import AVFoundation
 
 /// `DEV-030`'s chat screen: one continuous Timeline, cursor-paged history, and a
 /// structured receipt under each message.
@@ -12,6 +14,7 @@ import UIKit
 /// model wrote.
 struct ChatView: View {
     @Bindable var model: ChatModel
+    @Environment(\.scenePhase) private var scenePhase
     /// `1j`. The daily-review surface, now a card inside this Timeline. `nil`
     /// only before the first refresh has opened it; the review card draws from
     /// it for the live status and the ack/defer calls, while the frozen values
@@ -32,6 +35,9 @@ struct ChatView: View {
     /// §3c: the head of the identifier just copied, shown as a toast so a copy
     /// confirms itself without the identifiers ever going back on the card face.
     @State private var copiedPrefix: String?
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var voiceInput = VoiceInput()
+    @State private var showingCamera = false
 
     struct ResolutionIntent: Equatable {
         let operationID: String
@@ -59,6 +65,19 @@ struct ChatView: View {
             composer
         }
         .background(Color.screenBackground)
+        .sheet(isPresented: $showingCamera) {
+            CameraInput { data in
+                showingCamera = false
+                if let data { model.preparePhoto(data) }
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Backgrounded audio is never kept as an implicit recording or
+            // transformed into a partial draft after the user returns.
+            if phase != .active, voiceInput.isActive {
+                voiceInput.interrupt()
+            }
+        }
         // No title of its own: §1a makes the Timeline the whole surface, so the
         // navigation bar belongs to the app rather than to this view. `RootView`
         // sets it, together with the status entry.
@@ -340,6 +359,9 @@ struct ChatView: View {
         switch event.kind {
         case .userMessage(let text, let clarificationOf):
             VStack(alignment: .trailing, spacing: 2) {
+                ForEach(event.imageMediaIDs, id: \.self) { mediaID in
+                    TimelinePhoto(mediaID: mediaID, model: model)
+                }
                 Text(text)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14)
@@ -2150,6 +2172,27 @@ struct ChatView: View {
                 // because the only actionable card was a screen away).
                 unresolvedCard(pending)
             }
+            if model.hasPendingPhotoSend && model.unresolved == nil {
+                HStack {
+                    Text("图片发送尚未完成").font(.caption)
+                    Button("继续") { Task { await model.resumeUnresolved() } }
+                    Button("放弃本地图片") { Task { await model.discardUnsentPhoto() } }
+                }
+                .disabled(model.busy)
+            }
+            if let photo = model.preparedPhoto,
+               let preview = UIImage(data: photo.data) {
+                HStack(spacing: 8) {
+                    Image(uiImage: preview)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 56, height: 56)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .accessibilityLabel("待发送照片")
+                    Button("移除照片", role: .destructive) { model.clearPreparedPhoto() }
+                        .font(.caption)
+                }
+            }
             HStack(spacing: 8) {
                 // §3i 阶段一: 输入框不禁用。可以打字、可以想 —— 防重复记账不再靠
                 // 锁住打字承担, 而是把发送挡住（见下）。灰掉输入框连起草下一句
@@ -2157,6 +2200,66 @@ struct ChatView: View {
                 TextField("记一笔，或问一句", text: $model.draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
+                Button {
+                    Task {
+                        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+                            model.lastError = "当前设备没有可用相机。"
+                            return
+                        }
+                        guard await AVCaptureDevice.requestAccess(for: .video) else {
+                            model.lastError = "没有相机权限，请在系统设置中允许访问。"
+                            return
+                        }
+                        showingCamera = true
+                    }
+                } label: {
+                    Image(systemName: "camera").font(.title3)
+                }
+                .disabled(model.busy || writingInProgress || !model.imageCapability.enabled)
+                .accessibilityLabel("拍照")
+                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                    Image(systemName: "paperclip")
+                        .font(.title3)
+                }
+                .disabled(model.busy || writingInProgress || !model.imageCapability.enabled)
+                .accessibilityLabel("选择照片")
+                .onChange(of: selectedPhoto) { _, item in
+                    guard let item else { return }
+                    Task {
+                        defer { selectedPhoto = nil }
+                        do {
+                            guard let data = try await item.loadTransferable(type: Data.self) else {
+                                model.lastError = "无法读取这张照片，请重新选择。"
+                                return
+                            }
+                            model.preparePhoto(data)
+                        } catch {
+                            model.lastError = "无法读取这张照片，请重新选择。"
+                        }
+                    }
+                }
+                Button {
+                    if voiceInput.isActive {
+                        voiceInput.cancel()
+                    }
+                } label: {
+                    Image(systemName: voiceInput.isActive ? "mic.fill" : "mic")
+                        .font(.title3)
+                        .foregroundStyle(voiceInput.isActive ? .danger : .primary)
+                }
+                .disabled(model.busy || writingInProgress)
+                .accessibilityLabel(voiceInput.isActive ? "取消语音输入" : "长按语音输入")
+                .onLongPressGesture(minimumDuration: 0.2, pressing: { holding in
+                    if holding {
+                        Task { await voiceInput.start() }
+                    } else if voiceInput.isRecording {
+                        Task {
+                            model.appendVoiceDraft(await voiceInput.finish())
+                        }
+                    } else if voiceInput.isActive {
+                        voiceInput.cancel()
+                    }
+                }, perform: {})
                 if writingInProgress {
                     // §3i 阶段一: 写入进行中时, 发送按钮让位给一句说明。告诉用户
                     // 为什么按不下去, 而不是让他对着一个看似可点却不响应的按钮。
@@ -2178,12 +2281,25 @@ struct ChatView: View {
                     .disabled(
                         model.busy
                             || model.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-                                .isEmpty
+                                .isEmpty && model.preparedPhoto == nil
                     )
                 }
             }
             if model.unresolved != nil {
                 Text("上一条消息的结果还没确认。可以先打字, 但发出去要等它处理完: 否则同一笔可能被记两次。")
+                    .font(.caption)
+                    .foregroundStyle(.pending)
+            }
+            if voiceInput.isRecording {
+                Text("正在本机转写；松开后可编辑再发送。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if voiceInput.isPreparing {
+                Text("正在准备本机语音识别；松开或点麦克风可取消。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let message = voiceInput.errorMessage {
+                Text(message)
                     .font(.caption)
                     .foregroundStyle(.pending)
             }

@@ -190,7 +190,8 @@ struct DeviceSessionTests {
         store: CredentialStore = InMemoryCredentialStore(),
         clock: @escaping @Sendable () -> Date = { Date(timeIntervalSince1970: 1_000) }
     ) throws -> DeviceSession {
-        DeviceSession(client: try stubbedClient(), store: store, now: clock)
+        DeviceSession(client: try stubbedClient(), store: store,
+                      identityFactory: .softwareForTests, now: clock)
     }
 
     @Test("enrollment persists the device and a later launch restores it")
@@ -612,11 +613,10 @@ private final class HeaderStubProtocol: URLProtocol {
 struct ClientWireVersionTests {
     @Test("this build declares the version it actually implements")
     func versionIsTheImplementedOne() {
-        // v2 is the plural `device_actions` list plus the calendar identity,
-        // timezone and all-day date fields. Raising this without implementing
-        // them would be a claim to execute actions this build would mis-read.
-        #expect(ClientWireVersion.version == 2)
-        #expect(ClientWireVersion.value == "2")
+        // v3 adds a per-window sync epoch to v2's calendar actions.
+        // The mirror's prepare/capture/upload flow implements that contract.
+        #expect(ClientWireVersion.version == 3)
+        #expect(ClientWireVersion.value == "3")
         #expect(ClientWireVersion.header == "X-Client-Wire-Version")
     }
 

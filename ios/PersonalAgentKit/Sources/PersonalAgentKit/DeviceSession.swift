@@ -183,6 +183,7 @@ public actor DeviceSession {
             CredentialKey.pendingChatSend,
             // `DEV-031`: same reasoning for unconfirmed duplicate decisions.
             CredentialKey.pendingDuplicateDecisions,
+            CredentialKey.pendingMediaSend,
             // Delete the authoritative envelope last. If removing a legacy item
             // fails, the complete enrollment remains recoverable.
             CredentialKey.enrollment,
@@ -241,6 +242,53 @@ public actor DeviceSession {
                 idempotencyKey: idempotencyKey,
                 token: $0
             )
+        }
+    }
+
+    /// The structured parts form is safe under exactly the same one-refresh
+    /// rule as text: the caller's idempotency key is replayed, never replaced.
+    public func sendChatMessage(
+        conversationID: String,
+        parts: [ChatInputPart],
+        clarificationOf: String?,
+        startNewSession: Bool = false,
+        idempotencyKey: String
+    ) async throws -> OperationReceipt {
+        try await authorized {
+            try await self.client.sendChatMessage(
+                conversationID: conversationID,
+                parts: parts,
+                clarificationOf: clarificationOf,
+                startNewSession: startNewSession,
+                idempotencyKey: idempotencyKey,
+                token: $0
+            )
+        }
+    }
+
+    // --- `CAP-003` media upload ---------------------------------------------
+
+    public func createMediaUpload(
+        declaration: MediaUploadDeclaration, idempotencyKey: String
+    ) async throws -> CreatedMediaUpload {
+        try await authorized {
+            try await self.client.createMediaUpload(
+                declaration: declaration, idempotencyKey: idempotencyKey, token: $0
+            )
+        }
+    }
+
+    public func putMediaContent(
+        mediaID: String, body: Data
+    ) async throws -> MediaUploadReceipt {
+        try await authorized {
+            try await self.client.putMediaContent(mediaID: mediaID, body: body, token: $0)
+        }
+    }
+
+    public func completeMediaUpload(mediaID: String) async throws -> CompletedMediaUpload {
+        try await authorized {
+            try await self.client.completeMediaUpload(mediaID: mediaID, token: $0)
         }
     }
 
@@ -597,6 +645,15 @@ public actor DeviceSession {
 /// ones `ChatTimeline` can reach. Conforming the real session means the tests can
 /// stub HTTP alone and still exercise the real token policy.
 extension DeviceSession: ChatBackend {}
+
+/// The media pipeline uses the same token and one-refresh policy as chat, but
+/// has its own narrow protocol so the upload helper cannot learn any of the
+/// operation or Timeline APIs.
+extension DeviceSession: MediaUploadBackend {
+    public func readMedia(mediaID: String) async throws -> Data {
+        try await authorized { try await self.client.readMedia(mediaID: mediaID, token: $0) }
+    }
+}
 
 /// `DEV-031`: the review surface, same reasoning as above.
 extension DeviceSession: ReviewBackend {}

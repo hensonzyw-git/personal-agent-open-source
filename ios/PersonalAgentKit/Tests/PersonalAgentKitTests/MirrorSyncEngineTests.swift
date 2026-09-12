@@ -81,6 +81,12 @@ private final class StubMirrorBackend: ChatBackend, @unchecked Sendable {
     ) async throws -> OperationReceipt {
         throw AgentClientError.transport("unused")
     }
+    func sendChatMessage(
+        conversationID: String, parts: [ChatInputPart], clarificationOf: String?,
+        startNewSession: Bool, idempotencyKey: String
+    ) async throws -> OperationReceipt {
+        throw AgentClientError.transport("unused")
+    }
     func operation(operationID: String) async throws -> OperationReceipt { throw AgentClientError.transport("unused") }
     func operation(idempotencyKey: String) async throws -> OperationReceipt { throw AgentClientError.transport("unused") }
     func cancelOperation(operationID: String) async throws -> OperationReceipt { throw AgentClientError.transport("unused") }

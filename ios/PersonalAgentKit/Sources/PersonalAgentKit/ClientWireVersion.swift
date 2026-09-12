@@ -11,7 +11,7 @@ import Foundation
 /// not a nicety**: without it the server reads the caller as v1 and refuses to
 /// issue.
 ///
-/// Version 2 is what this build genuinely implements:
+/// Version 3 adds the mirror's per-window sync epoch to the v2 fields:
 ///
 /// - the plural `device_actions` list (a single action is a list of one), never
 ///   the singular historical field;

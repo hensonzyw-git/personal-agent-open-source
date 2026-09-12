@@ -87,6 +87,7 @@ from personal_agent.keys import (
     load_identifier_key,
     load_service_signing_ring,
 )
+from personal_agent.media.config import MediaConfig
 from personal_agent.mcp_client.core import (
     McpClientCore,
     McpTimeoutError,
@@ -103,6 +104,15 @@ from personal_agent.runtime.glm_gateway import (
     declared_context_limit,
     glm_gateway_from_env,
 )
+from personal_agent.runtime.model_providers import (
+    provider_from_env,
+    resolved_model_id,
+)
+from personal_agent.runtime.modality import (
+    ImageCapability,
+    image_capability,
+    master_switch,
+)
 from personal_agent.diagnostics.recording_dispatcher import RecordingDispatcher
 from personal_agent.diagnostics.transcript import (
     TranscriptRecorder,
@@ -113,6 +123,7 @@ from personal_agent.context.session_manager import SessionManager
 from personal_agent.runtime.compactor_provider import GlmCompactorProvider
 from personal_agent.runtime.model_gateway import ModelGatewayError
 from personal_agent.runtime.interpreter import ModelInterpreter
+from personal_agent.runtime.model_input import InputPart
 from personal_agent.runtime.prompt import build_system_prompt
 from personal_agent.runtime.session_classifier import GlmBoundaryClassifier
 from personal_agent.runtime.structured import (
@@ -190,6 +201,12 @@ class AgentServiceConfig:
     #: configuration, not a secret; `None` omits the field from
     #: `/v1/capabilities` and the app then offers no jump.
     ledger_url: str | None = None
+    #: `#18`. §4.3's versioned ceilings and the storage root. `None` means the
+    #: media surface is not composed -- §5.4's "缺配置不启用图片" -- and the
+    #: five routes then refuse rather than running half-configured. The store
+    #: is built from it here, because it needs the data keyring and this is the
+    #: one place that has both.
+    media: MediaConfig | None = None
 
 
 @dataclass
@@ -200,6 +217,35 @@ class ComposedAgentService:
     bridge: GovernedToolBridge
     catalog_aliases: tuple[str, ...]
     quarantined: tuple[str, ...] = field(default=())
+
+
+def image_capability_from(
+    config: AgentServiceConfig,
+) -> Callable[[], ImageCapability]:
+    """§8's switch, bound to this deployment's provider, model and media surface.
+
+    Built here rather than inside the app layer so there is exactly one place
+    that knows which model is in use. The provider and the model id come from
+    the same resolvers the gateway uses (`provider_from_env`,
+    `resolved_model_id`), so the model the evidence is checked against is the
+    model that will be sent -- a capability computed from a second reading of
+    `MODEL_ID` would be evidence about a model nobody calls.
+
+    The closure re-reads the master switch on every call. The rest cannot move
+    without a restart: the provider, the model id and the composed media
+    surface are all fixed by the time this runs.
+    """
+
+    def capability() -> ImageCapability:
+        provider = provider_from_env()
+        return image_capability(
+            master=master_switch(),
+            provider=provider.name,
+            model_id=resolved_model_id(provider),
+            media_ready=config.media is not None,
+        )
+
+    return capability
 
 
 # --- device state ------------------------------------------------------------
@@ -749,6 +795,7 @@ async def agent_service(
                 user_text: str,
                 clarification_context: ClarificationContext | None,
                 finance_retry_context: FinanceRetryContext | None,
+                input_parts: tuple[InputPart, ...] = (),
             ) -> ContextEnvelope:
                 """Assemble this turn's context (`CAP-001` design §9).
 
@@ -757,6 +804,13 @@ async def agent_service(
                 between anchoring and the model turn therefore sees an envelope
                 with no declarations rather than the catalog it had a moment
                 earlier -- and the write would still be refused downstream.
+
+                `input_parts` are already-authorized bytes (§6) handed down
+                from the caller that read them under the media lock. They
+                travel through this seam rather than being read here for the
+                same reason the tool set is: this function owns assembly, not
+                authorization, and a media read performed inside it would run
+                outside the lock discipline `media_read` exists to keep.
                 """
                 device = device_for(auth)
                 tools = (
@@ -782,6 +836,7 @@ async def agent_service(
                     effective_tools=tools,
                     clarification_context=clarification_context,
                     finance_retry_context=finance_retry_context,
+                    input_parts=input_parts,
                 )
 
             def compact_session(session, session_id: str) -> None:
@@ -933,6 +988,21 @@ async def agent_service(
                     sync_wait_seconds=config.sync_wait_seconds,
                     ledger_url=ledger_url,
                     recorder=recorder,
+                    # `#18`. Both or neither, which is why they are read off
+                    # one `config.media`: a store with no limits has no bound
+                    # to enforce, and limits with no store cannot store.
+                    media_store=(
+                        config.media.store(keyring)
+                        if config.media is not None
+                        else None
+                    ),
+                    media_limits=(
+                        config.media.limits() if config.media is not None else None
+                    ),
+                    # `#13`. §8's switch. Recomputing per call rather than
+                    # freezing a verdict is what makes "服务端再次校验" a
+                    # property of the code instead of a promise about a value.
+                    image_capability=image_capability_from(config),
                 ),
                 bridge=bridge,
                 catalog_aliases=aliases,

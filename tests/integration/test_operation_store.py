@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from personal_agent.api.chat_parts import ImageRefPart, TextPart
 from personal_agent.api.operation_state import StaleOperationVersionError
 from personal_agent_core.sqlite import run_write_transaction
 from personal_agent.api.operation_store import (
@@ -82,6 +83,102 @@ def test_fingerprint_depends_only_on_meaning() -> None:
     assert a == b
     assert a != c
     assert a != d
+
+
+def test_the_pre_media_fingerprint_is_frozen() -> None:
+    # §3.2: "无媒体旧 text 请求完整沿用升级前 canonical payload（不加空媒体键）；
+    # 以冻结 hash 验证." These literals were produced by the implementation as it
+    # stood before media existed, and every text-only request sealed since then
+    # is compared against them on replay. A media field -- even an empty one --
+    # would change every one of these and turn every existing sealed request
+    # into an idempotency conflict.
+    assert (
+        chat_request_fingerprint(conversation_id="conv_example", text="这张账单记一下")
+        == "0a961406f12fdedc624ce21eb01508b62ee9f370346a5884a10911acea8f9775"
+    )
+    assert (
+        chat_request_fingerprint(
+            conversation_id="conv_example", text="午餐", clarification_of="op_abc"
+        )
+        == "8520bed88f7aae23f293c752a9d45d9c4da8ce67429f55e479cf7019169cb93a"
+    )
+    assert (
+        chat_request_fingerprint(
+            conversation_id="conv_example", text="hi", start_new_session=True
+        )
+        == "fb02ec50363222cf9d4497b3fbfe298d6effd587e765acb2bd1a67831a9b6c47"
+    )
+    # The "no text part" versus "empty string" distinction §3.1 keeps: the
+    # empty-text request has its own frozen value.
+    assert (
+        chat_request_fingerprint(conversation_id="conv_example", text="")
+        == "d3af959242f4f8a757db121b1742ad3681acdfe6da560eff756256cefab9e05d"
+    )
+
+
+SHA_A = "a" * 64
+SHA_B = "b" * 64
+
+
+def _image(media_id: str, digest: str) -> ImageRefPart:
+    return ImageRefPart(media_id, content_sha256=digest)
+
+
+def test_a_parts_request_is_identified_by_its_ordered_media() -> None:
+    # §3.2: the fingerprint input gains the ordered (media_id, content_sha256)
+    # pairs, with the hash the server measured.
+    base = dict(conversation_id="c1", text="这张账单记一下")
+    legacy = chat_request_fingerprint(**base)
+
+    # The same text, sent as `parts` instead of the legacy field, is a
+    # different request: §3.1 requires the two forms stay distinguishable.
+    as_parts = chat_request_fingerprint(**base, parts=(TextPart("这张账单记一下"),))
+    assert legacy != as_parts
+
+    one = chat_request_fingerprint(**base, parts=(_image("media_1", SHA_A),))
+    two = chat_request_fingerprint(
+        **base, parts=(_image("media_1", SHA_A), _image("media_2", SHA_B))
+    )
+    assert legacy != one != two
+
+    # A different image under the same id is a different request.
+    assert one != chat_request_fingerprint(**base, parts=(_image("media_1", SHA_B),))
+
+
+def test_two_identical_uploads_do_not_replay_each_other() -> None:
+    # Two photos with the same bytes are two different media ids, and swapping
+    # one for the other is a different request even though the digest matches.
+    base = dict(conversation_id="c1", text="这两张")
+    left = chat_request_fingerprint(**base, parts=(_image("media_1", SHA_A),))
+    right = chat_request_fingerprint(**base, parts=(_image("media_2", SHA_A),))
+    assert left != right
+
+
+def test_part_order_is_part_of_the_meaning() -> None:
+    base = dict(conversation_id="c1", text="这张账单记一下")
+    forward = chat_request_fingerprint(
+        **base,
+        parts=(TextPart("这张账单记一下"), _image("media_1", SHA_A)),
+    )
+    # The wire format refuses a reversed pair, so the reversal that reaches the
+    # fingerprint is the one where the *text differs* -- and the fingerprint
+    # still has to tell the two apart.
+    backward = chat_request_fingerprint(
+        **base, parts=(_image("media_1", SHA_A), TextPart("这张账单记一下"))
+    )
+    assert forward != backward
+
+
+def test_a_part_without_the_servers_digest_cannot_be_fingerprinted() -> None:
+    # §3.2: the client submits only a media id and never declares an
+    # authoritative hash. A part that has not been resolved against the media
+    # table has no digest, and fingerprinting it would produce an identity
+    # derived from nothing.
+    with pytest.raises(AppError) as excinfo:
+        chat_request_fingerprint(
+            conversation_id="c1", text="x", parts=(ImageRefPart("media_1"),)
+        )
+    assert excinfo.value.code is ErrorCode.INVALID_ARGUMENT
 
 
 # --- idempotent open ---------------------------------------------------------

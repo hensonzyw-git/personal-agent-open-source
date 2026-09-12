@@ -166,7 +166,7 @@ struct StoredAcceptanceArchive: Codable {
 /// 「杀进程重启」 checklist item a real test rather than a tautology: the second
 /// launch loads the same file through the same `loadLatest` path the ordinary
 /// app uses, so a broken history load shows up as missing cards.
-public actor AcceptanceTimeline: ChatBackend {
+public actor AcceptanceTimeline: ChatBackend, MediaUploadBackend {
     private let location: AcceptanceArchiveLocation
     /// The page size for one read. Larger than the seeded archive on purpose:
     /// an acceptance run should not have to scroll to find the cards.
@@ -267,6 +267,25 @@ public actor AcceptanceTimeline: ChatBackend {
         }
     }
 
+    // This isolated harness must never gain an upload or media-read path.
+    public func createMediaUpload(
+        declaration: MediaUploadDeclaration, idempotencyKey: String
+    ) async throws -> CreatedMediaUpload {
+        throw AcceptanceHarnessError.noModel
+    }
+
+    public func putMediaContent(mediaID: String, body: Data) async throws -> MediaUploadReceipt {
+        throw AcceptanceHarnessError.noModel
+    }
+
+    public func completeMediaUpload(mediaID: String) async throws -> CompletedMediaUpload {
+        throw AcceptanceHarnessError.noModel
+    }
+
+    public func readMedia(mediaID: String) async throws -> Data {
+        throw AcceptanceHarnessError.noModel
+    }
+
     // --- ChatBackend ---------------------------------------------------------
 
     public func timelinePage(
@@ -363,6 +382,17 @@ public actor AcceptanceTimeline: ChatBackend {
         startNewSession: Bool,
         idempotencyKey: String
     ) async throws -> OperationReceipt {
+        throw AcceptanceHarnessError.noModel
+    }
+
+    public func sendChatMessage(
+        conversationID: String,
+        parts: [ChatInputPart],
+        clarificationOf: String?,
+        startNewSession: Bool,
+        idempotencyKey: String
+    ) async throws -> OperationReceipt {
+        // The isolated calendar harness has no upload or model path.
         throw AcceptanceHarnessError.noModel
     }
 

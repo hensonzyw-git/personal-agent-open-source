@@ -28,13 +28,14 @@ import json
 import logging
 import threading
 import uuid
-from collections.abc import Callable
-from contextlib import asynccontextmanager
+from collections.abc import Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Final, Protocol
 
 from fastapi import FastAPI, Request
+from fastapi import Response
 from fastapi.responses import JSONResponse
 from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
@@ -43,6 +44,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import object_session
 
 from personal_agent.api import events
+from personal_agent.api.chat_anchor import (
+    bind_chat_images,
+    resolve_chat_images,
+    resolved_parts,
+)
+from personal_agent.api.chat_parts import (
+    ImageRefPart,
+    Parts,
+    parse_chat_parts,
+    parts_text,
+)
 from personal_agent.api.calendar_issue import (
     may_override,
     override_fingerprint,
@@ -112,6 +124,7 @@ from personal_agent.api.review_view import (
 from personal_agent.api.request_payload import (
     ChatRequestPayload,
     continuation_context,
+    describes_request,
     open_chat_request,
     seal_chat_request,
     with_clarification_question,
@@ -134,10 +147,37 @@ from personal_agent.context.session_manager import (
     SessionManager,
 )
 from personal_agent.keys import HmacKey, HmacKeyRing
+from personal_agent.media.locking import MediaLockError, media_locks
+from personal_agent.media.store import MediaStore
+from personal_agent.media.uploads import (
+    CHAT_IMAGE_PURPOSE,
+    CompleteOutcome,
+    CompletedUpload,
+    CreatedUpload,
+    FetchedMedia,
+    MediaBusyError,
+    MediaError,
+    MediaGoneError,
+    MediaIncompleteUploadError,
+    MediaLimits,
+    MediaNotReadyError,
+    MediaNotFoundError,
+    MediaRejectedError,
+    UploadDeclaration,
+    UploadReceipt,
+    complete_upload,
+    delete_media as decide_media_deletion,
+    read_media,
+    receive_upload,
+    start_upload,
+)
+from personal_agent.api.media_read import read_authorized_images
 from personal_agent.runtime.bookkeeping_intent import (
     is_bookkeeping_write_request,
     is_finance_retry_request,
 )
+from personal_agent.runtime.modality import ImageCapability, image_capability
+from personal_agent.runtime.model_input import InputPart, TextInputPart
 from personal_agent.diagnostics import transcript
 from personal_agent.diagnostics.transcript import NullRecorder, Recorder, TurnIdentity
 from personal_agent.storage.models import (
@@ -215,7 +255,24 @@ class EnvelopeFactory(Protocol):
         user_text: str,
         clarification_context: ClarificationContext | None,
         finance_retry_context: FinanceRetryContext | None,
+        input_parts: tuple[InputPart, ...] = (),
     ) -> ContextEnvelope: ...
+
+
+def _images_never_enabled() -> ImageCapability:
+    """The capability of a service that composed no model or no media.
+
+    Not a stand-in for the real composition -- `composition.py` always supplies
+    one -- but the honest default for the many `AgentApiDeps` built by hand in
+    tests, and for any future caller that wires the dataclass directly. It
+    names no model and asserts no approval, so it can only ever answer "off".
+    """
+    return image_capability(
+        master=False,
+        provider="",
+        model_id="",
+        media_ready=False,
+    )
 
 
 @dataclass
@@ -278,6 +335,27 @@ class AgentApiDeps:
     #: composition that does not configure a transcript directory -- and every
     #: offline test -- behaves exactly as before.
     recorder: Recorder = field(default_factory=NullRecorder)
+    #: `#18`. The encrypted object store and §4.3's ceilings. Both are `None`
+    #: together or neither: a store with no limits has no bound to enforce
+    #: (§4.3 makes the ceilings configuration, and a defaulted ceiling is a
+    #: policy nobody chose), and limits with no store cannot store anything.
+    #: `None` means the media surface is not composed, and every route below
+    #: refuses rather than half-running -- the same shape `CAP-001`'s
+    #: `enrollment_manifest_version = None` uses.
+    media_store: MediaStore | None = None
+    media_limits: MediaLimits | None = None
+    #: `#13`. §8's composed switch, **called** rather than held as a value.
+    #: §8 requires the server to re-validate rather than let a client's stale
+    #: cached capability through, and a verdict computed once at boot would
+    #: make that a statement about a number nothing can move. It is one
+    #: callable so that the entry guard, the anchor that binds an image to a
+    #: message, and `/v1/capabilities` are three reads of one source instead of
+    #: three sources -- §8's "客户端 capability 和服务端入口同源计算".
+    #:
+    #: The default is closed and says so. A deployment that wired nothing has
+    #: not enabled images, and an `AgentApiDeps` built by a test must not
+    #: accidentally advertise a capability the test never composed.
+    image_capability: Callable[[], ImageCapability] = _images_never_enabled
     #: The governed calendar mirror ingest, composed once over the real bridge
     #: in production. It receives the authenticated device's `AuthContext` and
     #: the closed sync body, signs a Host Context naming *that* device, and
@@ -317,6 +395,14 @@ _STATUS_BY_CODE = {
     # every other refusal so the client keeps polling instead of concluding
     # anything about the write.
     ErrorCode.OPERATION_NOT_ANCHORED: 400,
+    # `#18`. Three different retry instructions, so three different statuses:
+    # wait and re-ask (`MEDIA_NOT_READY`), wait and re-send the same bytes
+    # (`MEDIA_BUSY`), or stop (`MEDIA_GONE`). Collapsing them into one 4xx is
+    # what makes a client poll a tombstone or give up on a busy lock.
+    ErrorCode.MEDIA_NOT_READY: 409,
+    ErrorCode.MEDIA_BUSY: 409,
+    ErrorCode.MEDIA_NOT_FOUND: 404,
+    ErrorCode.MEDIA_GONE: 410,
 }
 
 _MAX_JSON_BODY_BYTES = 64 * 1024
@@ -461,6 +547,11 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         await drain_background_tasks()
 
     app = FastAPI(lifespan=lifespan)
+    # The service composition runs one API process. Hold admission across both
+    # receive and the disk worker, including cancellation of the HTTP request.
+    upload_slots = threading.BoundedSemaphore(
+        (deps.media_limits.max_concurrent_uploads or 1) if deps.media_limits else 1
+    )
     # Tests and embedded hosts that do not drive ASGI lifespan can still perform
     # a truthful, deterministic drain instead of sleeping and guessing.
     app.state.drain_background_tasks = drain_background_tasks
@@ -667,6 +758,61 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             _update_push_token, deps, auth, device_id, body
         )
 
+    @app.post("/v1/media/uploads")
+    async def post_media_upload(request: Request):
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        body = await _json_body(request)
+        key = idempotency_key(request)
+        return await asyncio.to_thread(
+            _start_media_upload, deps, auth, key, body
+        )
+
+    @app.put("/v1/media/content/{media_id}")
+    async def put_media_content(media_id: str, request: Request):
+        # Authentication first, then the body -- the same order every other
+        # route uses, and the reason the binary reader below can assume it is
+        # reading for a caller that is entitled to upload at all.
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        store, limits = _media_ready(deps)
+        if not upload_slots.acquire(blocking=False):
+            raise AppError(ErrorCode.MEDIA_BUSY, internal_detail="upload concurrency limit")
+        handed_off = False
+        try:
+            raw = await asyncio.wait_for(
+                _binary_body(request, ceiling=limits.max_content_bytes),
+                timeout=limits.claim_ttl.total_seconds(),
+            )
+            def receive():
+                try:
+                    return _receive_media_content(deps, auth, media_id, raw)
+                finally:
+                    upload_slots.release()
+            worker = asyncio.create_task(asyncio.to_thread(receive))
+            handed_off = True
+            return await asyncio.shield(worker)
+        finally:
+            if not handed_off:
+                upload_slots.release()
+
+    @app.post("/v1/media/uploads/{media_id}/complete")
+    async def post_media_complete(media_id: str, request: Request):
+        # No body, and so no `_json_body`: §5.2's complete carries nothing the
+        # server needs -- everything it verifies is already sealed -- and
+        # requiring an empty JSON object would refuse the natural shape of the
+        # request for no gain.
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        return await asyncio.to_thread(_complete_media_upload, deps, auth, media_id)
+
+    @app.get("/v1/media/{media_id}")
+    async def get_media(media_id: str, request: Request):
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        return await asyncio.to_thread(_fetch_media, deps, auth, media_id)
+
+    @app.delete("/v1/media/{media_id}")
+    async def delete_media(media_id: str, request: Request):
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        return await asyncio.to_thread(_delete_media, deps, auth, media_id)
+
     @app.post("/v1/chat/messages")
     async def post_message(request: Request):
         # Authentication stays ahead of body parsing, while SQLite and the
@@ -675,7 +821,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         body = await _json_body(request)
         key = idempotency_key(request)
         conversation_id = _required(body, "conversation_id")
-        text = _required(body, "text")
+        parts, text = _chat_request(body, deps)
         clarification_of = _optional_operation_id(body, "clarification_of")
         start_new_session = _optional_bool(body, "start_new_session", default=False)
         if start_new_session and clarification_of is not None:
@@ -694,6 +840,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             key,
             conversation_id,
             text,
+            parts,
             clarification_of,
             start_new_session,
         )
@@ -730,6 +877,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 key,
                 conversation_id,
                 text,
+                parts,
                 clarification_of,
                 start_new_session,
                 resolved_classification,
@@ -1038,6 +1186,29 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 }
                 if deps.ledger_url is not None:
                     body["ledger_url"] = deps.ledger_url
+                # `#13`. §8's "客户端 capability 和服务端入口同源计算": this is
+                # the same callable the entry guard and the anchor read, so a
+                # client cannot be told one thing while the server does another.
+                # Only the verdict travels -- the closed terms name internal
+                # controls, and a client needs to know whether it may send an
+                # image, not which of the deployment's approvals is missing.
+                capability = deps.image_capability()
+                # The verdict remains the only approval information a device
+                # receives.  These bounds are not approval terms: they are the
+                # public limits a client needs to resize and encode before it
+                # makes an upload request.  Omitting them would force iOS to
+                # invent local ceilings, which is exactly the configuration
+                # drift §4.3 prohibits.
+                images: dict[str, Any] = {"enabled": capability.enabled}
+                if deps.media_limits is not None:
+                    images.update(
+                        {
+                            "max_content_bytes": deps.media_limits.max_content_bytes,
+                            "max_dimension": deps.media_limits.max_dimension,
+                            "allowed_mimes": sorted(deps.media_limits.allowed_mimes),
+                        }
+                    )
+                body["images"] = images
                 return JSONResponse(body)
 
             return _commit(session, work)
@@ -1417,16 +1588,390 @@ def _update_push_token(
         return _commit(session, work)
 
 
+# --- media (`#18`) ---------------------------------------------------------
+#
+# §5.2's five endpoints. Every one of them is device-authenticated (`GET`
+# included -- an image is personal data and §6's read protection is what
+# replaces the long-lived URL the design refuses), and every one of them is
+# thin: the state machine, the locks and the store live in
+# `personal_agent.media`, and this layer only turns one wire body into a
+# declaration and one domain refusal into a status.
+
+
+def _media_ready(deps: AgentApiDeps) -> tuple[MediaStore, MediaLimits]:
+    """The composed media surface, or a refusal saying it is not composed.
+
+    `INTERNAL_ERROR` rather than `UNSUPPORTED_OPERATION`: an uncomposed store
+    is a deployment that forgot to wire one, not a feature this phase declines
+    to offer, and the two must not look alike to whoever reads the log.
+    """
+    if deps.media_store is None or deps.media_limits is None:
+        raise AppError(
+            ErrorCode.INTERNAL_ERROR,
+            internal_detail="media is not composed: no store or no limits wired",
+        )
+    return deps.media_store, deps.media_limits
+
+
+def _media_refusal(error: MediaError) -> AppError:
+    """Map one media-domain refusal onto its outward code, **by type**.
+
+    Never by message. A mapper that switched on text would keep passing after a
+    message was reworded and would quietly start answering `INVALID_ARGUMENT`
+    for everything -- and these codes exist precisely because the client's next
+    action differs between them: wait (`MEDIA_NOT_READY`), re-send the same
+    bytes (`MEDIA_BUSY`), or stop (`MEDIA_GONE`).
+    """
+    if isinstance(error, MediaBusyError):
+        return AppError(ErrorCode.MEDIA_BUSY, internal_detail=str(error))
+    if isinstance(error, MediaNotFoundError):
+        return AppError(ErrorCode.MEDIA_NOT_FOUND, internal_detail=str(error))
+    if isinstance(error, MediaGoneError):
+        return AppError(ErrorCode.MEDIA_GONE, internal_detail=str(error))
+    if isinstance(error, (MediaNotReadyError, MediaIncompleteUploadError)):
+        return AppError(ErrorCode.MEDIA_NOT_READY, internal_detail=str(error))
+    # `MediaRejectedError` and every other lifecycle refusal: the request and
+    # the object's state disagree, and repeating the request changes nothing.
+    # `INVALID_ARGUMENT` is the honest answer -- the client's request was
+    # wrong, not early. A rejected object is a tombstone (`reject_upload`
+    # writes no manifest entry, because nothing was ever published), so a
+    # client that ignores this gets `MEDIA_GONE` on its next read, which is the
+    # truthful follow-up rather than a contradiction.
+    return AppError(ErrorCode.INVALID_ARGUMENT, internal_detail=str(error))
+
+
+def _upload_declaration(body: dict[str, Any]) -> UploadDeclaration:
+    """Read §5.2's create row -- purpose/MIME/size/hash -- off the wire.
+
+    Every field is required and none is defaulted. A defaulted digest would
+    make the server compare its measurement against a value nobody sent, and
+    §5.4 keeps the declared hash for exactly one purpose: deciding that what
+    arrived is not what was announced.
+
+    `purpose` is checked here rather than in the domain because it is a wire
+    field with no counterpart in `UploadDeclaration` -- the state machine has a
+    single purpose, and `create_upload` would refuse a second one by raising.
+    Checking it at the door turns that into a 400 that names the field.
+    """
+    purpose = _required(body, "purpose")
+    if purpose != CHAT_IMAGE_PURPOSE:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=f"unsupported media purpose {purpose!r}",
+        )
+    size = body.get("size")
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail="size must be a positive integer",
+        )
+    width = _optional_dimension(body, "width")
+    height = _optional_dimension(body, "height")
+    if (width is None) != (height is None):
+        # §5.2 keeps both as the client's declared values. One without the
+        # other describes no rectangle, and a later reuse (aspect-ratio
+        # planning, §6) would have to guess the missing half.
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail="width and height must be declared together",
+        )
+    return UploadDeclaration(
+        mime=_required(body, "mime"),
+        size=size,
+        sha256=_required(body, "sha256"),
+        width=width,
+        height=height,
+    )
+
+
+def _optional_dimension(body: dict[str, Any], field: str) -> int | None:
+    value = body.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=f"{field} must be a positive integer when present",
+        )
+    return value
+
+
+async def _binary_body(request: Request, *, ceiling: int) -> bytes:
+    """Read one bounded binary body for `PUT /v1/media/content/{id}`.
+
+    §5.2: "仅二进制 content 前缀使用独立 body 上限/限速；JSON 的两条 64 KiB 不
+    变". The ceiling is §4.3's object ceiling rather than the JSON one, because
+    the two bodies are different kinds of thing: the JSON body is parsed and
+    copied several times over, while this one is copied once into the staging
+    writer. A 30 MiB image is an ordinary request here and a fatal one there.
+
+    The ceiling is enforced *while* reading, not after: a client that streams
+    past it is cut off at the ceiling instead of being buffered whole and then
+    refused, which is the difference between a bounded service and a
+    memory-exhaustion one. The `Content-Length` pre-check is only an early
+    exit -- a lying header still meets the read loop.
+
+    `Content-Type` is deliberately unchecked. The materiality test for these
+    bytes is the magic probe against the sealed declaration (§5.4's
+    "验证不能仅信文件扩展名"), and a header the server is forbidden to trust
+    cannot be the gate that decides.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_length = int(content_length)
+        except ValueError as exc:
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail="Content-Length must be an integer",
+            ) from exc
+        if declared_length < 0 or declared_length > ceiling:
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail=f"content body exceeds {ceiling} bytes",
+            )
+
+    buffered = bytearray()
+    async for chunk in request.stream():
+        if len(buffered) + len(chunk) > ceiling:
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail=f"content body exceeds {ceiling} bytes",
+            )
+        buffered.extend(chunk)
+    return bytes(buffered)
+
+
+def _start_media_upload(
+    deps: AgentApiDeps, auth: AuthContext, key: str, body: dict[str, Any]
+) -> JSONResponse:
+    """`POST /v1/media/uploads`: create a target, or return the one it made.
+
+    The idempotency key is required here even though `start_upload` accepts
+    `None`. A request must not be able to create an object no key names: the
+    response carries the media id, so a client that lost it has nothing to
+    retry with, and the alternative -- a second `pending` object -- is a row
+    the user is never told about.
+    """
+    _, limits = _media_ready(deps)
+    declaration = _upload_declaration(body)
+    with deps.session_factory() as session:
+        def work():
+            try:
+                created = start_upload(
+                    session,
+                    keyring=deps.keyring,
+                    device_id=auth.device_id,
+                    client_request_id=key,
+                    declaration=declaration,
+                    limits=limits,
+                    now=deps.now(),
+                )
+            except MediaError as error:
+                raise _media_refusal(error) from error
+            return JSONResponse(
+                {
+                    "media_id": created.media_id,
+                    "state": created.state,
+                    "expires_at": to_rfc3339(created.expires_at),
+                    "replayed": created.replayed,
+                },
+                # A replay is the same object, so it is not a creation. `201`
+                # for both would claim the client now has two of something.
+                status_code=200 if created.replayed else 201,
+            )
+
+        return _commit(session, work)
+
+
+def _receive_media_content(
+    deps: AgentApiDeps, auth: AuthContext, media_id: str, body: bytes
+) -> JSONResponse:
+    """`PUT /v1/media/content/{id}`: consume the target and seal the bytes."""
+    store, limits = _media_ready(deps)
+    with deps.session_factory() as session:
+        def work():
+            try:
+                receipt = receive_upload(
+                    session,
+                    store=store,
+                    keyring=deps.keyring,
+                    media_id=media_id,
+                    device_id=auth.device_id,
+                    body=body,
+                    limits=limits,
+                    now=deps.now(),
+                )
+            except MediaError as error:
+                raise _media_refusal(error) from error
+            return JSONResponse(_receipt_json(receipt))
+
+        return _commit(session, work)
+
+
+def _receipt_json(receipt: UploadReceipt) -> dict[str, Any]:
+    """The measured half of one upload, as §5.1 requires it to be labelled.
+
+    `size` here is the server's count of what arrived, not the declaration --
+    the field is only named `size` because this object's response has no
+    declared value to be confused with. `complete` returns both and names them
+    apart.
+    """
+    return {
+        "media_id": receipt.media_id,
+        "state": receipt.state,
+        "mime": receipt.mime,
+        "size": receipt.size,
+    }
+
+
+def _complete_media_upload(
+    deps: AgentApiDeps, auth: AuthContext, media_id: str
+) -> JSONResponse:
+    """`POST /v1/media/uploads/{id}/complete`: verify the seal, then publish.
+
+    Reached `uploaded`, this publishes. Reached while an attempt is still
+    running it answers `202` with `outcome: in_progress` and the claim's
+    deadline, because §5.2 makes the poll the documented recovery for a lost
+    `PUT` response -- "不把尚未完成当坏图，处理中返回可轮询状态与期限".
+
+    `202` rather than a `409` carrying the same body: every other refusal on
+    this route is an `{"error": {...}}` envelope, and one status code with two
+    body shapes is how a client ends up parsing an error as a status or the
+    reverse. Here the status is never in doubt -- the request was accepted and
+    the answer is a state -- so the body shape is the same on `200` and `202`,
+    and only the status says which it is.
+
+    A tombstone is a `200` with the outcome named, not a `410`: re-asking after
+    a deletion is a legitimate way to find out what happened, and turning it
+    into a refusal would make the client guess which of the two it got.
+    """
+    store, limits = _media_ready(deps)
+    with deps.session_factory() as session:
+        def work():
+            try:
+                completed = complete_upload(
+                    session,
+                    store=store,
+                    keyring=deps.keyring,
+                    media_id=media_id,
+                    device_id=auth.device_id,
+                    limits=limits,
+                    now=deps.now(),
+                )
+            except MediaError as error:
+                raise _media_refusal(error) from error
+            body = _completed_json(completed)
+            if completed.outcome is CompleteOutcome.IN_PROGRESS:
+                return JSONResponse(body, status_code=202)
+            return JSONResponse(body)
+
+        return _commit(session, work)
+
+
+def _completed_json(completed: CompletedUpload) -> dict[str, Any]:
+    return {
+        "media_id": completed.media_id,
+        "state": completed.state,
+        "outcome": completed.outcome.value,
+        "retry_at": (
+            None if completed.retry_at is None else to_rfc3339(completed.retry_at)
+        ),
+        # The server's measurement (§5.1). Null on a tombstone or while an
+        # attempt is still in flight -- the object has no published bytes yet,
+        # and reporting the declaration as if it were one is what §5.1 forbids.
+        "content_sha256": completed.content_sha256,
+        "mime": completed.mime,
+        "size": completed.size,
+        "declared_width": completed.declared_width,
+        "declared_height": completed.declared_height,
+    }
+
+
+def _fetch_media(deps: AgentApiDeps, auth: AuthContext, media_id: str) -> Response:
+    """`GET /v1/media/{id}`: the persisted image under §6's read protection."""
+    store, _ = _media_ready(deps)
+    with deps.session_factory() as session:
+        def work():
+            try:
+                fetched = read_media(
+                    session,
+                    store=store,
+                    keyring=deps.keyring,
+                    media_id=media_id,
+                    device_id=auth.device_id,
+                )
+            except MediaError as error:
+                raise _media_refusal(error) from error
+            return Response(
+                content=fetched.body,
+                media_type=fetched.mime,
+                headers={
+                    # §5.2: "不发长期 URL，不写公共缓存". `no-store` is the
+                    # stronger half of that pair -- the bytes never reach a
+                    # shared cache at all, which a bearer-token URL's `private`
+                    # would still permit on the device.
+                    "Cache-Control": "no-store",
+                    # The digest of exactly these bytes, so the client's
+                    # round-trip self-check (§FR-PHOTO) compares against a
+                    # server measurement and not against its own echo.
+                    "ETag": f'"{hashlib.sha256(fetched.body).hexdigest()}"',
+                },
+            )
+
+        return _commit(session, work, retry=False)
+
+
+def _delete_media(deps: AgentApiDeps, auth: AuthContext, media_id: str) -> JSONResponse:
+    """`DELETE /v1/media/{id}`: mark the deletion and answer for the decision.
+
+    The response deliberately separates "已受理" from "物理完成" (§5.2): the
+    mark and its manifest entry commit together, and the reaper removes the
+    bytes later. A second delete is a 200 with `already_decided`, never a
+    conflict -- the state the caller asked for already holds.
+    """
+    with deps.session_factory() as session:
+        def work():
+            try:
+                decided = decide_media_deletion(
+                    session,
+                    keyring=deps.keyring,
+                    media_id=media_id,
+                    device_id=auth.device_id,
+                    now=deps.now(),
+                )
+            except MediaError as error:
+                raise _media_refusal(error) from error
+            return JSONResponse(
+                {
+                    "media_id": media_id,
+                    "state": "deleting",
+                    "decided": decided,
+                }
+            )
+
+        return _commit(session, work, retry=False)
+
+
 def _preflight_chat_replay(
     deps: AgentApiDeps,
     auth: AuthContext,
     key: str,
     conversation_id: str,
     text: str,
+    parts: Parts,
     clarification_of: str | None,
     start_new_session: bool,
 ) -> _AnchoredChat | None:
-    """Return an existing idempotent chat before spending a classifier call."""
+    """Return an existing idempotent chat before spending a classifier call.
+
+    Two ways to recognise the request, because a parts request cannot be
+    fingerprinted here: §3.2's fingerprint input carries the measured digest of
+    every image, and reading one back would be a read of live media -- which the
+    same sentence forbids on the replay path ("不访问活媒体"). So a parts request is
+    compared against the sealed structure instead, which is the same comparison
+    with an immutable value standing in for a re-readable one.
+    """
 
     with deps.session_factory() as session:
         try:
@@ -1435,12 +1980,6 @@ def _preflight_chat_replay(
                 deps.identifier_key,
                 client_conversation_id=conversation_id,
                 now=deps.now(),
-            )
-            fingerprint = chat_request_fingerprint(
-                conversation_id=timeline_id,
-                text=text,
-                clarification_of=clarification_of,
-                start_new_session=start_new_session,
             )
             request_row = (
                 session.query(ApiRequest)
@@ -1453,7 +1992,29 @@ def _preflight_chat_replay(
             if request_row is None:
                 session.commit()
                 return None
-            if request_row.request_fingerprint != fingerprint:
+            if parts:
+                sealed = open_chat_request(
+                    deps.keyring,
+                    request_id=request_row.request_id,
+                    envelope=request_row.encrypted_request_payload,
+                )
+                matches = describes_request(
+                    sealed,
+                    conversation_id=timeline_id,
+                    text=text,
+                    parts=parts,
+                    clarification_of=clarification_of,
+                    start_new_session=start_new_session,
+                )
+            else:
+                fingerprint = chat_request_fingerprint(
+                    conversation_id=timeline_id,
+                    text=text,
+                    clarification_of=clarification_of,
+                    start_new_session=start_new_session,
+                )
+                matches = request_row.request_fingerprint == fingerprint
+            if not matches:
                 raise AppError(
                     ErrorCode.IDEMPOTENCY_CONFLICT,
                     internal_detail=(
@@ -1573,6 +2134,7 @@ def _anchor_chat(
     key: str,
     conversation_id: str,
     text: str,
+    parts: Parts,
     clarification_of: str | None,
     start_new_session: bool,
     resolved_classification: ResolvedClassification,
@@ -1581,36 +2143,38 @@ def _anchor_chat(
 
     with deps.session_factory() as session:
         try:
-            for claim_attempt in range(2):
-                try:
-                    return run_write_transaction(
-                        session,
-                        lambda: _anchor_chat_in_transaction(
+            with _chat_media_locks(deps, parts):
+                for claim_attempt in range(2):
+                    try:
+                        return run_write_transaction(
                             session,
-                            deps,
-                            auth,
-                            key,
-                            conversation_id,
-                            text,
-                            clarification_of,
-                            start_new_session,
-                            resolved_classification,
-                        ),
-                        attempts=8,
-                    )
-                except IntegrityError as exc:
-                    # Usually SQLite serialises this as a snapshot conflict. If
-                    # both consumers instead reach the unique retry-lineage
-                    # constraint, the loser gets one fresh-state pass and then
-                    # anchors an unbound retry. Do not mask other constraints.
-                    retry_claim_conflict = (
-                        is_finance_retry_request(text)
-                        and "operations.retry_of_operation_id" in str(exc.orig)
-                    )
-                    if claim_attempt == 0 and retry_claim_conflict:
-                        continue
-                    raise
-            raise AssertionError("unreachable")  # pragma: no cover
+                            lambda: _anchor_chat_in_transaction(
+                                session,
+                                deps,
+                                auth,
+                                key,
+                                conversation_id,
+                                text,
+                                parts,
+                                clarification_of,
+                                start_new_session,
+                                resolved_classification,
+                            ),
+                            attempts=8,
+                        )
+                    except IntegrityError as exc:
+                        # Usually SQLite serialises this as a snapshot conflict. If
+                        # both consumers instead reach the unique retry-lineage
+                        # constraint, the loser gets one fresh-state pass and then
+                        # anchors an unbound retry. Do not mask other constraints.
+                        retry_claim_conflict = (
+                            is_finance_retry_request(text)
+                            and "operations.retry_of_operation_id" in str(exc.orig)
+                        )
+                        if claim_attempt == 0 and retry_claim_conflict:
+                            continue
+                        raise
+                raise AssertionError("unreachable")  # pragma: no cover
         except StaleOperationVersionError as exc:
             raise AppError(
                 ErrorCode.INVALID_ARGUMENT,
@@ -1623,6 +2187,34 @@ def _anchor_chat(
             raise
 
 
+@contextmanager
+def _chat_media_locks(deps: AgentApiDeps, parts: Parts) -> Iterator[None]:
+    """§4.1's lock set for the images this message names, or nothing at all.
+
+    Entered **outside** the write transaction and released after it, because
+    that is the order §4.1 gives: the lock is what makes the transaction's
+    read-and-compare-and-swap atomic against a concurrent deleter, and CLAUDE.md
+    §5.2 forbids holding a database transaction while waiting on a file lock.
+    Holding it across the retry loop is deliberate -- the retries re-read state
+    under the same protection.
+
+    Non-blocking, like the upload path's use of the same lock: a message that
+    would have to queue behind a slow reader is refused and retried by the
+    client, and §6 gives the reader that holds the stripe a bounded grace rather
+    than a queue.
+    """
+    media_ids = _chat_image_ids(parts)
+    if not media_ids:
+        yield
+        return
+    store, _ = _media_ready(deps)
+    try:
+        with media_locks(store.roots.root, media_ids, blocking=False):
+            yield
+    except MediaLockError as exc:
+        raise MediaBusyError("the media store is busy; retry shortly") from exc
+
+
 def _anchor_chat_in_transaction(
     session,
     deps: AgentApiDeps,
@@ -1630,22 +2222,38 @@ def _anchor_chat_in_transaction(
     key: str,
     conversation_id: str,
     text: str,
+    parts: Parts,
     clarification_of: str | None,
     start_new_session: bool,
     resolved_classification: ResolvedClassification,
 ) -> _AnchoredChat:
-    """Anchor one chat against the transaction's current database snapshot."""
+    """Anchor one chat against the transaction's current database snapshot.
+
+    §3.2's first anchoring runs here, in the order the design gives: resolve the
+    request's images, fingerprint them with the measured digests, create the
+    request/operation under one key, and only then -- once the user event exists
+    to hang them on -- record the bindings and move each object to `bound`.
+    """
     timeline_id = events.resolve_timeline(
         session,
         deps.identifier_key,
         client_conversation_id=conversation_id,
         now=deps.now(),
     )
+    # Resolution precedes the fingerprint because the fingerprint's input *is*
+    # the resolved image (§3.2: ordered (media_id, content_sha256), digest
+    # server-measured). It also precedes `open_operation`, which costs a reader
+    # one extra live read in the rare race where this request turns out to be a
+    # duplicate -- the loser of that race returns the winner's operation without
+    # ever binding anything, and a client whose retry lands in that window is
+    # answered by the preflight above, which never reads live media.
+    images = _resolve_chat_images(session, deps, auth, parts)
     fingerprint = chat_request_fingerprint(
         conversation_id=timeline_id,
         text=text,
         clarification_of=clarification_of,
         start_new_session=start_new_session,
+        parts=resolved_parts(parts, images),
     )
     opened = open_operation(
         session,
@@ -1721,6 +2329,10 @@ def _anchor_chat_in_transaction(
         clarification_context=context,
         finance_retry_context=retry_context,
         start_new_session=start_new_session,
+        # The *unresolved* parts: §3.2 seals the original structure, and the
+        # measured digest belongs to the fingerprint and the media table, not to
+        # the sealed copy of what the client sent.
+        parts=parts,
     )
     operation.api_request.encrypted_request_payload = seal_chat_request(
         deps.keyring,
@@ -1758,7 +2370,7 @@ def _anchor_chat_in_transaction(
             operation_id=None,
             now=deps.now(),
         )
-    events.append_event(
+    event_id = events.append_event(
         session,
         deps.keyring,
         conversation_id=timeline_id,
@@ -1776,11 +2388,77 @@ def _anchor_chat_in_transaction(
         operation_id=operation.operation_id,
         now=deps.now(),
     )
+    if images:
+        bind_chat_images(
+            session,
+            images=images,
+            event_id=event_id,
+            operation_id=operation.operation_id,
+            reuse_lineage=_reuse_lineage(clarification_of, retry_source),
+            now=deps.now(),
+        )
     logger.info(
         "session boundary %s",
         json.dumps(decision.audit_record(), sort_keys=True),
     )
     return _AnchoredChat(operation.operation_id, operation.state)
+
+
+def _resolve_chat_images(
+    session,
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    parts: Parts,
+) -> tuple:
+    """Resolve every image this message names, or refuse the request.
+
+    A text-only request resolves nothing and does not need a media store at all,
+    which matters: §5.4's "缺配置不启用图片" means a deployment with images off is
+    still a working deployment, and only the requests that actually name an
+    image may require the media configuration to exist.
+    """
+    if not _chat_image_ids(parts):
+        return ()
+    # §3.2 checks "扫描/豁免状态 ... 与能力" inside the anchoring transaction,
+    # which is here, and §8's reason is worth restating: a client that uploaded
+    # while the switch was open, and then re-sends after it closed, must not be
+    # let through because its own cached capability still says yes. The entry
+    # guard has already asked the same question; this asks it again at the point
+    # where an object would acquire a use, because that is the point a refusal
+    # still costs nothing.
+    capability = deps.image_capability()
+    if not capability.enabled:
+        raise AppError(
+            ErrorCode.UNSUPPORTED_OPERATION,
+            internal_detail=capability.refusal(),
+        )
+    _, limits = _media_ready(deps)
+    return resolve_chat_images(
+        session,
+        keyring=deps.keyring,
+        device_id=auth.device_id,
+        parts=parts,
+        limits=limits,
+    )
+
+
+def _reuse_lineage(
+    clarification_of: str | None, retry_source: Operation | None
+) -> tuple[str, ...]:
+    """The operations whose recorded use of an image this message may re-establish.
+
+    §5.1 allows exactly two, and both are server-side facts by the time this
+    runs: the clarification source has been checked to be waiting for
+    clarification in this conversation, and the retry source has been checked to
+    be the newest unconsumed failure that provably made no call. Neither is
+    taken from the request's own shape, which is what §3.2's "服务端验证 source
+    lineage" rules out.
+    """
+    if clarification_of is not None:
+        return (clarification_of,)
+    if retry_source is not None:
+        return (retry_source.operation_id,)
+    return ()
 
 
 def _abandon_pre_submit_operations_in_open_session(
@@ -1977,6 +2655,7 @@ def _run_chat_turn(
         session,
         payload=payload,
         anchor=anchor,
+        operation_id=operation.operation_id,
     )
     result = run_operation(
         session,
@@ -2425,15 +3104,24 @@ def _context_factory(
     *,
     payload: ChatRequestPayload,
     anchor: _Anchor,
+    operation_id: str,
 ) -> _TurnContext:
     """Bind this turn's assembly, to be run when the model is about to be asked.
 
     The envelope is built from the persisted anchor event rather than from the
     request body: the archived message is the one the model must answer, and a
     caller-supplied string that disagrees with it is refused by the builder.
+
+    §6's read happens here and nowhere else, because "here" is the moment the
+    design names: the last point before the model sees anything, where the
+    stripe lock can be held for one read and released before the call. A turn
+    that names no image never enters the media store at all.
     """
 
     def build() -> ContextEnvelope:
+        input_parts = _authorized_images(
+            deps, session, payload=payload, anchor=anchor, operation_id=operation_id
+        )
         return deps.build_envelope(
             session,
             auth,
@@ -2443,9 +3131,78 @@ def _context_factory(
             user_text=payload.text,
             clarification_context=payload.clarification_context,
             finance_retry_context=payload.finance_retry_context,
+            input_parts=input_parts,
         )
 
     return _TurnContext(build)
+
+
+def _authorized_images(
+    deps: AgentApiDeps,
+    session,
+    *,
+    payload: ChatRequestPayload,
+    anchor: _Anchor,
+    operation_id: str,
+) -> tuple[InputPart, ...]:
+    """§6's read for this turn, or a refusal the orchestrator can classify.
+
+    §8's switch is asked once more here. The entry guard and the anchor have
+    both asked it already, and asking a third time is the point rather than
+    duplication: this is the last moment at which refusing costs nothing -- no
+    bytes have left the store, no model has been called -- and §8 requires the
+    server to re-validate rather than honour a client's cached capability.
+    """
+    media_ids = _chat_image_ids(payload.parts)
+    if not media_ids:
+        return ()
+    capability = deps.image_capability()
+    if not capability.enabled:
+        # The same refusal the entry guard gives, reached by a different route:
+        # a switch that closed between the message being accepted and the model
+        # being asked. `UNSUPPORTED_OPERATION` is what the client saw then, so
+        # it is what the client sees now.
+        raise AppError(
+            ErrorCode.UNSUPPORTED_OPERATION,
+            internal_detail=capability.refusal(),
+        )
+    store, limits = _media_ready(deps)
+    try:
+        images = read_authorized_images(
+            session,
+            store=store,
+            keyring=deps.keyring,
+            limits=limits,
+            event_id=anchor.event_id,
+            operation_id=operation_id,
+            media_ids=media_ids,
+        )
+        return ((TextInputPart(payload.text),) if payload.text else ()) + images
+    except MediaError as error:
+        raise _media_read_refusal(error) from error
+
+
+def _media_read_refusal(error: MediaError) -> AppError:
+    """Map one §6 read refusal onto the code the orchestrator acts on.
+
+    The four classified refusals keep the door's own mapping
+    (`_media_refusal`), because they mean the same thing at both ends and a
+    client should read the same answer either way -- including `MEDIA_BUSY`,
+    which stays *out* of `_CONTEXT_FAILURES` so the idempotency key remains
+    re-runnable (§4.1's "每次等待有界，任务可重试").
+
+    What differs is the unclassified rest. At the door those refusals are the
+    client's own mistake and `INVALID_ARGUMENT` is honest; here, after §3.2 has
+    already accepted the message, the same refusal can only be a server-side
+    integrity failure -- a `ready` object with no seal record, or one whose
+    measured type is no longer allowed. Blaming the request for that would send
+    the client looking in the wrong place, so it becomes the loud code instead:
+    the operation stays re-runnable and the failure is a 500 the operator sees.
+    """
+    mapped = _media_refusal(error)
+    if mapped.code is ErrorCode.INVALID_ARGUMENT:
+        return AppError(ErrorCode.INTERNAL_ERROR, internal_detail=str(error))
+    return mapped
 
 
 _SAFE_FINANCE_RETRY_FAILURES = frozenset(
@@ -3419,6 +4176,66 @@ def _operation_event_content(
         if value is not None:
             content[name] = value
     return content
+
+
+def _chat_request(body: dict[str, Any], deps: AgentApiDeps) -> tuple[Parts, str]:
+    """The request's parts and effective text, from exactly one of `text` and `parts`.
+
+    §3.1: "text 与 parts 恰有一个". A parts request carries its text inside the
+    parts, so the two are not merged and not defaulted: sending both is a
+    refusal rather than a choice of which one wins, because a caller who sends
+    both has a different request in mind than the server can guess at.
+
+    For a parts request the effective text is :func:`parts_text`, which is `""`
+    when the user sent images and nothing else -- a legitimate request, and the
+    reason this cannot simply delegate to `_required`. The parts themselves
+    travel on rather than being reduced to that text: they are what the request
+    *is*, from the fingerprint (§3.2) through to the sealed payload.
+    """
+    has_parts = "parts" in body
+    has_text = "text" in body
+    if has_parts and has_text:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail="text and parts are mutually exclusive",
+        )
+    if not has_parts:
+        return (), _required(body, "text")
+    parts = parse_chat_parts(body["parts"])
+    _require_multimodal_ready(deps)
+    return parts, parts_text(parts)
+
+
+def _chat_image_ids(parts: Parts) -> list[str]:
+    """The media ids this message names, in order and once each.
+
+    Duplicates cannot arrive from the wire (`parse_chat_parts` allows one image
+    part), and the lock helper dedupes independently -- this is a list of what
+    to lock, not a claim about the request.
+    """
+    return [
+        part.media_id for part in parts if isinstance(part, ImageRefPart)
+    ]
+
+
+def _require_multimodal_ready(deps: AgentApiDeps) -> None:
+    """Refuse a parts request this deployment may not serve.
+
+    The whole chain an image needs now exists -- §8's switch (#13) and §6's
+    lock-scoped authorized read (`media_read.read_authorized_images`) -- so what
+    is left to ask is §8's question and only that: may this deployment serve
+    images at all. It is a policy made of decisions people made and facts about
+    what is composed, and a refusal names every term that closed it rather than
+    the first, so an operator does not have to restart the service to find out
+    there was a second reason.
+    """
+    capability = deps.image_capability()
+    if capability.enabled:
+        return
+    raise AppError(
+        ErrorCode.UNSUPPORTED_OPERATION,
+        internal_detail=capability.refusal(),
+    )
 
 
 def _required(body: dict[str, Any], field: str) -> str:

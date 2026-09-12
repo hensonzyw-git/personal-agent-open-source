@@ -556,6 +556,13 @@ struct AcceptanceHarnessTests {
             )
         }
         await #expect(throws: AcceptanceHarnessError.noModel) {
+            _ = try await timeline.sendChatMessage(
+                conversationID: AcceptanceScenario.conversationID,
+                parts: [.imageReference(mediaID: "synthetic-image")],
+                clarificationOf: nil, startNewSession: false, idempotencyKey: "key"
+            )
+        }
+        await #expect(throws: AcceptanceHarnessError.noModel) {
             _ = try await timeline.updateExpenseCategory(
                 recordID: "REC-ACCEPT-0001", category: "交通",
                 expectedCurrentCategory: nil, idempotencyKey: "key"

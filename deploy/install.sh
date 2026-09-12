@@ -101,22 +101,38 @@ fi
 # Application code: owned by the deploy user; services only read and execute.
 install -d -m 0755 -o "$DEPLOY_USER" -g "$DEPLOY_USER" /opt/personal-agent
 
-# DEV-035: staging dirs for the daily snapshots. Each is 2770 owned by its
-# service user with the backup user in the group, so the service writes the
-# snapshot and the backup user reads it -- and nobody else can. The live data
-# dirs above stay 0700, so group membership here grants no access to them.
+# DEV-035: staging dirs for the daily snapshots. The MCP timer still stages a
+# file directly, so its directory is setgid 2770. The API media bundle is
+# different: only the API may publish or replace its pointer/run, while the
+# backup identity can only read it (2750). The live data dirs above stay 0700,
+# so membership here grants no access to them.
 #
 # The setgid bit is load-bearing, not tidiness: without it a file created here
 # takes the writer's own primary group (personal-agent-api / personal-data-mcp),
 # and the backup user -- who is in neither -- can list the directory but open
 # nothing in it. Group inheritance plus the units' UMask=0027 is what actually
 # makes the staged files readable; the directory mode alone never did.
-install -d -m 2770 -o "$API_USER" -g "$BACKUP_USER" /var/backups/personal-agent/api
+install -d -m 2750 -o "$API_USER" -g "$BACKUP_USER" /var/backups/personal-agent/api
 install -d -m 2770 -o "$MCP_USER" -g "$BACKUP_USER" /var/backups/personal-agent/mcp
 # `install -d` on an existing directory does not reapply the mode, so make the
-# setgid bit and group explicit for boxes provisioned before this change.
-chmod 2770 /var/backups/personal-agent/api /var/backups/personal-agent/mcp
+# permissions and group explicit for boxes provisioned before this change.
+chmod 2750 /var/backups/personal-agent/api
+chmod 2770 /var/backups/personal-agent/mcp
 chgrp "$BACKUP_USER" /var/backups/personal-agent/api /var/backups/personal-agent/mcp
+# Multimodal media bundles are prepared by the API identity and consumed by the
+# backup identity. The lock is installed by root: neither identity may replace
+# it, but both can open it through the group-readable staging directory.
+install -d -m 2750 -o "$API_USER" -g "$BACKUP_USER" /var/backups/personal-agent/api/media-runs
+chown root:root /var/backups/personal-agent
+chmod 0755 /var/backups/personal-agent
+# Never reinstall an existing lock: preserve its inode across upgrades.
+if [ ! -e /var/backups/personal-agent/media-bundle.lock ]; then
+  install -m 0444 -o root -g root /dev/null /var/backups/personal-agent/media-bundle.lock
+fi
+test ! -L /var/backups/personal-agent/media-bundle.lock
+test -f /var/backups/personal-agent/media-bundle.lock
+chown root:root /var/backups/personal-agent/media-bundle.lock
+chmod 0444 /var/backups/personal-agent/media-bundle.lock
 # The restic cache is the only path the backup unit writes.
 install -d -m 0700 -o "$BACKUP_USER" -g "$BACKUP_USER" /var/cache/restic
 # DEV-036: backup observation state. The backup unit writes the success marker
@@ -171,7 +187,9 @@ install -m 0644 -o root -g root \
   "$UNIT_SRC/personal-agent-review.service" \
   "$UNIT_SRC/personal-agent-review.timer" \
   "$UNIT_SRC/personal-agent-cleanup.service" \
-  "$UNIT_SRC/personal-agent-cleanup.timer" /etc/systemd/system/
+  "$UNIT_SRC/personal-agent-cleanup.timer" \
+  "$UNIT_SRC/personal-agent-media-cleanup.service" \
+  "$UNIT_SRC/personal-agent-media-cleanup.timer" /etc/systemd/system/
 # The backup script is executed by the backup user from /opt/personal-agent.
 # /opt/personal-agent exists (created above), but its deploy/ subdir does not
 # until the first DEV-035 install, so create it here.
