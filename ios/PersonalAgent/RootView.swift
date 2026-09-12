@@ -186,6 +186,11 @@ struct ServiceStatusView: View {
                     // the服务端 makes -- an unreadable answer is never an empty one.
                     Text("无法读取：服务端已不再为本设备签发 token。")
                         .foregroundStyle(.secondary)
+                } else if model.capabilities == nil {
+                    Text(model.lastError == nil
+                         ? "尚未读取工具清单。"
+                         : "工具清单读取失败，请刷新重试。")
+                        .foregroundStyle(.secondary)
                 } else if let tools = model.capabilities?.tools, !tools.isEmpty {
                     ForEach(tools, id: \.alias) { tool in
                         VStack(alignment: .leading, spacing: 2) {

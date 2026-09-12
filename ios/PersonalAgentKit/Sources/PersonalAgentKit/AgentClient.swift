@@ -831,6 +831,20 @@ public struct Capabilities: Decodable, Sendable {
             case allowedMIMEs = "allowed_mimes"
         }
 
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            enabled = try container.decode(Bool.self, forKey: .enabled)
+            maxContentBytes = try container.decodeIfPresent(Int.self, forKey: .maxContentBytes)
+            maxDimension = try container.decodeIfPresent(Int.self, forKey: .maxDimension)
+            // A text-only deployment has no media limits to advertise. Missing
+            // MIME facts are safe only while images are explicitly disabled.
+            if enabled {
+                allowedMIMEs = try container.decode([String].self, forKey: .allowedMIMEs)
+            } else {
+                allowedMIMEs = try container.decodeIfPresent([String].self, forKey: .allowedMIMEs) ?? []
+            }
+        }
+
         public init(
             enabled: Bool = false,
             maxContentBytes: Int? = nil,
