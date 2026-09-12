@@ -4,6 +4,45 @@ import Testing
 
 @Suite("On-device voice input state")
 struct VoiceInputStateTests {
+    @Test("Apple's sole preferred alternative is accepted as final text")
+    func solePreferredAlternative() {
+        #expect(VoiceInputStateMachine.soleFinalCandidate([" 今天测试语音。 "]) == "今天测试语音。")
+    }
+
+    @Test("absent or multiple final candidates are still refused",
+          arguments: [[], ["候选一", "候选二"]] as [[String]])
+    func refusesAmbiguousOrEmpty(_ alternatives: [String]) {
+        #expect(VoiceInputStateMachine.soleFinalCandidate(alternatives) == nil)
+    }
+
+    @Test("silent final segments do not erase valid speech")
+    func silenceAroundSpeech() throws {
+        var state = VoiceInputStateMachine()
+        let generation = state.requestPermission()!
+        _ = state.permissionResult(true, generation: generation)
+        _ = state.beganRecording(generation: generation)
+        let segments = try [[""], ["你好"], [" \n "], ["世界"], [""]].map {
+            try #require(VoiceInputStateMachine.soleFinalCandidate($0))
+        }.filter { !$0.isEmpty }
+        _ = state.beginFinalizing(generation: generation)
+        let text = state.acceptFinalText(segments.joined(separator: " "), generation: generation)
+        #expect(text == "你好 世界")
+    }
+
+    @Test("a fully silent utterance remains empty")
+    func silentSegmentsRemainEmpty() throws {
+        var state = VoiceInputStateMachine()
+        let generation = state.requestPermission()!
+        _ = state.permissionResult(true, generation: generation)
+        _ = state.beganRecording(generation: generation)
+        let segments = try [[""], [" \n "]].map {
+            try #require(VoiceInputStateMachine.soleFinalCandidate($0))
+        }.filter { !$0.isEmpty }
+        _ = state.beginFinalizing(generation: generation)
+        let text = state.acceptFinalText(segments.joined(), generation: generation)
+        #expect(text == nil)
+    }
+
     @Test("cancel or timeout during preparation cannot start a late recording")
     func preparationInvalidation() {
         for cancel in [true, false] {

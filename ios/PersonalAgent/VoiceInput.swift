@@ -12,6 +12,7 @@ final class VoiceInput {
     private var state = VoiceInputStateMachine()
 
     var isRecording: Bool { state.phase == .recording }
+    var isFinalizing: Bool { state.phase == .finalizing }
     var isPreparing: Bool { state.phase == .permission || state.phase == .preparing }
     var isActive: Bool { isPreparing || isRecording || state.phase == .finalizing }
     var transcript = ""
@@ -20,6 +21,7 @@ final class VoiceInput {
     private let engine = AVAudioEngine()
     private var continuation: AsyncStream<AnalyzerInput>.Continuation?
     private var analyzer: SpeechAnalyzer?
+    private var audioSession: VoiceAudioTap.Session?
     private var resultTask: Task<Void, Never>?
     private var analysisTask: Task<Void, Never>?
     private var finalSegments: [String] = []
@@ -103,15 +105,27 @@ final class VoiceInput {
             try session.setActive(true)
             let input = engine.inputNode
             let format = input.outputFormat(forBus: 0)
+            guard let analysisFormat = await SpeechAnalyzer.bestAvailableAudioFormat(
+                compatibleWith: modules
+            ) else { throw VoiceAudioConverter.Failure.invalidFormat }
+            guard state.generation == generation, state.phase == .preparing else { return }
+            let converter = try VoiceAudioConverter(source: format, destination: analysisFormat)
             let analyzer = SpeechAnalyzer(modules: modules)
-            try await analyzer.prepareToAnalyze(in: format)
+            try await analyzer.prepareToAnalyze(in: analysisFormat)
             guard state.generation == generation, state.phase == .preparing else { return }
             let pair = AsyncStream<AnalyzerInput>.makeStream()
             continuation = pair.continuation
+            let audioSession = VoiceAudioTap.Session(continuation: pair.continuation, converter: converter)
+            self.audioSession = audioSession
             self.analyzer = analyzer
-            input.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self] buffer, _ in
-                self?.continuation?.yield(AnalyzerInput(buffer: buffer))
-            }
+            input.installTap(onBus: 0, bufferSize: 1_024, format: format,
+                             block: VoiceAudioTap.make(
+                                session: audioSession,
+                                onFailure: { [weak self] in
+                                    Task { @MainActor [weak self] in
+                                        self?.fail("录音格式转换失败，请重新录制。", generation: generation)
+                                    }
+                                }))
             try engine.start()
             guard state.beganRecording(generation: generation) else {
                 teardown(clearTranscript: true)
@@ -154,7 +168,12 @@ final class VoiceInput {
         guard state.beginFinalizing(generation: generation) else { return "" }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        continuation?.finish()
+        do {
+            try audioSession?.finish()
+        } catch {
+            fail("录音收尾转换失败，请重新录制。", generation: generation)
+            return ""
+        }
         continuation = nil
         let currentAnalyzer = analyzer
         let currentAnalysis = analysisTask
@@ -190,8 +209,10 @@ final class VoiceInput {
     }
 
     func cancel() {
+        let wasActive = isActive
         state.cancel()
         teardown(clearTranscript: true)
+        if wasActive { errorMessage = "录音已取消，未添加文字。" }
     }
 
     func interrupt() {
@@ -221,6 +242,8 @@ final class VoiceInput {
         finishWaiter = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        audioSession?.cancel()
+        audioSession = nil
         continuation?.finish()
         continuation = nil
         analysisTask?.cancel()
@@ -254,14 +277,18 @@ final class VoiceInput {
         else { return }
         if result.isFinal {
             hasVolatileTail = false
-            // We do not fabricate a confidence threshold.  If the OS presents
-            // alternatives, the contract requires the user to re-record rather
-            // than silently choosing one interpretation.
-            guard result.alternatives.isEmpty else {
-                fail("语音识别出现多个候选，请重新录制或手动输入。", generation: generation)
+            // Apple's alternatives contains the preferred text as its first
+            // element. Only additional candidates represent ambiguity.
+            guard let text = VoiceInputStateMachine.soleFinalCandidate(
+                result.alternatives.map { String($0.characters) }
+            ) else {
+                let message = result.alternatives.count > 1
+                    ? "语音识别出现多个候选，请重新录制或手动输入。"
+                    : "没有识别到有效文字，请重新录制。"
+                fail(message, generation: generation)
                 return
             }
-            finalSegments.append(String(result.text.characters))
+            if !text.isEmpty { finalSegments.append(text) }
             transcript = finalSegments.joined(separator: " ")
         } else {
             hasVolatileTail = true

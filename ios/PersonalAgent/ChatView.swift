@@ -2238,28 +2238,22 @@ struct ChatView: View {
                         }
                     }
                 }
-                Button {
-                    if voiceInput.isActive {
-                        voiceInput.cancel()
-                    }
-                } label: {
-                    Image(systemName: voiceInput.isActive ? "mic.fill" : "mic")
-                        .font(.title3)
-                        .foregroundStyle(voiceInput.isActive ? .danger : .primary)
-                }
-                .disabled(model.busy || writingInProgress)
-                .accessibilityLabel(voiceInput.isActive ? "取消语音输入" : "长按语音输入")
-                .onLongPressGesture(minimumDuration: 0.2, pressing: { holding in
-                    if holding {
+                VoiceHoldButton(
+                    enabled: !model.busy && !writingInProgress && !voiceInput.isFinalizing,
+                    active: voiceInput.isActive,
+                    began: {
                         Task { await voiceInput.start() }
-                    } else if voiceInput.isRecording {
-                        Task {
-                            model.appendVoiceDraft(await voiceInput.finish())
+                    },
+                    released: {
+                        if voiceInput.isRecording {
+                            Task { model.appendVoiceDraft(await voiceInput.finish()) }
+                        } else if voiceInput.isPreparing {
+                            voiceInput.cancel()
                         }
-                    } else if voiceInput.isActive {
-                        voiceInput.cancel()
-                    }
-                }, perform: {})
+                    },
+                    cancelled: { voiceInput.cancel() }
+                )
+                .frame(width: 36, height: 44)
                 if writingInProgress {
                     // §3i 阶段一: 写入进行中时, 发送按钮让位给一句说明。告诉用户
                     // 为什么按不下去, 而不是让他对着一个看似可点却不响应的按钮。
@@ -2294,8 +2288,12 @@ struct ChatView: View {
                 Text("正在本机转写；松开后可编辑再发送。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } else if voiceInput.isFinalizing {
+                Text("正在完成转写，请稍候…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else if voiceInput.isPreparing {
-                Text("正在准备本机语音识别；松开或点麦克风可取消。")
+                Text("正在准备本机语音识别；松开可取消。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if let message = voiceInput.errorMessage {
