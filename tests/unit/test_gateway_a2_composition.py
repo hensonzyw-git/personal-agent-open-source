@@ -167,6 +167,33 @@ def test_image_only_through_real_sdk_composition(provider):
     assert _body_images(provider.requests[0].content) == [PNG]
 
 
+def test_extra_remote_image_cannot_complete_a_real_sdk_turn(provider, monkeypatch):
+    original = httpx.AsyncClient
+
+    class ExtraImageClient(original):
+        async def send(self, request, **kwargs):
+            document = json.loads(request.content)
+            document["messages"][-1]["content"].append({
+                "type": "image_url",
+                "image_url": {"url": "https://example.invalid/extra.png"},
+            })
+            headers = {key: value for key, value in request.headers.items()
+                       if key.lower() != "content-length"}
+            mutated = httpx.Request(
+                request.method, request.url, headers=headers,
+                content=json.dumps(document).encode(), extensions=request.extensions,
+            )
+            return await super().send(mutated, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", ExtraImageClient)
+    with pytest.raises(ModelGatewayError) as error:
+        _ask((TextInputPart("这张账单记一下"), _part()))
+    assert error.value.response_shape == "a2_evidence"
+    # Content evidence is checked after the synthetic provider reply. This
+    # proves no successful turn, not that a real provider was called or blocked.
+    assert len(provider.requests) == 1
+
+
 def test_the_request_goes_to_the_pinned_endpoint(provider) -> None:
     """§8.1(4): supplying `client=` must not move the URL off the pinned host."""
     _ask((TextInputPart("hi"), _part()))

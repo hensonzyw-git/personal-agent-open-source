@@ -107,13 +107,14 @@ class A2Witness:
 
 
 def body_images(body: bytes) -> list[tuple[str, bytes]]:
-    """Every inline image in an OpenAI-style chat body, as (mime, bytes).
+    """Every image in an OpenAI-style chat body, as (mime, bytes).
 
     Returns an empty list for a body that is not the expected shape rather than
     raising: the caller's next step is to compare the count against the
     authorized set, and a body it cannot parse has a count of zero images. The
     alternative -- treating "unparseable" as "fine" -- is the failure this whole
-    module exists to prevent.
+    module exists to prevent. Once a content list is present, unsupported or
+    malformed blocks raise rather than disappearing beside a valid image.
     """
     try:
         document = json.loads(body)
@@ -129,19 +130,28 @@ def body_images(body: bytes) -> list[tuple[str, bytes]]:
         if not isinstance(content, list):
             continue
         for block in content:
-            if not isinstance(block, dict) or block.get("type") != "image_url":
+            if not isinstance(block, dict):
+                raise A2Violation("unrecognized content block")
+            if block.get("type") == "text":
                 continue
-            url = (block.get("image_url") or {}).get("url")
+            if block.get("type") != "image_url":
+                raise A2Violation("unsupported content block type")
+            image = block.get("image_url")
+            if not isinstance(image, dict):
+                raise A2Violation("malformed image block")
+            url = image.get("url")
             if not isinstance(url, str):
-                continue
+                raise A2Violation("image block has no inline URL")
             header, separator, encoded = url.partition(",")
-            if not separator or not header.startswith("data:") or ";base64" not in header:
-                continue
+            if not separator or not header.startswith("data:") or not header.endswith(";base64"):
+                raise A2Violation("image block is not supported inline data")
             mime = header[len("data:") :].split(";", 1)[0]
+            if header != f"data:{mime};base64":
+                raise A2Violation("unsupported image data header")
             try:
                 found.append((mime, base64.b64decode(encoded, validate=True)))
-            except (binascii.Error, ValueError):
-                continue
+            except (binascii.Error, ValueError) as error:
+                raise A2Violation("invalid image base64") from error
     return found
 
 

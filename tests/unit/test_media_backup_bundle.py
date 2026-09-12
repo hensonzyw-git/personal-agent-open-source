@@ -16,6 +16,7 @@ from personal_agent.backup.media_bundle import (
     verify_published_media_bundle,
 )
 from personal_agent.backup.restore_verify import check_media_bundle_media
+from personal_agent.backup.restore_verify import run_all
 from personal_agent.media.lifecycle import (
     claim_upload,
     create_upload,
@@ -90,6 +91,18 @@ def _ready_media(engine, store: MediaStore, keyring: KeyRing) -> str:
         ).value == "published"
         session.commit()
     return media_id
+
+
+def test_restore_cannot_omit_bundle_for_populated_media(tmp_path, keyring):
+    database = tmp_path / "agent.sqlite"
+    engine = _database(database)
+    try:
+        assert all(result["ok"] for result in run_all(database, keyring, manifest_entries=[]))
+        _ready_media(engine, _media_root(tmp_path, keyring), keyring)
+        results = run_all(database, keyring, manifest_entries=[])
+        assert any(not result["ok"] and result["name"] == "media_restore" for result in results)
+    finally:
+        engine.dispose()
 
 
 def test_bundle_captures_only_snapshot_referenced_ciphertext(tmp_path: Path, keyring: KeyRing):

@@ -450,6 +450,24 @@ def run_all(
         results.append(check_aead_sample(database, keyring, entry_id=aead_sample_entry_id))
     if any(not result["ok"] for result in results):
         return results
+    if media_bundle is None:
+        # "Optional" is the text-only compatibility path, not permission to
+        # skip ciphertext checks for a populated media database. Check before
+        # replay so deletion cannot erase the very evidence requiring a bundle.
+        engine = create_read_only_database_engine(database)
+        try:
+            with engine.connect() as connection:
+                has_media = bool(connection.execute(text(
+                    "SELECT EXISTS (SELECT 1 FROM media_objects)"
+                )).scalar_one())
+            if has_media:
+                results.append({
+                    "name": "media_restore", "ok": False,
+                    "detail": "media bundle required for a database with media lifecycle records",
+                })
+                return results
+        finally:
+            engine.dispose()
     if manifest_entries is not None:
         results.append(
             check_replay_deletion_manifest(database, keyring, manifest_entries)

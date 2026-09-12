@@ -24,3 +24,9 @@ def test_selection_identity_is_independent_of_content_hash():
     source = (ROOT / "ios/PersonalAgent/PhotoPreparation.swift").read_text()
     assert "let selectionID = UUID()" in source
     assert "let sha256: String" in source
+
+
+def test_captured_text_is_consumed_before_calendar_wait():
+    source = (ROOT / "ios/PersonalAgent/ChatModel.swift").read_text()
+    send = source.split("func send() async", 1)[1].split("func preparePhoto", 1)[0]
+    assert send.index('draft = ""') < send.index("await syncHandle?.wait()")

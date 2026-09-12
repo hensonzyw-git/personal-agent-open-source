@@ -284,6 +284,11 @@ final class ChatModel {
         guard !text.isEmpty || photo != nil else { return }
         busy = true
         defer { busy = false }
+        // Consume this draft synchronously. The field remains editable while
+        // Calendar sync waits, so no later continuation may clear its new text.
+        let clarificationOf = answering?.operationID
+        let startNewSession = startNewTopic
+        draft = ""
         // The pre-send mirror top-up (review R5), **bounded** (second review
         // F8): a calendar question in this very message is answered against
         // the mirror, so a stale one is topped up first — but a permission
@@ -293,10 +298,7 @@ final class ChatModel {
         // the server labels a still-stale answer honestly.
         let syncHandle = onSyncMirror?()
         await syncHandle?.wait()
-        let clarificationOf = answering?.operationID
-        let startNewSession = startNewTopic
         // Out of the composer and onto the screen before the request leaves.
-        draft = ""
         sending = text.isEmpty ? "[图片]" : text
         liveStages = []
         defer { sending = nil; liveStages = [] }

@@ -35,7 +35,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--media-bundle", type=Path,
-        help="the verified restored media run containing ciphertext files",
+        help="verified restored media run; may be omitted only when the DB has no media lifecycle rows",
     )
     parser.add_argument(
         "--aead-sample-entry-id",

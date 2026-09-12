@@ -86,6 +86,21 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode()
 
 
+@pytest.mark.parametrize("extra", [
+    {"type": "image_url", "image_url": {"url": "https://example.invalid/extra.png"}},
+    {"type": "image_url", "image_url": {}},
+    {"type": "image_url", "image_url": "invalid"},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,!!!"}},
+    {"type": "input_image", "image_url": "https://example.invalid/extra.png"},
+])
+def test_extra_unrecognized_images_refuse_instead_of_disappearing(extra):
+    document = json.loads(_body(("image", "image/png")))
+    document["messages"][0]["content"].append(extra)
+    with pytest.raises(A2Violation):
+        verify(_attempt(json.dumps(document).encode()),
+               expected_images=(_png_part(),), prompt_tokens=451)
+
+
 def _attempt(body: bytes) -> A2Witness:
     witness = A2Witness(pinned_host=HOST)
     witness.attempts.append(
