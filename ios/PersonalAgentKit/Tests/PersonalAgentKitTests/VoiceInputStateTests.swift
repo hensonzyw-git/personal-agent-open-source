@@ -4,6 +4,17 @@ import Testing
 
 @Suite("On-device voice input state")
 struct VoiceInputStateTests {
+    @Test("Apple's sole preferred alternative is accepted as final text")
+    func solePreferredAlternative() {
+        #expect(VoiceInputStateMachine.soleFinalCandidate([" 今天测试语音。 "]) == "今天测试语音。")
+    }
+
+    @Test("empty or multiple final candidates are still refused",
+          arguments: [[], [""], [" \n "], ["候选一", "候选二"]] as [[String]])
+    func refusesAmbiguousOrEmpty(_ alternatives: [String]) {
+        #expect(VoiceInputStateMachine.soleFinalCandidate(alternatives) == nil)
+    }
+
     @Test("cancel or timeout during preparation cannot start a late recording")
     func preparationInvalidation() {
         for cancel in [true, false] {

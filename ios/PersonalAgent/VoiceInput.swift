@@ -267,14 +267,18 @@ final class VoiceInput {
         else { return }
         if result.isFinal {
             hasVolatileTail = false
-            // We do not fabricate a confidence threshold.  If the OS presents
-            // alternatives, the contract requires the user to re-record rather
-            // than silently choosing one interpretation.
-            guard result.alternatives.isEmpty else {
-                fail("语音识别出现多个候选，请重新录制或手动输入。", generation: generation)
+            // Apple's alternatives contains the preferred text as its first
+            // element. Only additional candidates represent ambiguity.
+            guard let text = VoiceInputStateMachine.soleFinalCandidate(
+                result.alternatives.map { String($0.characters) }
+            ) else {
+                let message = result.alternatives.count > 1
+                    ? "语音识别出现多个候选，请重新录制或手动输入。"
+                    : "没有识别到有效文字，请重新录制。"
+                fail(message, generation: generation)
                 return
             }
-            finalSegments.append(String(result.text.characters))
+            finalSegments.append(text)
             transcript = finalSegments.joined(separator: " ")
         } else {
             hasVolatileTail = true
