@@ -12,6 +12,7 @@ final class VoiceInput {
     private var state = VoiceInputStateMachine()
 
     var isRecording: Bool { state.phase == .recording }
+    var isFinalizing: Bool { state.phase == .finalizing }
     var isPreparing: Bool { state.phase == .permission || state.phase == .preparing }
     var isActive: Bool { isPreparing || isRecording || state.phase == .finalizing }
     var transcript = ""
@@ -200,8 +201,10 @@ final class VoiceInput {
     }
 
     func cancel() {
+        let wasActive = isActive
         state.cancel()
         teardown(clearTranscript: true)
+        if wasActive { errorMessage = "录音已取消，未添加文字。" }
     }
 
     func interrupt() {
