@@ -32,13 +32,16 @@ from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 from fastapi import FastAPI, Request
 from fastapi import Response
 from fastapi.responses import JSONResponse
+from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema.exceptions import ValidationError
 from sqlalchemy import text as text_clause
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import object_session
 
 from personal_agent.api import events
 from personal_agent.api.chat_anchor import (
@@ -52,6 +55,17 @@ from personal_agent.api.chat_parts import (
     parse_chat_parts,
     parts_text,
 )
+from personal_agent.api.calendar_issue import (
+    may_override,
+    override_fingerprint,
+    override_key,
+)
+from personal_agent.api.calendar_query_projection import (
+    CalendarQueryProjectionError,
+    decode_calendar_query_projection,
+    summarise_calendar_projection,
+)
+from personal_agent.api.device_action_projection import open_device_action
 from personal_agent.api.finance_query_projection import (
     FinanceQueryProjectionError,
     decode_finance_query_projection,
@@ -61,6 +75,11 @@ from personal_agent.api.finance_record_projection import open_expense_record
 from personal_agent.api.manual_review import (
     append_resolution_event,
     resolve_manual_review,
+)
+from personal_agent.api.operation_request import (
+    OperationRequestError,
+    open_operation_request,
+    seal_operation_request,
 )
 from personal_agent_core.timeutil import to_rfc3339
 from personal_agent.api.device_api import (
@@ -78,6 +97,7 @@ from personal_agent.api.operation_store import (
     chat_request_fingerprint,
     get_operation,
     open_operation,
+    plan_operations,
     request_cancel,
     transition_operation,
 )
@@ -91,6 +111,7 @@ from personal_agent.api.orchestrator import (
     Authorizer,
     Dispatcher,
     Interpreter,
+    resume_action_plan,
     run_operation,
 )
 from personal_agent.api.review_view import (
@@ -160,6 +181,7 @@ from personal_agent.runtime.model_input import InputPart, TextInputPart
 from personal_agent.diagnostics import transcript
 from personal_agent.diagnostics.transcript import NullRecorder, Recorder, TurnIdentity
 from personal_agent.storage.models import (
+    DEVICE_REPORT_WRITES,
     REVIEW_STATUSES,
     TERMINAL_OPERATION_STATES,
     ApiRequest,
@@ -175,10 +197,30 @@ from personal_agent_core.errors import (
 )
 from personal_agent_core.manifest import canonical_json
 from personal_agent_core.sqlite import run_write_transaction
-from personal_agent_core.tool_ir import TOOL_CONTRACTS
+from personal_agent_core.tool_ir import (
+    CLIENT_WIRE_VERSION_HEADER,
+    DEFAULT_CLIENT_WIRE_VERSION,
+    DEVICE_EXECUTED_TOOL_NAMES,
+    TOOL_CONTRACTS,
+    SCOPE_CALENDAR_READ,
+    client_supports_wire_version,
+    domain_of_tool,
+    parse_client_wire_version,
+)
 
 
 logger = logging.getLogger(__name__)
+
+#: The closed sync body, taken from the IR's `calendar.ingest_events` input
+#: schema. Validated at the route edge with the same validator the bridge
+#: applies inside — deliberately twice-gated, because the route must refuse a
+#: whole malformed batch before it reaches any governed machinery, and because
+#: the bridge is not composed in offline API tests.
+_SYNC_INGEST_CONTRACT: Final[dict[str, Any]] = next(
+    contract.model_input_schema
+    for contract in TOOL_CONTRACTS
+    if contract.name == "calendar.ingest_events"
+)
 
 
 @dataclass(frozen=True)
@@ -186,6 +228,11 @@ class AuthContext:
     device_id: str
     scopes: tuple[str, ...]
     allowed_tools_version: str
+    #: The action semantics this caller says it implements (design 2.5.1).
+    #: Read from the request header and never persisted: reading it per request
+    #: is what covers all three delivery doors at once, because the 200 reply,
+    #: the by-id poll and a replay are each a device-authenticated request.
+    client_wire_version: int
 
 
 class EnvelopeFactory(Protocol):
@@ -309,6 +356,20 @@ class AgentApiDeps:
     #: not enabled images, and an `AgentApiDeps` built by a test must not
     #: accidentally advertise a capability the test never composed.
     image_capability: Callable[[], ImageCapability] = _images_never_enabled
+    #: The governed calendar mirror ingest, composed once over the real bridge
+    #: in production. It receives the authenticated device's `AuthContext` and
+    #: the closed sync body, signs a Host Context naming *that* device, and
+    #: merges the batch into the mirror. `None` means calendar sync is not
+    #: composed and the route refuses rather than serving an unbound mirror.
+    sync_ingest: Callable[[AuthContext, dict[str, Any]], dict[str, Any]] | None = None
+    #: The keyring that seals an issued device action onto its operation row
+    #: (review R6, 2026-09-08). Production composes the data keyring; the
+    #: separate field keeps the seal at a deliberate, visible seam rather than
+    #: letting every `keyring` call site implicitly gain write access to the
+    #: device-action column. `None` means device actions may not be issued,
+    #: and `run_operation` refuses one loudly instead of parking an
+    #: operation whose action nobody could ever deliver.
+    action_keyring: KeyRing | None = None
 
     def __post_init__(self) -> None:
         if self.sync_wait_seconds <= 0 or self.sync_wait_seconds > 30.0:
@@ -323,6 +384,7 @@ _STATUS_BY_CODE = {
     ErrorCode.TOOL_NOT_ALLOWLISTED: 403,
     ErrorCode.HOST_CONTEXT_MISMATCH: 403,
     ErrorCode.INVALID_ARGUMENT: 400,
+    ErrorCode.CALENDAR_SYNC_RESET_REQUIRED: 400,
     # `CAP-001`: an id that names no Timeline here. A `404` says so without
     # confirming whether that id exists anywhere, and without ever being read as
     # "so create it".
@@ -344,6 +406,11 @@ _STATUS_BY_CODE = {
 }
 
 _MAX_JSON_BODY_BYTES = 64 * 1024
+#: The calendar sync route carries a whole window of events, and its own
+#: batching budget is 128 KiB (design 6): the global 64 KiB cap would refuse a
+#: batch the device is *required* to send. Raised only for this route -- every
+#: other body stays on the global limit.
+_MAX_SYNC_BODY_BYTES = 512 * 1024
 
 # Only a governed write may project `safe_result` as an external record id.
 # Unknown and read-only tools fail toward `answer`, never toward evidence that a
@@ -381,6 +448,36 @@ _QUERY_RESULT_TOOLS = frozenset(
     and contract.output_schema.get("properties", {}).get("metric", {}).get("const")
     == "personal_spend_total_cny"
 )
+
+#: Same discipline for the calendar mirror read (review R4): a governed read
+#: whose `safe_result` is the calendar projection, keyed on the output
+#: contract's `source_system` const the way the Finance set keys on `metric`.
+_CALENDAR_QUERY_RESULT_TOOLS = frozenset(
+    contract.name
+    for contract in TOOL_CONTRACTS
+    if contract.effect == "read"
+    and contract.enabled
+    and contract.output_schema.get("properties", {}).get("source_system", {}).get(
+        "const"
+    )
+    == "apple_calendar_mirror"
+)
+
+#: The device-executed tools whose issued action the operation projection
+#: hands to the phone while the operation is parked (review R6). Derived from
+#: the IR's `executor` field like every other executor split, never
+#: hand-listed, so a second device tool is delivered by the same branch
+#: automatically.
+_DEVICE_EXECUTED_TOOLS = DEVICE_EXECUTED_TOOL_NAMES
+
+#: Which domain each tool belongs to is the IR's answer, not this file's
+#: (`domain_of_tool`). A client picks the manual-review card by domain — a
+#: calendar write cannot be checked in the ledger — so the domain has to be a
+#: fact the server states, derived from the tool's own contract like every
+#: other executor and risk split here. A tool with no contract has no domain
+#: and projects as null rather than falling into a default. The Timeline marker
+#: asks the same question when it freezes a resolution, and two expressions of
+#: it would be two things to keep in step.
 
 
 class _Unauthenticated(Exception):
@@ -572,6 +669,9 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             # must take effect immediately and the capability projection must
             # describe the same current database row enforced by dispatch.
             allowed_tools_version=device.allowed_tools_version,
+            client_wire_version=parse_client_wire_version(
+                request.headers.get(CLIENT_WIRE_VERSION_HEADER)
+            ),
         )
 
     def idempotency_key(request: Request) -> str:
@@ -786,8 +886,8 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             response = await asyncio.to_thread(
                 _load_operation_response,
                 deps,
+                auth,
                 anchored.operation_id,
-                auth.device_id,
             )
             return await asyncio.to_thread(
                 _record_operation_http_response,
@@ -879,8 +979,8 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             response = await asyncio.to_thread(
                 _load_operation_response,
                 deps,
+                auth,
                 anchored.operation_id,
-                auth.device_id,
             )
             return await asyncio.to_thread(
                 _record_operation_http_response,
@@ -902,7 +1002,11 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 operation = _owned_operation(
                     session, operation_id, device_id=auth.device_id
                 )
-                return _operation_response(deps.keyring, operation)
+                return _operation_response(
+                    deps.keyring,
+                    operation,
+                    client_wire_version=auth.client_wire_version,
+                )
 
             response = _commit(session, work)
         return _record_operation_http_response(
@@ -965,7 +1069,11 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                         ),
                     )
                 anchored_operation_id = operation.operation_id
-                return _operation_response(deps.keyring, operation)
+                return _operation_response(
+                    deps.keyring,
+                    operation,
+                    client_wire_version=auth.client_wire_version,
+                )
 
             response = _commit(session, work)
         if anchored_operation_id is not None:
@@ -989,7 +1097,11 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 _owned_operation(session, operation_id, device_id=auth.device_id)
                 request_cancel(session, operation_id=operation_id, now=deps.now())
                 operation = get_operation(session, operation_id)
-                return _operation_response(deps.keyring, operation)
+                return _operation_response(
+                    deps.keyring,
+                    operation,
+                    client_wire_version=auth.client_wire_version,
+                )
 
             response = _commit(session, work)
         return _record_operation_http_response(
@@ -1232,6 +1344,104 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             decision,
             key,
         )
+
+    @app.post("/v1/device-actions/{action_id}/result")
+    async def post_device_action_result(action_id: str, request: Request):
+        """Settle one device-executed write with the phone's own report.
+
+        The iPhone is the executor of `calendar.create_event` and the fact
+        source for what it did, so its report is the evidence the operation
+        settles on -- not a claim to be re-verified against anything. The
+        report vocabulary is closed:
+
+        - `created` / `duplicate` -- the event exists on the phone. The
+          EventKit identifier is the receipt's record id (`safe_result`), and
+          both are success: the device's local dedup finding the event already
+          there is a created calendar from the user's point of view.
+        - `denied` / `failed` -- EventKit refused the save. The device refused
+          before any write could exist, which is the strongest zero-write
+          evidence this domain can hold, so the operation settles `failed_safe`
+          -- the one place a device report may claim it.
+
+        A report naming a success without an `event_id` proves nothing and is
+        refused before it can settle anything. The operation is located by its
+        own idempotency key (which *is* the action id) under the same ownership
+        rule every operation endpoint applies, so a valid token for another
+        device cannot settle this one's action. The CAS transition makes the
+        settlement exactly-once: a replay answers the settled projection and
+        never re-migrates.
+        """
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        body = await _json_body(request)
+        return await asyncio.to_thread(
+            _process_device_action_result, deps, auth, action_id, body
+        )
+
+    @app.post("/v1/device-actions/{action_id}/override")
+    async def post_device_action_override(action_id: str, request: Request):
+        """Write the calendar event again, because the user said 「仍要创建」.
+
+        The device reported `duplicate`, so the phone's own lookup found an
+        event it will not write over. The user answered the card and asked for
+        it anyway; that answer is what this endpoint carries, and nothing else.
+
+        There is no decision to submit, which is why the body is empty and
+        closed: the meaning of the call is entirely in *which* action it names
+        and in whether that action is allowed to be overridden (a device-
+        executed calendar create that settled `succeeded` on a `duplicate`
+        report). An override is a write, so it is issued afresh through the
+        normal dispatch path -- policy, scopes and kill switch are all
+        re-evaluated rather than inherited from the operation being overridden.
+
+        It is idempotent by derivation, not by a key the caller sends: the one
+        derived operation for an action is fixed by the action's own id, so a
+        double tap, a retry whose response was lost, and two concurrent taps
+        all reach the same operation and the same projection (design 3.3).
+        """
+        # Authentication precedes any body check, as it does on every other
+        # device endpoint: an unauthenticated caller learns nothing about this
+        # action, not even whether its own envelope would have been accepted.
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        body = await _json_body(request)
+        if body:
+            raise AppError(
+                ErrorCode.INVALID_ARGUMENT,
+                internal_detail="an override carries no body",
+            )
+        return await asyncio.to_thread(
+            _process_device_action_override, deps, auth, action_id
+        )
+
+    @app.post("/v1/calendar/sync")
+    async def post_calendar_sync(request: Request):
+        """Merge one device calendar snapshot into the server's mirror.
+
+        The mirror is what `calendar.query_events` reads, so a device that
+        could write it through any other path could fabricate the calendar the
+        model would then be asked to summarise. The upload is therefore
+        governed like any tool call: device auth, the `calendar.event.read`
+        scope (an upload exists to be read back), and the real bridge inside
+        `deps.sync_ingest`, which signs a Host Context naming the calling
+        device -- the payload never carries an identity the server trusts.
+
+        One malformed batch refuses whole (§5.1: no silent triage), and the
+        bridge call runs without an API-side transaction under it (§5.2).
+        """
+        if deps.sync_ingest is None:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="calendar sync is not composed",
+            )
+        auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
+        if SCOPE_CALENDAR_READ not in auth.scopes:
+            raise AppError(
+                ErrorCode.SCOPE_DENIED,
+                internal_detail="calendar sync requires calendar.event.read",
+            )
+        body = await _json_body(request, max_bytes=_MAX_SYNC_BODY_BYTES)
+        _validate_sync_body(body)
+        result = await asyncio.to_thread(deps.sync_ingest, auth, body)
+        return JSONResponse(result)
 
     @app.exception_handler(_Unauthenticated)
     async def _on_unauth(request: Request, exc: _Unauthenticated):
@@ -2323,7 +2533,23 @@ def _process_chat(
                 session, operation_id, device_id=auth.device_id
             )
             if operation.state != "accepted":
-                return _ProcessedChat(_operation_response(deps.keyring, operation))
+                # A replay of a frozen action plan finishes issuing it (design
+                # 4.1). This is the one non-`accepted` state that still has work
+                # to do: the freeze wrote the list down, and a crash between two
+                # items left the rest waiting for an action that only this
+                # re-entry can give them. Every other shape is answered by its
+                # projection, exactly as before -- `resume_action_plan` returns
+                # `None` unless there is something to finish.
+                resumed = _resume_action_plan(deps, auth, session, operation)
+                if resumed is not None:
+                    return resumed
+                return _ProcessedChat(
+                    _operation_response(
+                        deps.keyring,
+                        operation,
+                        client_wire_version=auth.client_wire_version,
+                    )
+                )
             payload = open_chat_request(
                 deps.keyring,
                 request_id=operation.request_id,
@@ -2342,10 +2568,63 @@ def _process_chat(
             operation = _owned_operation(
                 session, operation_id, device_id=auth.device_id
             )
-            return _ProcessedChat(_operation_response(deps.keyring, operation))
+            return _ProcessedChat(
+                _operation_response(
+                    deps.keyring,
+                    operation,
+                    client_wire_version=auth.client_wire_version,
+                )
+            )
         except Exception:
             session.rollback()
             raise
+
+
+def _resume_action_plan(
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    session,
+    operation: Operation,
+) -> _ProcessedChat | None:
+    """Finish a frozen plan this session's replay found unfinished.
+
+    The turn is recorded under the same correlation identity as the message that
+    created the plan -- the anchor already exists, because the plan's first item
+    is that very operation -- so the resumed issuing reads as the same
+    conversation turn rather than as a second one.
+    """
+    if operation.plan_key is None:
+        # Not a member of any frozen list, so there is nothing to finish and no
+        # reason to build a dispatcher for it.
+        return None
+    identity = _turn_identity(
+        operation, _anchor_event_or_none(session, operation.operation_id)
+    )
+    with deps.recorder.turn(identity):
+        result = resume_action_plan(
+            session,
+            operation,
+            dispatcher=deps.build_dispatcher(auth, operation.trace_id),
+            authorize=deps.build_authorizer(auth),
+            keyring=deps.keyring,
+            action_keyring=deps.action_keyring,
+            now=deps.now,
+        )
+        if result is None:
+            return None
+        deps.recorder.record(
+            transcript.TURN_RESULT, {"state": result.state, "result": result}
+        )
+    session.commit()
+    session.refresh(operation)
+    return _ProcessedChat(
+        _operation_response(
+            deps.keyring,
+            operation,
+            client_wire_version=auth.client_wire_version,
+            extra=_transient(result),
+        )
+    )
 
 
 def _run_chat_turn(
@@ -2393,6 +2672,7 @@ def _run_chat_turn(
             else None
         ),
         recorder=deps.recorder,
+        action_keyring=deps.action_keyring,
     )
     if result.state == "waiting_for_clarification":
         question = result.clarification
@@ -2435,7 +2715,12 @@ def _run_chat_turn(
         else None
     )
     processed = _ProcessedChat(
-        _operation_response(deps.keyring, operation, extra=_transient(result)),
+        _operation_response(
+            deps.keyring,
+            operation,
+            client_wire_version=auth.client_wire_version,
+            extra=_transient(result),
+        ),
         compact_session_id=compact_session_id,
     )
     return processed
@@ -2592,6 +2877,87 @@ def _anchor_event_or_none(session, operation_id: str) -> _Anchor | None:
         session_id=row[1],
         turn_id=row[2],
         event_id=row[3],
+    )
+
+
+def _message_operation(session, operation: Operation) -> Operation:
+    """The operation the user's message became, for any operation downstream of it.
+
+    `_plan_rows` answers the *delivery* question -- which actions may this reply
+    hand over -- and so returns the whole plan for item 0 and the row alone for
+    a sibling. This answers the *authorship* question, and it has one answer for
+    every row the same sentence produced:
+
+    - an item of a frozen plan belongs to item 0, the message itself;
+    - a row an override derived belongs to the operation it names as its parent
+      (`_process_device_action_override` states exactly that when it labels the
+      derived run with the source's turn), so a chain of deliberate re-issues
+      still points at the one message that asked for the event;
+    - anything else is its own message.
+
+    The walk is bounded rather than trusting the lineage to be acyclic: a cycle
+    would otherwise be an unbounded loop inside a request, and the honest answer
+    for a lineage this code cannot read is the row itself.
+    """
+    seen: set[str] = set()
+    while True:
+        if operation.plan_key is not None:
+            return plan_operations(session, operation.plan_key)[0]
+        parent_id = operation.parent_operation_id
+        if parent_id is None or operation.operation_id in seen:
+            return operation
+        seen.add(operation.operation_id)
+        parent = session.get(Operation, parent_id)
+        if parent is None:
+            return operation
+        operation = parent
+
+
+def _append_plan_item_result_event(
+    session, keyring: KeyRing, *, operation: Operation, now: datetime
+) -> None:
+    """Append a changed result projection once, preserving earlier history.
+
+    Both the message's own operation and plan siblings need durable terminal
+    receipts. An earlier running projection must not suppress settlement.
+    Replayed reports compare the latest event with the current stored state.
+    Operations without a conversation anchor cannot invent a history turn.
+    """
+    # An initial source_in_progress event is not the final receipt. Keep it
+    # in the archive and append the settled projection exactly once, including
+    # on a replay that repairs a previously missing terminal event.
+    session.refresh(operation)
+    existing = (
+        session.query(ConversationEvent)
+        .filter(
+            ConversationEvent.operation_id == operation.operation_id,
+            ConversationEvent.event_type == events.OPERATION_RESULT,
+        )
+        .order_by(ConversationEvent.timeline_sequence.desc())
+        .first()
+    )
+    if existing is not None:
+        previous = events._entry(keyring, existing).content
+        if previous.get("state") == operation.state:
+            return
+    anchor = _anchor_event_or_none(
+        session, _message_operation(session, operation).operation_id
+    )
+    if anchor is None:
+        return
+    # The CAS above wrote the row directly, so the identity map still holds the
+    # state this request read; the projection has to describe what was stored.
+    session.refresh(operation)
+    events.append_event(
+        session,
+        keyring,
+        conversation_id=anchor.conversation_id,
+        session_id=anchor.session_id,
+        turn_id=anchor.turn_id,
+        event_type=events.OPERATION_RESULT,
+        content=_operation_event_content(keyring, operation),
+        operation_id=operation.operation_id,
+        now=now,
     )
 
 
@@ -2948,11 +3314,17 @@ def _session_of_operation(session, operation_id: str) -> str | None:
 
 
 def _load_operation_response(
-    deps: AgentApiDeps, operation_id: str, device_id: str
+    deps: AgentApiDeps, auth: AuthContext, operation_id: str
 ) -> JSONResponse:
     with deps.session_factory() as session:
-        operation = _owned_operation(session, operation_id, device_id=device_id)
-        return _operation_response(deps.keyring, operation)
+        operation = _owned_operation(
+            session, operation_id, device_id=auth.device_id
+        )
+        return _operation_response(
+            deps.keyring,
+            operation,
+            client_wire_version=auth.client_wire_version,
+        )
 
 
 def _process_manual_resolution(
@@ -3002,6 +3374,318 @@ def _process_manual_resolution(
             )
 
         return _commit(session, work)
+
+
+def _process_device_action_result(
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    action_id: str,
+    body: dict[str, Any],
+) -> JSONResponse:
+    """Settle the operation a device report names, exactly once.
+
+    Reads and writes only the Agent database -- the phone's report *is* the
+    external evidence, so no fact source is contacted and the retrying commit
+    is safe. The CAS in `transition_operation` is the one-shot guarantee: a
+    retry that arrives after settlement re-projects the winner's state rather
+    than moving anything.
+    """
+    _closed_device_result_body(body)
+    result = body["result"]
+    event_id = body.get("event_id")
+    detail = body.get("detail")
+    if result in DEVICE_REPORT_WRITES and (
+        not isinstance(event_id, str) or not event_id.strip()
+    ):
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail="a created or duplicate report must carry an event_id",
+        )
+    if detail is not None and not isinstance(detail, str):
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail="detail must be a string or null",
+        )
+    with deps.session_factory() as session:
+        def work():
+            operation = _owned_action_operation(
+                session, action_id, device_id=auth.device_id
+            )
+            # This endpoint settles *device-executed* actions. Ownership alone
+            # is not enough: a Finance operation parked by its own execution
+            # path must not be settleable by a phone POST claiming a calendar
+            # write it never held. Derived from the IR, so a second device
+            # tool is admitted automatically.
+            if not any(
+                contract.name == operation.tool and contract.executor == "device"
+                for contract in TOOL_CONTRACTS
+            ):
+                raise AppError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    internal_detail=(
+                        f"action {action_id} is not a device-executed tool"
+                    ),
+                )
+            session.refresh(operation)
+            if not is_terminal(operation.state):
+                now = deps.now()
+                if result in DEVICE_REPORT_WRITES:
+                    # Success evidence: the phone holds the event. Two hops,
+                    # both audited, so the receipt carries the EventKit id.
+                    transition_operation(
+                        session,
+                        operation_id=operation.operation_id,
+                        current_state=operation.state,
+                        current_version=operation.state_version,
+                        target_state="verifying",
+                        now=now,
+                    )
+                    session.refresh(operation)
+                    transition_operation(
+                        session,
+                        operation_id=operation.operation_id,
+                        current_state=operation.state,
+                        current_version=operation.state_version,
+                        target_state="succeeded",
+                        now=now,
+                        safe_result=event_id,
+                        # Kept verbatim, and kept at all, because `created` and
+                        # `duplicate` are not interchangeable downstream: both
+                        # settle here with the EventKit id above, and only the
+                        # report itself says whether the phone *found* the event
+                        # or *made* it. 「仍要创建」 may be offered for exactly
+                        # one of those (design 3.3).
+                        device_result=result,
+                    )
+                else:
+                    # The device refused before any write could exist: the
+                    # fact source's own zero-write testimony.
+                    reason = (
+                        _DEVICE_REPORT_REASONS[result]
+                        if detail is None
+                        else f"{_DEVICE_REPORT_REASONS[result]}: {detail}"
+                    )
+                    transition_operation(
+                        session,
+                        operation_id=operation.operation_id,
+                        current_state=operation.state,
+                        current_version=operation.state_version,
+                        target_state="failed_safe",
+                        now=now,
+                        failure_reason=reason,
+                        device_result=result,
+                    )
+                session.refresh(operation)
+            # Every item of a plan gets its own receipt line (design 4.2). Item
+            # 0's is the one the issuing turn wrote; a sibling's is written here
+            # or nowhere, and nowhere is a settled write nobody is ever shown.
+            _append_plan_item_result_event(
+                session, deps.keyring, operation=operation, now=deps.now()
+            )
+            # A settled operation (including one this request did not move --
+            # the loser of a CAS race, or a replay) answers its current state.
+            return _operation_response(
+                deps.keyring,
+                operation,
+                client_wire_version=auth.client_wire_version,
+            )
+
+        return _commit(session, work)
+
+
+def _process_device_action_override(
+    deps: AgentApiDeps,
+    auth: AuthContext,
+    action_id: str,
+) -> JSONResponse:
+    """Re-issue a calendar write the user answered 「仍要创建」 to (design 3.3).
+
+    The decision is a server-side binding, not a new conversation turn. A turn
+    would ask the model to produce the call again -- and a turn is exactly what
+    a double tap, a retry whose response was lost, or two concurrent taps each
+    produce, giving two independently valid actions and two real events. So the
+    endpoint derives *one* key from the original operation
+    (`uuid5(namespace, "<operation_id>:calendar-override")`) and calls the same
+    INSERT-or-get the rest of the API uses: the first tap creates the derived
+    operation, and every later one reads it back and answers its current
+    projection. The client never supplies this key and cannot compute it for
+    another device's action, which is what keeps a predictable key the
+    mechanism here rather than a hazard.
+
+    The new operation carries `parent_operation_id`, so the audit shows two
+    operations -- the write that found the duplicate and the deliberate second
+    one -- rather than one silent pass. It resumes the *sealed* arguments the
+    original turn was authorised to make, never a re-derivation, and the device
+    is told to skip its own lookup, which is the whole point of the decision.
+
+    Only a `succeeded` operation whose report was `duplicate` qualifies; every
+    other state, including a settled one, is refused with `INVALID_ARGUMENT`.
+    """
+    action_keyring = deps.action_keyring
+    if action_keyring is None:
+        raise AppError(
+            ErrorCode.INTERNAL_ERROR,
+            internal_detail="the override endpoint is not composed",
+        )
+    with deps.session_factory() as session:
+        def work():
+            source = _owned_action_operation(
+                session, action_id, device_id=auth.device_id
+            )
+            if not may_override(
+                tool=source.tool,
+                state=source.state,
+                device_result=source.device_result,
+            ):
+                raise AppError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    internal_detail=(
+                        f"action {action_id} is not a duplicate a user may override"
+                    ),
+                )
+            if source.encrypted_request is None:
+                # The row says it is overridable and carries nothing to resume.
+                # Only a row that predates the retained request can be in this
+                # state, and guessing its arguments is the one thing an override
+                # must never do.
+                raise AppError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    internal_detail=(
+                        f"action {action_id} kept no request to resume"
+                    ),
+                )
+            try:
+                intent = open_operation_request(
+                    action_keyring,
+                    operation_id=source.operation_id,
+                    envelope=source.encrypted_request,
+                )
+            except OperationRequestError as unreadable:
+                raise AppError(
+                    ErrorCode.INVALID_ARGUMENT,
+                    internal_detail=str(unreadable),
+                ) from unreadable
+
+            opened = open_operation(
+                session,
+                device_id=auth.device_id,
+                client_request_id=override_key(source.operation_id),
+                request_fingerprint=override_fingerprint(source.operation_id),
+                now=deps.now(),
+                parent_operation_id=source.operation_id,
+            )
+            derived = opened.operation
+            if derived.state == "accepted":
+                # Sealed *before* the run, because this is what makes the
+                # derived operation pre-resolved: the orchestrator recognises
+                # an override by the parent lineage together with this seal, and
+                # runs it without a model. The seal is rewritten in the same
+                # transition that issues the new action, where the freshly
+                # attested arguments are in hand.
+                derived.encrypted_request = seal_operation_request(
+                    action_keyring,
+                    operation_id=derived.operation_id,
+                    intent=intent,
+                )
+                session.flush()
+                # The override joins the source message's turn when the source
+                # has one: it is the same user request, continued, and its own
+                # record is appended under that turn's identity rather than a
+                # fabricated one. A press is still not a chat turn, though, so a
+                # source with no anchor is a legitimate shape here (as it is for
+                # the other card-driven actions) and the record is labelled by
+                # the operation, trace and device instead of a guessed turn.
+                anchor = _anchor_event_or_none(session, source.operation_id)
+                with deps.recorder.turn(_turn_identity(derived, anchor)):
+                    run_operation(
+                        session,
+                        derived,
+                        # No model: the write is the one already authorised.
+                        build_context=None,
+                        interpreter=deps.build_interpreter(auth),
+                        dispatcher=deps.build_dispatcher(auth, derived.trace_id),
+                        authorize=deps.build_authorizer(auth),
+                        keyring=deps.keyring,
+                        now=deps.now,
+                        recorder=deps.recorder,
+                        action_keyring=action_keyring,
+                    )
+            session.refresh(derived)
+            # The derived operation's own projection is the answer, on both the
+            # first tap and every replay: a parked operation hands over its
+            # action through the same delivery door every other response uses
+            # (and under the same capability gate), and a settled one reports
+            # what the phone did with it.
+            return _operation_response(
+                deps.keyring,
+                derived,
+                client_wire_version=auth.client_wire_version,
+            )
+
+        # Retrying is safe here, and required: the device fork's `resolve` only
+        # *reads* our control plane (the calendar directory) and the write
+        # itself happens on the phone, after this response is delivered -- so a
+        # re-run repeats an idempotent read and nothing else. It is also what
+        # makes a double tap converge: two taps are a read-then-write each, and
+        # the loser of that shape cannot upgrade its snapshot once the winner
+        # commits (SQLite refuses immediately; `busy_timeout` cannot help), so
+        # without the retry the second tap would be a 500 rather than the same
+        # projection.
+        return _commit(session, work)
+
+
+#: The stable failure reasons a refused report records. The device's report is
+#: the evidence; the reason only names which closed value carried it. Which
+#: results are *writes* is not restated here: `DEVICE_REPORT_WRITES` is the
+#: same constant the operations CHECK constraint is built from, so a value the
+#: database would accept can never be one this endpoint refuses, or the reverse.
+_DEVICE_REPORT_REASONS: Final[dict[str, str]] = {
+    "denied": "DEVICE_ACTION_DENIED",
+    "failed": "DEVICE_EXECUTION_FAILED",
+}
+_DEVICE_RESULT_FIELDS: Final[frozenset[str]] = frozenset(
+    {"result", "event_id", "detail"}
+)
+
+
+def _closed_device_result_body(body: dict[str, Any]) -> None:
+    """Validate the closed report body before anything can settle."""
+    unexpected = sorted(set(body) - _DEVICE_RESULT_FIELDS)
+    if unexpected:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=f"unexpected fields in request body: {unexpected}",
+        )
+    result = body.get("result")
+    if result not in _DEVICE_REPORT_REASONS and result not in DEVICE_REPORT_WRITES:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=(
+                "result must be one of created, duplicate, denied, failed"
+            ),
+        )
+
+
+def _validate_sync_body(body: dict[str, Any]) -> None:
+    """Refuse a whole sync batch that does not match the ingest contract.
+
+    One malformed event refuses the batch entire (§5.1: no silent triage) --
+    the device is told to resend a coherent snapshot, never to have the server
+    guess which half it meant. The schema is the IR's own, so a contract
+    change moves both gates together.
+    """
+    try:
+        Draft202012Validator(
+            _SYNC_INGEST_CONTRACT, format_checker=FormatChecker()
+        ).validate(body)
+    except ValidationError as exc:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=(
+                "calendar sync body failed schema validation at "
+                f"{list(exc.absolute_path)}"
+            ),
+        ) from exc
 
 
 def _category_correction_fingerprint(
@@ -3115,7 +3799,11 @@ def _process_category_correction(
                     operation.operation_id,
                     exc_info=True,
                 )
-            return _operation_response(deps.keyring, operation)
+            return _operation_response(
+                deps.keyring,
+                operation,
+                client_wire_version=auth.client_wire_version,
+            )
 
         return _commit(session, work, retry=False)
 
@@ -3182,7 +3870,11 @@ def _process_duplicate_decision(
                 decision=decision,
                 now=deps.now(),
             )
-            return _operation_response(deps.keyring, target)
+            return _operation_response(
+                deps.keyring,
+                target,
+                client_wire_version=auth.client_wire_version,
+            )
 
         # `write anyway` dispatches a real Finance write inside `work`.
         return _commit(session, work, retry=False)
@@ -3228,6 +3920,33 @@ def _commit(session, work: Callable[[], Any], *, retry: bool = True):
     return run_write_transaction(session, work)
 
 
+def _owned_action_operation(
+    session, action_id: str, *, device_id: str
+) -> Operation:
+    """Locate the operation a device action id names, for its own device.
+
+    An action id *is* the operation's idempotency key, which is why the two
+    device endpoints (the report and the override) look it up this way rather
+    than by `operation_id`: the phone only ever holds the action id. Not "no
+    such action" and not "another device's action" -- one opaque refusal that
+    maps out no surface.
+    """
+    operation = (
+        session.query(Operation)
+        .filter(Operation.idempotency_key == action_id)
+        .filter(Operation.api_request.has(device_id=device_id))
+        .one_or_none()
+    )
+    if operation is None:
+        raise AppError(
+            ErrorCode.INVALID_ARGUMENT,
+            internal_detail=(
+                f"no operation anchored for action {action_id} on this device"
+            ),
+        )
+    return operation
+
+
 def _owned_operation(
     session, operation_id: str, *, device_id: str
 ) -> Operation:
@@ -3245,7 +3964,9 @@ def _owned_operation(
     return operation
 
 
-async def _json_body(request: Request) -> dict[str, Any]:
+async def _json_body(
+    request: Request, *, max_bytes: int = _MAX_JSON_BODY_BYTES
+) -> dict[str, Any]:
     """Read one bounded JSON object after authentication."""
     content_type = request.headers.get("content-type", "")
     media_type = content_type.split(";", 1)[0].strip().lower()
@@ -3264,17 +3985,17 @@ async def _json_body(request: Request) -> dict[str, Any]:
                 ErrorCode.INVALID_ARGUMENT,
                 internal_detail="Content-Length must be an integer",
             ) from exc
-        if declared_length < 0 or declared_length > _MAX_JSON_BODY_BYTES:
+        if declared_length < 0 or declared_length > max_bytes:
             raise AppError(
                 ErrorCode.INVALID_ARGUMENT,
-                internal_detail=f"JSON body exceeds {_MAX_JSON_BODY_BYTES} bytes",
+                internal_detail=f"JSON body exceeds {max_bytes} bytes",
             )
 
     raw = await request.body()
-    if len(raw) > _MAX_JSON_BODY_BYTES:
+    if len(raw) > max_bytes:
         raise AppError(
             ErrorCode.INVALID_ARGUMENT,
-            internal_detail=f"JSON body exceeds {_MAX_JSON_BODY_BYTES} bytes",
+            internal_detail=f"JSON body exceeds {max_bytes} bytes",
         )
     try:
         body = json.loads(raw)
@@ -3410,12 +4131,23 @@ def _operation_event_content(
     only for a `finance.query_expenses` result that decoded; anything else fails
     closed to an absent field rather than a raw dump.
     """
-    projection = _operation_projection(keyring, operation)
+    # A Timeline event is history, not a hand-off, and it deliberately never
+    # carried the action: `device_actions` is not among the names copied below.
+    # So the version passed here decides nothing -- it is version 1 to say so,
+    # rather than to claim this call site speaks for a client it does not have.
+    projection = _operation_projection(
+        keyring, operation, client_wire_version=DEFAULT_CLIENT_WIRE_VERSION
+    )
     content: dict[str, Any] = {
         "state": projection["state"],
         "tool": projection["tool"],
     }
     for name in (
+        # The domain travels with the history too: a card re-rendered from the
+        # Timeline after a restart must still know that its 人工核对 asks about
+        # the calendar rather than the ledger. Absent exactly when no tool was
+        # recorded, which is the same case the card cannot word either way.
+        "domain",
         "record_id",
         # `G1`. History and the live receipt draw the same card, so the fields
         # travel on the event too -- otherwise scrolling back would silently
@@ -3429,6 +4161,16 @@ def _operation_event_content(
         "duplicate_check_id",
         "duplicate_existing",
         "failure_reason",
+        # A calendar receipt says which of the two successes it was, and names
+        # the action a 「仍要创建」 would re-issue (design 3.3). `device_action_id`
+        # is the idempotency key *alone* -- not the sealed action, which stays
+        # out of history for the reason above: the key lets a card point at an
+        # action that is already the user's, while the action itself would be a
+        # hand-off frozen into a scroll-back. An event written before these two
+        # fields existed carries neither, and a card falls back to reading the
+        # operation rather than reading "created" into a missing fact.
+        "device_result",
+        "device_action_id",
     ):
         value = projection.get(name)
         if value is not None:
@@ -3550,6 +4292,7 @@ def _operation_response(
     keyring: KeyRing,
     operation: Operation,
     *,
+    client_wire_version: int,
     extra: dict[str, Any] | None = None,
 ) -> JSONResponse:
     # A parked or in-flight operation is 202; a resolved one is 200. The client
@@ -3558,7 +4301,9 @@ def _operation_response(
     # duplicate record), returned on the immediate reply only.
     from personal_agent.api.operation_state import is_terminal
 
-    projection = _operation_projection(keyring, operation)
+    projection = _operation_projection(
+        keyring, operation, client_wire_version=client_wire_version
+    )
     if extra:
         projection.update(extra)
     return JSONResponse(
@@ -3573,11 +4318,90 @@ def _transient(result) -> dict[str, Any]:
         value = getattr(result, name, None)
         if value is not None:
             fields[name] = value
+    # The device action used to ride here as a transient field, which made the
+    # chat response the action's only delivery channel: a request that timed
+    # out at 202 lost the action while the operation stayed parked. The action
+    # is now sealed on the operation and delivered by `_operation_projection`
+    # while the operation sits at `source_in_progress` (review R6, 2026-09-08),
+    # so the 200 reply, the by-id poll and a replay all answer through the one
+    # door. The worker's copy is deliberately dropped -- two channels would
+    # mean two answers about what was handed over.
     return fields
 
 
+def _parked_plan_actions(
+    keyring: KeyRing, operation: Operation, *, client_wire_version: int
+) -> list[dict[str, Any]]:
+    """Every device action this turn still owes the phone, in plan order.
+
+    A message that asked for several things is one frozen plan (design 4.1), and
+    its items are separate operations. The user's message is the row being
+    polled, so this is where the whole list has to appear: an item the projection
+    did not reach would be issued to nobody. A single-action message is a plan of
+    one and carries no plan key, so both shapes read the same way here.
+
+    Each item answers for itself. An envelope that will not open (wrong key,
+    tampering) is omitted rather than guessed: that item stays parked and the
+    timeout sweep is its witness, exactly as if nothing had been sealed -- and
+    its siblings are unaffected, because they are different rows.
+
+    The delivery gate (design 2.5.3) is applied per action. The issuance gate
+    already refused a client that cannot implement this action, but it reads the
+    version of a *different* request: the one that issued. Between issuing and
+    delivering, the same phone can be restored, downgraded or replaced by an
+    older build, and this call is the last moment anyone can tell. So the sealed
+    action's own `wire_version` -- not the contract's, which a later IR change
+    could raise past what was actually sealed -- is compared against the caller's
+    claim, and a shortfall withholds the action rather than degrading it. The
+    operation stays parked and the 15-minute sweep settles it into
+    needs_manual_review, which is the honest terminal state: the phone may or may
+    not have written, and no client was told otherwise.
+    """
+    handed: list[dict[str, Any]] = []
+    for row in _plan_rows(operation):
+        if (
+            row.state != "source_in_progress"
+            or row.tool not in _DEVICE_EXECUTED_TOOLS
+            or row.encrypted_device_action is None
+        ):
+            continue
+        action = open_device_action(
+            keyring,
+            operation_id=row.operation_id,
+            envelope=row.encrypted_device_action,
+        )
+        if action is None:
+            continue
+        if client_supports_wire_version(
+            client=client_wire_version, required=action["wire_version"]
+        ):
+            handed.append(action)
+    return handed
+
+
+def _plan_rows(operation: Operation) -> list[Operation]:
+    """This operation's frozen plan in order, or the operation on its own.
+
+    A message with several actions is one plan and its items are separate rows,
+    and the whole list is delivered through the plan's *first* item -- the
+    message the user is polling. A later item answers only for itself: the
+    phone reaches it to report a result, and having it recite its siblings'
+    actions back would be handing over what was already handed over. Every
+    other operation is a plan of one, so a caller never needs two shapes.
+    """
+    if operation.plan_key is None or operation.plan_index != 0:
+        return [operation]
+    session = object_session(operation)
+    if session is None:  # pragma: no cover - every caller reads inside a session
+        raise AppError(
+            ErrorCode.INTERNAL_ERROR,
+            internal_detail="a frozen action plan was projected outside its session",
+        )
+    return plan_operations(session, operation.plan_key)
+
+
 def _operation_projection(
-    keyring: KeyRing, operation: Operation
+    keyring: KeyRing, operation: Operation, *, client_wire_version: int
 ) -> dict[str, Any]:
     projection = {
         "operation_id": operation.operation_id,
@@ -3585,10 +4409,52 @@ def _operation_projection(
         "cancel_requested": operation.cancel_requested,
         "client_detached": operation.client_detached,
         "tool": operation.tool,
+        # Which domain the operation belongs to, so a card can be chosen by
+        # domain instead of by guessing from a tool name (design §10, gap 4:
+        # a `needs_manual_review` calendar write asks the user to look in the
+        # calendar, not in the ledger). Derived from the tool's own IR
+        # contract, never a list beside the IR — the same rule the record and
+        # query evidence sets follow. Null when no tool was recorded: an old
+        # event's domain is unknown, and unknown is not a default.
+        "domain": domain_of_tool(operation.tool),
         "record_id": None,
         "failure_reason": operation.failure_reason,
         "duplicate_check_id": operation.duplicate_check_id,
+        # What the phone decided, kept distinct from `state` because the two are
+        # not the same fact: `created` and `duplicate` both settle as `succeeded`
+        # with the event id above, and only this says whether the phone *made*
+        # the event or *found* it. 「仍要创建」 may be offered for exactly one of
+        # those (design 3.3), so a receipt that folded them together would put a
+        # button on the wrong card. Null for every Finance operation, and null on
+        # a receipt written before this field existed.
+        "device_result": operation.device_result,
+        # The action id the device reports and overrides by. It *is* the
+        # operation's idempotency key (`_owned_action_operation`), and it is
+        # emitted only for a tool the IR marks device-executed: for anything
+        # else an idempotency key is an internal key that no card has business
+        # naming, and a client that offered to re-issue one would be offering to
+        # replay a connector write. Fail closed -- an unrecognised tool yields
+        # null rather than the key.
+        "device_action_id": (
+            operation.idempotency_key
+            if operation.tool in DEVICE_EXECUTED_TOOL_NAMES
+            else None
+        ),
     }
+    # Delivery-or-refusal (review R6, 2026-09-08). An issued action is sealed on
+    # its own row, and this is its one delivery door: the 200 reply, the by-id
+    # poll and a replay all hand over the same authorised action. Each row
+    # answers for itself -- a settled one has already had its seal cleared
+    # (`device_action_only_while_parked`), so it drops out without a second
+    # rule, and the read-back can never re-arm a finished write.
+    handed = _parked_plan_actions(
+        keyring, operation, client_wire_version=client_wire_version
+    )
+    if handed:
+        # Always a list, even for the single action a v1-shaped request issues:
+        # a client that switched on length would otherwise need two decode paths
+        # for one contract (design 2.5.4).
+        projection["device_actions"] = handed
     if operation.safe_result is not None:
         if operation.state == "waiting_for_clarification":
             projection["clarification"] = operation.safe_result
@@ -3613,6 +4479,20 @@ def _operation_projection(
                 else:
                     projection["query_result"] = query.to_dict()
                     projection["answer"] = summarise_query_projection(query)
+            elif operation.tool in _CALENDAR_QUERY_RESULT_TOOLS:
+                # Same fail-closed discipline for the calendar mirror read:
+                # the safe_result must decode as the whitelisted calendar
+                # projection or nothing is shown. The decoder returns exactly
+                # the display dict, so `query_result` is the projection itself.
+                try:
+                    calendar_query = decode_calendar_query_projection(
+                        operation.safe_result
+                    )
+                except CalendarQueryProjectionError:
+                    pass
+                else:
+                    projection["query_result"] = calendar_query
+                    projection["answer"] = summarise_calendar_projection(calendar_query)
             else:
                 projection["answer"] = operation.safe_result
 

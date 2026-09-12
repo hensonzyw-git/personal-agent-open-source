@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+   The isolated acceptance build's scheme.
+
+   Every configuration here is `Acceptance` — the one build configuration that
+   sets `SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG ACCEPTANCE $(inherited)"`.
+   That is the whole isolation mechanism: `AcceptanceScene.swift` and the
+   acceptance branch of `PersonalAgentApp` are inside `#if ACCEPTANCE`, so they
+   are not part of any other product, and `AppModel` (with the device session,
+   the enrollment and the EventKit mirror engine) is not constructed on this
+   path at all.
+
+   `ProfileAction` is `Acceptance` too, not `Release`. A release-profile build
+   would be a different product from the one this scheme names, and the point of
+   the scheme is that what you install is what was compiled with the flag.
+   `ios/scripts/check_acceptance_isolation.sh` asserts, from the built products,
+   that the flag is present here and absent from every other configuration.
+-->
+<Scheme
+   LastUpgradeVersion = "2660"
+   version = "1.3">
+   <BuildAction
+      parallelizeBuildables = "YES"
+      buildImplicitDependencies = "YES">
+      <BuildActionEntries>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "A00000000000000000000002"
+               BuildableName = "PersonalAgent.app"
+               BlueprintName = "PersonalAgent"
+               ReferencedContainer = "container:PersonalAgent.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+      </BuildActionEntries>
+   </BuildAction>
+   <TestAction
+      buildConfiguration = "Acceptance"
+      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
+      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+      shouldUseLaunchSchemeArgsEnv = "YES">
+      <Testables>
+      </Testables>
+   </TestAction>
+   <LaunchAction
+      buildConfiguration = "Acceptance"
+      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
+      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+      launchStyle = "0"
+      useCustomWorkingDirectory = "NO"
+      ignoresPersistentStateOnLaunch = "NO"
+      debugDocumentVersioning = "YES"
+      debugServiceExtension = "internal"
+      allowLocationSimulation = "YES">
+      <BuildableProductRunnable
+         runnableDebuggingMode = "0">
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "A00000000000000000000002"
+            BuildableName = "PersonalAgent.app"
+            BlueprintName = "PersonalAgent"
+            ReferencedContainer = "container:PersonalAgent.xcodeproj">
+         </BuildableReference>
+      </BuildableProductRunnable>
+   </LaunchAction>
+   <ProfileAction
+      buildConfiguration = "Acceptance"
+      shouldUseLaunchSchemeArgsEnv = "YES"
+      savedToolIdentifier = ""
+      useCustomWorkingDirectory = "NO"
+      debugDocumentVersioning = "YES">
+      <BuildableProductRunnable
+         runnableDebuggingMode = "0">
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "A00000000000000000000002"
+            BuildableName = "PersonalAgent.app"
+            BlueprintName = "PersonalAgent"
+            ReferencedContainer = "container:PersonalAgent.xcodeproj">
+         </BuildableReference>
+      </BuildableProductRunnable>
+   </ProfileAction>
+   <AnalyzeAction
+      buildConfiguration = "Acceptance">
+   </AnalyzeAction>
+   <ArchiveAction
+      buildConfiguration = "Acceptance"
+      revealArchiveInOrganizer = "YES">
+   </ArchiveAction>
+</Scheme>

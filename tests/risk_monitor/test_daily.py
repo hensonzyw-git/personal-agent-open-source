@@ -27,7 +27,7 @@ from risk_monitor.scoring.policy import load_policy
 
 
 def _series(values, start_day=1):
-    return [(f"2026-01-{i+1:02d}", v) for i, v in enumerate(values)]
+    return [((date(2026, 1, start_day) + timedelta(days=i)).isoformat(), v) for i, v in enumerate(values)]
 
 
 def test_derive_market_values():

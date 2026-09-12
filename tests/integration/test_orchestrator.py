@@ -124,7 +124,7 @@ class FakeDispatcher:
         self.commit_calls: list[dict] = []
         self.resolve_calls: list[dict] = []
 
-    def resolve(self, *, tool, model_args):
+    def resolve(self, *, tool, model_args, idempotency_key=None):
         self.resolve_calls.append({"tool": tool, "model_args": model_args})
         return self._resolve
 
@@ -249,6 +249,24 @@ def test_a_bookkeeping_direct_answer_fails_safe(session, keyring) -> None:
     session.refresh(op)
     assert op.state == "failed_safe"
     assert op.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
+
+
+def test_a_calendar_create_direct_answer_fails_safe(session, keyring) -> None:
+    """Calendar prose has no EventKit receipt and therefore cannot be success."""
+    op = _fresh_operation(session)
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(DirectAnswer("已经创建日程")),
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        text="明天上午 10 点，在日常安排创建一个名为“Personal Agent 验收”的 30 分钟日程",
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "CALENDAR_TOOL_REQUIRED"
+    session.refresh(op)
+    assert op.state == "failed_safe"
+    assert op.failure_reason == "CALENDAR_TOOL_REQUIRED"
 
 
 def test_natural_bookkeeping_shorthand_cannot_succeed_as_prose(

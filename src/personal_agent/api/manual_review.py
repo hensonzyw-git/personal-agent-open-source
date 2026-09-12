@@ -37,6 +37,7 @@ from personal_agent.api import events
 from personal_agent.storage.models import MANUAL_RESOLUTIONS, Operation
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
+from personal_agent_core.tool_ir import domain_of_tool
 
 
 #: A person's report about the ledger, appended to the Timeline as a permanent
@@ -44,6 +45,13 @@ from personal_agent_core.errors import AppError, ErrorCode
 #: -- it is deliberately absent from `MODEL_VISIBLE_EVENT_TYPES`: the model must
 #: never read a human's manual reconciliation as an instruction.
 MANUAL_REVIEW_RESOLVED = "manual_review_resolved"
+
+#: The marker's destination field. Named rather than inlined so the cross-language
+#: pin can hold this key and the client's decoder to one spelling: nothing else on
+#: either side would notice a rename here, and the failure it would cause is
+#: silent -- every marker would decode as domain-less and a calendar resolution
+#: would render in the neutral words forever, with the entry already frozen.
+MANUAL_REVIEW_DOMAIN_FIELD = "domain"
 
 
 @dataclass(frozen=True)
@@ -125,7 +133,18 @@ def append_resolution_event(
     resolution: str,
     now: datetime,
 ) -> str | None:
-    """Append the Timeline marker, exactly once per operation."""
+    """Append the Timeline marker, exactly once per operation.
+
+    The marker carries the operation's **domain**, not only the conclusion. It is
+    frozen when it is appended and nothing backfills it, and the client chooses
+    the words it renders from these fields alone — so a marker written without a
+    domain would leave a calendar write's history line saying 账本 forever, which
+    is the card's own misdirection one screen later. The domain comes from the
+    same IR derivation the live projection uses (`domain_of_tool`), so the card a
+    person tapped and the entry it left behind cannot disagree; a tool the IR
+    does not carry records `None`, which the client renders neutrally rather than
+    borrowing either domain's words.
+    """
     from personal_agent.storage.models import ConversationEvent
 
     already = (
@@ -145,7 +164,10 @@ def append_resolution_event(
         session_id=session_id,
         turn_id=turn_id,
         event_type=MANUAL_REVIEW_RESOLVED,
-        content={"resolution": resolution},
+        content={
+            "resolution": resolution,
+            MANUAL_REVIEW_DOMAIN_FIELD: domain_of_tool(operation.tool),
+        },
         operation_id=operation.operation_id,
         now=now,
     )

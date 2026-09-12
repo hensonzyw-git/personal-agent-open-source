@@ -70,8 +70,42 @@ public actor ChatTimeline {
         public let clarificationOf: String?
         /// Nil preserves decoding of pending sends written by older app builds.
         public let startNewSession: Bool?
-        /// Known only once the server has answered at least once.
-        public var operationID: String?
+        /// Every operation this message produced, in plan order — item 0 first.
+        /// Known only as the server answers: the anchor merge names the
+        /// message's own operation, and each device report names the plan item
+        /// it settled.
+        ///
+        /// A list rather than one id because one message may be several
+        /// operations (design §4.1/§4.2: 每项独立持有 operationID), and because
+        /// the slot's question is about all of them. "This message is finished"
+        /// is the claim the slot exists to make safe, and the message's own item
+        /// settling says nothing about a sibling whose write may or may not
+        /// exist — releasing on item 0 alone is how the user comes to ask for an
+        /// event that a parked sibling already created.
+        public var operationIDs: [String]
+        /// The message's own operation: item 0 of its plan, or the operation
+        /// itself when the plan is one item. What every path that speaks about
+        /// *this message* means — the card the user is watching.
+        public var operationID: String? { operationIDs.first }
+        /// The operations whose outcome released the slot. A release is earned
+        /// per operation, and the slot clears only once the whole set has one.
+        public var releasedOperationIDs: [String]
+        /// The device actions this device has already executed or refused for
+        /// the pending operation, persisted *before* the executor runs (review
+        /// R6). A poll, a resume or a replay can hand the same action over
+        /// again — the server's projection carries it while the operation is
+        /// parked — and executing twice is how a duplicate event gets born.
+        /// The marker makes the execution exactly-once across restarts; the
+        /// timeout sweep, not a re-execution, owns what the report's silence
+        /// means.
+        ///
+        /// A list rather than one id, because a single reply may hand over
+        /// several actions and each is its own operation with its own write
+        /// (design §4.2: 每项独立持有 deliveredActionID). The set is per
+        /// message, which is what the invariants need: a sibling's action is
+        /// only ever delivered on the message's own projection, so the marker
+        /// that must survive a restart is the message's.
+        public var deliveredActionIDs: [String]
 
         public init(
             idempotencyKey: String,
@@ -80,7 +114,10 @@ public actor ChatTimeline {
             parts: [ChatInputPart]? = nil,
             clarificationOf: String?,
             startNewSession: Bool? = nil,
-            operationID: String?
+            operationID: String? = nil,
+            operationIDs: [String] = [],
+            deliveredActionIDs: [String] = [],
+            releasedOperationIDs: [String] = []
         ) {
             self.idempotencyKey = idempotencyKey
             self.conversationID = conversationID
@@ -88,7 +125,90 @@ public actor ChatTimeline {
             self.parts = parts
             self.clarificationOf = clarificationOf
             self.startNewSession = startNewSession
-            self.operationID = operationID
+            // A caller that knows the message's own operation (the anchor merge,
+            // and every test written before plans were tracked) still says one
+            // id; the list is that id plus whatever reports add later.
+            self.operationIDs = operationIDs.isEmpty
+                ? (operationID.map { [$0] } ?? []) : operationIDs
+            self.deliveredActionIDs = deliveredActionIDs
+            self.releasedOperationIDs = releasedOperationIDs
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case idempotencyKey, conversationID, text, parts, clarificationOf
+            case startNewSession, operationID, operationIDs, deliveredActionIDs
+            case releasedOperationIDs
+            /// The one-action marker builds before design §4.2 wrote. Read as
+            /// a fact about what already ran; also written, so that a build
+            /// rolled back to one of those does not read an empty marker and
+            /// execute an action this slot already claimed.
+            case deliveredActionID
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            idempotencyKey = try container.decode(String.self, forKey: .idempotencyKey)
+            conversationID = try container.decode(String.self, forKey: .conversationID)
+            text = try container.decode(String.self, forKey: .text)
+            parts = try container.decodeIfPresent([ChatInputPart].self, forKey: .parts)
+            clarificationOf = try container.decodeIfPresent(
+                String.self, forKey: .clarificationOf
+            )
+            startNewSession = try container.decodeIfPresent(
+                Bool.self, forKey: .startNewSession
+            )
+            var tracked =
+                try container.decodeIfPresent([String].self, forKey: .operationIDs) ?? []
+            // The singular field is what builds before §4.2 wrote, and it is
+            // also what this build keeps writing for them (see `encode`); a
+            // slot written by either shape reads back as one list.
+            if let legacy = try container.decodeIfPresent(
+                String.self, forKey: .operationID
+            ), !tracked.contains(legacy) {
+                tracked.append(legacy)
+            }
+            operationIDs = tracked
+            releasedOperationIDs = try container.decodeIfPresent(
+                [String].self, forKey: .releasedOperationIDs
+            ) ?? []
+            var claimed =
+                try container.decodeIfPresent([String].self, forKey: .deliveredActionIDs)
+                ?? []
+            // An upgraded build must not forget an action the build it is
+            // replacing already ran: losing that marker is how a restart
+            // re-executes a write the server may have settled long ago.
+            if let legacy = try container.decodeIfPresent(
+                String.self, forKey: .deliveredActionID
+            ), !claimed.contains(legacy) {
+                claimed.append(legacy)
+            }
+            deliveredActionIDs = claimed
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(idempotencyKey, forKey: .idempotencyKey)
+            try container.encode(conversationID, forKey: .conversationID)
+            try container.encode(text, forKey: .text)
+            try container.encodeIfPresent(parts, forKey: .parts)
+            try container.encodeIfPresent(clarificationOf, forKey: .clarificationOf)
+            try container.encodeIfPresent(startNewSession, forKey: .startNewSession)
+            try container.encode(operationIDs, forKey: .operationIDs)
+            try container.encode(releasedOperationIDs, forKey: .releasedOperationIDs)
+            // The message's own operation, written under the name a build that
+            // predates the list reads. Same reasoning as `deliveredActionID`
+            // below: the older build then tracks the message's own item, which
+            // is the only one it knows how to speak about. It cannot see the
+            // siblings, which is exactly the gap this batch closes.
+            try container.encodeIfPresent(operationID, forKey: .operationID)
+            try container.encode(deliveredActionIDs, forKey: .deliveredActionIDs)
+            // The first claim is the message's own action (design §4.1: item 0
+            // is the message's operation, delivered first), which is the one a
+            // rolled-back single-action build could be handed a second time.
+            // Writing it can only make that build *skip*, never re-execute.
+            try container.encodeIfPresent(
+                deliveredActionIDs.first, forKey: .deliveredActionID
+            )
         }
     }
 
@@ -120,10 +240,37 @@ public actor ChatTimeline {
         /// The local pending-decision records could not be decoded. Reported
         /// rather than discarded, for the same reason as `pendingSendMalformed`.
         case pendingDecisionsMalformed
+        /// The local override-claim record could not be decoded. Reported
+        /// rather than discarded or reset: the entries in it are the only
+        /// evidence that an override's write already ran, and starting from an
+        /// empty set would execute it a second time.
+        case overrideClaimsMalformed
+    }
+
+    /// Which exactly-once marker owns the claim on a delivered action.
+    ///
+    /// Two shapes, because the second has no slot to live in. A chat send parks
+    /// a `PendingSend` whose `operationID` names the operation the reply belongs
+    /// to, and the marker rides inside it — so a released or replaced slot
+    /// refuses to run anything, which is one of the ways a duplicate is
+    /// prevented. A 「仍要创建」 override has no slot at all: it is a button on a
+    /// card, not a message, and the operation it settles is derived server-side
+    /// from the original. Its marker therefore stands alone, keyed by action id
+    /// (the action id *is* the operation's idempotency key), and — unlike the
+    /// message marker — it has to outlive the report, because the tap that must
+    /// be refused is the one that arrives while the first report is in flight.
+    private enum DeliveryClaim {
+        case message(PendingSend)
+        case override
     }
 
     private let backend: any ChatBackend
     private let store: CredentialStore
+    /// The device-executed action runner. Nil in builds without one — in which
+    /// case a handed action is still *reported* (as `failed`), because the
+    /// server's operation parks at `source_in_progress` until it hears
+    /// something; it never times out just because this build chose not to run.
+    private let deviceActionExecutor: DeviceActionExecuting?
     private let sleep: @Sendable (Duration) async throws -> Void
     /// The poll schedule. Bounded on purpose: a client that polls forever hides a
     /// stuck operation behind a spinner and drains the battery doing it.
@@ -131,6 +278,29 @@ public actor ChatTimeline {
     /// The progress trail's sink, set by the UI. Stage observations are
     /// delivered in arrival order; the sink decides what to show.
     private var progressSink: (@Sendable (OperationStage) async -> Void)?
+    /// The calendar-mirror sink, set by the app, which owns the mirror engine.
+    /// Fired once per delivered action whose report **landed** — design §9.1's
+    /// second `.forced` trigger.
+    ///
+    /// Not redundant with an `EKEventStoreChanged` observer: one reply can
+    /// carry several actions, and N reports arriving as N triggers is exactly
+    /// the shape the engine collapses into at most two passes. It is also the
+    /// signal the server records as the write's testimony, so it holds even
+    /// when EventKit's own notification is coalesced away.
+    ///
+    /// A report whose reply was lost (the executor returns nil) fires nothing
+    /// here — the device knows it wrote, but this seam is "the report landed",
+    /// and the EventKit observer is what covers that case.
+    ///
+    /// **The sink arms; it does not sync.** It is awaited on the path between a
+    /// write landing and its receipt, so an implementation that uploads the
+    /// mirror here makes the user wait for a whole-window sync to be told about
+    /// their own event. The engine's `armCalendarChanged` is the intended
+    /// implementation: it commits the change and starts the pass before
+    /// returning, which is the whole of what §9.1's query gate needs. (It was
+    /// `noteCalendarChanged` — the full pass — until the review found a
+    /// multi-action reply blocking its receipt on N uploads.)
+    private var calendarWriteSink: (@Sendable () async -> Void)?
 
     private var conversationID: String?
     private var seenEventIDs: Set<String> = []
@@ -148,6 +318,7 @@ public actor ChatTimeline {
     public init(
         backend: any ChatBackend,
         store: CredentialStore,
+        deviceActionExecutor: DeviceActionExecuting? = nil,
         pollDelays: [Duration] = [
             .milliseconds(400), .seconds(1), .seconds(2), .seconds(3), .seconds(5),
             .seconds(5), .seconds(5), .seconds(5),
@@ -158,6 +329,7 @@ public actor ChatTimeline {
     ) {
         self.backend = backend
         self.store = store
+        self.deviceActionExecutor = deviceActionExecutor
         self.pollDelays = pollDelays
         self.sleep = sleep
     }
@@ -192,6 +364,14 @@ public actor ChatTimeline {
         _ sink: (@Sendable (OperationStage) async -> Void)?
     ) {
         progressSink = sink
+    }
+
+    /// Install the calendar-mirror sink (design §9.1). The app sets this to
+    /// `CalendarMirrorSyncEngine.armCalendarChanged`, which records the change
+    /// and *starts* the forced pass without waiting for it — see
+    /// `calendarWriteSink` for why the wait is not this seam's to make.
+    public func setCalendarWriteSink(_ sink: (@Sendable () async -> Void)?) {
+        calendarWriteSink = sink
     }
 
     /// Project one receipt's state onto the trail. Terminal and parked states
@@ -303,7 +483,7 @@ public actor ChatTimeline {
         if let pending = try loadPending() {
             throw ChatError.unresolvedSend(pending)
         }
-        var pending = PendingSend(
+        let pending = PendingSend(
             idempotencyKey: IdempotencyKey.mint(),
             conversationID: id,
             text: text,
@@ -326,13 +506,35 @@ public actor ChatTimeline {
         } catch let error as AgentClientError where Self.provesNotAnchored(error) {
             // The server refused before it could create an operation, so there is
             // nothing to resume and keeping the record would block every later
-            // message behind a request that can never land.
-            try? clearPending()
+            // message behind a request that can never land. The refusal may
+            // land long after the user discarded this message (fifth review
+            // I1): the release verifies the slot still belongs to it before
+            // clearing, so a replaced message's pending survives.
+            try? releaseSlotIfStillOwned(
+                key: pending.idempotencyKey, operationID: nil
+            )
             throw error
         }
-        pending.operationID = receipt.operationID
-        try savePending(pending)
-        return try await settle(receipt, pending: pending)
+        // The anchor merge (second review F2 / third review G1): the slot is
+        // re-read and only the operation id is added, never the in-memory
+        // copy written back whole, and the merge verifies the slot still
+        // carries this send's key. A `send` starts from an empty slot it just
+        // wrote, so the shape cannot arise here, but the rule is one rule —
+        // the slot's authority is the disk, and its owner is the key.
+        guard let anchored = try mergeAnchoredOperation(
+            receipt.operationID, forKey: pending.idempotencyKey
+        ) else {
+            // Unreachable for a send that owns the slot, but refusing is the
+            // safe answer: nothing is executed on a slot this call no longer
+            // owns.
+            return receipt
+        }
+        // The device-action hand-off runs here, before settling: the reply is
+        // the only time the action exists on the wire, and the parked
+        // operation cannot settle until this device reports what it did.
+        // Executing *is* the settle step for this shape, so the returned
+        // receipt replaces the polling loop's input.
+        return try await runDeviceActionIfAny(receipt, pending: anchored)
     }
 
     /// Send a previously completed image reference (optionally with text).
@@ -346,7 +548,7 @@ public actor ChatTimeline {
     ) async throws -> OperationReceipt {
         let id = try requireConversation()
         if let pending = try loadPending() { throw ChatError.unresolvedSend(pending) }
-        var pending = PendingSend(
+        let pending = PendingSend(
             idempotencyKey: idempotencyKey ?? IdempotencyKey.mint(),
             conversationID: id,
             text: ChatInput.parts(parts).textForDisplay,
@@ -362,12 +564,17 @@ public actor ChatTimeline {
         do {
             receipt = try await sendPending(pending)
         } catch let error as AgentClientError where Self.provesNotAnchored(error) {
-            try? clearPending()
+            try? releaseSlotIfStillOwned(
+                key: pending.idempotencyKey, operationID: nil
+            )
             throw error
         }
-        pending.operationID = receipt.operationID
-        try savePending(pending)
-        return try await settle(receipt, pending: pending)
+        guard let anchored = try mergeAnchoredOperation(
+            receipt.operationID, forKey: pending.idempotencyKey
+        ) else {
+            return receipt
+        }
+        return try await runDeviceActionIfAny(receipt, pending: anchored)
     }
 
     /// Finish whatever was left unresolved, if anything.
@@ -378,19 +585,77 @@ public actor ChatTimeline {
         guard let pending = try loadPending() else { return nil }
         if let operationID = pending.operationID {
             let receipt = try await backend.operation(operationID: operationID)
-            return try await settle(receipt, pending: pending)
+            // The by-id read goes through the same gate as a fresh reply: the
+            // parked projection hands the action over on any read (review
+            // R6), so a restart re-arms the hand-off rather than bypassing it.
+            return try await runDeviceActionIfAny(receipt, pending: pending)
         }
         let receipt: OperationReceipt
         do {
             receipt = try await sendPending(pending)
         } catch let error as AgentClientError where Self.provesNotAnchored(error) {
-            try? clearPending()
+            // Same rule as the send path (fifth review I1): a refusal landing
+            // after this message was discarded and replaced must not delete
+            // the replacement's slot.
+            try? releaseSlotIfStillOwned(
+                key: pending.idempotencyKey, operationID: nil
+            )
             throw error
         }
-        var updated = pending
-        updated.operationID = receipt.operationID
-        try savePending(updated)
-        return try await settle(receipt, pending: updated)
+        // Second review F2 / third review G1: the anchor merge re-reads the
+        // stored slot rather than writing the in-memory copy back, and it
+        // verifies the slot still belongs to **this message** — the idempotency
+        // key the request was sent under. A reply that lands after the user
+        // discarded this message and sent another must not anchor into the
+        // new message's slot and must not execute this message's action: the
+        // slot's owner is the key, and `operationID == nil` alone proves
+        // nothing about who the slot now belongs to.
+        guard let updated = try mergeAnchoredOperation(
+            receipt.operationID, forKey: pending.idempotencyKey
+        ) else {
+            // The slot was released — or taken over by a different message —
+            // while this request was in flight. Nothing is ours to run; the
+            // caller receives the server's answer as a plain read.
+            return receipt
+        }
+        // This branch anchored the operation *now*, so the reply really can
+        // hand this device an action. The by-id branch above does not lose the
+        // shape either: the parked projection hands the action over on any
+        // read (review R6), and `settle` handles a delivered action inside its
+        // poll loop through the same exactly-once gate.
+        return try await runDeviceActionIfAny(receipt, pending: updated)
+    }
+
+    /// Record a just-learned operation id onto the durable slot, **merging**
+    /// with whatever the slot now holds instead of overwriting it.
+    ///
+    /// Returns the merged record, or `nil` when the slot no longer exists,
+    /// was released, or was taken over by a *different* message (third review
+    /// G1: the merge carries the requesting message's idempotency key and
+    /// verifies it against the stored record — a late reply whose message was
+    /// discarded and replaced mid-flight must not anchor into the new
+    /// message's slot or execute the old message's action). The only fields
+    /// this call owns are the tracked operation ids; every other field — above
+    /// all `deliveredActionIDs` — survives from disk.
+    ///
+    /// The anchor is the message's own operation, so it goes to the head of
+    /// the list; a mismatch against a head already on disk means a different
+    /// message now owns this key. It never *shortens* the list: a sibling
+    /// recorded by an earlier report is a fact about this message, and the
+    /// anchor arriving late must not erase it.
+    private func mergeAnchoredOperation(
+        _ operationID: String, forKey idempotencyKey: String
+    ) throws -> PendingSend? {
+        guard var stored = try loadPending() else { return nil }
+        guard stored.idempotencyKey == idempotencyKey else { return nil }
+        guard stored.operationID == nil || stored.operationID == operationID else {
+            return nil
+        }
+        if stored.operationIDs.first != operationID {
+            stored.operationIDs.insert(operationID, at: 0)
+        }
+        try savePending(stored)
+        return stored
     }
 
     /// Ask the server to cancel. The reply is the operation's real state: past a
@@ -398,9 +663,17 @@ public actor ChatTimeline {
     /// comes from the server.
     public func cancel(operationID: String) async throws -> OperationReceipt {
         let receipt = try await backend.cancelOperation(operationID: operationID)
-        if receipt.outcome.releasesPendingSlot, let pending = try loadPending(),
-           pending.operationID == receipt.operationID {
-            try clearPending()
+        if receipt.outcome.releasesPendingSlot {
+            // The cancel reply can land after the slot was discarded and
+            // replaced (fourth review H1): release only what this call owns.
+            // Membership in the message's operations, not headship — a plan's
+            // later item is cancellable from its own card.
+            if let pending = try loadPending(),
+               pending.operationIDs.contains(receipt.operationID) {
+                try releaseSlotIfStillOwned(
+                    key: pending.idempotencyKey, operationID: receipt.operationID
+                )
+            }
         }
         return receipt
     }
@@ -495,6 +768,99 @@ public actor ChatTimeline {
         try removeDecision(checkID)
     }
 
+    // --- the calendar 「仍要创建」 override (design §3.3) ------------------------
+
+    /// Re-issue a calendar write this device reported as a duplicate, because
+    /// the user pressed 「仍要创建」.
+    ///
+    /// The endpoint is a replayable server-side binding rather than a new
+    /// conversation turn: it resumes the arguments the original turn was
+    /// already authorised to make, derives one operation from the original
+    /// (`uuid5(ns, "<operation_id>:calendar-override")`), and answers every tap
+    /// with that same operation's projection. So the client sends no key and a
+    /// double tap, two concurrent taps and a retry after a lost reply all
+    /// converge there — which is the whole reason a press is not a turn.
+    ///
+    /// What the server cannot do is *write*: the event exists only once this
+    /// device puts it in EventKit, so the reply hands the re-issued action back
+    /// over the ordinary delivery door, and that action carries
+    /// `skip_local_dedup` — the check that produced the refusal is switched off
+    /// because the user answered it. That leaves the claim in `recordDelivery`
+    /// as the only thing between a double tap and two events, and it is why the
+    /// action goes through the same gate everything else does rather than
+    /// straight to the executor.
+    ///
+    /// A refusal (`INVALID_ARGUMENT`: not a duplicate, not `succeeded`, nothing
+    /// retained to resume) propagates: nothing was created, and a receipt
+    /// saying otherwise is a lie the card cannot recover from.
+    ///
+    /// Like the finance override it mirrors, the wait afterwards is bounded and
+    /// carries no slot — the decision is durable on the server, and the write's
+    /// outcome is the server's to show rather than the client's to insist on.
+    @discardableResult
+    public func overrideDeviceAction(
+        actionID: String
+    ) async throws -> OperationReceipt {
+        let first = try await backend.overrideDeviceAction(actionID: actionID)
+        if let reported = try await runDeliveredActions(first, claim: .override) {
+            return reported.outcome.isSettled
+                ? reported
+                : try await settleOverride(reported)
+        }
+        return try await settleOverride(first)
+    }
+
+    /// Every loaded receipt whose own fields cannot say whether 「仍要创建」
+    /// belongs, by operation id.
+    ///
+    /// What a caller iterates to ask the server once per page load rather than
+    /// once per card. The filter is `overrideIsUndecided`, so this is empty for
+    /// a Timeline written by this build — the fields are frozen onto each event
+    /// as it is appended, and only history predating them is in here.
+    public func undecidedOverrideCandidates() -> [String: OperationOutcome] {
+        var found: [String: OperationOutcome] = [:]
+        for event in events {
+            guard let operationID = event.operationID else { continue }
+            guard case .operationResult(let outcome, _, _) = event.kind else { continue }
+            guard outcome.overrideIsUndecided else { continue }
+            found[operationID] = outcome
+        }
+        return found
+    }
+
+    /// What 「仍要创建」 may be answered on a card drawn from `frozen`, asking the
+    /// server only when the frozen receipt cannot decide it.
+    ///
+    /// `device_result` and `device_action_id` are frozen into a Timeline event
+    /// when it is appended. The operation row behind that event is *not* frozen
+    /// — it has carried both since migration 0010 — so an event scrolled back to
+    /// from before the projection included them shows nothing where the current
+    /// row would show a duplicate. This is the one lookup that closes that gap,
+    /// and it is the fallback rather than the path: a card whose own fields
+    /// already decide the question never asks.
+    ///
+    /// **Fail closed, and say so by returning `.notOffered`.** Every failure
+    /// here — an unreachable server, a refusal, a projection that still does not
+    /// answer — is the same answer, because the alternative is inventing an
+    /// action id and offering a button that would write a second copy of an
+    /// event the user already has. A refusal is not surfaced as an error for the
+    /// same reason: this runs while drawing a card that is otherwise complete,
+    /// and a banner about a button that is not there is noise. The *cast* is not
+    /// swallowed: `overrideDeviceAction` propagates its refusal.
+    public func overrideDecision(
+        frozen: OperationOutcome, operationID: String
+    ) async -> OverrideDecision {
+        guard frozen.overrideIsUndecided else { return frozen.overrideDecision }
+        guard let current = try? await backend.operation(operationID: operationID)
+        else { return .notOffered }
+        let decision = current.outcome.overrideDecision
+        // A projection that answers `.offered` from an operation the card did
+        // not draw as a calendar write is still honoured: the decision is a
+        // property of the server's row, and this method's whole reason to exist
+        // is that the card's own copy of that row may be older than it is.
+        return decision
+    }
+
     // --- the manual-review resolution (`DEV-040`) -----------------------------
 
     /// Record what the user found in the ledger for an operation that ended at
@@ -523,10 +889,20 @@ public actor ChatTimeline {
         )
         // Bind to the *server's* operation id, not the argument: the slot must
         // only ever be released for the operation the server actually answered
-        // about.
+        // about — and only when the slot still belongs to that message (the
+        // same ownership rule as every other post-wait release; a resolution
+        // landing after a discard-and-replace must not delete the
+        // replacement's slot).
+        //
+        // Membership, not headship: the card the user resolved may be a plan's
+        // *later* item, whose write is exactly as unknown as the message's own.
+        // Comparing against the head alone is how a resolved sibling left the
+        // message blocked forever with nothing left to resolve.
         if let pending = try loadPending(),
-           pending.operationID == receipt.operationID {
-            try clearPending()
+           pending.operationIDs.contains(receipt.operationID) {
+            try releaseSlotIfStillOwned(
+                key: pending.idempotencyKey, operationID: receipt.operationID
+            )
         }
         return receipt
     }
@@ -609,7 +985,295 @@ public actor ChatTimeline {
         return receipt
     }
 
+    /// Bounded polling for the operation a 「仍要创建」 override derived.
+    ///
+    /// Slot-free like `settleDecision`, and for the same reason, but it cannot
+    /// borrow that loop: any poll here may hand the re-issued action over again
+    /// — a lost reply, or a `202` — and a poll that read the action and dropped
+    /// it would leave the operation parked until the sweep, with the event the
+    /// user asked for never written. So every poll goes through the delivery
+    /// gate against the override's own claim, which is what makes the second
+    /// read a no-op instead of a second event. The loop shape is `settle`'s for
+    /// the same reason it is `settle`'s: one shape is easier to check than two.
+    private func settleOverride(
+        _ first: OperationReceipt
+    ) async throws -> OperationReceipt {
+        var receipt = first
+        var attempt = 0
+        while !receipt.outcome.isSettled && attempt < pollDelays.count {
+            try await sleep(pollDelays[attempt])
+            attempt += 1
+            receipt = try await backend.operation(operationID: receipt.operationID)
+            if let reported = try await runDeliveredActions(receipt, claim: .override) {
+                receipt = reported
+                if reported.outcome.isSettled { break }
+            }
+        }
+        return receipt
+    }
+
     // --- polling --------------------------------------------------------------
+
+    /// Execute a handed device action and settle the operation with the
+    /// report, when the reply carries one.
+    ///
+    /// The three failure shapes all still report, because the server's
+    /// operation parks at `source_in_progress` until it hears *something* and
+    /// its 15-minute timeout sweep ends at `needs_manual_review` — a state a
+    /// person has to clear by hand:
+    ///
+    /// - an action the envelope resolved but no executor is composed: one
+    ///   honest `failed` ("this build cannot execute this");
+    /// - an action the envelope refused *with* its action id (unknown tool,
+    ///   missing fields, unreadable times): the refusal is reportable now —
+    ///   the server learns it was not executed instead of waiting out the
+    ///   sweep;
+    /// - a refusal *without* an action id (the id itself was missing) names
+    ///   nothing reportable, so nothing is sent and the sweep is the
+    ///   remaining witness. That is the honest state: the action is unknown.
+    ///
+    /// A receipt without a device action passes through untouched, and the
+    /// report result carries no new local state — the settled projection from
+    /// the server is the only fact this function returns.
+    private func runDeviceActionIfAny(
+        _ receipt: OperationReceipt, pending: PendingSend
+    ) async throws -> OperationReceipt {
+        // The direct hand-off routes through the same exactly-once helper the
+        // poll path uses: the server now delivers the action on every reply
+        // that reads the parked projection, so the "same" action legitimately
+        // arrives twice (immediate reply, then a poll), and the second arrival
+        // must be a no-op. (Review R6, 2026-09-08.)
+        guard let reported = try await runDeliveredActions(
+            receipt, claim: .message(pending)
+        ) else {
+            return try await settle(receipt, pending: pending)
+        }
+        // A settled report needs no polling; an unexpectedly non-terminal
+        // projection still gets the bounded loop, reading the server's state
+        // rather than trusting the report's echo.
+        if reported.outcome.isSettled {
+            if reported.outcome.releasesPendingSlot {
+                // Fourth review H1: the report may have landed long after the
+                // user discarded this message — the slot can belong to a
+                // different send by now. Clearing unconditionally deleted
+                // that message's pending. The release verifies ownership,
+                // exactly like the anchor merge.
+                try? releaseSlotIfStillOwned(
+                    key: pending.idempotencyKey, operationID: pending.operationID
+                )
+            }
+            return reported
+        }
+        return try await settle(reported, pending: pending)
+    }
+
+    /// Execute and report every action a reply hands over, in plan order, and
+    /// answer with the message's own projection — item 0's — or `nil` when the
+    /// reply carried no action at all (design §4.1: item 0 is the message's
+    /// operation; §4.2: 交付循环逐项执行、逐项回报).
+    ///
+    /// Every item runs, not just the first. Each is a separate operation on the
+    /// server, parked separately, and only the actions actually delivered on
+    /// this reply will ever be delivered — the server hands each one over on
+    /// the projection of *its own* operation, and this device never reads the
+    /// siblings' operations to poll them. Executing only item 0 would leave
+    /// every sibling parked until the sweep turned it into needs_manual_review
+    /// for a write the device was told to make.
+    ///
+    /// The return value is item 0's because that is the operation this turn is
+    /// about: its projection is the card the user is watching and the one the
+    /// pending slot belongs to. A sibling's receipt is not returned, but it is
+    /// *read*: it answers about the sibling's own operation, and that answer is
+    /// the only place this device ever learns a sibling's operation id — the
+    /// delivered action names its action id, which the server refuses as a
+    /// lookup key for a derived item, and the whole list arrives on item 0's
+    /// projection. The id is written to the slot, which is what lets the
+    /// message know how much of itself is still outstanding (design §4.2:
+    /// 每项独立持有 operationID).
+    ///
+    /// `nil` is *no action*, never a lost report: `handleDeliveredAction`
+    /// always answers with a receipt, degrading to the parked one it was given
+    /// when a report's reply is lost, so the two cases cannot be confused.
+    private func runDeliveredActions(
+        _ receipt: OperationReceipt, claim: DeliveryClaim
+    ) async throws -> OperationReceipt? {
+        guard !receipt.deviceActions.isEmpty else { return nil }
+        var primary: OperationReceipt?
+        var releasing: [String] = []
+        for (index, envelope) in receipt.deviceActions.enumerated() {
+            let reported = try await handleDeliveredAction(
+                envelope, claim: claim, pollReceipt: receipt
+            )
+            // Bookkeeping, not safety: losing this write costs a slot that
+            // cannot release, while *throwing* here would abandon the actions
+            // after this one and skip writes the server is waiting on. So it
+            // is best-effort, unlike the delivery marker it sits beside.
+            try? recordDeliveredOperation(reported.operationID, claim: claim)
+            if reported.outcome.releasesPendingSlot {
+                releasing.append(reported.operationID)
+            }
+            if index == 0 { primary = reported }
+        }
+        // Releases are applied only once the whole list has run. Clearing in
+        // the middle would take the delivery marker with it, and the next
+        // item would read an empty slot as "not mine to run" — skipping a
+        // write the server is still waiting on.
+        if case .message(let pending) = claim {
+            for operationID in releasing {
+                try? releaseSlotIfStillOwned(
+                    key: pending.idempotencyKey, operationID: operationID
+                )
+            }
+        }
+        // Non-empty list ⇒ set: item 0's branch always returns a receipt.
+        return primary ?? receipt
+    }
+
+    /// Write one operation this message produced onto the durable slot.
+    ///
+    /// The list grows as the server answers: the anchor merge names the
+    /// message's own item, and each action's report names the item that action
+    /// belongs to. Appending is idempotent, and the ownership rule is the
+    /// delivery marker's — a report that lands after the user discarded and
+    /// replaced the message must not write into the replacement's slot.
+    private func recordDeliveredOperation(
+        _ operationID: String, claim: DeliveryClaim
+    ) throws {
+        guard case .message(let pending) = claim else { return }
+        guard var stored = try loadPending(),
+              stored.idempotencyKey == pending.idempotencyKey,
+              stored.operationID == pending.operationID
+        else { return }
+        guard !stored.operationIDs.contains(operationID) else { return }
+        stored.operationIDs.append(operationID)
+        try savePending(stored)
+    }
+
+    /// Execute (or skip, if already executed) a delivered device action and
+    /// report what happened. This is the exactly-once gate for every shape
+    /// that can carry an action — the direct chat reply and any poll that
+    /// read the parked projection (review R6, 2026-09-08).
+    ///
+    /// The delivery marker is persisted **before** the executor runs: a crash
+    /// between marker and report leaves an executed-but-unreported action,
+    /// which the server's sweep parks for review — the honest outcome. The
+    /// reverse order (report, then marker) would let a crash re-execute, and
+    /// a duplicate event is the one failure a retry may never produce.
+    private func handleDeliveredAction(
+        _ envelope: DeviceActionEnvelope,
+        claim: DeliveryClaim,
+        pollReceipt: OperationReceipt
+    ) async throws -> OperationReceipt {
+        switch envelope.resolve() {
+        case .execute(let action):
+            guard try recordDelivery(actionID: action.actionID, claim: claim) else {
+                // Already executed on a previous delivery of this same
+                // action: report nothing and keep polling the server's
+                // state. The silence is the sweep's to interpret.
+                return pollReceipt
+            }
+            if let executor = deviceActionExecutor {
+                // A lost report reply degrades to the parked projection this
+                // call was given — the one that names the right operation by
+                // construction. (Review R9, 2026-09-08; design §4.2.)
+                let reported = await executor.executeAndReport(action)
+                // The report landed: the calendar has been written, and the
+                // mirror has to catch up before the next query reads it back
+                // as missing (design §9.1). Fired before returning, so the
+                // change is armed by the time the query window opens.
+                //
+                // "Armed" and not "synced": the sink records the change and
+                // starts the pass, and does not wait for the upload. This call
+                // sits between a write landing and its receipt being shown, so
+                // waiting here put a whole-window upload in front of the user's
+                // answer to a create — the receipt is about the write, and
+                // §9.1 asks for the query gate to be honest, not for the mirror
+                // to be current before the write can be reported.
+                if reported != nil { await calendarWriteSink?() }
+                return reported ?? pollReceipt
+            } else {
+                return try await reportFailure(
+                    actionID: action.actionID,
+                    detail: "no executor is composed on this device"
+                )
+            }
+        case .refuse(let actionID, let error):
+            guard let actionID else {
+                // Cannot name what it refuses: nothing to report, and the
+                // polling loop re-reads the real state either way.
+                return pollReceipt
+            }
+            guard try recordDelivery(actionID: actionID, claim: claim) else {
+                // The refusal was already reported for this action.
+                return pollReceipt
+            }
+            return try await reportFailure(
+                actionID: actionID,
+                detail: "the device refused the action: \(error)"
+            )
+        }
+    }
+
+    /// Claim an action for execution: record its id as delivered and answer
+    /// whether *this* call won the right to run it.
+    ///
+    /// The marker lives on disk, not in memory — `PendingSend` is a value
+    /// type, and the poll loop must see what the last call actually wrote.
+    /// The check-then-write reads the stored record fresh, so a second
+    /// delivery of the same action (reply, then poll; or after a restart)
+    /// reads back the id and loses the claim — exactly once, by construction.
+    ///
+    /// The claim is persisted **before** the executor runs: a crash between
+    /// marker and report leaves an executed-but-unreported action, which the
+    /// server's sweep parks for review — the honest outcome. The reverse
+    /// order would let a crash re-execute, and a duplicate event is the one
+    /// failure a retry may never produce. A missing stored record (the slot
+    /// was already released) is read as "not mine to run" and also refuses:
+    /// executing into a released slot is how a duplicate is born.
+    ///
+    /// The override's claim (design §3.3) makes the same promise against a
+    /// marker no slot owns, and it is the one carrying the most weight: the
+    /// re-issued action says `skip_local_dedup`, so the duplicate check is off
+    /// by design and this claim is the *only* thing between a double tap and
+    /// two events. It is taken the same way and at the same point — before the
+    /// executor runs — and read fresh, so a second delivery of the same action
+    /// loses the claim here.
+    private func recordDelivery(
+        actionID: String, claim: DeliveryClaim
+    ) throws -> Bool {
+        switch claim {
+        case .message(let pending):
+            guard var stored = try loadPending(),
+                  stored.operationID == pending.operationID
+            else { return false }
+            guard !stored.deliveredActionIDs.contains(actionID) else { return false }
+            stored.deliveredActionIDs.append(actionID)
+            try savePending(stored)
+            return true
+        case .override:
+            // Never cleared by a successful run, unlike the message marker's
+            // slot: deleting the entry is how the write it guards becomes
+            // repeatable, and there is nothing to delete it for. The set is
+            // capped, and the server stops delivering an action once its
+            // operation settles, so an entry is only ever needed again while
+            // its operation is still parked.
+            var claimed = try loadOverrideClaims()
+            guard !claimed.contains(actionID) else { return false }
+            claimed.append(actionID)
+            try saveOverrideClaims(claimed)
+            return true
+        }
+    }
+
+    /// Report an execution failure against the action's id and return the
+    /// server's settled projection. The report endpoint itself answers with
+    /// the settled operation — its CAS guarantees exactly-once, and the
+    /// projection is what the UI renders, so no separate read-back is needed.
+    private func reportFailure(actionID: String, detail: String) async throws -> OperationReceipt {
+        try await backend.reportDeviceActionResult(
+            actionID: actionID, body: .failed(detail: detail)
+        )
+    }
 
     private func settle(
         _ first: OperationReceipt, pending: PendingSend
@@ -626,16 +1290,82 @@ public actor ChatTimeline {
             if let stage = Self.stage(of: receipt) {
                 await report(stage)
             }
+            // The parked projection can hand the actions over on any poll
+            // (review R6): a send that detached at 202, or a lost reply,
+            // reaches its actions here. Executing them is what settles the
+            // operations, so every delivered action is handled inside the loop
+            // and the loop continues from item 0's answer — the operation this
+            // slot and this card belong to.
+            if let reported = try await runDeliveredActions(
+                receipt, claim: .message(pending)
+            ) {
+                receipt = reported
+                if reported.outcome.isSettled { break }
+            }
         }
         if receipt.outcome.releasesPendingSlot {
             // Polling may stop without releasing the slot. Unknown and
             // needs-manual-review outcomes stay on disk because the client
             // giving up on watching is not proof that another key is safe.
-            if let stored = try loadPending(), stored.operationID == receipt.operationID {
-                try clearPending()
-            }
+            // The release also verifies ownership (fourth review H1): a poll
+            // answering after the slot was discarded and replaced must not
+            // delete the replacement.
+            try? releaseSlotIfStillOwned(
+                key: pending.idempotencyKey, operationID: receipt.operationID
+            )
         }
         return receipt
+    }
+
+    /// Clear the pending slot **only if it still belongs to the message that
+    /// earned the release** (fourth review H1).
+    ///
+    /// Every path that clears the slot after a network wait — the settled
+    /// report, the settle loop's terminal poll, a cancellation — can land
+    /// after the user discarded that message and sent another; the slot then
+    /// holds a different idempotency key, and deleting it would strand the
+    /// new message's write. Ownership is the pair (key, operation): the key
+    /// names the message, the operation names the server-side work this
+    /// release speaks for. A slot with a `nil` operation matches by key alone
+    /// (the discard-and-replace window before any reply anchors).
+    ///
+    /// A release is earned **per operation**, and the slot clears only once
+    /// every operation the message produced has earned one. One message may be
+    /// several operations (design §4.1), and its own item settling says
+    /// nothing about a sibling whose write may or may not exist — releasing on
+    /// item 0 alone is how the user comes to ask for an event a parked sibling
+    /// already created. A message with nothing tracked yet keeps the old
+    /// key-only rule: there is no operation to disagree with.
+    private func releaseSlotIfStillOwned(
+        key: String, operationID: String?
+    ) throws {
+        guard var stored = try loadPending() else { return }
+        guard stored.idempotencyKey == key else { return }
+        guard let operationID, !stored.operationIDs.isEmpty else {
+            // No operation to attribute: a refusal that never anchored
+            // anything, a give-up with no reply ever seen. The key named by
+            // the caller is the only owner there is to check.
+            try clearPending()
+            return
+        }
+        guard stored.operationIDs.contains(operationID) else {
+            // This release speaks for an operation that is not this message's.
+            // Clearing would strand the replacement's write.
+            return
+        }
+        if !stored.releasedOperationIDs.contains(operationID) {
+            stored.releasedOperationIDs.append(operationID)
+            try savePending(stored)
+        }
+        // Something is still outstanding: an item that has not settled, or one
+        // that settled into a state the client may not treat as safe to forget
+        // (`needs_manual_review` above all). The slot stays, and stays as the
+        // one thing blocking the next send, until a person resolves it.
+        let outstanding = stored.operationIDs.filter {
+            !stored.releasedOperationIDs.contains($0)
+        }
+        guard outstanding.isEmpty else { return }
+        try clearPending()
     }
 
     /// Run the by-key trail concurrently with the chat POST.
@@ -762,6 +1492,40 @@ public actor ChatTimeline {
         )
     }
 
+    /// How many override claims are remembered.
+    ///
+    /// The marker only has to outlive one in-flight tap, and an entry is only
+    /// ever needed again while its operation is still parked — the server stops
+    /// delivering an action once it settles — so a dropped entry has never been
+    /// the one still owed. Sixty-four is far past the number of taps that can
+    /// be in flight inside a single window.
+    private static let overrideClaimLimit = 64
+
+    private func loadOverrideClaims() throws -> [String] {
+        guard let data = try store.read(CredentialKey.claimedOverrideActions) else {
+            return []
+        }
+        do {
+            return try JSONDecoder().decode([String].self, from: data)
+        } catch {
+            // Reported, never reset to empty: an empty set means "nothing was
+            // ever written", and the override would then run its write again.
+            throw ChatError.overrideClaimsMalformed
+        }
+    }
+
+    private func saveOverrideClaims(_ claims: [String]) throws {
+        let bounded = Array(claims.suffix(Self.overrideClaimLimit))
+        if bounded.isEmpty {
+            try store.delete(CredentialKey.claimedOverrideActions)
+            return
+        }
+        try store.write(
+            CredentialKey.claimedOverrideActions,
+            value: try JSONEncoder().encode(bounded)
+        )
+    }
+
     private func removeDecision(_ checkID: String) throws {
         try saveDecisions(try loadDecisions().filter { $0.checkID != checkID })
     }
@@ -833,4 +1597,39 @@ public protocol ChatBackend: Sendable {
         expectedCurrentCategory: String?,
         idempotencyKey: String
     ) async throws -> OperationReceipt
+
+    /// Settle a device-executed action this device was handed. The report is
+    /// the evidence the server settles on; its CAS makes a retry after a lost
+    /// reply safe (a replay answers the settled projection, never re-migrates),
+    /// so the caller may resend without a client idempotency key.
+    func reportDeviceActionResult(
+        actionID: String,
+        body: DeviceActionResultBody
+    ) async throws -> OperationReceipt
+
+    /// Answer 「仍要创建」 for a calendar write this device reported as a
+    /// duplicate (design §3.3). No client key: the server derives it from the
+    /// action's own operation, so every tap and every retry converge on one
+    /// derived operation.
+    func overrideDeviceAction(actionID: String) async throws -> OperationReceipt
+
+    /// Upload one calendar mirror batch. `window_complete` on the last batch
+    /// authorises the server to mark window events absent from the upload as
+    /// deleted — the device is the fact source. `snapshotAsOf` is the batch's
+    /// version, identical across every batch of one window (second review F1:
+    /// the server's schema requires it).
+    ///
+    /// `calendars` rides on every batch and is idempotent (§2.1). It carries
+    /// **all** ordinary event calendars, subscribed ones included, so the
+    /// server can recognise and refuse them; the `events` alongside it come
+    /// only from the non-subscribed ones.
+    func uploadCalendarSync(
+        windowStart: Date,
+        windowEnd: Date,
+        events: [CalendarMirrorEvent],
+        calendars: [CalendarDirectoryEntry],
+        windowComplete: Bool,
+        snapshotAsOf: Date,
+        syncEpoch: Int
+    ) async throws -> CalendarSyncResponse
 }

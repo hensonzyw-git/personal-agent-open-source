@@ -98,6 +98,17 @@ def main() -> None:
         required=True,
         help="destination snapshot path; written atomically at mode 0600",
     )
+    calendar_parser = subparsers.add_parser(
+        "calendar-barrier", description="Operate the local calendar mirror rebuild barrier."
+    )
+    calendar_parser.add_argument(
+        "calendar_action", choices=("enter", "leave", "rebuild")
+    )
+    calendar_parser.add_argument("--device-id", required=True)
+    calendar_parser.add_argument(
+        "--confirm", action="store_true",
+        help="required for rebuild because it physically clears the server mirror cache",
+    )
 
     args = parser.parse_args()
 
@@ -109,7 +120,24 @@ def main() -> None:
     if args.database.exists():
         check_integrity(engine)
 
-    if args.action == "current":
+    if args.action == "calendar-barrier":
+        if args.confirm is False and args.calendar_action == "rebuild":
+            raise SystemExit("calendar rebuild requires --confirm")
+        from datetime import datetime, timezone
+        from personal_data_mcp.calendar import policy
+        from personal_data_mcp.storage.engine import session_factory
+
+        with session_factory(engine)() as session:
+            now = datetime.now(tz=timezone.utc)
+            if args.calendar_action == "enter":
+                policy.enter_maintenance(session, now=now)
+            elif args.calendar_action == "leave":
+                policy.leave_maintenance(session, now=now)
+            else:
+                policy.begin_rebuild(session, device_id=args.device_id, now=now)
+            session.commit()
+        print(f"calendar barrier {args.calendar_action} completed for {args.device_id}")
+    elif args.action == "current":
         current(engine)
     elif args.action == "upgrade":
         upgrade(engine, args.revision)

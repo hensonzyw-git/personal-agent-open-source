@@ -10,9 +10,16 @@ def test_prompt_covers_every_current_runtime_tool() -> None:
         "finance.log_income",
         "finance.update_family_fund",
         "finance.query_expenses",
+        "calendar.create_event",
         "meta.capabilities",
     ):
         assert tool in prompt
+
+
+def test_prompt_requires_an_eventkit_backed_calendar_create() -> None:
+    prompt = build_system_prompt(today="2026-09-12")
+    assert "必须调用 calendar.create_event" in prompt
+    assert "EventKit 返回的设备执行结果才是创建证据" in prompt
 
 
 def test_prompt_refuses_disabled_batch_without_selecting_one_entry() -> None:

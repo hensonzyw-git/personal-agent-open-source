@@ -92,7 +92,8 @@ LIMITS = MediaLimits(
 )
 
 AUTH = AuthContext(
-    device_id="dev", scopes=("finance.write",), allowed_tools_version="v1"
+    device_id="dev", scopes=("finance.write",), allowed_tools_version="v1",
+    client_wire_version=1,
 )
 
 

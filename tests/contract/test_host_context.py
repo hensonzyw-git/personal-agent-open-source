@@ -23,6 +23,7 @@ from personal_agent_core.host_context import (
     strip_host_only_fields,
     verify_host_context,
 )
+from personal_agent_core.tool_ir import DEFAULT_CLIENT_WIRE_VERSION
 
 
 NOW = datetime(2026, 7, 23, 7, 0, tzinfo=timezone.utc)
@@ -165,6 +166,155 @@ def test_a_forged_duplicate_override_does_not_survive_verification(ring) -> None
     token = sign_host_context(ring, context(), ARGUMENTS, now=NOW)
     claims = verify(ring, token, arguments={**ARGUMENTS, "duplicate_override": True})
     assert "duplicate_override" not in claims
+
+
+# --- the wire version the Host observed, not the one the payload claims -----
+
+
+def _resign(ring: ServiceKeyRing, token: str, **changes) -> str:
+    """Re-mint an honest token with claims replaced, as a buggy Host would.
+
+    Used only to reach shapes the real `sign_host_context` never produces.
+    """
+    claims = jwt.decode(token, options={"verify_signature": False})
+    claims.update(changes)
+    return jwt.encode(
+        claims,
+        ring.signing_key(),
+        algorithm=ALGORITHM,
+        headers={"kid": ring.active_kid, "typ": "JWT"},
+    )
+
+
+def test_the_client_wire_version_travels_as_a_signed_claim(ring) -> None:
+    token = sign_host_context(
+        ring, context(client_wire_version=2), ARGUMENTS, now=NOW
+    )
+    assert verify(ring, token)["client_wire_version"] == 2
+
+
+def test_a_payload_supplied_client_wire_version_cannot_change_the_hash() -> None:
+    # Same rule as every Host field: a device must not upgrade itself by
+    # rewriting what it sends as business arguments.
+    forged = {**ARGUMENTS, "client_wire_version": 2}
+    assert arguments_hash(forged) == arguments_hash(ARGUMENTS)
+
+
+def test_a_forged_client_wire_version_does_not_survive_verification(ring) -> None:
+    token = sign_host_context(ring, context(), ARGUMENTS, now=NOW)
+    claims = verify(ring, token, arguments={**ARGUMENTS, "client_wire_version": 2})
+    assert claims["client_wire_version"] == 1
+
+
+def test_a_host_older_than_the_claim_is_read_as_the_oldest_protocol(ring) -> None:
+    # Absence has to fail closed. If an absent claim defaulted to the newest
+    # protocol, every pre-claim Host would silently pass the ingest barrier.
+    token = _resign(ring, sign_host_context(ring, context(), ARGUMENTS, now=NOW))
+    claims = jwt.decode(token, options={"verify_signature": False})
+    del claims["client_wire_version"]
+    token = jwt.encode(
+        claims,
+        ring.signing_key(),
+        algorithm=ALGORITHM,
+        headers={"kid": ring.active_kid, "typ": "JWT"},
+    )
+    assert verify(ring, token).get(
+        "client_wire_version", DEFAULT_CLIENT_WIRE_VERSION
+    ) == DEFAULT_CLIENT_WIRE_VERSION
+
+
+@pytest.mark.parametrize("bad", ["2", 2.0, True, None, [2]])
+def test_a_client_wire_version_that_is_not_an_integer_is_refused(ring, bad) -> None:
+    token = _resign(
+        ring, sign_host_context(ring, context(), ARGUMENTS, now=NOW),
+        client_wire_version=bad,
+    )
+    with pytest.raises(AppError) as excinfo:
+        verify(ring, token)
+    assert excinfo.value.code is ErrorCode.HOST_CONTEXT_MISMATCH
+
+
+# --- a contract may declare a host-only name for itself ---------------------
+
+
+CALENDAR_TOOL = "calendar.create_event"
+CALENDAR_ARGUMENTS = {
+    "title": "东京行",
+    "start": "2027-01-01T00:00:00+08:00",
+    "end": "2027-01-04T00:00:00+08:00",
+    "all_day": True,
+    "calendar": "出游计划",
+    "timezone": "Asia/Tokyo",
+    "start_date": "2027-01-01",
+    "end_date": "2027-01-04",
+}
+#: What the tool's own schema declares, derived the same way the bridge derives
+#: it — from the contract, never from the request.
+DECLARED = frozenset(CALENDAR_ARGUMENTS)
+
+
+def test_without_a_declaration_every_host_field_is_dropped() -> None:
+    assert strip_host_only_fields({**ARGUMENTS, "timezone": "Asia/Tokyo"}) == ARGUMENTS
+
+
+def test_a_declared_business_field_survives_the_strip() -> None:
+    hostile = {
+        **CALENDAR_ARGUMENTS,
+        "device_id": "someone-elses-device",
+        "user_id": "henson",
+    }
+    cleaned = strip_host_only_fields(hostile, declared=DECLARED)
+    assert cleaned == CALENDAR_ARGUMENTS
+    assert cleaned["timezone"] == "Asia/Tokyo"
+
+
+def test_the_declared_field_is_bound_into_the_hash() -> None:
+    # The exemption must not open a hole: a field the model controls has to be
+    # covered by the binding, or a tampered timezone would verify against an
+    # honest signature.
+    forged_host_field = {**CALENDAR_ARGUMENTS, "device_id": "injected"}
+    assert arguments_hash(forged_host_field, declared=DECLARED) == arguments_hash(
+        CALENDAR_ARGUMENTS, declared=DECLARED
+    )
+    tampered = {**CALENDAR_ARGUMENTS, "timezone": "Asia/Shanghai"}
+    assert arguments_hash(tampered, declared=DECLARED) != arguments_hash(
+        CALENDAR_ARGUMENTS, declared=DECLARED
+    )
+
+
+def test_sign_and_verify_agree_on_the_declared_field(ring) -> None:
+    token = sign_host_context(
+        ring,
+        context(tool=CALENDAR_TOOL),
+        CALENDAR_ARGUMENTS,
+        now=NOW,
+        declared=DECLARED,
+    )
+    claims = verify(
+        ring, token, tool=CALENDAR_TOOL, arguments=CALENDAR_ARGUMENTS, declared=DECLARED
+    )
+    assert claims["arguments_hash"] == arguments_hash(
+        CALENDAR_ARGUMENTS, declared=DECLARED
+    )
+
+
+def test_a_tampered_declared_field_fails_verification(ring) -> None:
+    token = sign_host_context(
+        ring,
+        context(tool=CALENDAR_TOOL),
+        CALENDAR_ARGUMENTS,
+        now=NOW,
+        declared=DECLARED,
+    )
+    with pytest.raises(AppError) as excinfo:
+        verify(
+            ring,
+            token,
+            tool=CALENDAR_TOOL,
+            arguments={**CALENDAR_ARGUMENTS, "timezone": "Asia/Shanghai"},
+            declared=DECLARED,
+        )
+    assert excinfo.value.code is ErrorCode.HOST_CONTEXT_MISMATCH
 
 
 # --- key handling -----------------------------------------------------------

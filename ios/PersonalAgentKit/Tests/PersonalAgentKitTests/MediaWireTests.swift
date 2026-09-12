@@ -45,7 +45,10 @@ struct MediaWireTests {
             text: "这张账单",
             parts: [.text("这张账单"), .imageReference(mediaID: "media_1")],
             clarificationOf: nil,
-            operationID: nil
+            operationID: "op-image",
+            operationIDs: ["op-image", "op-sibling"],
+            deliveredActionIDs: ["action-image"],
+            releasedOperationIDs: ["op-sibling"]
         )
         let restored = try JSONDecoder().decode(
             ChatTimeline.PendingSend.self, from: JSONEncoder().encode(pending)

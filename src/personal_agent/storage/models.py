@@ -93,6 +93,32 @@ MANUAL_RESOLUTIONS: Final[tuple[str, ...]] = (
     "confirmed_not_written",
 )
 
+#: The closed vocabulary a device reports for an action it executed. The phone
+#: is the fact source for its own write, so this is testimony rather than a
+#: claim to be checked -- and it is kept verbatim on the operation because the
+#: four values are not interchangeable downstream:
+#:
+#: - `created` and `duplicate` both mean the event exists, and both settle with
+#:   the EventKit id in `safe_result`, but only `duplicate` says the *device*
+#:   found the event already there -- which is the one case 「仍要创建」 may
+#:   override (design 3.3). A column that stored only success could not tell
+#:   them apart, and an override offered on a `created` would write a second
+#:   copy of an event the user already has.
+#: - `denied` and `failed` are the device's own zero-write testimony: EventKit
+#:   refused before any write could exist, which is what lets the operation
+#:   settle `failed_safe` instead of being parked for review.
+DEVICE_REPORT_RESULTS: Final[tuple[str, ...]] = (
+    "created",
+    "duplicate",
+    "denied",
+    "failed",
+)
+
+#: The reports that say the event exists on the phone.
+DEVICE_REPORT_WRITES: Final[frozenset[str]] = frozenset(
+    {"created", "duplicate"}
+)
+
 #: What the push provider has said, which is never what the user has done.
 #: `provider_accepted` means APNs took the notification, nothing more; only an
 #: explicit `/ack` moves the review itself to `reviewed` (design 7.7 step 6).
@@ -651,6 +677,72 @@ class Operation(Base):
     encrypted_result_record: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedEnvelope, nullable=True
     )
+    #: The device action issued for this operation (`calendar.create_event`),
+    #: sealed on the row in the same committed transition that parks the
+    #: operation at `source_in_progress` (review R6, 2026-09-08).
+    #:
+    #: Why it exists: the chat response used to be the action's only delivery
+    #: channel, and a request that timed out at 202 lost the action while the
+    #: operation stayed parked. With the seal, the operation projection is the
+    #: one delivery door -- the 200 reply, the by-id poll and a replay all
+    #: converge on the same parked-state read -- and a settled operation
+    #: refuses to hand the action over, so a stale read can never re-execute a
+    #: finished write.
+    #:
+    #: Sealed because the event fields are the user's personal schedule and
+    #: the model-authorised intent itself; the same exposure rule that governs
+    #: `encrypted_result_record` applies, and the Timeline's copy already
+    #: travels inside `encrypted_content`.
+    encrypted_device_action: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
+    #: The resolved tool call this operation was authorised to make -- the
+    #: *attested* arguments, sealed on the same transition that issues the
+    #: device action (design 3.3).
+    #:
+    #: It is what an override resumes from: 「仍要创建」 must re-issue the write
+    #: the user originally authorised, never a re-derived one, so the arguments
+    #: have to outlive the turn that produced them -- and outlive *settlement*,
+    #: which is why this is not the device-action seal beside it (cleared when
+    #: the operation leaves `source_in_progress`; a duplicate is only discovered
+    #: after the phone reports). It is not `api_requests
+    #: .encrypted_request_payload` either: that column holds the chat request
+    #: the turn replays, and writing an intent there would cost the request its
+    #: own idempotent replay.
+    #:
+    #: Sealed because the arguments name the user's calendar, title and time,
+    #: and bound by AAD to this operation so a ciphertext cannot be lifted onto
+    #: another row.
+    encrypted_request: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
+    #: The operation an override was derived from. Kept so the override is
+    #: visible in the audit as *two* operations -- the original write and the
+    #: deliberate second one -- rather than one silent pass. See
+    #: `parent_operation_derives_once` for why the promise is a constraint.
+    parent_operation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("operations.operation_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    #: What the phone reported it did with the action. The verbatim value, not a
+    #: boolean, because the four reports are not interchangeable: only
+    #: `duplicate` may be overridden, and both success reports otherwise look
+    #: identical on this row (state `succeeded`, EventKit id in `safe_result`).
+    device_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Which frozen action plan this operation belongs to, and where in it
+    #: (design 4.1). One message that asks for several events is interpreted
+    #: once, and the whole list is written down before any of it is issued, so a
+    #: crash halfway through cannot re-ask the model and get a different list.
+    #: The key is the message's own idempotency key, and the items are read back
+    #: in index order.
+    #:
+    #: Both halves are written together or not at all: an index without its plan
+    #: would be a position in a list nobody can find, and a plan without its
+    #: index could not be ordered. The pair is unique because the derived item
+    #: key is `uuid5(plan, index)` -- a promise the derivation keeps today and
+    #: which the constraint keeps if the derivation ever changes.
+    plan_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    plan_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: What a human concluded after looking at the ledger, for an operation that
     #: ended at `needs_manual_review`. A *flag*, not a state, for the same reason
     #: `cancel_requested` is one: the accounting outcome belongs to the state
@@ -687,6 +779,49 @@ class Operation(Base):
             " OR state IN ('succeeded', 'needs_manual_review')",
             name="result_record_only_where_written",
         ),
+        # An undelivered device action may only sit on an operation parked at
+        # `source_in_progress` — the one state whose meaning is "the write was
+        # authorised and handed off, the executor may act". A settled state
+        # carrying a live action would let a stale read re-arm a finished
+        # write, so settlement clears the seal (`transition_operation` does it
+        # centrally when leaving `source_in_progress`) and this constraint
+        # makes any future settlement path that forgets to fail loudly
+        # instead of silently re-arming an action. (`failed_safe` never holds
+        # one: the pre-submit recovery walk to `failed_safe` is exactly the
+        # case where no response ever carried the action anywhere. Review R6,
+        # 2026-09-08.)
+        CheckConstraint(
+            "encrypted_device_action IS NULL OR state = 'source_in_progress'",
+            name="device_action_only_while_parked",
+        ),
+        # An operation may be derived from at most one parent and may not be its
+        # own parent. Today the derived key is
+        # `uuid5(namespace, "<parent>:calendar-override")`, which could not
+        # produce two children or a self-parent -- but design 3.3's promise
+        # ("一次 duplicate → 至多一条派生 operation") is what makes a double tap
+        # harmless, and a promise should not rest on a derivation a later change
+        # could alter.
+        CheckConstraint(
+            "parent_operation_id IS NULL OR parent_operation_id <> operation_id",
+            name="parent_operation_is_not_self",
+        ),
+        UniqueConstraint(
+            "parent_operation_id", name="parent_operation_derives_once"
+        ),
+        CheckConstraint(
+            _in_set("device_result", DEVICE_REPORT_RESULTS)
+            + " OR device_result IS NULL",
+            name="device_result",
+        ),
+        # A plan membership is one fact in two columns: an index with no plan
+        # names a position in a list nobody can find, and a plan with no index
+        # cannot be ordered. A negative index is not a position at all.
+        CheckConstraint(
+            "(plan_key IS NULL) = (plan_index IS NULL)"
+            " AND (plan_index IS NULL OR plan_index >= 0)",
+            name="plan_membership_is_whole",
+        ),
+        UniqueConstraint("plan_key", "plan_index", name="plan_item_once"),
         CheckConstraint(
             _in_set("manual_resolution", MANUAL_RESOLUTIONS)
             + " OR manual_resolution IS NULL",

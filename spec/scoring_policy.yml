@@ -8,8 +8,10 @@
 # All thresholds are TRANSPARENT HEURISTICS, not statistically validated
 # (PRD §15.6). They are a risk-review scaffold, not investment advice.
 
-policy_version: "2026-09-03.3"
-definition_version: "2026-09-03.3"
+policy_version: "2026-09-11.1"
+definition_version: "2026-09-11.1"
+# Extraction correction only: aligned annual XBRL facts and dated breadth
+# coverage. Indicator weights, bands and action thresholds are unchanged.
 description: >
   First frozen baseline for the US/AI systemic-risk monitor. Bands are
   green/yellow/orange/red mapped to 0/35/65/100; each score is the weighted

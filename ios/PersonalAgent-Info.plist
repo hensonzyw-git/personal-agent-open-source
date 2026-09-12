@@ -30,5 +30,15 @@
 	<string>拍摄要随消息发送的照片；仅点击发送后才上传。</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>用于把长按录入的语音转写成文字；识别在设备本地完成，音频不会上传。</string>
+	<!--
+	  The agent writes events you ask for into Apple Calendar (EventKit full
+	  access: reading is what the server-side 明天/本周 summaries need, writing is
+	  the device-executed create). iOS 17+ reads the FullAccess key; the legacy
+	  key covers iOS ≤16.
+	-->
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>允许 Personal Agent 把你指定的日程写入日历，并读取日历以回答“明天/本周有什么安排”。</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>允许 Personal Agent 把你指定的日程写入日历，并读取日历以回答“明天/本周有什么安排”。</string>
 </dict>
 </plist>

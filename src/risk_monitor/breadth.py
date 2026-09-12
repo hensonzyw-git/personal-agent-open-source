@@ -80,11 +80,14 @@ def breadth_change(
     return round(bs[-1][1] - bs[-1 - days][1], 4)
 
 
-def coverage(series_by_ticker: dict[str, Sequence[Obs]], window: int = WINDOW) -> float:
-    """Fraction of tickers that produced at least one signal (for freshness /
-    anomaly reporting)."""
+def coverage(series_by_ticker: dict[str, Sequence[Obs]], window: int = WINDOW,
+             *, as_of: str | None = None) -> float:
+    """Fraction with a signal on the target date, not merely sometime in history."""
     total = len(series_by_ticker)
     if total == 0:
         return 0.0
-    with_signal = sum(1 for s in series_by_ticker.values() if _rolling_above(s, window))
+    if as_of is None:
+        as_of = max((d for s in series_by_ticker.values() for d, v in s if v is not None), default=None)
+    with_signal = sum(1 for s in series_by_ticker.values()
+                      if any(d == as_of for d, _ in _rolling_above(s, window)))
     return round(with_signal / total, 4)

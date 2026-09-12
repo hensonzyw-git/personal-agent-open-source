@@ -42,6 +42,17 @@ struct ChatView: View {
     struct ResolutionIntent: Equatable {
         let operationID: String
         let resolution: ManualResolution
+        /// The words of the card this tap came from. The dialog is the last thing
+        /// read before a human conclusion is recorded, so it has to name the same
+        /// destination the card named. Carrying the copy rather than a domain
+        /// makes that structural: there is no second lookup that could fork
+        /// differently from the card's.
+        let copy: ManualReviewCopy
+
+        /// What the dialog asks, in the tapped card's words.
+        var confirmPrompt: String {
+            copy.confirmPrompt(forWire: resolution.rawValue)
+        }
     }
 
     /// Scroll target for the in-flight bubble, which has no `event_id` to use.
@@ -99,15 +110,19 @@ struct ChatView: View {
             Button("再想想", role: .cancel) { confirmingWriteAnyway = nil }
         }
         .confirmationDialog(
-            confirmingResolution.map(resolutionPrompt) ?? "",
+            confirmingResolution?.confirmPrompt ?? "",
             isPresented: Binding(
                 get: { confirmingResolution != nil },
                 set: { if !$0 { confirmingResolution = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("确认，我已在账本里核对过") {
-                if let intent = confirmingResolution {
+            // Every word here comes from the tapped card's copy, including the
+            // confirm button and the message: the dialog is one tap from a
+            // recorded human fact, and naming the wrong destination on the way
+            // in is the card's own defect one screen later.
+            if let intent = confirmingResolution {
+                Button(intent.copy.confirmButton) {
                     confirmingResolution = nil
                     Task {
                         await model.resolveManualReview(
@@ -119,7 +134,7 @@ struct ChatView: View {
             }
             Button("再想想", role: .cancel) { confirmingResolution = nil }
         } message: {
-            Text("这个结论记录后不能在应用里改判：服务端会拒绝相反的答复。它只写在这次操作旁边，不会改动账本。")
+            Text(confirmingResolution?.copy.confirmMessage ?? "")
         }
         .confirmationDialog(
             "开始新话题？",
@@ -173,15 +188,6 @@ struct ChatView: View {
         }
     }
 
-    private func resolutionPrompt(_ intent: ResolutionIntent) -> String {
-        switch intent.resolution {
-        case .confirmedWritten:
-            return "确认飞书账本里已经有这一笔？"
-        case .confirmedNotWritten:
-            return "确认飞书账本里没有这一笔？"
-        }
-    }
-
     private var timeline: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -208,7 +214,7 @@ struct ChatView: View {
                         EmptyTimelineView(tools: model.tools) { model.draft = $0 }
                     }
 
-                    ForEach(model.events) { event in
+                    ForEach(model.visibleEvents) { event in
                         entry(event).id(event.eventID)
                     }
 
@@ -411,9 +417,10 @@ struct ChatView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
-        case .manualReviewResolved(let resolution):
+        case .manualReviewResolved(let resolution, let domain):
+            let copy = ManualReviewCopy.forResolvedMarker(domain)
             Label(
-                "已人工核对：\(manualResolutionText(resolution))",
+                "已人工核对：\(manualResolutionText(resolution, copy: copy))",
                 systemImage: "person.crop.circle.badge.checkmark"
             )
             .font(.caption)
@@ -784,8 +791,28 @@ struct ChatView: View {
                 record: record,
                 operationID: operationID
             )
+        } else if case .calendarEventWritten(let eventID, let tool, let evidence, _) = outcome {
+            // Its own branch, not a fallthrough to `recordedReceipt`. The two
+            // receipts share the evidence field and nothing else: the ledger
+            // row's wording, its fields and its 打开飞书账本 link all name a
+            // place this write never went. (2026-09-10 review.)
+            calendarWriteReceipt(
+                eventID: eventID,
+                tool: tool,
+                evidence: evidence,
+                operationID: operationID,
+                // The card's own fields decide this for every receipt this
+                // build produces; the map only has entries for cards drawn
+                // from history that had to ask (`ChatModel.overrideDecisions`).
+                // One lookup per undecided card per page load, never per redraw.
+                decision: model.overrideDecision(
+                    for: outcome, operationID: operationID
+                )
+            )
         } else if case .answeredWithQuery(let result, let tool) = outcome {
             queryReceiptCard(result: result, tool: tool, operationID: operationID)
+        } else if case .answeredWithCalendarQuery(let result, let tool) = outcome {
+            calendarQueryReceiptCard(result: result, tool: tool, operationID: operationID)
         } else {
             plainReceiptCard(
                 outcome: outcome,
@@ -899,6 +926,62 @@ struct ChatView: View {
                 fields: fields
             )
         }
+    }
+
+    /// The calendar write's receipt: 状态行, 仍要创建, and nothing else.
+    ///
+    /// It shares the status-row shape with the ledger's because the shape is
+    /// right — a receipt with no business fields to draw must not pretend to
+    /// a structured record. What it does not share is the *content*: the badge
+    /// comes from the device result (已创建 / 日历里已有 / 已写入, see
+    /// `CalendarDeviceResult.terminalLabel`), and there is no 打开飞书账本
+    /// link, because this write never went near the ledger. The 2026-09-10
+    /// review found exactly those two strings on a created calendar event.
+    ///
+    /// 仍要创建 appears for exactly one badge: 日历里已有. It re-issues the write
+    /// the phone declined, which is only safe when the phone's report and the
+    /// server's row agree that an event was already there — so the button is
+    /// drawn from `decision`, which cannot carry one without the other (see
+    /// `OperationOutcome.overrideDecision`).
+    ///
+    /// The EventKit id stays reachable through the same long-press menu the
+    /// ledger receipt uses: it is the evidence the write happened, and 20
+    /// opaque characters on the row would cost more than it buys.
+    private func calendarWriteReceipt(
+        eventID: String,
+        tool: String?,
+        evidence: CalendarDeviceResult,
+        operationID: String?,
+        decision: OverrideDecision
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            terminalChip(
+                for: .calendarEventWritten(
+                    eventID: eventID, tool: tool, evidence: evidence, actionID: nil
+                ),
+                toolEvidence: .known(tool)
+            )
+
+            if let tool, !tool.isEmpty {
+                Text(tool == "calendar.create_event"
+                     ? "Apple 日历"
+                     : Capabilities.displayName(forAlias: tool, tools: model.tools))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let actionID = decision.actionID {
+                Button {
+                    Task { await model.overrideDeviceAction(actionID: actionID) }
+                } label: {
+                    Text("仍要创建").font(.footnote)
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.busy)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(evidenceMenu(recordID: eventID, operationID: operationID, explicit: false))
     }
 
     /// §3a/§3b 档一档二: 状态行. The lightest possible receipt.
@@ -1412,6 +1495,128 @@ struct ChatView: View {
         }
     }
 
+    // --- the calendar list card (design §9.2) --------------------------------
+
+    /// A row per event: 标题 · 日期时间（或全天日期区间）· 日历名 · [已创建].
+    ///
+    /// Every string on this card comes from a row field of the projection, by
+    /// the same rules the server's own summary renders by (`§5.2`/`§5.3`): an
+    /// all-day event from its dates (end exclusive), a timed event in its own
+    /// zone with the zone named, and the truncation and uncertainty notes
+    /// spelled out. The rules live in `CalendarQueryResult.EventRow`; this view
+    /// only lays them out.
+    private func calendarQueryReceiptCard(
+        result: CalendarQueryResult, tool: String?, operationID: String?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("查询结果").font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                if let tool {
+                    Text(tool).font(.caption.monospaced()).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.top, Metric.cardHeaderTop)
+            .padding(.bottom, Metric.cardHeaderBottom)
+
+            VStack(spacing: 0) {
+                // The two warnings are different facts and can both be true
+                // (design §9.1): this one is about what *this device* has
+                // changed and not yet uploaded, and it never waits on the
+                // server's mirror state to say so.
+                if model.calendarUnsynced {
+                    calendarNote("本地日历有未同步的变更，结果可能不含最新日程")
+                }
+                if result.mirrorStale {
+                    calendarNote("日历镜像已陈旧或未覆盖该时间段，结果可能不全")
+                }
+                ForEach(Array(result.events.enumerated()), id: \.offset) { _, row in
+                    calendarEventRow(row)
+                }
+                if result.events.isEmpty {
+                    calendarNote(
+                        result.mirrorStale
+                            ? "日历镜像尚未同步，暂时无法给出安排"
+                            : "这个时间段没有日程"
+                    )
+                } else if result.nextCursor != nil {
+                    calendarNote("已显示部分日程，查询结果还有更多。")
+                    Button("继续查看上一条日程查询的更多结果") {
+                        model.draft = "继续查看上一条日程查询的更多结果"
+                    }
+                    .font(.footnote)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Metric.fieldRowPadding)
+                    .overlay(alignment: .top) { hairline }
+                } else {
+                    fieldRow("日程数", "已全部显示（共 \(result.recordCount) 条）")
+                }
+                // The freshness line is the server's own words, stated only
+                // when the mirror is fresh enough to have a 截至 time worth
+                // showing. A stale mirror already said so above.
+                if !result.mirrorStale, !result.dataAsOf.isEmpty {
+                    fieldRow("数据截至", ChatView.editStamp(result.dataAsOf))
+                }
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.bottom, Metric.cardInset)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(Color.cardBorder, lineWidth: Metric.hairline)
+        )
+        // The same long-press menu as the other receipt cards: a query has no
+        // `record_id` of its own, but its `operation_id` is what the evidence
+        // would be checked against.
+        .modifier(evidenceMenu(recordID: nil, operationID: operationID, explicit: false))
+    }
+
+    private func calendarEventRow(_ row: CalendarQueryResult.EventRow) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(row.displayTitle).font(.callout)
+                if row.createdByAgent {
+                    Text("已创建")
+                        .font(.caption2)
+                        .foregroundStyle(Color.accentText)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.surface, in: Capsule())
+                }
+            }
+            HStack(spacing: 8) {
+                Text(row.when).font(.caption).foregroundStyle(.secondary)
+                // A calendar with no name the device knows shows no name here.
+                // The EventKit identifier is not a substitute for one.
+                if let calendarTitle = row.calendarTitle {
+                    Text(calendarTitle).font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(row.annotations, id: \.self) { note in
+                    Text(note).font(.caption2).foregroundStyle(Color.pending)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, Metric.fieldRowPadding)
+        .overlay(alignment: .top) { hairline }
+    }
+
+    private func calendarNote(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption2)
+            Text(text).font(.caption)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(Color.pending)
+        .padding(.vertical, Metric.fieldRowPadding)
+        .overlay(alignment: .top) { hairline }
+    }
+
     @ViewBuilder
     private func plainReceiptCard(
         outcome: OperationOutcome,
@@ -1433,10 +1638,11 @@ struct ChatView: View {
                     Text("服务端仍在处理（\(state.wire)）").font(.callout)
                 }
 
-            // Handled by `recordedReceipt` and `queryReceiptCard` above;
-            // listed only to keep the switch exhaustive, so a new outcome still
-            // fails to compile here.
-            case .recorded, .answeredWithQuery:
+            // Handled by `recordedReceipt`, `calendarWriteReceipt` and
+            // `queryReceiptCard` above; listed only to keep the switch
+            // exhaustive, so a new outcome still fails to compile here.
+            case .recorded, .calendarEventWritten, .answeredWithQuery,
+                 .answeredWithCalendarQuery:
                 EmptyView()
 
             case .answered(let text):
@@ -1506,13 +1712,19 @@ struct ChatView: View {
                     .foregroundStyle(.danger)
                 if let reason { field("原因", reason) }
 
-            case .needsManualReview(let reason, let recordID):
+            case .needsManualReview(let reason, let recordID, let domain):
+                // Design §10, gap 4: the card is chosen by the operation's
+                // domain, never by guessing from the tool name. A calendar write
+                // cannot be checked in the ledger, and a person sent to the
+                // wrong place taps a conclusion that is then recorded as a
+                // human fact the server refuses to contradict.
+                let copy = ManualReviewCopy.forDomain(domain)
                 Label("需要人工核对：写入结果无法确认", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.pending)
                 if let reason { field("原因", reason) }
-                if let recordID { field("记录 ID", recordID) }
+                if let recordID { field(copy.recordLabel, recordID) }
                 if let operationID {
-                    manualReviewResolution(operationID: operationID)
+                    manualReviewResolution(operationID: operationID, copy: copy)
                 }
 
             case .cancelledBeforeSubmit:
@@ -1577,9 +1789,10 @@ struct ChatView: View {
     /// to the menu (or have none). Kept here so the menu and the 详情单 see the
     /// same value the body already shows.
     private func recordID(from outcome: OperationOutcome) -> String? {
-        if case .needsManualReview(_, let recordID) = outcome { return recordID }
+        if case .needsManualReview(_, let recordID, _) = outcome { return recordID }
         return nil
     }
+
 
     /// §1o 组件二: the terminal-state label in the card's top corner.
     ///
@@ -1610,6 +1823,15 @@ struct ChatView: View {
             // this name states the verifiable fact instead, and can be promoted
             // back only if the comparison is ever actually implemented.
             return TerminalBadge(text: "账本已存在此记录", color: .accentText)
+        case .calendarEventWritten(_, _, let evidence, _):
+            // The calendar's own label, chosen by what the phone reported. It
+            // deliberately does **not** say 账本, which is what this card said
+            // before the 2026-09-10 review: a created calendar event was
+            // labelled 「账本已存在此记录」 beside a 打开飞书账本 link.
+            //
+            // The words live in the Kit so a test can hold them; a view is not
+            // where "does this card name the wrong system" can be asserted.
+            return TerminalBadge(text: evidence.terminalLabel, color: .accentText)
         case .answered:
             // 无工具调用 is only claimed when the server explicitly recorded
             // `tool == null` for a direct answer. A history event that predates
@@ -1623,7 +1845,7 @@ struct ChatView: View {
             case .unknown:
                 return TerminalBadge(text: "工具事实不可用", color: .secondary)
             }
-        case .answeredWithQuery:
+        case .answeredWithQuery, .answeredWithCalendarQuery:
             // The query card carries its own header; a badge here would compete
             // with the structured rows it renders.
             return nil
@@ -1772,36 +1994,47 @@ struct ChatView: View {
     /// `DEV-040`. The human resolution path for a `needs_manual_review` card.
     ///
     /// It answers the question the state itself cannot: the system could not
-    /// establish whether the row reached the ledger, and only a person looking at
-    /// the ledger can. What it deliberately does **not** do is change the receipt
+    /// establish whether the write landed, and only a person looking at the
+    /// destination can. What it deliberately does **not** do is change the receipt
     /// above it — 需要人工核对 stays exactly as rendered, because that is still what
     /// the *system* proved. The resolution is shown beside it as what a person
     /// reported.
+    ///
+    /// `copy` is the domain's wording (design §10, gap 4). It is a parameter and
+    /// not a fresh derivation here so that the resolved line and the button the
+    /// person tapped are worded by the same value: the receipt and the unresolved
+    /// slot both pass the copy their own outcome carried.
     @ViewBuilder
-    private func manualReviewResolution(operationID: String) -> some View {
+    private func manualReviewResolution(
+        operationID: String, copy: ManualReviewCopy
+    ) -> some View {
         if let resolved = model.resolvedManualReviews[operationID] {
             Label(
-                "已人工核对：\(manualResolutionText(resolved))",
+                "已人工核对：\(manualResolutionText(resolved, copy: copy))",
                 systemImage: "checkmark.circle"
             )
             .foregroundStyle(.secondary)
-            Text("这是你核对账本后的结论，不是系统验证的结果。要改判需要重新人工核对，服务端会拒绝相反的答复。")
+            Text("这是你核对后的结论，不是系统验证的结果。要改判需要重新人工核对，服务端会拒绝相反的答复。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else {
-            Text("请先在飞书账本里核对这一笔（复核页有「打开飞书账本」），再选择结论。选择只记录你看到的事实，不会改动账本。")
+            Text(copy.instruction)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
-                Button("账本里有这笔") {
+                Button(copy.writtenButton) {
                     confirmingResolution = .init(
-                        operationID: operationID, resolution: .confirmedWritten
+                        operationID: operationID,
+                        resolution: .confirmedWritten,
+                        copy: copy
                     )
                 }
                 Spacer()
-                Button("账本里没有") {
+                Button(copy.notWrittenButton) {
                     confirmingResolution = .init(
-                        operationID: operationID, resolution: .confirmedNotWritten
+                        operationID: operationID,
+                        resolution: .confirmedNotWritten,
+                        copy: copy
                     )
                 }
             }
@@ -1810,13 +2043,18 @@ struct ChatView: View {
         }
     }
 
-    private func manualResolutionText(_ wire: String) -> String {
-        switch wire {
-        case ManualResolution.confirmedWritten.rawValue: return "账本里有这笔"
-        case ManualResolution.confirmedNotWritten.rawValue: return "账本里没有这笔"
-        // A conclusion this build cannot name is still one that was recorded.
-        default: return "服务端结论 \(wire)"
-        }
+    /// The conclusion in words. The wording is `ManualReviewCopy`'s rule, in the
+    /// Kit where it can be tested; this only supplies the copy.
+    ///
+    /// Every caller passes its copy explicitly, because the two markers fork
+    /// differently. A live card forks on its operation's domain and falls back to
+    /// the ledger words; a `manual_review_resolved` history marker forks on the
+    /// domain the server froze into the event, and a marker with no domain gets
+    /// the neutral words. Neither default is right for the other.
+    private func manualResolutionText(
+        _ wire: String, copy: ManualReviewCopy
+    ) -> String {
+        copy.conclusion(forWire: wire)
     }
 
     private func duplicateDecisionText(_ wire: String) -> String {
@@ -1843,8 +2081,11 @@ struct ChatView: View {
                 // costs nothing.
                 if let receipt = model.liveReceipt,
                    receipt.operationID == operationID,
-                   case .needsManualReview = receipt.outcome {
-                    manualReviewResolution(operationID: operationID)
+                   case .needsManualReview(_, _, let domain) = receipt.outcome {
+                    manualReviewResolution(
+                        operationID: operationID,
+                        copy: ManualReviewCopy.forDomain(domain)
+                    )
                 }
             } else {
                 Text("尚未拿到 operation_id：服务端可能已收到，也可能没有。")

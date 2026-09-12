@@ -445,7 +445,7 @@ class _FakeDispatcher:
         self.error = error
         self.calls: list[tuple] = []
 
-    def resolve(self, *, tool: str, model_args: dict):
+    def resolve(self, *, tool: str, model_args: dict, idempotency_key: str | None = None):
         self.calls.append(("resolve", tool, model_args))
         if self.error is not None:
             raise self.error

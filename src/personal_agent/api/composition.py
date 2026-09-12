@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
@@ -52,6 +53,7 @@ from personal_agent.api.control_client import (
 from personal_agent.api.finance_dispatcher import (
     DispatcherContext,
     McpFinanceDispatcher,
+    tool_call_fingerprint,
 )
 from personal_agent.api.orchestrator import (
     CommitFailedSafe,
@@ -62,6 +64,10 @@ from personal_agent.api.orchestrator import (
 )
 from personal_agent.api.intent import WriteIntent
 from personal_agent.api.recovery import FinanceExecutionStatus, recover_pending
+from personal_agent.api.operation_store import (
+    new_traceparent,
+    sweep_timed_out_device_actions,
+)
 from personal_agent.auth.enrollment import decode_device_scopes
 from personal_agent.context.builder import ContextBuilder, ContextEnvelope
 from personal_agent.context.compactor import Compactor
@@ -89,7 +95,11 @@ from personal_agent.mcp_client.core import (
     StreamableHttpTransport,
 )
 from personal_agent.mcp_client.registry import ConnectorRegistry, TrustLevel
-from personal_agent.policy.bridge import DeviceAuthorization, GovernedToolBridge
+from personal_agent.policy.bridge import (
+    BridgeCallContext,
+    DeviceAuthorization,
+    GovernedToolBridge,
+)
 from personal_agent.runtime.glm_gateway import (
     declared_context_limit,
     glm_gateway_from_env,
@@ -129,7 +139,7 @@ from personal_agent.storage.engine import (
 )
 from personal_agent.storage.models import Device
 from personal_agent_core.errors import AppError, ErrorCode
-from personal_agent_core.host_context import ISSUER
+from personal_agent_core.host_context import HostContext, ISSUER
 from personal_agent_core.manifest import load_manifest
 from personal_agent_core.mcp_protocol import FINANCE_PROTOCOL_VERSIONS
 from personal_agent_core.timeutil import (
@@ -152,6 +162,11 @@ FINANCE_CONNECTOR_ID: Final[str] = "personal-data"
 
 LEDGER_TIMEZONE: Final[str] = "Asia/Shanghai"
 RECOVERY_INTERVAL_SECONDS: Final[float] = 60.0
+
+#: The device-side data channel: the sync route executes this connector tool
+#: through the governed bridge with the authenticated device as the Host
+#: Context caller (`model_callable=False`, so the model never offers it).
+_CALENDAR_INGEST_TOOL: Final[str] = "calendar.ingest_events"
 
 
 class CompositionError(RuntimeError):
@@ -303,6 +318,7 @@ class DeviceBoundDispatcher:
         trace_id: str,
         enabled_tools: frozenset[str],
         manifest_version: str,
+        client_wire_version: int,
         run: Callable[[Any], Any] = asyncio.run,
     ) -> None:
         self._device_id = device_id
@@ -315,6 +331,7 @@ class DeviceBoundDispatcher:
         self._trace_id = trace_id
         self._enabled_tools = enabled_tools
         self._manifest_version = manifest_version
+        self._client_wire_version = client_wire_version
         self._run = run
 
     def _dispatcher(self) -> McpFinanceDispatcher | None:
@@ -336,16 +353,29 @@ class DeviceBoundDispatcher:
                 user_id=self._user_id,
                 agent_id=self._agent_id,
                 conversation_trace_id=self._trace_id,
+                client_wire_version=self._client_wire_version,
                 timezone=LEDGER_TIMEZONE,
             ),
             run=self._run,
         )
 
-    def resolve(self, *, tool: str, model_args: dict[str, Any]) -> ResolveOutcome:
+    def resolve(
+        self,
+        *,
+        tool: str,
+        model_args: dict[str, Any],
+        idempotency_key: str | None = None,
+        skip_local_dedup: bool = False,
+    ) -> ResolveOutcome:
         dispatcher = self._dispatcher()
         if dispatcher is None:
             return ResolveFailedSafe(reason="policy_denied")
-        return dispatcher.resolve(tool=tool, model_args=model_args)
+        return dispatcher.resolve(
+            tool=tool,
+            model_args=model_args,
+            idempotency_key=idempotency_key,
+            skip_local_dedup=skip_local_dedup,
+        )
 
     def commit(
         self,
@@ -520,13 +550,49 @@ def recover_at_startup(
                 "recoverable operations are left untouched for the next scan",
                 type(exc).__name__,
             )
-            return []
+            # The control plane being down says nothing about a device report
+            # that never arrived, so the device sweep still runs: its timeout
+            # judgement needs no external read at all.
+            return _sweep_timed_out_device_actions_logged(sessions, now)
         except Exception:
             session.rollback()
             raise
-    for operation_id, plan in results:
-        logger.info("operation recovery: %s -> %s", operation_id, plan.action)
+    results.extend(_sweep_timed_out_device_actions_logged(sessions, now))
+    for operation_id, outcome in results:
+        # A Finance projection logs its plan; a device sweep logs the state it
+        # parked the operation at. Both are "why this row moved".
+        outcome_description = (
+            outcome if isinstance(outcome, str) else outcome.action
+        )
+        logger.info(
+            "operation recovery: %s -> %s", operation_id, outcome_description
+        )
     return results
+
+
+def _sweep_timed_out_device_actions_logged(
+    sessions: Callable[[], Any], now: Callable[[], datetime]
+) -> list[tuple[str, Any]]:
+    """Run the device-report timeout sweep in its own session.
+
+    Separate from the Finance projection's session so a Finance-side failure
+    can never hold a transaction open across the sweep, and the sweep's CAS
+    moves survive independently. Only device-executed tools are touched (the
+    filter is derived from the IR); every Finance operation at
+    `source_in_progress` stays the reconciler's alone.
+    """
+    try:
+        with sessions() as session:
+            settled = sweep_timed_out_device_actions(session, now=now())
+            session.commit()
+    except Exception:
+        logger.exception("device-action timeout sweep failed; retrying next scan")
+        return []
+    for operation_id, target in settled:
+        logger.info(
+            "device action report timed out: %s -> %s", operation_id, target
+        )
+    return settled
 
 
 async def _recover_periodically(
@@ -809,6 +875,7 @@ async def agent_service(
                     trace_id=trace_id,
                     enabled_tools=enabled_tools,
                     manifest_version=manifest_version,
+                    client_wire_version=auth.client_wire_version,
                 )
                 # Always wrapped, on every composition. A recorder that is
                 # disabled records nothing; a conditional wrap would be one more
@@ -829,6 +896,58 @@ async def agent_service(
                     for tool in bridge.visible_tools(device)
                     if tool.alias in model_callable_tools
                 ]
+
+            def sync_ingest(auth: AuthContext, body: dict[str, Any]) -> dict[str, Any]:
+                """Mirror one calendar snapshot batch into the MCP database.
+
+                The device-side data channel (`calendar.ingest_events`): the
+                route has already authenticated the caller and checked the
+                read scope, but the *execution* still crosses the same
+                governed bridge as every other tool call, under a Host Context
+                naming this caller as the device. The bridge's `execute`
+                authorises again -- the stale-manifest and scope gates are
+                proven there -- and the MCP side stamps each mirror row with
+                the signed device identity.
+
+                Runs synchronously on a worker thread: it must not hold any
+                API-side transaction across the MCP call (`CLAUDE.md` §5.2).
+                """
+                device = device_for(auth)
+                if device is None:
+                    raise _no_such_device(auth.device_id)
+                host = HostContext(
+                    agent_id=config.agent_id,
+                    device_id=device.device_id,
+                    user_id=config.user_id,
+                    scopes=tuple(sorted(device.scopes)),
+                    tool=_CALENDAR_INGEST_TOOL,
+                    request_id=str(uuid.uuid4()),
+                    trace_id=new_traceparent(),
+                    idempotency_key=f"calendar-sync-{uuid.uuid4()}",
+                    request_fingerprint=tool_call_fingerprint(
+                        _CALENDAR_INGEST_TOOL, body
+                    ),
+                    allowed_tools_version=device.allowed_tools_version,
+                    timezone="Asia/Shanghai",
+                    # The barrier's protocol version is the header the device
+                    # already sends on every request, read once at the edge and
+                    # signed here. It is never a payload field: the ingest gate
+                    # decides from `client_wire_version` whether this call's own
+                    # arguments may be written, so a device able to state it in
+                    # the payload would be grading its own paper.
+                    client_wire_version=auth.client_wire_version,
+                )
+                execution = asyncio.run(
+                    bridge.execute(
+                        _CALENDAR_INGEST_TOOL,
+                        body,
+                        device,
+                        call_context=BridgeCallContext(
+                            host=host, signing_keys=service_ring
+                        ),
+                    )
+                )
+                return execution.trusted_result
 
             yield ComposedAgentService(
                 deps=AgentApiDeps(
@@ -854,6 +973,12 @@ async def agent_service(
                     build_dispatcher=build_dispatcher,
                     build_authorizer=build_authorizer,
                     capabilities=capabilities,
+                    sync_ingest=sync_ingest,
+                    # The same data keyring seals an issued device action onto
+                    # its operation (review R6); the explicit field keeps the
+                    # seal a visible seam instead of an implicit right of every
+                    # `keyring` call site.
+                    action_keyring=keyring,
                     now=now,
                     read_record=record_reader(control),
                     # A device is enrolled against the manifest this service is

@@ -38,87 +38,102 @@ AR_TAGS = ["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"]
 
 
 def _usd_obs(usgaap: dict, aliases: list[str]) -> tuple[list[dict], Optional[str]]:
+    """Gather equivalent aliases before choosing a period; never stop at an old tag."""
+    import math
+    rows = []
     for tag in aliases:
-        if tag not in usgaap:
-            continue
-        units = usgaap[tag].get("units", {})
-        unit = "USD" if "USD" in units else next(
-            (u for u in units if u.startswith("USD")), None
-        )
-        if unit is None:
-            continue
-        obs = [o for o in units[unit] if o.get("val") is not None]
-        if obs:
-            return obs, tag
-    return [], None
+        for obs in usgaap.get(tag, {}).get("units", {}).get("USD", []):
+            value = obs.get("val")
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                rows.append({**obs, "tag": tag})
+    return rows, None
+
+
+def _days(start: str, end: str) -> int:
+    from datetime import date
+    try:
+        return (date.fromisoformat(end) - date.fromisoformat(start)).days
+    except (ValueError, TypeError):
+        return -1
+
+
+def _deduplicate(rows: list[dict]) -> list[dict]:
+    """Newest filing wins per period; ambiguous same-version values are unavailable.
+
+    Keep an unavailable marker at the latest period rather than falling back
+    to an older, apparently healthy value. Preserve selected source facts.
+    """
+    groups: dict[tuple, list[dict]] = {}
+    for row in rows:
+        groups.setdefault((row.get("start"), row["end"]), []).append(row)
+    result = []
+    for group in groups.values():
+        filed = max(r.get("filed", "") for r in group)
+        latest = [r for r in group if r.get("filed", "") == filed]
+        selected = dict(sorted(latest, key=lambda r: (r.get("tag", ""), r.get("accn", "")))[0])
+        if len({r["val"] for r in latest}) != 1:
+            selected.update(val=None, error="conflicting_facts")
+        result.append(selected)
+    return sorted(result, key=lambda r: (r["end"], r.get("start", "")))
 
 
 def _annual_facts(usgaap: dict, aliases: list[str]) -> tuple[list[dict], Optional[str]]:
-    obs, tag = _usd_obs(usgaap, aliases)
-    annual = [o for o in obs if o.get("form") == "10-K" and o.get("fp") == "FY"]
-    annual.sort(key=lambda o: o.get("end", ""))
-    return annual, tag
+    rows, _ = _usd_obs(usgaap, aliases)
+    annual = _deduplicate([
+        r for r in rows if r.get("form") in {"10-K", "10-K/A"}
+        and r.get("fp") == "FY" and 330 <= _days(r.get("start"), r.get("end")) <= 380
+    ])
+    return annual, annual[-1]["tag"] if annual else None
 
 
 def _instant_facts(usgaap: dict, aliases: list[str]) -> tuple[list[dict], Optional[str]]:
-    obs, tag = _usd_obs(usgaap, aliases)
-    instants = [o for o in obs if o.get("end")]
-    instants.sort(key=lambda o: o.get("end", ""))
-    return instants, tag
+    rows, _ = _usd_obs(usgaap, aliases)
+    instants = _deduplicate([
+        r for r in rows if not r.get("start") and _days(r.get("end"), r.get("end")) == 0
+    ])
+    return instants, instants[-1]["tag"] if instants else None
 
 
 def _prev_by_year(facts: list[dict], end: str) -> Optional[dict]:
-    """The fact closest to one year before ``end`` (for YoY growth)."""
-    from datetime import date as _date
-
-    try:
-        target = _date.fromisoformat(end).replace(year=_date.fromisoformat(end).year - 1)
-    except ValueError:
-        return None
-    prior = [o for o in facts if o["end"] < end]
-    if not prior:
-        return None
-    return min(prior, key=lambda o: abs((_date.fromisoformat(o["end"]) - target).days))
+    prior = [r for r in facts if 350 <= _days(r["end"], end) <= 380]
+    return min(prior, key=lambda r: abs(_days(r["end"], end) - 365)) if prior else None
 
 
 def extract_fundamentals(facts_json: dict) -> dict:
-    """Latest-fiscal-year fundamentals for one company, with method + evidence.
+    """Annual-only baseline with period-aligned ratios and source evidence.
 
-    Returns ``{capex, ocf, revenue, ar, ar_prior, rev_prior, method, evidence}``;
-    any field may be ``None`` when the tag is absent or has no 10-K/FY fact."""
+    Quarterly/TTM is deliberately not inferred from cumulative annual records.
+    """
     usgaap = (facts_json.get("facts") or {}).get("us-gaap", {})
-
-    capex_facts, capex_tag = _annual_facts(usgaap, CAPEX_TAGS)
-    ocf_facts, ocf_tag = _annual_facts(usgaap, OCF_TAGS)
-    rev_facts, rev_tag = _annual_facts(usgaap, REVENUE_TAGS)
-    ar_facts, ar_tag = _instant_facts(usgaap, AR_TAGS)
-
-    def annual(facts: list[dict]) -> Optional[dict]:
-        return facts[-1] if facts else None
-
-    capex = annual(capex_facts)
-    ocf = annual(ocf_facts)
-    rev = annual(rev_facts)
-    ar = ar_facts[-1] if ar_facts else None
-    ar_prior = _prev_by_year(ar_facts, ar["end"]) if ar else None
-    rev_prior = rev_facts[-2] if len(rev_facts) >= 2 else None
-
+    capex_rows, _ = _annual_facts(usgaap, CAPEX_TAGS)
+    ocf_rows, _ = _annual_facts(usgaap, OCF_TAGS)
+    rev_rows, _ = _annual_facts(usgaap, REVENUE_TAGS)
+    ar_rows, _ = _instant_facts(usgaap, AR_TAGS)
+    last = lambda rows: rows[-1] if rows else None
+    capex, ocf, rev = last(capex_rows), last(ocf_rows), last(rev_rows)
+    rev_prior = _prev_by_year(rev_rows, rev["end"]) if rev else None
+    # The balance-sheet points must be the exact endpoints of the annual
+    # revenue comparison, not each series' independent latest observations.
+    ar = next((r for r in ar_rows if rev and r["end"] == rev["end"]), None)
+    ar_prior = next((r for r in ar_rows if rev_prior and r["end"] == rev_prior["end"]), None)
+    selected = dict(capex=capex, ocf=ocf, revenue=rev, ar=ar, ar_prior=ar_prior, rev_prior=rev_prior)
+    invalid = [f"{name}:{r['error']}" for name, r in selected.items() if r and r.get("error")]
+    cashflow_aligned = bool(capex and ocf and
+        (capex["start"], capex["end"]) == (ocf["start"], ocf["end"]))
+    if capex and ocf and not cashflow_aligned:
+        invalid.append("cashflow_period_mismatch")
+    if rev and (not ar or not ar_prior or not rev_prior):
+        invalid.append("receivables_comparison_unavailable")
+    prior_capex = _prev_by_year(capex_rows, capex["end"]) if capex else None
+    def evidence(row):
+        return {k: row.get(k) for k in ("tag", "start", "end", "filed", "accn", "form", "val")} if row else {}
     return {
-        "capex": capex["val"] if capex else None,
-        "ocf": ocf["val"] if ocf else None,
-        "revenue": rev["val"] if rev else None,
-        "ar": ar["val"] if ar else None,
-        "ar_prior": ar_prior["val"] if ar_prior else None,
-        "rev_prior": rev_prior["val"] if rev_prior else None,
-        "method": {
-            "capex": {"tag": capex_tag, "end": capex["end"] if capex else None},
-            "ocf": {"tag": ocf_tag, "end": ocf["end"] if ocf else None},
-            "revenue": {"tag": rev_tag, "end": rev["end"] if rev else None},
-            "ar": {"tag": ar_tag, "end": ar["end"] if ar else None},
-        },
-        "evidence": {
-            "capex_prior": capex_facts[-2]["val"] if len(capex_facts) >= 2 else None,
-        },
+        **{name: r.get("val") if r else None for name, r in selected.items()},
+        "cashflow_aligned": cashflow_aligned,
+        "invalid": invalid,
+        "method": {name: evidence(selected[name]) for name in ("capex", "ocf", "revenue", "ar")},
+        "evidence": {"selected_facts": {name: evidence(r) for name, r in selected.items()},
+                     "capex_prior": prior_capex.get("val") if prior_capex else None},
     }
 
 
@@ -127,7 +142,7 @@ def compute_values(fund: dict) -> dict[str, float]:
     is omitted (not zero) when its inputs are missing or degenerate."""
     out: dict[str, float] = {}
     capex, ocf = fund.get("capex"), fund.get("ocf")
-    if capex is not None and ocf not in (None, 0):
+    if capex is not None and ocf is not None and ocf > 0 and fund.get("cashflow_aligned", True):
         out["company.capex_ocf_pct"] = round(capex / ocf * 100.0, 4)
         out["company.fcf_ocf_pct"] = round((ocf - capex) / ocf * 100.0, 4)
 
@@ -145,7 +160,7 @@ def validate(fund: dict, values: dict[str, float]) -> tuple[str, list[str]]:
 
     ``confidence`` is one of high/medium/low and reflects *extraction* trust,
     not the business signal (the scoring bands already grade that)."""
-    flags: list[str] = []
+    flags: list[str] = list(fund.get("invalid", []))
     capex_tag = (fund.get("method") or {}).get("capex", {}).get("tag")
     if capex_tag == "PaymentsToAcquirePropertyPlantAndEquipment":
         # The legacy tag: some filers switched off it mid-series, so a value
@@ -167,6 +182,6 @@ def validate(fund: dict, values: dict[str, float]) -> tuple[str, list[str]]:
 
     if not flags:
         return "high", []
-    if "non_positive_ocf" in flags or "ar_revenue_divergence" in flags:
+    if fund.get("invalid") or "non_positive_ocf" in flags or "ar_revenue_divergence" in flags:
         return "low", flags
     return "medium", flags

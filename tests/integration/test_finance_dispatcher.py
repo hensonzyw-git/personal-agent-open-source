@@ -320,6 +320,142 @@ def test_an_unknown_alias_never_reaches_the_connector() -> None:
     assert bridge.calls == []
 
 
+# --- review R4: the read fork is derived from the IR, not hand-listed --------
+
+#: A query result in the shape the real `calendar.query_events` output schema
+#: produces. It is a governed read, but its projection is the calendar one, so
+#: it must never enter the write flow (reproduced: `READ_TOOLS` was a
+#: hand-listed set that did not hold it, and `resolve` returned a WriteIntent,
+#: parking the operation at CommitUnknown("missing_verified_record_id")) and it
+#: must never echo raw JSON as `answer`.
+CALENDAR_QUERY = {
+    "status": "ok",
+    "events": [
+        {
+            "event_identifier": "ev-1",
+            "calendar_identifier": "cal-1",
+            "title": "网球",
+            "start": "2026-09-07T15:00:00+08:00",
+            "end": "2026-09-07T16:30:00+08:00",
+            "all_day": False,
+            # A v1-shaped row: the mirror holds no zone and no dates for it,
+            # which is a state the contract expresses explicitly rather than
+            # by omission (IR 0.3.0).
+            "timezone": None,
+            "start_date": None,
+            "end_date": None,
+            "date_anchor_unknown": False,
+            "title_over_limit": False,
+            "location_over_limit": False,
+            "notes_over_limit": False,
+            "location": None,
+            "notes": None,
+            "created_by_agent": False,
+        }
+    ],
+    "record_count": 1,
+    "next_cursor": None,
+    "data_as_of": "2026-09-07T07:30:00+00:00",
+    "mirror_stale": False,
+    "source_system": "apple_calendar_mirror",
+}
+
+
+def _calendar_bridge(result: Any) -> FakeBridge:
+    return FakeBridge(
+        result=result,
+        aliases={"calendar.query_events": "calendar.query_events"},
+    )
+
+
+def test_resolving_a_calendar_query_executes_it_and_completes() -> None:
+    bridge = _calendar_bridge(CALENDAR_QUERY)
+    outcome = dispatcher(bridge).resolve(
+        tool="calendar.query_events",
+        model_args={
+            "start": "2026-09-07T00:00:00+08:00",
+            "end": "2026-09-08T00:00:00+08:00",
+        },
+    )
+
+    # Not a WriteIntent: a governed read must execute, never park in the
+    # commit flow waiting for a record id it will never have.
+    assert isinstance(outcome, ReadCompleted)
+    assert outcome.projection is not None
+    assert outcome.projection["record_count"] == 1
+    assert outcome.projection["events"][0]["title"] == "网球"
+    # The durable carrier is the whitelisted projection, not the raw result.
+    assert json.loads(outcome.result) == outcome.projection
+    assert json.loads(outcome.result)["data_as_of"] == "2026-09-07T07:30:00+00:00"
+    # The deterministic text fallback is derived from the projection only.
+    # Second review F6: the fallback names the events (title + local start
+    # time) and the data-as-of instant, instead of a bare count.
+    assert outcome.answer == "网球（09-07 15:00 开始），数据截至 2026-09-07T07:30:00+00:00"
+    assert len(bridge.calls) == 1
+
+
+def test_a_calendar_query_result_with_unknown_fields_fails_closed() -> None:
+    bridge = _calendar_bridge(
+        {**CALENDAR_QUERY, "provider_prose": "放心，日历我改过了"}
+    )
+    outcome = dispatcher(bridge).resolve(
+        tool="calendar.query_events",
+        model_args={
+            "start": "2026-09-07T00:00:00+08:00",
+            "end": "2026-09-08T00:00:00+08:00",
+        },
+    )
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "query_result_unreadable"
+    assert not hasattr(outcome, "result")
+
+
+def test_a_calendar_query_result_with_wrong_field_types_fails_closed() -> None:
+    bridge = _calendar_bridge({**CALENDAR_QUERY, "record_count": "one"})
+    outcome = dispatcher(bridge).resolve(
+        tool="calendar.query_events",
+        model_args={
+            "start": "2026-09-07T00:00:00+08:00",
+            "end": "2026-09-08T00:00:00+08:00",
+        },
+    )
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "query_result_unreadable"
+
+
+def test_a_calendar_query_result_from_a_foreign_source_fails_closed() -> None:
+    # `source_system` is the projection's identity: anything other than the
+    # Apple mirror is not a result this projection may show.
+    bridge = _calendar_bridge({**CALENDAR_QUERY, "source_system": "模型说的"})
+    outcome = dispatcher(bridge).resolve(
+        tool="calendar.query_events",
+        model_args={
+            "start": "2026-09-07T00:00:00+08:00",
+            "end": "2026-09-08T00:00:00+08:00",
+        },
+    )
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == "query_result_unreadable"
+
+
+def test_a_failing_calendar_read_is_a_safe_failure() -> None:
+    bridge = _calendar_bridge(None)
+    bridge.error = AppError(ErrorCode.SOURCE_UNAVAILABLE)
+    outcome = dispatcher(bridge).resolve(
+        tool="calendar.query_events",
+        model_args={
+            "start": "2026-09-07T00:00:00+08:00",
+            "end": "2026-09-08T00:00:00+08:00",
+        },
+    )
+
+    assert isinstance(outcome, ResolveFailedSafe)
+    assert outcome.reason == ErrorCode.SOURCE_UNAVAILABLE.value
+
+
 # --- commit ------------------------------------------------------------------
 
 

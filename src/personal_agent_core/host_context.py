@@ -35,6 +35,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.manifest import canonical_json
 from personal_agent_core.timeutil import utc_now
+from personal_agent_core.tool_ir import DEFAULT_CLIENT_WIRE_VERSION
 
 
 ALGORITHM: Final[str] = "ES256"
@@ -47,7 +48,9 @@ MAX_TTL: Final[timedelta] = timedelta(minutes=5)
 CLOCK_SKEW: Final[timedelta] = timedelta(seconds=30)
 
 #: Names that only the Host may set. If any appears in model output it is
-#: discarded, never merged, and never allowed to reach the argument hash.
+#: discarded, never merged, and never allowed to reach the argument hash —
+#: unless the target tool's own contract declares that name as one of its
+#: business fields (see `declared_model_fields`).
 HOST_ONLY_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "request_id",
@@ -58,6 +61,13 @@ HOST_ONLY_FIELDS: Final[frozenset[str]] = frozenset(
         "timezone",
         "trace_id",
         "duplicate_override",
+        # The client protocol version the Host read off the request. A device
+        # stating its own version in its *payload* is the shape design 14.2's
+        # ingest barrier must not believe: the version decides whether that
+        # same payload may write at all, so it travels as a signed Host claim
+        # (`HostContext.client_wire_version`) and this entry is what makes a
+        # device-supplied copy get stripped before the argument hash.
+        "client_wire_version",
         "arguments_hash",
         "request_fingerprint",
         "allowed_tools_version",
@@ -84,23 +94,54 @@ class HostContextError(Exception):
     """The signed context could not be produced."""
 
 
-def strip_host_only_fields(arguments: dict[str, Any]) -> dict[str, Any]:
+def declared_model_fields(input_schema: dict[str, Any]) -> frozenset[str]:
+    """The top-level field names a tool's own contract declares.
+
+    A host-only name and a business field can collide. `timezone` is the Host
+    Context's message day-boundary *and* the calendar event's IANA zone
+    (`calendar.create_event`, design §2.2): dropping the second because the
+    first exists would silently write a Tokyo event as Asia/Shanghai.
+
+    The exemption is therefore derived from the target tool's own closed
+    schema rather than a hand-maintained list, and both sides of the binding
+    — the Host that signs and the MCP server that verifies — read it from the
+    same trusted manifest, so no caller can widen it. The names that may
+    actually collide are pinned by a contract test.
+    """
+    return frozenset(input_schema.get("properties", {}))
+
+
+def strip_host_only_fields(
+    arguments: dict[str, Any], *, declared: frozenset[str] = frozenset()
+) -> dict[str, Any]:
     """Remove anything the model is not allowed to decide.
 
     This is the Agent Host's pre-signing cleanup. The Finance MCP independently
     rejects any Host-only key that reaches its raw request boundary.
+
+    `declared` carries the target tool's own top-level field names; a name in
+    both `HOST_ONLY_FIELDS` and `declared` is that tool's business field and
+    survives.
     """
     return {
         key: value
         for key, value in arguments.items()
-        if key not in HOST_ONLY_FIELDS
+        if key not in HOST_ONLY_FIELDS or key in declared
     }
 
 
-def arguments_hash(arguments: dict[str, Any]) -> str:
-    """Canonical hash over the model-visible arguments only."""
+def arguments_hash(
+    arguments: dict[str, Any], *, declared: frozenset[str] = frozenset()
+) -> str:
+    """Canonical hash over the model-visible arguments only.
+
+    A declared field is model-visible, so it is covered by the hash: a
+    tampered event timezone must not verify against an honest signature.
+    """
     return hashlib.sha256(
-        canonical_json(strip_host_only_fields(arguments)).encode("utf-8")
+        canonical_json(strip_host_only_fields(arguments, declared=declared)).encode(
+            "utf-8"
+        )
     ).hexdigest()
 
 
@@ -125,8 +166,20 @@ class HostContext:
     #: model-facing channel, and `duplicate_override` is in `HOST_ONLY_FIELDS`
     #: precisely so a model-emitted copy is stripped before the hash is taken.
     duplicate_override: str | None = None
+    #: The client protocol version this call is being made on behalf of, read
+    #: from the request's `X-Client-Wire-Version` header (design §2.5). It is a
+    #: claim for the same reason `duplicate_override` is one, and for one
+    #: additional one: the value decides whether the *arguments* of this very
+    #: call may be written at all (design 14.2's ingest barrier), so a caller
+    #: able to state its own version in the payload would be grading its own
+    #: paper. The default is the version every client that predates the header
+    #: implements, which is also the version the barrier refuses first -- the
+    #: unset direction fails closed.
+    client_wire_version: int = DEFAULT_CLIENT_WIRE_VERSION
 
-    def claims(self, arguments: dict[str, Any]) -> dict[str, Any]:
+    def claims(
+        self, arguments: dict[str, Any], *, declared: frozenset[str] = frozenset()
+    ) -> dict[str, Any]:
         claims = {
             "agent_id": self.agent_id,
             "device_id": self.device_id,
@@ -137,9 +190,14 @@ class HostContext:
             "trace_id": self.trace_id,
             "idempotency_key": self.idempotency_key,
             "request_fingerprint": self.request_fingerprint,
-            "arguments_hash": arguments_hash(arguments),
+            "arguments_hash": arguments_hash(arguments, declared=declared),
             "allowed_tools_version": self.allowed_tools_version,
             "timezone": self.timezone,
+            # Always present, unlike `duplicate_override` below: a version is
+            # not something a call can be without, so "absent" would be a third
+            # state meaning either "version 1" or "the Host forgot to say", and
+            # the two must not be the same shape on the wire.
+            "client_wire_version": self.client_wire_version,
         }
         # Emitted only when there is one, so a plain call's token carries no
         # override claim at all and cannot be confused with one that does.
@@ -213,8 +271,13 @@ def sign_host_context(
     *,
     now: datetime | None = None,
     ttl: timedelta = DEFAULT_TTL,
+    declared: frozenset[str] = frozenset(),
 ) -> str:
-    """Mint the per-call internal token."""
+    """Mint the per-call internal token.
+
+    `declared` must be the target tool's own declared field names, derived
+    from the same contract the verifier will use.
+    """
     if ttl > MAX_TTL:
         raise HostContextError(f"ttl {ttl} exceeds the {MAX_TTL} maximum")
     issued_at = now or utc_now()
@@ -226,7 +289,7 @@ def sign_host_context(
         "nbf": int(issued_at.timestamp()),
         "exp": int((issued_at + ttl).timestamp()),
         "jti": context.request_id,
-        **context.claims(arguments),
+        **context.claims(arguments, declared=declared),
     }
     return jwt.encode(
         claims,
@@ -249,6 +312,7 @@ def verify_host_context(
     arguments: dict[str, Any],
     duplicate_override: str | None = None,
     now: datetime | None = None,
+    declared: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Check the token against what actually arrived.
 
@@ -308,6 +372,16 @@ def verify_host_context(
         if claim not in claims:
             raise mismatch(f"missing bound claim {claim}")
 
+    # Deliberately not a bound claim: nothing arrives at this boundary that a
+    # verifier could compare it against, because the version comes from a
+    # header only the Agent API receives. The signature is the whole guarantee
+    # -- but a claim of the wrong *type* is not a version at all, and a string
+    # would later compare against an integer in a way that is easy to get
+    # wrong, so it is refused here rather than at each reader.
+    client_version = claims.get("client_wire_version", DEFAULT_CLIENT_WIRE_VERSION)
+    if not isinstance(client_version, int) or isinstance(client_version, bool):
+        raise mismatch("client_wire_version is not an integer")
+
     # Compare against what was actually received, not against the token's own
     # copy of it.
     observed = {
@@ -317,7 +391,7 @@ def verify_host_context(
         "user_id": user_id,
         "trace_id": trace_id,
         "timezone": timezone,
-        "arguments_hash": arguments_hash(arguments),
+        "arguments_hash": arguments_hash(arguments, declared=declared),
     }
     for field, value in observed.items():
         if claims[field] != value:

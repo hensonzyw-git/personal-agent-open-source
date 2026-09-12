@@ -865,6 +865,32 @@ def test_finance_required_tool_is_essential_without_a_router_hint(db, keyring):
     assert envelope.estimated_input_tokens <= tight.hard_limit_tokens
 
 
+def test_calendar_create_tool_is_essential_without_a_router_hint(db, keyring):
+    """A constrained calendar-create turn cannot lose its EventKit tool."""
+    calendar = VisibleTool(
+        alias="calendar.create_event",
+        description="在 iPhone 日历创建日程",
+        input_schema={"type": "object", "properties": {}},
+        risk_level="R2",
+        required_scopes=("calendar.event.write",),
+    )
+    envelope = _build(
+        db,
+        keyring,
+        user_text=(
+            "明天上午 10 点，在日常安排创建一个名为“Personal Agent 验收”的 30 分钟日程"
+        ),
+        candidate_tools=["finance.query_expenses"],
+        effective_tools=[*_tools(), calendar],
+    )
+
+    assert envelope.calendar_create_intent_required is True
+    assert envelope.tool_aliases == (
+        "finance.query_expenses",
+        "calendar.create_event",
+    )
+
+
 def test_the_least_relevant_tool_is_dropped_first(db, keyring):
     """The caller's order is relevance order, and the budget must respect it.
 

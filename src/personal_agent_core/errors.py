@@ -35,6 +35,9 @@ class ErrorCode(StrEnum):
     BOOKKEEPING_TOOL_REQUIRED = "BOOKKEEPING_TOOL_REQUIRED"
     #: A Finance read was answered from model text instead of the fact source.
     FINANCE_TOOL_REQUIRED = "FINANCE_TOOL_REQUIRED"
+    #: An explicit calendar-create request was answered with prose and no
+    #: EventKit-backed device action was issued.
+    CALENDAR_TOOL_REQUIRED = "CALENDAR_TOOL_REQUIRED"
 
     # Finance semantics
     CLARIFICATION_REQUIRED = "CLARIFICATION_REQUIRED"
@@ -62,6 +65,14 @@ class ErrorCode(StrEnum):
     BATCH_ATOMICITY_UNAVAILABLE = "BATCH_ATOMICITY_UNAVAILABLE"
     BATCH_COMMIT_UNKNOWN = "BATCH_COMMIT_UNKNOWN"
 
+    # Calendar device-executed actions. The iPhone EventKit is the fact source:
+    # a denial or an execution failure it *reports* is zero-write evidence, at
+    # the same trust level as Finance reporting its own refusal. The timeout is
+    # deliberately not here as a zero-write claim — a report that never arrived
+    # means the write may exist, which is `needs_manual_review`, not a code.
+    DEVICE_ACTION_DENIED = "DEVICE_ACTION_DENIED"
+    DEVICE_EXECUTION_FAILED = "DEVICE_EXECUTION_FAILED"
+
     # Timeline and context (`CAP-001`). The later cross-cutting codes
     # (`MEMORY_POLICY_REJECTED`, `MEDIA_NOT_READY`, `UNSUPPORTED_MODALITY`,
     # `INVALID_EVENT_CURSOR`) arrive with the CAP that serves their route; a
@@ -76,6 +87,7 @@ class ErrorCode(StrEnum):
     CONTEXT_BUDGET_EXCEEDED = "CONTEXT_BUDGET_EXCEEDED"
     CONTEXT_UNAVAILABLE = "CONTEXT_UNAVAILABLE"
     PENDING_OPERATION_NOT_CANCELLABLE = "PENDING_OPERATION_NOT_CANCELLABLE"
+    CALENDAR_SYNC_RESET_REQUIRED = "CALENDAR_SYNC_RESET_REQUIRED"
 
     # Media (`#18`). `MEDIA_NOT_READY` is the name the comment above reserved
     # for this CAP; the other three are the distinctions §5.2's state machine
@@ -168,6 +180,9 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.FINANCE_TOOL_REQUIRED: (
         "这是账务查询，但未调用 Finance 工具，未返回账本结果"
     ),
+    ErrorCode.CALENDAR_TOOL_REQUIRED: (
+        "这是创建日程请求，但未调用日历工具，没有创建任何日程"
+    ),
     ErrorCode.CLARIFICATION_REQUIRED: "信息不完整，需要先确认后才能记账",
     ErrorCode.CLARIFICATION_REPEATED: (
         "同一项信息已回答但仍无法完成，未写入任何记录"
@@ -190,6 +205,8 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.SOURCE_COMMITTED_MISMATCH: "写入后回读的字段与预期不一致",
     ErrorCode.BATCH_ATOMICITY_UNAVAILABLE: "多笔写入尚未启用，一笔也没有记录",
     ErrorCode.BATCH_COMMIT_UNKNOWN: "多笔写入结果未知，正在按批次键核验",
+    ErrorCode.DEVICE_ACTION_DENIED: "设备上的日历没有授权这次写入",
+    ErrorCode.DEVICE_EXECUTION_FAILED: "设备写入日历失败，没有产生日程",
     ErrorCode.TIMELINE_MISMATCH: "该会话标识不属于当前对话记录",
     ErrorCode.OPERATION_NOT_ANCHORED: "该请求键还没有对应的操作记录，请继续等待",
     ErrorCode.INVALID_CURSOR: "翻页游标无效或已过期",
@@ -206,6 +223,7 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.PENDING_OPERATION_NOT_CANCELLABLE: (
         "当前待办可能已提交，不能放弃后另开话题"
     ),
+    ErrorCode.CALENDAR_SYNC_RESET_REQUIRED: "日历镜像已重建，请重新同步当前日历",
     ErrorCode.INTERNAL_ERROR: "服务内部错误",
 }
 

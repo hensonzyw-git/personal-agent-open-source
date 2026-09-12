@@ -26,8 +26,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from personal_agent_core.errors import AppError, ErrorCode
-from personal_agent_core.host_context import ServiceKeyRing, verify_host_context
+from personal_agent_core.host_context import (
+    ServiceKeyRing,
+    verify_host_context,
+)
 from personal_agent_core.manifest import load_manifest
+from personal_agent_core.tool_ir import DEFAULT_CLIENT_WIRE_VERSION
 
 
 AUTHORIZATION_HEADER = "authorization"
@@ -64,6 +68,13 @@ class VerifiedCall:
     #: The duplicate check this call is authorised to release, if any. It comes
     #: from the verified Host Context, never from the arguments.
     duplicate_override: str | None = None
+    #: The client protocol version the Host read off the request
+    #: (`X-Client-Wire-Version`, design §2.5), carried through for the handlers
+    #: whose behaviour depends on it -- the calendar ingest barrier refuses a
+    #: client below the channel's floor. A token minted before the claim
+    #: existed reads as version 1, which is the version the barrier refuses
+    #: first, so the default is the fail-closed one.
+    client_wire_version: int = DEFAULT_CLIENT_WIRE_VERSION
 
 
 class Authorizer:
@@ -115,6 +126,7 @@ class Authorizer:
         arguments: dict[str, Any],
         headers: dict[str, str],
         required_scopes: tuple[str, ...],
+        declared: frozenset[str] = frozenset(),
         now=None,
     ) -> VerifiedCall:
         """Verify one call, or raise before anything downstream runs.
@@ -122,6 +134,10 @@ class Authorizer:
         `headers` are lower-cased. `arguments` are the model-visible arguments
         exactly as received; the hash is recomputed from them and any Host-only
         field a model tried to smuggle in is stripped inside `verify_host_context`.
+
+        `declared` is the target contract's own top-level field names, so a
+        host-only name the contract declares (the calendar event's `timezone`)
+        is hashed rather than stripped on both sides of the binding.
         """
         token = self._bearer(headers)
         idempotency_key = self._required_header(headers, IDEMPOTENCY_HEADER)
@@ -146,6 +162,7 @@ class Authorizer:
             arguments=arguments,
             duplicate_override=duplicate_override,
             now=now,
+            declared=declared,
         )
 
         granted = frozenset(claims.get("scopes") or [])
@@ -178,4 +195,9 @@ class Authorizer:
             scopes=tuple(sorted(granted)),
             allowed_tools_version=str(claims["allowed_tools_version"]),
             duplicate_override=duplicate_override,
+            # `verify_host_context` has already refused a claim of the wrong
+            # type, so this reads without re-checking shape.
+            client_wire_version=claims.get(
+                "client_wire_version", DEFAULT_CLIENT_WIRE_VERSION
+            ),
         )

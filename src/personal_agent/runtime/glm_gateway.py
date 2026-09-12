@@ -37,6 +37,7 @@ from personal_agent.runtime.model_gateway import (
     ProposedClarification,
     ProposedFailure,
     ProposedToolCall,
+    ProposedToolCalls,
 )
 from personal_agent.runtime.model_input import (
     InputPart,
@@ -266,6 +267,7 @@ def _recorded_context(envelope: ContextEnvelope) -> dict[str, Any]:
         "compaction_requested": envelope.compaction_requested,
         "source_fingerprint": envelope.source_fingerprint,
         "finance_intent_required": envelope.finance_intent_required,
+        "calendar_create_intent_required": envelope.calendar_create_intent_required,
         "finance_required_tool": envelope.finance_required_tool,
         "finance_clarification_required": envelope.finance_clarification_required,
         "finance_date_default_eligible": envelope.finance_date_default_eligible,
@@ -652,93 +654,32 @@ def _parse_adk_proposal(
             text_parts.append(text)
 
     if calls:
-        if len(calls) != 1:
+        suppressed_untrusted_text = bool(text_parts)
+        proposals = [
+            _propose_call(
+                call,
+                mapper=mapper,
+                suppressed_untrusted_text=suppressed_untrusted_text,
+            )
+            for call in calls
+        ]
+        if len(proposals) == 1:
+            return proposals[0]
+        # Several calls to run-and-report tools are one message asking for
+        # several things, and that shape is handed on whole (design 4.2). A
+        # control call among them is different in kind: "ask the user" or "fail"
+        # beside "do this" is two answers to what this turn should do, and no
+        # reading of that is safe. It keeps the refusal a multi-call response
+        # always got, and the refusal stays here rather than moving downstream
+        # because there is nothing to decide -- only something to reject.
+        if not all(isinstance(proposal, ProposedToolCall) for proposal in proposals):
             raise _invalid_model_response(
-                "model proposed multiple tool calls",
+                "model mixed a control call into several tool calls",
                 reason=ModelFailureReason.RESPONSE_AMBIGUOUS,
                 response_shape="multiple_tool_calls",
             )
-        suppressed_untrusted_text = bool(text_parts)
-        call = calls[0]
-        name = getattr(call, "name", None)
-        if not isinstance(name, str) or not name:
-            raise _invalid_model_response(
-                "tool call had no name",
-                reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
-                response_shape="missing_tool_name",
-            )
-        arguments = _parse_arguments(getattr(call, "args", None))
-        # The provider saw a sanitized name; dispatch downstream happens on
-        # the business alias. An unmapped name passes through unchanged, and
-        # the branches below (or the policy allowlist) reject it as unknown.
-        name = mapper.to_business(name) if mapper is not None else name
-        if name == _ASK_CLARIFICATION:
-            if set(arguments) != {"question", "reason"}:
-                raise _invalid_model_response(
-                    "clarification had unexpected arguments",
-                    reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
-                    response_shape="clarification_arguments",
-                )
-            question = arguments.get("question")
-            if not isinstance(question, str) or not question.strip():
-                raise _invalid_model_response(
-                    "clarification had no question",
-                    reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
-                    response_shape="clarification_question",
-                )
-            if len(question) > MAX_CLARIFICATION_QUESTION_CHARS:
-                raise _invalid_model_response(
-                    "clarification question exceeded its schema limit",
-                    reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
-                    response_shape="clarification_question",
-                )
-            reason = arguments.get("reason")
-            if reason not in {"date", "other"}:
-                raise _invalid_model_response(
-                    "clarification had an invalid reason",
-                    reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
-                    response_shape="clarification_reason",
-                )
-            return ProposedClarification(
-                question=question.strip(),
-                suppressed_untrusted_text=suppressed_untrusted_text,
-                reason=reason,
-            )
-        if name == _FAIL_BATCH:
-            if arguments:
-                raise _invalid_model_response(
-                    "batch failure tool had unexpected arguments",
-                    reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
-                    response_shape="batch_failure_arguments",
-                )
-            return ProposedFailure(
-                reason=ErrorCode.BATCH_ATOMICITY_UNAVAILABLE.value,
-                suppressed_untrusted_text=suppressed_untrusted_text,
-            )
-        if name == _FAIL_SAFELY:
-            if set(arguments) != {"reason"}:
-                raise _invalid_model_response(
-                    "fail-safe tool had unexpected arguments",
-                    reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
-                    response_shape="fail_safe_arguments",
-                )
-            reason = arguments.get("reason")
-            if reason not in _MODEL_FAILURE_REASONS:
-                raise _invalid_model_response(
-                    "fail-safe tool had an unsupported reason",
-                    reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
-                    response_shape="fail_safe_reason",
-                )
-            return ProposedFailure(
-                reason=reason,
-                suppressed_untrusted_text=suppressed_untrusted_text,
-            )
-        return ProposedToolCall(
-            tool=name,
-            arguments=arguments,
-            # This is an explicit protocol disposition, not a best-effort
-            # repair: the adjacent text is not incorporated into the call,
-            # answer, audit evidence or any persisted user-facing result.
+        return ProposedToolCalls(
+            calls=tuple(proposals),
             suppressed_untrusted_text=suppressed_untrusted_text,
         )
 
@@ -750,6 +691,102 @@ def _parse_adk_proposal(
             response_shape="blank_text",
         )
     return ProposedAnswer(text=answer)
+
+
+def _propose_call(
+    call: Any,
+    *,
+    mapper: Any,
+    suppressed_untrusted_text: bool,
+) -> ProposedToolCall | ProposedClarification | ProposedFailure:
+    """Map one proposed call onto the proposal it actually is.
+
+    A faithful mapping, not a corrective one: an unknown tool is handed on as a
+    `ProposedToolCall` for policy to reject, because deciding what may run is
+    policy's job and a second place that decides it would be a second place that
+    can drift.
+    """
+    name = getattr(call, "name", None)
+    if not isinstance(name, str) or not name:
+        raise _invalid_model_response(
+            "tool call had no name",
+            reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+            response_shape="missing_tool_name",
+        )
+    arguments = _parse_arguments(getattr(call, "args", None))
+    # The provider saw a sanitized name; dispatch downstream happens on
+    # the business alias. An unmapped name passes through unchanged, and
+    # the branches below (or the policy allowlist) reject it as unknown.
+    name = mapper.to_business(name) if mapper is not None else name
+    if name == _ASK_CLARIFICATION:
+        if set(arguments) != {"question", "reason"}:
+            raise _invalid_model_response(
+                "clarification had unexpected arguments",
+                reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                response_shape="clarification_arguments",
+            )
+        question = arguments.get("question")
+        if not isinstance(question, str) or not question.strip():
+            raise _invalid_model_response(
+                "clarification had no question",
+                reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                response_shape="clarification_question",
+            )
+        if len(question) > MAX_CLARIFICATION_QUESTION_CHARS:
+            raise _invalid_model_response(
+                "clarification question exceeded its schema limit",
+                reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                response_shape="clarification_question",
+            )
+        reason = arguments.get("reason")
+        if reason not in {"date", "other"}:
+            raise _invalid_model_response(
+                "clarification had an invalid reason",
+                reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                response_shape="clarification_reason",
+            )
+        return ProposedClarification(
+            question=question.strip(),
+            suppressed_untrusted_text=suppressed_untrusted_text,
+            reason=reason,
+        )
+    if name == _FAIL_BATCH:
+        if arguments:
+            raise _invalid_model_response(
+                "batch failure tool had unexpected arguments",
+                reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                response_shape="batch_failure_arguments",
+            )
+        return ProposedFailure(
+            reason=ErrorCode.BATCH_ATOMICITY_UNAVAILABLE.value,
+            suppressed_untrusted_text=suppressed_untrusted_text,
+        )
+    if name == _FAIL_SAFELY:
+        if set(arguments) != {"reason"}:
+            raise _invalid_model_response(
+                "fail-safe tool had unexpected arguments",
+                reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                response_shape="fail_safe_arguments",
+            )
+        reason = arguments.get("reason")
+        if reason not in _MODEL_FAILURE_REASONS:
+            raise _invalid_model_response(
+                "fail-safe tool had an unsupported reason",
+                reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+                response_shape="fail_safe_reason",
+            )
+        return ProposedFailure(
+            reason=reason,
+            suppressed_untrusted_text=suppressed_untrusted_text,
+        )
+    return ProposedToolCall(
+        tool=name,
+        arguments=arguments,
+        # This is an explicit protocol disposition, not a best-effort
+        # repair: the adjacent text is not incorporated into the call,
+        # answer, audit evidence or any persisted user-facing result.
+            suppressed_untrusted_text=suppressed_untrusted_text,
+        )
 
 
 def _unsupported_part_fields(part: Any) -> set[str]:
@@ -1137,13 +1174,23 @@ def _prompt_tokens(response: Any) -> int | None:
 def _required_function_names(
     envelope: ContextEnvelope, declarations: list[dict[str, Any]]
 ) -> list[str] | None:
-    """Return the trusted function-choice subset for a Finance turn.
+    """Return the trusted function-choice subset for a governed turn.
 
     The envelope is the only trusted source for the Finance intent class; the
     model cannot loosen its own tool choice. We preserve declaration order so
     the selected names are a measured subset of the exact provider request.
     """
 
+    if envelope.calendar_create_intent_required:
+        allowed = {_ASK_CLARIFICATION, _FAIL_SAFELY, "calendar.create_event"}
+        selected = [
+            item["function"]["name"]
+            for item in declarations
+            if item["function"]["name"] in allowed
+        ]
+        if not selected:  # pragma: no cover - internal declarations are mandatory
+            raise ModelGatewayError("Calendar create had no allowed declarations")
+        return selected
     if not envelope.finance_intent_required:
         return None
     allowed = {_ASK_CLARIFICATION, _FAIL_SAFELY}

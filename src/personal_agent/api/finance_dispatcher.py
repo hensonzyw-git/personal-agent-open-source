@@ -49,7 +49,20 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from personal_agent.api.calendar_query_projection import (
+    CalendarQueryProjectionError,
+    canonical_calendar_projection_json,
+    decode_calendar_query_projection,
+    summarise_calendar_projection,
+)
+from personal_agent.api.calendar_issue import (
+    CLIENT_UPGRADE_QUESTION,
+    action_fields,
+    issuance_policy,
+    routing_question,
+)
 from personal_agent.api.control_client import (
+    CalendarResolved,
     ControlPlaneError,
     FinanceControlClient,
 )
@@ -72,6 +85,8 @@ from personal_agent.api.orchestrator import (
     CommitFailedSafe,
     CommitOutcome,
     CommitUnknown,
+    DeviceActionIssued,
+    NeedsClarification,
     ReadCompleted,
     Resolved,
     ResolveFailedSafe,
@@ -92,21 +107,33 @@ from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.finance_tools import FINANCE_READ_TOOLS
 from personal_agent_core.host_context import HostContext, ServiceKeyRing
 from personal_agent_core.manifest import canonical_json
-from personal_agent_core.tool_ir import TOOL_CONTRACTS
+from personal_agent_core.tool_ir import (
+    DEFAULT_CLIENT_WIRE_VERSION,
+    TOOL_CONTRACTS,
+    ToolContract,
+    client_supports_wire_version,
+)
 
 
 _log = logging.getLogger(__name__)
 
 
 #: Tools with no side effect, which `resolve` may therefore execute outright.
+#: Derived from the IR's effect field, never hand-listed (review R4): the
+#: hand-listed set held exactly the Finance reads and `meta.capabilities`, so
+#: `calendar.query_events` — a governed read in the IR — fell through to the
+#: write branch and parked in the commit flow awaiting a record id that a read
+#: will never produce.
 READ_TOOLS: frozenset[str] = frozenset(
-    {*FINANCE_READ_TOOLS, "meta.capabilities"}
+    contract.name
+    for contract in TOOL_CONTRACTS
+    if contract.effect == "read" and contract.enabled
 )
 
-#: The governed read tools whose `trusted_result` is a structured query
+#: The governed read tools whose `trusted_result` is the *expense* query
 #: projection rather than a prose answer. Derived from the IR so a second
-#: governed read tool cannot silently bypass the strict decoder and have its
-#: canonical JSON echoed as `answer` -- the exact bug this change exists to fix.
+#: governed read tool cannot silently bypass a strict decoder and have its
+#: canonical JSON echoed as `answer` -- the exact bug this set exists to fix.
 #: Narrowed to the tools whose output contract is the expense query projection
 #: (identified by its `metric` const): `meta.capabilities` is a read but not a
 #: query, and must keep the plain `answer` path.
@@ -118,6 +145,35 @@ _QUERY_RESULT_TOOLS: frozenset[str] = frozenset(
     and contract.output_schema.get("properties", {}).get("metric", {}).get("const")
     == "personal_spend_total_cny"
 )
+
+#: The same idea for the calendar mirror read (review R4): a governed read
+#: whose result is a structured projection — here keyed on the output
+#: contract's `source_system` const, exactly the way the Finance set keys on
+#: `metric`. A read in neither set keeps the plain `answer` path.
+_CALENDAR_QUERY_RESULT_TOOLS: frozenset[str] = frozenset(
+    contract.name
+    for contract in TOOL_CONTRACTS
+    if contract.effect == "read"
+    and contract.enabled
+    and contract.output_schema.get("properties", {}).get("source_system", {}).get(
+        "const"
+    )
+    == "apple_calendar_mirror"
+)
+
+
+#: A tool whose executor is the user's device, derived from the IR. A
+#: device-executed write never crosses the MCP bridge; the dispatcher
+#: authorises it, resolves what it targets, and issues a device action
+#: instead. Derived, never hand-listed: a second device tool ships into the
+#: fork automatically, and flipping `calendar.create_event` back to `mcp`
+#: leaves the fork empty — which the orchestrator's exhaustiveness assertion
+#: then surfaces.
+def _device_contract(remote_name: str) -> ToolContract | None:
+    for contract in TOOL_CONTRACTS:
+        if contract.name == remote_name and contract.executor == "device":
+            return contract
+    return None
 
 
 
@@ -157,6 +213,11 @@ class DispatcherContext:
     agent_id: str
     conversation_trace_id: str
     timezone: str = "Asia/Shanghai"
+    #: The action semantics the client that made this request implements
+    #: (design 2.5.2). Defaults to the oldest contract in existence, so a
+    #: caller that never states a version is treated as a client that cannot
+    #: implement anything new -- which is what an absent header means.
+    client_wire_version: int = DEFAULT_CLIENT_WIRE_VERSION
 
 
 class McpFinanceDispatcher:
@@ -199,12 +260,109 @@ class McpFinanceDispatcher:
             ) from exc
 
     def resolve(
-        self, *, tool: str, model_args: dict[str, Any]
+        self,
+        *,
+        tool: str,
+        model_args: dict[str, Any],
+        idempotency_key: str | None = None,
+        skip_local_dedup: bool = False,
     ) -> ResolveOutcome:
         try:
             remote = self._remote_name(tool)
         except AppError as error:
             return ResolveFailedSafe(reason=_reason(error))
+        contract = _device_contract(remote)
+        if contract is not None:
+            # Device-executed write: authorise exactly like any governed
+            # write (scope, allowlist, write switch, schema — the bridge
+            # refuses before anything can be issued), then resolve what it
+            # targets and stop. No MCP call exists for this tool; the executor
+            # is the phone, reached by the chat response itself. The action id
+            # *is* the operation's idempotency key, so one message can produce
+            # at most one device side effect.
+            if not client_supports_wire_version(
+                client=self._context.client_wire_version,
+                required=contract.wire_version,
+            ):
+                # The issuance gate, and it has to come before `authorize`
+                # (design 2.5.2): a client that does not implement this
+                # action's semantics ignores the fields that say *which*
+                # calendar to use and would fall back to its default writable
+                # one -- so it is not given a degraded action, it is given
+                # none. Nothing is validated, nothing is issued, nothing is
+                # sealed, and the operation is not parked at
+                # `source_in_progress`, which is the state that means "a write
+                # may exist". A clarification is the right ending rather than
+                # `failed_safe`: nothing was written, the model did nothing
+                # wrong, and the user is the only one who can clear it.
+                return NeedsClarification(reason=CLIENT_UPGRADE_QUESTION)
+            try:
+                # The cleaned arguments are the *attested* ones: host-only
+                # fields the model tried to smuggle in are gone, and a field
+                # this contract declares survives. The action is the
+                # authorisation record, so what it carries must be what was
+                # attested, never the model's raw output.
+                _, attested = self._bridge.authorize(
+                    tool, model_args, self._context.device
+                )
+            except AppError as error:
+                # Nothing was issued, so this is provably zero-write.
+                return ResolveFailedSafe(reason=_reason(error))
+            try:
+                # The server, not the model and not the phone, decides which
+                # *calendar* the name meant: this is the one step a device
+                # action needs that has no MCP call behind it. A shape the
+                # service never accepts is refused here, before anything is
+                # issued, and the model can recompute it.
+                request = issuance_policy(remote)(attested)
+            except AppError as error:
+                return ResolveFailedSafe(reason=_reason(error))
+            if idempotency_key is None:
+                return ResolveFailedSafe(
+                    reason="device action requires the operation idempotency key"
+                )
+            try:
+                resolution = self._run(
+                    self._control.resolve_calendar(
+                        device_id=self._context.device.device_id,
+                        title=request.calendar_title,
+                    )
+                )
+            except ControlPlaneError as error:
+                # The directory could not be read, so no action is issued and
+                # none is claimed. Not a clarification: there is no question a
+                # user could answer to make an unreachable service reachable.
+                _log.warning(
+                    "calendar routing unreadable tool=%s trace_id=%s: %s",
+                    tool,
+                    self._context.conversation_trace_id,
+                    error,
+                )
+                return ResolveFailedSafe(reason=ErrorCode.SOURCE_UNAVAILABLE.value)
+            if not isinstance(resolution, CalendarResolved):
+                # The world does not currently allow this write — the name
+                # matches nothing, matches two accounts, or matches only a
+                # calendar that cannot be written to. That is not an invalid
+                # argument: the user asked for something reasonable, and only
+                # they can say which calendar they meant. So it becomes a
+                # question, and no action, no operation seal and no write
+                # results from it.
+                return NeedsClarification(
+                    reason=routing_question(
+                        resolution, title=request.calendar_title
+                    )
+                )
+            return DeviceActionIssued(
+                action_id=idempotency_key,
+                tool=tool,
+                wire_version=contract.wire_version,
+                event_fields=action_fields(
+                    request,
+                    resolution,
+                    attested=attested,
+                    skip_local_dedup=skip_local_dedup,
+                ),
+            )
         if remote not in READ_TOOLS:
             # A write tool has exactly one MCP call and it belongs to `commit`.
             # Returning here means nothing has been sent yet, which is what lets
@@ -235,6 +393,19 @@ class McpFinanceDispatcher:
                 projection=projection,
                 answer=summarise_query_projection(projection),
             )
+        if tool in _CALENDAR_QUERY_RESULT_TOOLS:
+            # Same discipline, calendar shape: the mirror read's result is a
+            # structured projection the calendar decoder whitelists, never a
+            # string the model may restate as its own answer.
+            try:
+                calendar_projection = decode_calendar_query_projection(result)
+            except CalendarQueryProjectionError:
+                return ResolveFailedSafe(reason=QUERY_RESULT_UNREADABLE)
+            return ReadCompleted(
+                result=canonical_calendar_projection_json(calendar_projection),
+                projection=calendar_projection,
+                answer=summarise_calendar_projection(calendar_projection),
+            )
         return ReadCompleted(result=canonical_json(result))
 
     # --- phase 2: commit -----------------------------------------------------
@@ -246,6 +417,18 @@ class McpFinanceDispatcher:
         idempotency_key: str,
         duplicate_override: str | None,
     ) -> CommitOutcome:
+        if _device_contract(intent.tool) is not None:
+            # The two-phase protocol has no phase 2 for a device tool: the
+            # write was issued in `resolve` and the phone reports back through
+            # its own endpoint. Reaching `commit` means the dispatch fork
+            # failed to intercept, and failing open here would fabricate an
+            # MCP call the contract says does not exist.
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail=(
+                    f"{intent.tool} is device-executed; commit must never run"
+                ),
+            )
         dispatched: list[bool] = []
         try:
             result = self._call(

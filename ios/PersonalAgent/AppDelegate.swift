@@ -12,6 +12,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// Set by `AppModel` once the coordinator exists, so the callbacks iOS
     /// fires during `registerForRemoteNotifications` reach it.
     var pushCoordinator: PushCoordinator?
+    /// The foreground mirror-sync trigger (review R5), set by `AppModel`
+    /// once the engine exists. iOS fires `didBecomeActive` on every return
+    /// to the foreground, which SwiftUI's lifecycle does not observe.
+    var foregroundMirrorSync: (() -> Void)?
 
     func application(
         _ application: UIApplication,
@@ -29,6 +33,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     func applicationDidBecomeActive(_ application: UIApplication) {
         Self.clearBadge()
+        // A foreground return is when the calendar may have changed under us
+        // (another app's edits, a rebooted device) and when a stale mirror is
+        // most likely to be summarised. The engine's own staleness gate and
+        // in-flight coalescing make repeated calls harmless.
+        foregroundMirrorSync?()
     }
 
     /// Clear the icon badge through every path iOS can derive it from.

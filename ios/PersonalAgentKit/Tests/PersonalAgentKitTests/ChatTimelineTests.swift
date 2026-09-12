@@ -36,10 +36,23 @@ struct Call: Sendable {
     /// Scalar JSON fields are split by type so the recorded call stays Sendable.
     let body: [String: String]
     let booleans: [String: Bool]
+    /// The full request JSON as encoded, for the cross-language contract
+    /// tests that must assert a *field's presence* the scalars do not carry
+    /// (e.g. `snapshot_as_of`, whose absence the real route rejects).
+    /// Re-parsed on access from the retained bytes so the recorded call
+    /// stays Sendable.
+    let rawBody: Data
 
     var idempotencyKey: String? { headers["Idempotency-Key"] }
     func string(_ field: String) -> String? { body[field] }
     func bool(_ field: String) -> Bool? { booleans[field] }
+
+    /// The parsed JSON object, or an empty dict when the body was not JSON.
+    /// Access is confined to tests; a corrupt body reads as empty rather
+    /// than trapping, because the assertion that follows is the point.
+    var rawJSONBody: [String: Any] {
+        (try? JSONSerialization.jsonObject(with: rawBody)) as? [String: Any] ?? [:]
+    }
 }
 
 struct Reply: Sendable {
@@ -174,7 +187,8 @@ final class ChatStub: URLProtocol {
             path: request.url?.path ?? "",
             query: query,
             headers: request.allHTTPHeaderFields ?? [:],
-            decodedBody: Self.decodeBody(request)
+            decodedBody: Self.decodeBody(request),
+            rawBody: Self.readBody(request) ?? Data()
         )
         guard let port = request.url?.port,
               let service = ServiceRegistry.shared.service(port: port)
@@ -230,9 +244,7 @@ final class ChatStub: URLProtocol {
     /// `URLProtocol` usually hands the body over as a stream rather than as
     /// `httpBody`, and reading only the latter would silently assert against an
     /// empty request. Both are checked.
-    private static func decodeBody(
-        _ request: URLRequest
-    ) -> (strings: [String: String], booleans: [String: Bool]) {
+    private static func readBody(_ request: URLRequest) -> Data? {
         var data = request.httpBody
         if data == nil, let stream = request.httpBodyStream {
             stream.open()
@@ -247,7 +259,13 @@ final class ChatStub: URLProtocol {
             }
             data = collected
         }
-        guard let data, !data.isEmpty,
+        return data
+    }
+
+    private static func decodeBody(
+        _ request: URLRequest
+    ) -> (strings: [String: String], booleans: [String: Bool]) {
+        guard let data = readBody(request), !data.isEmpty,
               let object = try? JSONSerialization.jsonObject(with: data)
                 as? [String: Any]
         else { return ([:], [:]) }
@@ -264,7 +282,8 @@ private extension Call {
         path: String,
         query: [String: String],
         headers: [String: String],
-        decodedBody: (strings: [String: String], booleans: [String: Bool])
+        decodedBody: (strings: [String: String], booleans: [String: Bool]),
+        rawBody: Data
     ) {
         self.init(
             method: method,
@@ -272,7 +291,8 @@ private extension Call {
             query: query,
             headers: headers,
             body: decodedBody.strings,
-            booleans: decodedBody.booleans
+            booleans: decodedBody.booleans,
+            rawBody: rawBody
         )
     }
 }
@@ -316,6 +336,9 @@ func chatReceipt(
     cancelRequested: Bool = false,
     clientDetached: Bool = false,
     tool: Any = NSNull(),
+    // Present and null by default, which is the server's own shape: it always
+    // emits the key, and emits null exactly when no tool was recorded.
+    domain: Any = NSNull(),
     recordID: Any = NSNull(),
     failureReason: Any = NSNull(),
     duplicateCheckID: Any = NSNull(),
@@ -327,6 +350,7 @@ func chatReceipt(
         "cancel_requested": cancelRequested,
         "client_detached": clientDetached,
         "tool": tool,
+        "domain": domain,
         "record_id": recordID,
         "failure_reason": failureReason,
         "duplicate_check_id": duplicateCheckID,
@@ -391,6 +415,7 @@ func makeChatSession(
 func makeChat(
     service: Service,
     store: CredentialStore = InMemoryCredentialStore(),
+    deviceActionExecutor: DeviceActionExecuting? = nil,
     bind: Bool = true,
     pollDelays: [Duration] = Array(repeating: .zero, count: 4),
     sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in }
@@ -398,7 +423,8 @@ func makeChat(
     let session = try makeChatSession(service: service, store: store)
     _ = try await session.enroll(code: "code", displayName: "iPhone")
     let chat = ChatTimeline(
-        backend: session, store: store, pollDelays: pollDelays, sleep: sleep
+        backend: session, store: store, deviceActionExecutor: deviceActionExecutor,
+        pollDelays: pollDelays, sleep: sleep
     )
     if bind { await chat.bind(conversationID: chatTimelineID) }
     return (chat, session, store)
@@ -734,7 +760,9 @@ struct OperationReceiptTests {
         )
         #expect(
             parsed.outcome
-                == .needsManualReview(reason: "SOURCE_COMMIT_UNKNOWN", recordID: "rec-7")
+                == .needsManualReview(
+                    reason: "SOURCE_COMMIT_UNKNOWN", recordID: "rec-7", domain: nil
+                )
         )
         #expect(!parsed.outcome.releasesPendingSlot)
         #expect(!parsed.outcome.provesWrite)
@@ -1492,6 +1520,7 @@ struct ChatSendTests {
                     chatReceipt(
                         "needs_manual_review",
                         tool: "finance.log_expense",
+                        domain: "finance",
                         recordID: "rec-42",
                         failureReason: "RECEIPT_MISMATCH"
                     )
@@ -1505,7 +1534,7 @@ struct ChatSendTests {
         #expect(
             review.outcome
                 == .needsManualReview(
-                    reason: "RECEIPT_MISMATCH", recordID: "rec-42"
+                    reason: "RECEIPT_MISMATCH", recordID: "rec-42", domain: "finance"
                 )
         )
         #expect(try store.read(CredentialKey.pendingChatSend) != nil)
@@ -1853,12 +1882,32 @@ private struct ReceiptVectors {
         let expectedSettled: Bool
         let expectedReleasesPending: Bool
         let expectedCancellation: String
+        /// The domain the *server* wrote into this receipt, read straight off the
+        /// vector's own body. It is a fact the server derived from the tool's IR
+        /// contract, and the client must decode that exact value: the 人工核对
+        /// card's wording is chosen by it.
+        let domain: String?
+        /// What the phone reported, when the case declares it (v8). Present only
+        /// on the calendar-write cases, and `nil` on the one that predates the
+        /// server emitting the field -- which is itself the case that matters:
+        /// history must render without it, as `unstated`.
+        let deviceEvidence: String?
+        /// The action id an override of this receipt must name, or `null` when
+        /// 「仍要创建」 may not be answered at all (v9). The server states it once,
+        /// from `may_override`; the client asserts its own decision against it.
+        let expectedOverrideActionID: String?
     }
 
     let contract: String
     let operationStates: [String]
     let recordEvidenceTools: [String]
     let queryEvidenceTools: [String]
+    let calendarQueryEvidenceTools: [String]
+    let deviceExecutedTools: [String]
+    /// The one device tool whose duplicates the user may override (v9). The
+    /// server's `CALENDAR_DEVICE_TOOL` and the client's `calendarDeviceTool` are
+    /// two names for it, and this holds them equal.
+    let overrideTool: String
     let expenseCategories: [String]
     let cases: [Case]
 
@@ -1897,7 +1946,11 @@ private struct ReceiptVectors {
                 expectedProvesWrite: provesWrite,
                 expectedSettled: settled,
                 expectedReleasesPending: releasesPending,
-                expectedCancellation: cancellation
+                expectedCancellation: cancellation,
+                domain: (chatReceipt as? [String: Any])?["domain"] as? String,
+                deviceEvidence: entry["expected_device_evidence"] as? String,
+                expectedOverrideActionID: entry["expected_override_action_id"]
+                    as? String
             )
         }
         return ReceiptVectors(
@@ -1905,6 +1958,10 @@ private struct ReceiptVectors {
             operationStates: root["operation_states"] as? [String] ?? [],
             recordEvidenceTools: root["record_evidence_tools"] as? [String] ?? [],
             queryEvidenceTools: root["query_evidence_tools"] as? [String] ?? [],
+            calendarQueryEvidenceTools: root["calendar_query_evidence_tools"]
+                as? [String] ?? [],
+            deviceExecutedTools: root["device_executed_tools"] as? [String] ?? [],
+            overrideTool: root["override_tool"] as? String ?? "",
             expenseCategories: root["expense_categories"] as? [String] ?? [],
             cases: cases
         )
@@ -1918,8 +1975,13 @@ private func label(_ outcome: OperationOutcome) -> String {
     case .needsClarification: return "needs_clarification"
     case .needsDuplicateDecision: return "needs_duplicate_decision"
     case .recorded: return "recorded"
+    case .calendarEventWritten: return "calendar_event_written"
     case .answered: return "answered"
-    case .answeredWithQuery: return "answered_with_query"
+    case .answeredWithQuery, .answeredWithCalendarQuery:
+        // One wire name for "a succeeded governed read with a structured card":
+        // which card is the client's own business, and the server states only
+        // that the read produced a projectable result.
+        return "answered_with_query"
     case .failedSafe: return "failed_safe"
     case .needsManualReview: return "needs_manual_review"
     case .cancelledBeforeSubmit: return "cancelled_before_submit"
@@ -1943,7 +2005,7 @@ struct ReceiptContractTests {
     @Test("the vector file is the one this build was written against")
     func contractVersion() throws {
         let vectors = try #require(vectors)
-        #expect(vectors.contract == "chat_receipt_projection_v5")
+        #expect(vectors.contract == "chat_receipt_projection_v9")
         #expect(!vectors.cases.isEmpty)
     }
 
@@ -2059,6 +2121,179 @@ struct ReceiptContractTests {
         #expect(Set(vectors.queryEvidenceTools) == OperationReceipt.queryEvidenceTools)
     }
 
+    @Test("the calendar query-evidence tool set matches the server's")
+    func calendarQueryEvidenceToolsMatch() throws {
+        let vectors = try #require(vectors)
+        #expect(
+            Set(vectors.calendarQueryEvidenceTools)
+                == OperationReceipt.calendarQueryEvidenceTools
+        )
+        // Two sets, and never one tool in both: a result decoded as the wrong
+        // domain's card is the failure this separation exists to prevent.
+        #expect(
+            OperationReceipt.queryEvidenceTools
+                .isDisjoint(with: OperationReceipt.calendarQueryEvidenceTools)
+        )
+    }
+
+    @Test("the device-executed tool set matches the server's")
+    func deviceExecutedToolsMatch() throws {
+        // The server's set is IR-derived; the client's is hard-coded, and it is
+        // what decides whether a success draws the calendar card or the ledger
+        // receipt. The vector holds them equal, so a second device tool cannot
+        // ship a receipt this build renders as a ledger row.
+        let vectors = try #require(vectors)
+        #expect(Set(vectors.deviceExecutedTools) == OperationReceipt.deviceExecutedTools)
+        // A device tool is still an R2 write whose receipt must carry evidence;
+        // the sets overlap by design and neither is a subset of the other's
+        // complement. What they must not do is disagree about `record_id`.
+        #expect(
+            OperationReceipt.deviceExecutedTools
+                .isSubset(of: OperationReceipt.recordEvidenceTools)
+        )
+    }
+
+    @Test("a calendar receipt reports what the phone decided, or says it does not know")
+    func calendarEvidenceIsDecodedAsDeclared() throws {
+        // The three-way distinction the 2026-09-10 review found missing: a
+        // `created` and a `duplicate` are both successes, and a receipt that
+        // predates the field is neither. Reading the third as one of the first
+        // two is how a card ends up offering a button it must not.
+        let vectors = try #require(vectors)
+        var seen = Set<String>()
+        for vectorCase in vectors.cases {
+            guard vectorCase.expectedOutcome == "calendar_event_written" else {
+                continue
+            }
+            let receipt = try JSONDecoder().decode(
+                OperationReceipt.self, from: vectorCase.chatReceipt
+            )
+            let declared = try #require(vectorCase.deviceEvidence)
+            seen.insert(declared)
+            guard
+                case .calendarEventWritten(let eventID, _, let evidence, _) =
+                    receipt.outcome
+            else {
+                Issue.record("\(vectorCase.name): not the calendar card")
+                continue
+            }
+            // The event id is the evidence the write happened, and it is the
+            // same field the ledger receipt would have shown.
+            #expect(eventID == receipt.recordID)
+            #expect(evidence.terminalLabel == CalendarDeviceResult(wire: declared).terminalLabel)
+        }
+        // All three must be covered by the file, or the distinction is asserted
+        // only where it is easy.
+        #expect(seen == ["created", "duplicate", "unstated"])
+    }
+
+    @Test("a calendar receipt never names the ledger")
+    func calendarReceiptCopyNeverSaysLedger() {
+        // The defect, stated as the assertion that would have caught it. The
+        // 2026-09-10 review found a created calendar event rendering
+        // 「账本已存在此记录」 beside a 打开飞书账本 link.
+        for evidence in [CalendarDeviceResult.created, .duplicate, .unstated] {
+            #expect(!evidence.terminalLabel.contains("账本"))
+            #expect(!evidence.terminalLabel.isEmpty)
+        }
+        #expect(
+            Set([CalendarDeviceResult.created, .duplicate, .unstated].map(\.terminalLabel))
+                .count == 3,
+            "two outcomes share a label, so the card would not distinguish them"
+        )
+    }
+
+    @Test("the calendar domain the card forks on is the server's own value")
+    func calendarDomainMatchesTheServer() throws {
+        // `ManualReviewCopy.forDomain` compares against a literal in this
+        // package, and the server derives its domain string from the tool's IR
+        // contract. The vector is the only place the two meet: without this the
+        // client could spell it "cal" and every test would still pass while no
+        // calendar card was ever drawn -- the fork would fail open, silently, to
+        // the ledger copy.
+        let vectors = try #require(vectors)
+        let review = try #require(
+            vectors.cases.first { $0.name == "calendar_manual_review_keeps_record" }
+        )
+        #expect(review.domain == OperationReceipt.calendarDomain)
+        // Every calendar tool must share one domain string, or the fork would
+        // cover the write and miss the read. The query case is the other
+        // calendar tool the vector carries.
+        let query = try #require(
+            vectors.cases.first { $0.name == "calendar_query_list_card" }
+        )
+        #expect(query.domain == review.domain)
+        // The ledger's own case, for the other direction: it must not be the
+        // value this build forks on.
+        let ledger = try #require(
+            vectors.cases.first { $0.name == "manual_review_keeps_record" }
+        )
+        #expect(ledger.domain != OperationReceipt.calendarDomain)
+        #expect(ManualReviewCopy.forDomain(ledger.domain) == .ledger)
+    }
+
+    @Test("the list card renders the rows the server's own summary renders")
+    func calendarCardMatchesTheServersSummary() throws {
+        // The two sides render from the same fields by hand-kept rules (design
+        // §13 step 6), so the vector's `answer` -- which the *server* produced
+        // from those fields -- is the only thing here that can catch a drift.
+        // The summary shows three lines and a total; the card shows all of the
+        // page. Those three must be character-identical.
+        let vectors = try #require(vectors)
+        let entry = try #require(
+            vectors.cases.first { $0.name == "calendar_query_list_card" }
+        )
+        let receipt = try JSONDecoder().decode(
+            OperationReceipt.self, from: entry.chatReceipt
+        )
+        guard case .answeredWithCalendarQuery(let result, let tool) = receipt.outcome
+        else {
+            Issue.record("expected the calendar list card, got \(receipt.outcome)")
+            return
+        }
+        #expect(tool == "calendar.query_events")
+        #expect(result.recordCount == 4)
+        #expect(result.nextCursor == nil)
+        #expect(!result.mirrorStale)
+        #expect(result.sourceSystem == "apple_calendar_mirror")
+        let answer = try #require(receipt.answer)
+        #expect(answer.hasSuffix("数据截至 \(result.dataAsOf)"))
+        for row in result.events.prefix(3) {
+            #expect(
+                answer.contains(row.line),
+                "the server summarised “\(row.line)” differently: \(answer)"
+            )
+        }
+        // The fourth row is past the summary's three lines and is on the card
+        // anyway -- that is what the card is for. Its calendar has no name the
+        // device knows, and the row shows none rather than the raw identifier.
+        #expect(result.events.count == 4)
+        #expect(result.events[3].calendarTitle == nil)
+        #expect(result.events[3].displayTitle == "体检")
+        // `created_by_agent` reaches the row, which is what draws 已创建.
+        #expect(result.events[0].createdByAgent)
+        #expect(!result.events[1].createdByAgent)
+        #expect(result.events[1].calendarTitle == "出游计划")
+    }
+
+    @Test("a calendar query page with a cursor says there is more")
+    func calendarPageWithACursor() throws {
+        // `next_cursor` is what drives 「看更多」, and the case that carries one
+        // is the only place the server's own page contract is exercised.
+        let page = """
+        {"status":"ok","events":[],"record_count":9,"next_cursor":"cur-2",\
+        "data_as_of":"2026-10-06T07:30:00+08:00","mirror_stale":false,\
+        "source_system":"apple_calendar_mirror"}
+        """
+        let result = try JSONDecoder().decode(
+            CalendarQueryResult.self, from: Data(page.utf8)
+        )
+        #expect(result.nextCursor == "cur-2")
+        // A page carries at most what the total says exists, which is what the
+        // 「另有 N 条未列出」 line counts against.
+        #expect(result.recordCount == 9)
+    }
+
     @Test("every server chatReceipt projects to the outcome both sides agreed on")
     func casesAgree() throws {
         let vectors = try #require(vectors)
@@ -2087,7 +2322,36 @@ struct ReceiptContractTests {
                 label(parsed.cancellation) == entry.expectedCancellation,
                 "\(entry.name): cancellation disagreed with the server contract"
             )
+            // The domain the server derived from the tool's IR contract is a
+            // fact about the operation, and this client's 人工核对 card is chosen
+            // by it. A receipt that decoded a different value would send the
+            // person to the wrong place to check a write.
+            #expect(
+                parsed.domain == entry.domain,
+                "\(entry.name): the decoded domain disagreed with the server's"
+            )
+            // Whether 「仍要创建」 belongs on this receipt, and to which action.
+            // The server answers the same question in `may_override`, and the
+            // Python pin holds `may_override` against this same field -- so a
+            // rule changed on one side fails on both, instead of shipping a
+            // button that writes a second copy of an event the user has.
+            let decision = parsed.outcome.overrideDecision
+            #expect(
+                decision.actionID == entry.expectedOverrideActionID,
+                "\(entry.name): override decision disagreed with the contract"
+            )
         }
+    }
+
+    @Test("the override tool is the one the server names")
+    func theOverrideToolAgrees() throws {
+        let vectors = try #require(vectors)
+        // Named on both sides rather than derived from `deviceExecutedTools`:
+        // an override is not a property of being device-executed, it is the
+        // meaning a calendar duplicate has, and a second device tool must
+        // decide its own override semantics rather than inherit these.
+        #expect(vectors.overrideTool == OperationReceipt.calendarDeviceTool)
+        #expect(vectors.overrideTool == "calendar.create_event")
     }
 }
 
@@ -2272,7 +2536,7 @@ final class KeyBox: @unchecked Sendable {
 /// fixed sleep races machine speed, and the CI runner lost that race — one
 /// by-key poll inside a 30 ms window where a laptop found two. A starved gate
 /// answers anyway so the assertions below fail loudly instead of hanging.
-private func waitForGate(
+func waitForGate(
     _ name: String,
     until predicate: @escaping @Sendable () -> Bool
 ) {
