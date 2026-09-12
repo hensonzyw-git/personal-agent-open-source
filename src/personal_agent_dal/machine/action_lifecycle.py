@@ -22,6 +22,7 @@ from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import utc_now
 from personal_agent_dal.storage.engine import session_factory
 from personal_agent_dal.storage.machine_models import (
+    Capability,
     ExecutionGate,
     Lease,
     TransitionReceipt,
@@ -241,20 +242,45 @@ def cancel_execution(
     engine: Engine, *, feature_id: str, expected_gate_version: int,
     now: datetime | None = None,
 ) -> LifecycleOutcome:
+    return _stop_execution(engine, feature_id=feature_id,
+        expected_gate_version=expected_gate_version, mode='cancelled', now=now)
+
+
+def pause_execution(
+    engine: Engine, *, feature_id: str, expected_gate_version: int,
+    now: datetime | None = None,
+) -> LifecycleOutcome:
+    return _stop_execution(engine, feature_id=feature_id,
+        expected_gate_version=expected_gate_version, mode='paused', now=now)
+
+
+def _stop_execution(engine, *, feature_id, expected_gate_version, mode, now):
     _non_empty(feature_id, 'feature_id')
     _integer(expected_gate_version)
     timestamp = now or utc_now()
     def work(session):
-        gate = session.get(ExecutionGate, feature_id)
-        if gate is None:
-            return LifecycleOutcome('EXECUTION_GATE_MISSING')
-        result = session.execute(update(ExecutionGate).where(
-            ExecutionGate.feature_id == feature_id, ExecutionGate.version == expected_gate_version,
-            ExecutionGate.mode == 'open',
-        ).values(mode='cancelled', version=expected_gate_version + 1,
-                 approval_epoch=ExecutionGate.approval_epoch + 1, updated_at=timestamp))
-        return LifecycleOutcome('CANCELLED' if result.rowcount == 1 else 'EXECUTION_GATE_STALE')
+        return _stop_gate(session, feature_id, expected_gate_version, mode, timestamp)
     return _transaction(engine, work)
+
+
+def _stop_gate(session, feature_id, expected_gate_version, mode, timestamp):
+    if session.get(ExecutionGate, feature_id) is None:
+        return LifecycleOutcome('EXECUTION_GATE_MISSING')
+    allowed = ('open', 'paused') if mode == 'cancelled' else ('open',)
+    result = session.execute(update(ExecutionGate).where(
+        ExecutionGate.feature_id == feature_id, ExecutionGate.version == expected_gate_version,
+        ExecutionGate.mode.in_(allowed),
+    ).values(mode=mode, version=expected_gate_version + 1,
+             approval_epoch=ExecutionGate.approval_epoch + 1, updated_at=timestamp))
+    if result.rowcount != 1:
+        return LifecycleOutcome('EXECUTION_GATE_STALE')
+    # Revoke remaining uses, including partially used capabilities. Evidence
+    # of prior use and in-flight attempts is retained; this is not termination.
+    session.execute(update(Capability).where(
+        Capability.feature_id == feature_id, Capability.revoked_at.is_(None),
+        Capability.uses_consumed < Capability.max_uses,
+    ).values(revoked_at=timestamp))
+    return LifecycleOutcome('CANCELLED' if mode == 'cancelled' else 'PAUSED')
 
 
 def _mutate_attempt(engine, attempt_id, expected_version, now, mutation, *,

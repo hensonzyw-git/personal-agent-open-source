@@ -526,6 +526,31 @@ class ProviderRecoveryReceipt(Base):
     )
 
 
+class ExecutionControlReceipt(Base):
+    """Immutable, replayable proof of a stop command and retired authority."""
+
+    __tablename__ = 'execution_control_receipts'
+    receipt_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    command_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    feature_id: Mapped[str] = mapped_column(ForeignKey('features.feature_id'), nullable=False)
+    operation: Mapped[str] = mapped_column(Text, nullable=False)
+    requested_by: Mapped[str] = mapped_column(Text, nullable=False)
+    expected_gate_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    gate_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    approval_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    code: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        CheckConstraint(_hex_of_length('request_sha256', 64, nullable=False), name='request_sha256_hex'),
+        CheckConstraint("operation IN ('pause', 'cancel')", name='operation'),
+        CheckConstraint('expected_gate_version >= 1 AND gate_version = expected_gate_version + 1', name='gate_version'),
+        CheckConstraint('approval_epoch >= 1', name='approval_epoch'),
+        CheckConstraint("(operation = 'pause' AND code = 'PAUSED') OR (operation = 'cancel' AND code = 'CANCELLED')", name='code'),
+        Index('ix_execution_control_receipts_feature_id', 'feature_id'),
+    )
+
+
 class ExecutionGate(Base):
     """Per-feature CAS gate for cancellation, pause, delivery and approval epoch."""
 

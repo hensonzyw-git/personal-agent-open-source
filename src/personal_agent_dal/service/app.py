@@ -39,6 +39,7 @@ from personal_agent_core.timeutil import utc_now
 
 from personal_agent_dal.github import executor
 from personal_agent_dal.machine.action_recovery import recover_attempt
+from personal_agent_dal.machine.execution_control import control_execution
 from personal_agent_dal.service.intake import IntakeRefusal, intake_task
 from personal_agent_dal.service.operator_tokens import (
     OperatorTokenError,
@@ -476,6 +477,14 @@ class EffectWakeRequest(_Closed):
         "intent_recorded", "claimed", "unknown", "reconciling"
     ]
     expected_version: int = Field(ge=1)
+
+
+class ExecutionControlRequest(_Closed):
+    schema_version: Literal["dal.operator-transport/1.0"]
+    request_id: _Id
+    feature_id: _Id
+    operation: Literal["pause", "cancel"]
+    expected_gate_version: int = Field(ge=1, strict=True)
 
 
 class ProviderRecoveryRequest(_Closed):
@@ -953,6 +962,33 @@ def create_app(
             "job_id": job_id,
             "action": action,
             "state": "cancelled",
+        }
+
+    @app.post("/operator/features/{feature_id}/execution-control")
+    def operator_control_execution(
+        feature_id: str,
+        body: ExecutionControlRequest,
+        operator_id: str = Depends(operator_control),
+        _: None = Depends(transport_body_guard),
+    ) -> dict[str, Any]:
+        if body.feature_id != feature_id:
+            raise _http(400, "feature_mismatch")
+        # Stop-only controls stay available under the kill switch. They cannot
+        # dispatch work or reopen authority, and the receipt is the atomic audit.
+        outcome = control_execution(
+            engine, feature_id=feature_id, operation=body.operation,
+            expected_gate_version=body.expected_gate_version,
+            command_id=body.request_id, requested_by=operator_id,
+        )
+        if outcome.code == "EXECUTION_GATE_MISSING":
+            raise _http(404, outcome.code)
+        if outcome.code not in ("PAUSED", "CANCELLED"):
+            raise _http(409, outcome.code)
+        return {
+            "schema_version": OPERATOR_SCHEMA_VERSION,
+            "feature_id": feature_id, "code": outcome.code,
+            "receipt_id": outcome.receipt_id, "duplicate": outcome.duplicate,
+            "gate_version": outcome.gate_version,
         }
 
     @app.post("/operator/provider-attempts/{attempt_id}/recover")
