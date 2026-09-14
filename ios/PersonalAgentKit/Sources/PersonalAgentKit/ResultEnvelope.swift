@@ -28,6 +28,21 @@ public struct ResultEnvelope: Decodable, Sendable, Equatable {
         public let kind: String
         public let text: String
         public let sources: [Source]?
+        public let differenceDecimal: String?
+        public let current: Metric?
+        public let baseline: Metric?
+        enum CodingKeys: String, CodingKey {
+            case kind, text, sources, current, baseline
+            case differenceDecimal = "difference_decimal"
+        }
+    }
+    public struct Metric: Decodable, Sendable, Equatable {
+        public let valueDecimal: String
+        public let unit: String
+        enum CodingKeys: String, CodingKey {
+            case unit
+            case valueDecimal = "value_decimal"
+        }
     }
     public struct Evidence: Decodable, Sendable, Equatable {
         public let kind: String

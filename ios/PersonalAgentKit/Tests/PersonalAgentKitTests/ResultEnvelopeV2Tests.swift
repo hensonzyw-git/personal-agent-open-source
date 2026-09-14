@@ -15,6 +15,9 @@ final class ResultEnvelopeV2Tests: XCTestCase {
             XCTAssertEqual(envelope.version, 2)
             if item["name"] as? String == "comparison" {
                 XCTAssertTrue(envelope.text.contains("增加 20 元"))
+                XCTAssertEqual(envelope.analysisNodes?.first?.differenceDecimal, "20")
+                XCTAssertEqual(envelope.analysisNodes?.first?.current?.valueDecimal, "120")
+                XCTAssertEqual(envelope.analysisNodes?.first?.baseline?.valueDecimal, "100")
                 XCTAssertEqual(envelope.analysisNodes?.first?.text, envelope.text)
             }
         }

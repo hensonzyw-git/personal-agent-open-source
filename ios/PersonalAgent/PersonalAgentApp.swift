@@ -8,7 +8,7 @@ import SwiftUI
 /// problem from a model problem during the first real rollout.
 @main
 struct PersonalAgentApp: App {
-    #if !ACCEPTANCE
+    #if !ACCEPTANCE && !ADK_ACCEPTANCE
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
 
@@ -22,7 +22,9 @@ struct PersonalAgentApp: App {
 
     var body: some Scene {
         WindowGroup {
-            #if ACCEPTANCE
+            #if ADK_ACCEPTANCE
+            ADKAcceptanceScene()
+            #elseif ACCEPTANCE
             // The isolated acceptance build. `AppModel` — and with it the
             // device session, the enrollment, the Keychain namespace and the
             // EventKit mirror engine — is never constructed on this path. The

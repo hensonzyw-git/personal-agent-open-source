@@ -120,6 +120,13 @@ final class ChatModel {
     var busy = false
     var loadingOlder = false
 
+    private var acceptanceStopping = false
+    private var acceptanceWork = 0
+    func stopForAcceptanceReset() async {
+        acceptanceStopping = true
+        while acceptanceWork > 0 { try? await Task.sleep(for: .milliseconds(50)) }
+    }
+
     private let timeline: ChatTimeline
     private let mediaUploads: MediaUploadCoordinator
     private let mediaBackend: any MediaUploadBackend
@@ -180,6 +187,9 @@ final class ChatModel {
 
     /// Open the Timeline the server named, then finish anything left unresolved.
     func open(conversationID: String) async {
+        guard !acceptanceStopping else { return }
+        acceptanceWork += 1
+        defer { acceptanceWork -= 1 }
         await timeline.bind(conversationID: conversationID)
         // `bind` drops the loaded history when the Timeline changes, so the
         // decisions projected out of it are dropped here too. Every later
@@ -240,6 +250,9 @@ final class ChatModel {
     /// also the only path on which a *corrupt* slot would otherwise stay
     /// unreported, since `pendingSendMalformed` surfaces through here.
     func refresh() async {
+        guard !acceptanceStopping else { return }
+        acceptanceWork += 1
+        defer { acceptanceWork -= 1 }
         busy = true
         defer { busy = false }
         do {
@@ -257,6 +270,9 @@ final class ChatModel {
     /// state, so `refresh()` — not this — is the gesture that means "show me
     /// everything as it is now".
     func loadOlder() async {
+        guard !acceptanceStopping else { return }
+        acceptanceWork += 1
+        defer { acceptanceWork -= 1 }
         guard !loadingOlder else { return }
         loadingOlder = true
         defer { loadingOlder = false }
@@ -269,6 +285,9 @@ final class ChatModel {
     }
 
     func send() async {
+        guard !acceptanceStopping else { return }
+        acceptanceWork += 1
+        defer { acceptanceWork -= 1 }
         guard !busy else { return }
         do {
             if try loadPendingPhotoSend() != nil {
@@ -372,6 +391,9 @@ final class ChatModel {
     }
 
     func discardUnsentPhoto() async {
+        guard !acceptanceStopping else { return }
+        acceptanceWork += 1
+        defer { acceptanceWork -= 1 }
         guard !busy else { return }
         do {
             guard try await timeline.pendingSend() == nil else {
@@ -454,8 +476,13 @@ final class ChatModel {
     }
 
     private func loadPendingPhotoSend() throws -> PendingPhotoSend? {
+        #if ADK_ACCEPTANCE
+        guard try store.read(CredentialKey.pendingMediaSend) == nil else { throw AgentClientError.malformedResponse }
+        return nil
+        #else
         guard let data = try store.read(CredentialKey.pendingMediaSend) else { return nil }
         return try JSONDecoder().decode(PendingPhotoSend.self, from: data)
+        #endif
     }
 
     private func savePendingPhotoSend(_ pending: PendingPhotoSend) throws {
@@ -470,6 +497,9 @@ final class ChatModel {
     /// Ask the server to cancel. Past a possible submit this only records the
     /// request; the state the server returns is still the answer.
     func cancelLive() async {
+        guard !acceptanceStopping else { return }
+        acceptanceWork += 1
+        defer { acceptanceWork -= 1 }
         guard let operationID = liveReceipt?.operationID else { return }
         busy = true
         defer { busy = false }
@@ -486,6 +516,9 @@ final class ChatModel {
 
     /// Re-ask the server about the unresolved message.
     func resumeUnresolved() async {
+        guard !acceptanceStopping else { return }
+        acceptanceWork += 1
+        defer { acceptanceWork -= 1 }
         busy = true
         liveStages = []
         defer { busy = false; liveStages = [] }
@@ -509,6 +542,9 @@ final class ChatModel {
     /// `resumeUnresolved`, and deliberately not automatic: the operation may hold a
     /// write, so the id is shown first and the user decides.
     func discardUnresolved() async {
+        guard !acceptanceStopping else { return }
+        acceptanceWork += 1
+        defer { acceptanceWork -= 1 }
         do {
             try await timeline.discardPending()
             lastError = nil
@@ -548,6 +584,9 @@ final class ChatModel {
     /// `ChatTimeline`; a lost reply is retried with the same key, so a flaky
     /// network cannot record the choice twice.
     func decideDuplicate(checkID: String, decision: DuplicateDecision) async {
+        guard !acceptanceStopping else { return }
+        acceptanceWork += 1
+        defer { acceptanceWork -= 1 }
         busy = true
         defer { busy = false }
         do {
@@ -568,6 +607,9 @@ final class ChatModel {
     /// Re-present a decision whose reply never arrived. The stored key is
     /// reused, so this is a replay, never a second decision.
     func retryDecision(_ pending: ChatTimeline.PendingDuplicateDecision) async {
+        guard !acceptanceStopping else { return }
+        acceptanceWork += 1
+        defer { acceptanceWork -= 1 }
         await decideDuplicate(checkID: pending.checkID, decision: pending.decision)
     }
 
@@ -711,6 +753,9 @@ final class ChatModel {
     /// settled, nothing was retained to resume — and inventing reassurance for
     /// those would be the client claiming a decision the server did not make.
     func overrideDeviceAction(actionID: String) async {
+        guard !acceptanceStopping else { return }
+        acceptanceWork += 1
+        defer { acceptanceWork -= 1 }
         busy = true
         defer { busy = false }
         do {
@@ -753,6 +798,9 @@ final class ChatModel {
     /// would report a problem the user cannot act on. The *tap* is where a
     /// refusal matters, and `overrideDeviceAction` surfaces that one.
     func refreshOverrideDecisions() async {
+        guard !acceptanceStopping else { return }
+        acceptanceWork += 1
+        defer { acceptanceWork -= 1 }
         for (operationID, outcome) in await timeline.undecidedOverrideCandidates()
         where overrideDecisions[operationID] == nil {
             overrideDecisions[operationID] = await timeline.overrideDecision(
@@ -774,6 +822,9 @@ final class ChatModel {
     func resolveManualReview(
         operationID: String, resolution: ManualResolution
     ) async {
+        guard !acceptanceStopping else { return }
+        acceptanceWork += 1
+        defer { acceptanceWork -= 1 }
         busy = true
         defer { busy = false }
         do {
@@ -796,6 +847,9 @@ final class ChatModel {
     /// server may already have recorded it, so the check id is shown first and
     /// the user decides.
     func discardDecision(checkID: String) async {
+        guard !acceptanceStopping else { return }
+        acceptanceWork += 1
+        defer { acceptanceWork -= 1 }
         do {
             try await timeline.discardDecision(checkID: checkID)
             lastError = nil

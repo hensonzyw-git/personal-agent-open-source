@@ -117,6 +117,8 @@ def _raw_calls(body: bytes) -> tuple[CallStamp, ...]:
         raise ResponseViolation("incomplete_response")
     if not calls and not (content and content.strip()):
         raise ResponseViolation("empty_response")
+    if calls and content and content.strip():
+        raise ResponseViolation("mixed_tool_prose")
     stamps = []
     seen = set()
     for call in calls:

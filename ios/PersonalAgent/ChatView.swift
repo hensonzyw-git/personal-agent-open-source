@@ -35,9 +35,11 @@ struct ChatView: View {
     /// §3c: the head of the identifier just copied, shown as a toast so a copy
     /// confirms itself without the identifiers ever going back on the card face.
     @State private var copiedPrefix: String?
+    #if !ADK_ACCEPTANCE
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var voiceInput = VoiceInput()
     @State private var showingCamera = false
+    #endif
 
     struct ResolutionIntent: Equatable {
         let operationID: String
@@ -65,6 +67,7 @@ struct ChatView: View {
             composer
         }
         .background(Color.screenBackground)
+        #if !ADK_ACCEPTANCE
         .sheet(isPresented: $showingCamera) {
             CameraInput { data in
                 showingCamera = false
@@ -78,6 +81,7 @@ struct ChatView: View {
                 voiceInput.interrupt()
             }
         }
+        #endif
         // No title of its own: §1a makes the Timeline the whole surface, so the
         // navigation bar belongs to the app rather than to this view. `RootView`
         // sets it, together with the status entry.
@@ -1651,7 +1655,7 @@ struct ChatView: View {
             case .answeredV2(let envelope):
                 if let nodes = envelope.analysisNodes {
                     ForEach(Array(nodes.enumerated()), id: \.offset) { _, node in
-                        Text(node.text)
+                        if node.kind != "comparison" { Text(node.text) }
                         ForEach(Array((node.sources ?? []).enumerated()), id: \.offset) { _, source in
                             if let url = source.publicURL { Link(source.title, destination: url) }
                         }
@@ -1672,6 +1676,28 @@ struct ChatView: View {
                     if let raw = evidence.url, let url = URL(string: raw), ["http", "https"].contains(url.scheme), url.user == nil, url.password == nil {
                         Link(evidence.title ?? "来源", destination: url)
                     }
+                }
+
+                // After source cards so auto-scroll leaves the conclusion visible.
+                // Every value is server-rendered; no client-side arithmetic.
+                ForEach(Array((envelope.analysisNodes ?? []).filter { $0.kind == "comparison" }.enumerated()), id: \.offset) { _, node in
+                    if let current = node.current, let baseline = node.baseline,
+                       let difference = node.differenceDecimal, current.unit == baseline.unit {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("比较结果").font(.headline)
+                            HStack {
+                                Text("当前 \(current.valueDecimal) \(current.unit)")
+                                Spacer()
+                                Text("基准 \(baseline.valueDecimal) \(baseline.unit)")
+                            }.font(.subheadline)
+                            Text("差额 \(difference) \(current.unit)")
+                                .font(.title2.bold())
+                                .accessibilityIdentifier("comparison-difference")
+                            DisclosureGroup("比较口径") { Text(node.text).font(.caption) }
+                        }
+                        .padding(12)
+                        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                    } else { Text(node.text) }
                 }
 
             case .needsClarification(let question):
@@ -2226,6 +2252,7 @@ struct ChatView: View {
                 TextField("记一笔，或问一句", text: $model.draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
+                #if !ADK_ACCEPTANCE
                 Button {
                     Task {
                         guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
@@ -2280,6 +2307,7 @@ struct ChatView: View {
                     cancelled: { voiceInput.cancel() }
                 )
                 .frame(width: 36, height: 44)
+                #endif
                 if writingInProgress {
                     // §3i 阶段一: 写入进行中时, 发送按钮让位给一句说明。告诉用户
                     // 为什么按不下去, 而不是让他对着一个看似可点却不响应的按钮。
@@ -2310,6 +2338,7 @@ struct ChatView: View {
                     .font(.caption)
                     .foregroundStyle(.pending)
             }
+            #if !ADK_ACCEPTANCE
             if voiceInput.isRecording {
                 Text("正在本机转写；松开后可编辑再发送。")
                     .font(.caption)
@@ -2327,6 +2356,7 @@ struct ChatView: View {
                     .font(.caption)
                     .foregroundStyle(.pending)
             }
+            #endif
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
