@@ -118,7 +118,7 @@ class TestTheAcceptanceAppIsBehindTheFlag:
         is what makes that a fact rather than a fence: without it the two
         compositions would both be built and the last one would win."""
         source = _read(APP / "PersonalAgentApp.swift")
-        match = re.search(r"#if ACCEPTANCE(.*?)#else(.*?)#endif", source, re.DOTALL)
+        match = re.search(r"#(?:if|elseif) ACCEPTANCE(.*?)#else(.*?)#endif", source, re.DOTALL)
         assert match, "PersonalAgentApp no longer splits the acceptance branch with an #else"
         acceptance_branch, production_branch = match.group(1), match.group(2)
         assert "AcceptanceScene()" in acceptance_branch
@@ -153,7 +153,7 @@ class TestTheAcceptanceAppIsBehindTheFlag:
         naming = {
             path.name
             for path in sorted(APP.glob("*.swift"))
-            if "Acceptance" in _read(path)
+            if re.search(r"\b(?:AcceptanceScene|AcceptanceScenario|AcceptanceChecklist|AcceptanceBackend)\b", _read(path))
         }
         assert naming == {"AcceptanceScene.swift", "PersonalAgentApp.swift"}
 
@@ -166,7 +166,7 @@ class TestTheFlagIsSetInExactlyOnePlace:
         lines = [
             line
             for line in _read(PBXPROJ).splitlines()
-            if "ACCEPTANCE" in line
+            if re.search(r"\bACCEPTANCE\b", line)
         ]
         assert lines == [
             '\t\t\t\tSWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG ACCEPTANCE $(inherited)";'
@@ -195,7 +195,7 @@ class TestTheFlagIsSetInExactlyOnePlace:
             "A00000000000000000000014",  # target-level Acceptance
         ):
             assert f"{object_id} /* Acceptance */" in source
-            assert f"{object_id} /* Acceptance */,\n\t\t\t)" in source, (
+            assert f"{object_id} /* Acceptance */," in source, (
                 f"{object_id} is not in a build configuration list"
             )
 
@@ -308,3 +308,35 @@ class TestTheKitCarriesNoFlag:
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
+
+
+class TestADKAcceptanceIsolation:
+    def test_entry_and_storage_are_explicit(self):
+        scene = _read(APP / 'ADKAcceptanceScene.swift')
+        assert scene.startswith('#if ADK_ACCEPTANCE') and scene.rstrip().endswith('#endif')
+        code = '\n'.join(_code_lines(scene))
+        for forbidden in ('AppModel(', 'KeychainCredentialStore(', 'EventKitCalendarStore(', 'DeviceEventActionExecutor(', 'VoiceInput('):
+            assert forbidden not in code
+        assert 'AcceptanceFileStore()' in code
+        assert 'NoAcceptanceMedia()' in code
+        assert 'ChatTimeline(backend: session, store: store)' in code
+        assert 'stopForAcceptanceReset()' in code
+
+    def test_profile_and_usage_keys_do_not_grant_production_access(self):
+        assert _plist_keys(IOS / 'PersonalAgent-ADKAcceptance.entitlements') == set()
+        keys = _plist_keys(IOS / 'PersonalAgent-ADKAcceptance-Info.plist')
+        assert not keys & {'NSCameraUsageDescription', 'NSMicrophoneUsageDescription', 'NSPhotoLibraryUsageDescription', 'NSCalendarsFullAccessUsageDescription', 'NSAppTransportSecurity'}
+        assert {'ADKAcceptanceURL', 'ADKAcceptanceCertificateSHA256', 'NSLocalNetworkUsageDescription'} <= keys
+
+    def test_scheme_has_no_production_action(self):
+        scheme = _read(SCHEMES / 'PersonalAgent-ADKAcceptance.xcscheme')
+        assert set(re.findall(r'buildConfiguration = "([^"]+)"', scheme)) == {'ADKAcceptance'}
+        source = _read(PBXPROJ)
+        assert source.count('SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG ADK_ACCEPTANCE $(inherited)"') == 1
+        assert 'PRODUCT_BUNDLE_IDENTIFIER = org.example.PersonalAgent.ADKAcceptance;' in source
+
+    def test_media_ui_is_excluded_from_adk_configuration(self):
+        source = _read(APP / 'ChatView.swift')
+        excluded = re.findall(r'#if !ADK_ACCEPTANCE(.*?)#endif', source, re.DOTALL)
+        for symbol in ('VoiceInput()', 'PhotosPicker(', 'CameraInput {', 'VoiceHoldButton('):
+            assert any(symbol in block for block in excluded), symbol

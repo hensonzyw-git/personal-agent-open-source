@@ -1977,6 +1977,7 @@ private func label(_ outcome: OperationOutcome) -> String {
     case .recorded: return "recorded"
     case .calendarEventWritten: return "calendar_event_written"
     case .answered: return "answered"
+    case .answeredV2: return "answered_v2"
     case .answeredWithQuery, .answeredWithCalendarQuery:
         // One wire name for "a succeeded governed read with a structured card":
         // which card is the client's own business, and the server states only

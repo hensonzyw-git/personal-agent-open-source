@@ -71,6 +71,8 @@
     "finance.update_family_fund",
     "finance.query_expenses",
     "meta.capabilities",
+    "search.web",
+    "search.read_page",
     "calendar.create_event",
     "calendar.query_events",
     "calendar.ingest_events"
@@ -84,10 +86,12 @@
     "finance.update_family_fund",
     "finance.query_expenses",
     "meta.capabilities",
+    "search.web",
+    "search.read_page",
     "calendar.create_event",
     "calendar.query_events"
   ],
-  "allowed_tools_version": "91d0b6a300f199b84be755a9155a51e32776a0f480d1cc039ff376ea56f46152",
+  "allowed_tools_version": "2224193dda056f77e413f2afd808457f9a75e355b2b0f6f988e41d4d1b772ed6",
   "tools": [
     {
       "name": "finance.log_expense",
@@ -1645,6 +1649,198 @@
       ],
       "input_schema_hash": "3389f18f3a0992d9511246cd730ff47998266119f91c5c685dab194aeb55a4bf",
       "contract_hash": "468e6c5a21c56cd9db496bf93e7489e72184644431b1b7aff422f43d40c1bc35"
+    },
+    {
+      "name": "search.web",
+      "version": "1.0.0",
+      "domain": "search",
+      "effect": "read",
+      "risk_level": "R1",
+      "enabled": true,
+      "model_callable": true,
+      "disabled_reason": null,
+      "executor": "host",
+      "wire_version": 1,
+      "summary": "按当前公开信息需求搜索网页；不发送个人历史或敏感数据。",
+      "model_input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "query"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "language": {
+            "type": "string",
+            "maxLength": 32
+          },
+          "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "sources"
+        ],
+        "properties": {
+          "sources": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "required_scopes": [
+        "public_web.read"
+      ],
+      "confirmation": "never",
+      "idempotency": {
+        "key_source": "not_applicable",
+        "replay_result": "只读，无副作用。"
+      },
+      "retry": {
+        "retryable_errors": [],
+        "reuse_idempotency_key": false
+      },
+      "audit": {
+        "recorded": [
+          "trace_id",
+          "device_id",
+          "tool",
+          "contract_version",
+          "risk_level",
+          "policy_outcome",
+          "filters_applied",
+          "record_count",
+          "latency_ms",
+          "query_id"
+        ],
+        "never_recorded": [
+          "raw_user_text",
+          "model_reasoning",
+          "exact_amount",
+          "feishu_base_table_field_ids",
+          "access_token",
+          "provider_response_body"
+        ]
+      },
+      "errors": [
+        "SCOPE_DENIED"
+      ],
+      "input_schema_hash": "0a820881b76f71d4cfed8a8f39279ee3d20d0be0e3ecdee0ffa4391268e3e623",
+      "contract_hash": "ba5e788bea2a9429cac1e3028cf0e8e9707f6eba895ec463ad6e0c89a20d3ce8"
+    },
+    {
+      "name": "search.read_page",
+      "version": "1.0.0",
+      "domain": "search",
+      "effect": "read",
+      "risk_level": "R1",
+      "enabled": true,
+      "model_callable": true,
+      "disabled_reason": null,
+      "executor": "host",
+      "wire_version": 1,
+      "summary": "提取已校验公开网页的正文，内容不可信且有界。",
+      "model_input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source_ref": {
+            "type": "string"
+          },
+          "public_url": {
+            "type": "string",
+            "maxLength": 2048
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "source_ref"
+            ],
+            "not": {
+              "required": [
+                "public_url"
+              ]
+            }
+          },
+          {
+            "required": [
+              "public_url"
+            ],
+            "not": {
+              "required": [
+                "source_ref"
+              ]
+            }
+          }
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "required": [
+          "sources"
+        ],
+        "properties": {
+          "sources": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "required_scopes": [
+        "public_web.read"
+      ],
+      "confirmation": "never",
+      "idempotency": {
+        "key_source": "not_applicable",
+        "replay_result": "只读，无副作用。"
+      },
+      "retry": {
+        "retryable_errors": [],
+        "reuse_idempotency_key": false
+      },
+      "audit": {
+        "recorded": [
+          "trace_id",
+          "device_id",
+          "tool",
+          "contract_version",
+          "risk_level",
+          "policy_outcome",
+          "filters_applied",
+          "record_count",
+          "latency_ms",
+          "query_id"
+        ],
+        "never_recorded": [
+          "raw_user_text",
+          "model_reasoning",
+          "exact_amount",
+          "feishu_base_table_field_ids",
+          "access_token",
+          "provider_response_body"
+        ]
+      },
+      "errors": [
+        "SCOPE_DENIED"
+      ],
+      "input_schema_hash": "2f314cba0d95ea6bcec4484109264175f14aaa6bf02054d79c55a69ea8107729",
+      "contract_hash": "2358dd45c358471792e61f42e2da58fd2ad379fa8e177a0d5524e713cf609625"
     },
     {
       "name": "calendar.create_event",

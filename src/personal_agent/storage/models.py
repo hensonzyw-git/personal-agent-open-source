@@ -1263,3 +1263,9 @@ class MediaBinding(Base):
         Index("ix_media_bindings_media_id", "media_id"),
         Index("ix_media_bindings_operation_id", "operation_id"),
     )
+
+
+# Frozen Core definitions: concurrency guards intentionally use fresh SELECTs.
+from personal_agent.storage.run_schema_v2 import register_run_tables
+
+register_run_tables(Base.metadata)

@@ -469,6 +469,7 @@ public enum OperationOutcome: Sendable, Equatable {
     )
     /// A no-side-effect answer.
     case answered(String)
+    case answeredV2(ResultEnvelope)
     /// A structured Finance query result, read-only, rendered as a card rather
     /// than as prose. `tool` is the recorded query tool, shown on the card.
     case answeredWithQuery(result: FinanceQueryResult, tool: String?)
@@ -517,7 +518,7 @@ public enum OperationOutcome: Sendable, Equatable {
         case .running, .needsManualReview, .indeterminate:
             return false
         case .needsClarification, .needsDuplicateDecision, .recorded,
-             .calendarEventWritten, .answered, .answeredWithQuery,
+             .calendarEventWritten, .answered, .answeredV2, .answeredWithQuery,
              .answeredWithCalendarQuery, .failedSafe, .cancelledBeforeSubmit:
             return true
         }
@@ -631,6 +632,7 @@ public struct OperationReceipt: Sendable, Equatable {
     public let clarification: String?
     public let duplicateExisting: String?
     public let answer: String?
+    public let resultEnvelope: ResultEnvelope?
     /// The structured `finance.query_expenses` projection, when the tool was a
     /// query and the result decoded. `nil` for every other tool.
     public let queryResult: FinanceQueryResult?
@@ -676,6 +678,7 @@ public struct OperationReceipt: Sendable, Equatable {
         clarification: String?,
         duplicateExisting: String?,
         answer: String?,
+        resultEnvelope: ResultEnvelope? = nil,
         queryResult: FinanceQueryResult? = nil,
         calendarQuery: CalendarQueryResult? = nil,
         record: FinanceExpenseRecord? = nil,
@@ -695,6 +698,7 @@ public struct OperationReceipt: Sendable, Equatable {
         self.clarification = clarification
         self.duplicateExisting = duplicateExisting
         self.answer = answer
+        self.resultEnvelope = resultEnvelope
         self.queryResult = queryResult
         self.calendarQuery = calendarQuery
         self.record = record
@@ -799,6 +803,7 @@ public struct OperationReceipt: Sendable, Equatable {
             clarification: clarification,
             duplicateExisting: duplicateExisting,
             answer: answer,
+            resultEnvelope: resultEnvelope,
             queryResult: queryResult,
             calendarQuery: calendarQuery,
             record: record,
@@ -833,6 +838,7 @@ public struct OperationReceipt: Sendable, Equatable {
         clarification: String?,
         duplicateExisting: String?,
         answer: String?,
+        resultEnvelope: ResultEnvelope? = nil,
         queryResult: FinanceQueryResult? = nil,
         calendarQuery: CalendarQueryResult? = nil,
         record: FinanceExpenseRecord? = nil,
@@ -841,11 +847,14 @@ public struct OperationReceipt: Sendable, Equatable {
     ) -> OperationOutcome {
         let tool: String?
         if case .known(let value) = toolEvidence { tool = value } else { tool = nil }
+        if state == .succeeded, let envelope = resultEnvelope, envelope.kind != "action" {
+            return .answeredV2(envelope)
+        }
         switch state {
         case .accepted, .interpreting, .dispatching, .sourceInProgress, .verifying:
             return .running
         case .waitingForClarification:
-            return .needsClarification(question: clarification)
+            return .needsClarification(question: resultEnvelope?.text ?? clarification)
         case .waitingForDuplicateDecision:
             guard let duplicateCheckID, !duplicateCheckID.isEmpty else {
                 // Without the check id there is nothing the user could decide,
@@ -945,6 +954,7 @@ extension OperationReceipt: Decodable {
         case clarification
         case duplicateExisting = "duplicate_existing"
         case answer
+        case resultEnvelope = "result_envelope"
         case queryResult = "query_result"
         case record
         case deviceResult = "device_result"
@@ -979,6 +989,11 @@ extension OperationReceipt: Decodable {
             String.self, forKey: .duplicateExisting
         )
         answer = try container.decodeIfPresent(String.self, forKey: .answer)
+        do {
+            resultEnvelope = try container.decodeIfPresent(ResultEnvelope.self, forKey: .resultEnvelope)
+        } catch is DecodingError {
+            resultEnvelope = .unavailable
+        }
         // A malformed `query_result` is a query this build cannot render, not a
         // reason to lose the whole receipt: it decodes to `nil` and the screen
         // fails closed on the query card while everything else still works.
@@ -1401,6 +1416,7 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                     clarification: content["clarification"]?.stringValue,
                     duplicateExisting: content["duplicate_existing"]?.stringValue,
                     answer: content["answer"]?.stringValue,
+                    resultEnvelope: decodeResultEnvelope(content["result_envelope"]),
                     queryResult: queryResult,
                     calendarQuery: calendarQuery,
                     record: record,
@@ -1560,6 +1576,12 @@ public enum TimelineDirection: String, Sendable {
 /// the bytes the projection types already know how to read. A body that will
 /// not decode returns `nil` and the caller fails closed -- history never gets
 /// a second, more permissive reader than the live receipt.
+private func decodeResultEnvelope(_ value: JSONValue?) -> ResultEnvelope? {
+    guard let value else { return nil }
+    if case .null = value { return nil }
+    return decodeProjection(ResultEnvelope.self, from: value) ?? .unavailable
+}
+
 private func decodeProjection<T: Decodable>(
     _ type: T.Type, from value: JSONValue?
 ) -> T? {

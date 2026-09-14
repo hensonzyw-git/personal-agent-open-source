@@ -207,6 +207,9 @@ class AgentServiceConfig:
     #: is built from it here, because it needs the data keyring and this is the
     #: one place that has both.
     media: MediaConfig | None = None
+    v2_device_ids: frozenset[str] = frozenset()
+    v2_execution_enabled: bool = True
+    search_config: Any = None
 
 
 @dataclass
@@ -517,6 +520,7 @@ def recover_at_startup(
     *,
     now: Callable[[], datetime] = utc_now,
     run: Callable[[Any], Any] = asyncio.run,
+    keyring=None,
 ) -> list[tuple[str, Any]]:
     """Run one projection of Finance truth onto every recoverable operation.
 
@@ -538,6 +542,9 @@ def recover_at_startup(
     would wedge the Agent whenever Finance is down, and guessing would be worse
     than both.
     """
+    if keyring is not None:
+        from personal_agent.runtime.run_repository import RunRepository
+        RunRepository(sessions,keyring).sweep(now_ms=round(now().timestamp()*1000))
     read = _finance_status_reader(control, run)
     with sessions() as session:
         try:
@@ -602,6 +609,7 @@ async def _recover_periodically(
     now: Callable[[], datetime],
     interval_seconds: float,
     stop: asyncio.Event,
+    keyring=None,
 ) -> None:
     """Re-run the recovery projection for the lifetime of the service."""
     while True:
@@ -613,7 +621,7 @@ async def _recover_periodically(
         try:
             # The scan is synchronous SQLite work and its control reads drive
             # their own event loop, so it must not block the API event loop.
-            await asyncio.to_thread(recover_at_startup, sessions, control, now=now)
+            await asyncio.to_thread(recover_at_startup, sessions, control, now=now, keyring=keyring)
         except Exception:
             # A single broken scan must not permanently remove recovery from a
             # long-running service. The next minute retries from durable state.
@@ -761,7 +769,7 @@ async def agent_service(
         try:
             # In a worker thread, because the scan is synchronous SQLite work
             # and its control reads drive their own event loop.
-            await asyncio.to_thread(recover_at_startup, sessions, control, now=now)
+            await asyncio.to_thread(recover_at_startup, sessions, control, now=now, keyring=keyring)
             recovery_task = asyncio.create_task(
                 _recover_periodically(
                     sessions,
@@ -769,6 +777,7 @@ async def agent_service(
                     now=now,
                     interval_seconds=recovery_interval_seconds,
                     stop=recovery_stop,
+                    keyring=keyring,
                 ),
                 name="operation-recovery",
             )
@@ -822,6 +831,10 @@ async def agent_service(
                         if tool.alias in model_callable_tools
                     ]
                 )
+                from personal_agent.api.runtime_v2 import row as runtime_row
+                from personal_agent.storage.models import ConversationEvent
+                event = session.get(ConversationEvent, current_event_id)
+                is_v2 = event is not None and runtime_row(session, event.operation_id) is not None
                 return context_builder.build(
                     session,
                     keyring,
@@ -830,10 +843,11 @@ async def agent_service(
                     session_id=session_id,
                     current_event_id=current_event_id,
                     system_instruction=build_system_prompt(
-                        today=format_ledger_date(ledger_date(now()))
+                        today=format_ledger_date(ledger_date(now())), runtime_v2=is_v2
                     ),
                     user_text=user_text,
                     effective_tools=tools,
+                    essential_tools=tuple(t.alias for t in tools) if is_v2 else (),
                     clarification_context=clarification_context,
                     finance_retry_context=finance_retry_context,
                     input_parts=input_parts,
@@ -882,11 +896,23 @@ async def agent_service(
                 # path that only production exercises.
                 return RecordingDispatcher(dispatcher, recorder)
 
+            def search_allowed(auth: AuthContext, tool: str) -> bool:
+                device = device_for(auth)
+                search = config.search_config
+                return bool(search and search.enabled and config.v2_execution_enabled
+                    and auth.client_wire_version >= 4 and auth.device_id in config.v2_device_ids
+                    and device is not None and device.status == "active"
+                    and device.allowed_tools_version == manifest_version
+                    and "public_web.read" in device.scopes
+                    and tool in {"search.web", "search.read_page"}
+                    and tool in allowlist and tool in device.allowed_tools
+                    and (tool != "search.read_page" or search.extract_enabled))
+
             def capabilities(auth: AuthContext) -> list[dict[str, Any]]:
                 device = device_for(auth)
                 if device is None:
                     return []
-                return [
+                result = [
                     {
                         "alias": tool.alias,
                         "description": tool.description,
@@ -896,6 +922,12 @@ async def agent_service(
                     for tool in bridge.visible_tools(device)
                     if tool.alias in model_callable_tools
                 ]
+
+                from personal_agent_core.tool_ir import SEARCH_WEB,SEARCH_READ_PAGE
+                for tool in (SEARCH_WEB,SEARCH_READ_PAGE):
+                    if search_allowed(auth, tool.name):
+                        result.append({'alias':tool.name,'description':tool.summary,'risk_level':tool.risk_level,'required_scopes':list(tool.required_scopes)})
+                return result
 
             def sync_ingest(auth: AuthContext, body: dict[str, Any]) -> dict[str, Any]:
                 """Mirror one calendar snapshot batch into the MCP database.
@@ -952,6 +984,10 @@ async def agent_service(
             yield ComposedAgentService(
                 deps=AgentApiDeps(
                     session_factory=sessions,
+                    v2_device_ids=config.v2_device_ids,
+                    v2_execution_enabled=config.v2_execution_enabled,
+                    v2_search_adapter=_search_adapter(config.search_config),
+                    v2_search_allowed=search_allowed,
                     token_ring=token_ring,
                     keyring=keyring,
                     identifier_key=identifier_key,
@@ -1043,3 +1079,9 @@ def _no_such_device(device_id: str) -> AppError:
         ErrorCode.TOOL_NOT_ALLOWLISTED,
         internal_detail=f"no device row for {device_id}",
     )
+
+
+def _search_adapter(config):
+    from personal_agent.search.adapter import SearchAdapter,SearchConfig
+    import os
+    return SearchAdapter(config or SearchConfig(),key=os.environ.get('ANYSEARCH_API_KEY'))

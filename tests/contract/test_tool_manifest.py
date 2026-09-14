@@ -142,6 +142,8 @@ def test_six_finance_tools_with_only_batch_disabled() -> None:
         "meta.capabilities",
         "calendar.create_event",
         "calendar.query_events",
+        "search.web",
+        "search.read_page",
         "calendar.ingest_events",
     }
 
@@ -168,6 +170,8 @@ def test_the_model_is_never_offered_the_category_update() -> None:
         "meta.capabilities",
         "calendar.create_event",
         "calendar.query_events",
+        "search.web",
+        "search.read_page",
     }
     assert "finance.update_expense_category" not in document["model_callable_tools"]
     # And it really is live -- this is a narrowing of who may call it, not a
@@ -607,9 +611,10 @@ def test_the_calendar_action_declares_the_client_wire_version_it_needs() -> None
 
 def test_device_executor_forks_the_dispatch_path() -> None:
     """Every contract declares an executor, and exactly one calendar write is
-    device-executed while everything else stays connector-backed."""
+    device-executed and public search is executed by the Host."""
     executors = {entry["name"]: entry["executor"] for entry in tools()}
-    assert set(executors.values()) == {"mcp", "device"}
+    assert {n for n,e in executors.items() if e == "host"} == {"search.web", "search.read_page"}
+    assert set(executors.values()) == {"mcp", "device", "host"}
     assert {n for n, e in executors.items() if e == "device"} == {
         "calendar.create_event"
     }
