@@ -671,7 +671,7 @@ final class ChatModel {
         case .running:
             return "服务端仍在处理"
         case .needsClarification, .needsDuplicateDecision, .answered,
-             .answeredWithQuery, .answeredWithCalendarQuery, .recorded,
+             .answeredWithQuery, .answeredWithCalendarQuery, .answeredV2, .recorded,
              .calendarEventWritten:
             // None of these are reachable for this route — it dispatches one
             // governed update and never a model turn — but the switch stays
