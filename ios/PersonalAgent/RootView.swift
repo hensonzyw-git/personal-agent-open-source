@@ -154,6 +154,14 @@ struct ServiceStatusView: View {
             }
 
             Section {
+                row("App 版本", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
+                row("构建号", Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")
+            } header: {
+                groupHeader("应用")
+            }
+            .listRowBackground(Color.cardSurface)
+
+            Section {
                 row("device_id", model.deviceID ?? "—")
                 row("设备密钥", model.keyKind ?? "—")
                 if let device = model.selfDevice {
