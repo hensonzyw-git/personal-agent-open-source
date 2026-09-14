@@ -235,16 +235,12 @@ def test_the_switch_is_closed_without_an_approval_record() -> None:
         assert (term in capability.closed_by) is (record is None)
 
 
-def test_the_scanner_exemption_is_not_approved_in_this_build() -> None:
-    """A guard against the exemption being filled in without a review.
-
-    This failure is the review. §0 G2 records the exemption as pending Henson's
-    decision and §10 forbids the code from granting itself one, so the change
-    that fills in `SCANNER_EXEMPTION` is the change that approves it -- and it
-    must arrive with the date, the name and the evidence, and with this test and
-    its comment updated to say so. Silently flipping it is what this catches.
-    """
-    assert SCANNER_EXEMPTION is None
+def test_scanner_exemption_is_bound_to_explicit_user_decision() -> None:
+    assert SCANNER_EXEMPTION is not None
+    assert SCANNER_EXEMPTION.approved_by == "Henson"
+    assert SCANNER_EXEMPTION.approved_on == date(2026, 9, 14)
+    assert SCANNER_EXEMPTION.evidence == "docs/gates/multimodal-input.md"
+    assert image_capability(**_OPEN).enabled
 
 
 def test_no_configuration_can_approve_the_exemption() -> None:
