@@ -1,5 +1,6 @@
 """Model-facing wrappers around one governed business catalog."""
 from personal_agent.runtime.run_tools import RunToolSpec
+from personal_agent_core.tool_ir import QUERY_EXPENSES
 
 
 def obj(properties, required=None):
@@ -9,9 +10,12 @@ def obj(properties, required=None):
 STR={'type':'string','maxLength':8000}
 REFS={'type':'array','items':{'type':'string'},'minItems':1,'maxItems':32}
 CONSTRAINT=obj({'key':STR,'value':{},'source_refs':REFS})
+FILTERS=obj({k:v for k,v in QUERY_EXPENSES.model_input_schema['properties'].items() if k not in {'view','cursor'}}, [])
+# A category_total metric also names the selected by_category bucket.
+FILTERS['properties']['category'] = QUERY_EXPENSES.model_input_schema['properties']['categories']['items']
 TASK_VALIDATION=obj({'task_ref':{'type':'string'},'goal':STR,'source_refs':REFS,
     'constraints':{'type':'array','items':CONSTRAINT,'maxItems':32},
-    'comparisons':{'type':'array','maxItems':8,'items':obj({'comparison_ref':STR,'metric_kind':{'enum':['total','count','category_total']},'current':{'type':'object'},'baseline':{'type':'object'},'source_refs':REFS})}},
+    'comparisons':{'type':'array','maxItems':8,'items':obj({'comparison_ref':STR,'metric_kind':{'enum':['total','count','category_total']},'current':FILTERS,'baseline':FILTERS,'source_refs':REFS}, ['metric_kind','current','baseline','source_refs'])}},
     ['goal','source_refs','constraints'])
 # The shared metadata shape is described once in the core instruction. Host
 # validates TASK_VALIDATION before admitting the whole batch; provider-side
@@ -44,13 +48,18 @@ def catalog(declarations):
         if alias.startswith('agent.'): continue
         from personal_agent_core.tool_ir import contract_by_name
         read=contract_by_name(alias).effect=='read'
-        specs.append(RunToolSpec(alias.replace('.','_'),alias,'read' if read else 'write',f['description'],obj({'arguments':_compact_schema(f['parameters']),'task':TASK})))
+        fields={'arguments':_compact_schema(f['parameters']),'task':TASK}
+        if read and alias in {'finance.query_expenses','calendar.query_events'}:
+            fields['response_mode']={'enum':['card','analyze']}
+        if not read:
+            fields['write_source_refs']=REFS
+        specs.append(RunToolSpec(alias.replace('.','_'),alias,'read' if read else 'write',f['description'],obj(fields,['arguments','task'])))
     calendar=next((s for s in specs if s.business_name=='calendar.create_event'),None)
     if calendar:
         from dataclasses import replace
         original=calendar.schema['properties']['arguments']
         schema={'type':'object','additionalProperties':False,'required':['task'],'$defs':{'event':original},
-            'properties':{'task':TASK,'arguments':{'$ref':'#/$defs/event'},
+            'properties':{'task':TASK,'write_source_refs':REFS,'arguments':{'$ref':'#/$defs/event'},
                 'items':{'type':'array','minItems':2,'maxItems':8,'items':{'$ref':'#/$defs/event'}}},
             'oneOf':[{'required':['arguments'],'not':{'required':['items']}},{'required':['items'],'not':{'required':['arguments']}}]}
         specs[specs.index(calendar)]=replace(calendar,schema=schema,description=calendar.description+' 多个新建日程用 items 一次冻结；单个用 arguments。')

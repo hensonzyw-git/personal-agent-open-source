@@ -82,6 +82,35 @@ class RunRepository(TaskControlStore):
                     if current_source not in metadata['source_refs']: raise RunStateError('constraint_change_needs_current_source')
         return metadata
 
+    def validate_write_sources(self, metadata, sources, *, current_source, timeline, task_id):
+        refs = set(sources) | set(metadata['source_refs'])
+        for constraint in metadata['constraints']:
+            refs.update(constraint['source_refs'])
+        with self.sessions() as s:
+            self.validate_sources(s, timeline, list(refs))
+            if task_id is None:
+                if refs != {current_source}:
+                    raise RunStateError('new_write_requires_current_source')
+                return
+            old = refs - {current_source}
+            owned = s.execute(select(ConversationEvent.event_id).join(
+                self.runs, self.runs.c.operation_id == ConversationEvent.operation_id).where(
+                ConversationEvent.event_id.in_(old), self.runs.c.task_id == task_id)).scalars().all()
+            if old != set(owned):
+                raise RunStateError('write_source_task_mismatch')
+
+    def record_not_executed(self, lease, calls, *, now_ms):
+        def work(s):
+            self.check_in_transaction(s, lease, now_ms=now_ms)
+            for call in calls:
+                step = self._next_step(s, lease.operation_id)
+                s.execute(insert(self.steps).values(operation_id=lease.operation_id,
+                    step_no=step, call_no=0, attempt_no=1, call_id=call.call_id,
+                    attempt_nonce='not_executed:'+str(step)+':'+call.call_id,
+                    args_hash=call.args_hash, kind='read', status='not_executed',
+                    started_ms=now_ms, ended_ms=now_ms))
+        self._write(work)
+
     def finish(self, lease, answer, *, now_ms, event_writer=None, close_source=True, metadata=None):
         def work(s):
             run=self.check_in_transaction(s,lease,now_ms=now_ms)
@@ -110,6 +139,7 @@ class RunRepository(TaskControlStore):
         """Called in the authenticated DELETE transaction after safe cancellation."""
         run=session.execute(select(self.runs).where(self.runs.c.operation_id==operation_id)).mappings().one_or_none()
         if run is None:return
+        if run['superseded_by_operation_id'] is not None:return
         op=self._one(session,Operation.__table__,Operation.operation_id,operation_id)
         if op['state']!='cancelled_pre_submit':return
         session.execute(update(self.runs).where(self.runs.c.operation_id==operation_id).values(state='cancelled',fence=run['fence']+1))
@@ -214,24 +244,56 @@ class RunRepository(TaskControlStore):
             s.execute(update(r).where(r.c.operation_id==lease.operation_id,r.c.task_id==task_id,r.c.state=='held').values(task_revision=t['revision']))
             bound=self.bind(lease.operation_id,task_id=task_id,now_ms=now_ms,lease=lease,sealed_goal=goal,sealed_constraints=constraints,_session=s)
             if not bound.accepted:raise RunStateError('amend_binding_conflict')
-            s.execute(update(self.runs).where(self.runs.c.operation_id==lease.operation_id).values(candidate_operation_id=None,expected_source_version=None))
+            from personal_agent.runtime.task_contracts import freeze_comparisons
+            frozen = freeze_comparisons(metadata, None, task_id=task_id, revision=t['revision'])
+            run = self._one(s, self.runs, self.runs.c.operation_id, lease.operation_id)
+            snapshot = self.open('agent_runs', 'sealed_input_snapshot', lease.operation_id, run['sealed_input_snapshot'])
+            snapshot['task_metadata'] = frozen
+            s.execute(update(self.runs).where(self.runs.c.operation_id==lease.operation_id).values(
+                candidate_operation_id=None,expected_source_version=None,
+                sealed_input_snapshot=self.seal('agent_runs','sealed_input_snapshot',lease.operation_id,snapshot)))
+            s.execute(update(self.tasks).where(self.tasks.c.task_id==task_id).values(source_refs=self.seal('agent_tasks','source_refs',task_id,frozen)))
             return 'applied'
-        return self._write(work)
+        try:
+            result = self._write(work)
+        except RunStateError as exc:
+            # The amendment transaction must roll back the old proposal, but
+            # cannot refund the already reserved model attempt on that task.
+            if str(exc) not in {'stale_or_foreign_task','terminal_task','amend_binding_conflict'}:
+                raise
+            self.bind(lease.operation_id,task_id=task_id,now_ms=now_ms,lease=lease,
+                      sealed_goal=goal,sealed_constraints=constraints,_reject=True)
+            raise RunStateError('task_binding_conflict') from None
+        if result == 'too_late':
+            with self.sessions() as s:
+                held = s.execute(select(self.reservations.c.task_id).where(
+                    self.reservations.c.operation_id==lease.operation_id,
+                    self.reservations.c.task_id==task_id,self.reservations.c.state=='held')).first()
+            if held:
+                self.bind(lease.operation_id,task_id=task_id,now_ms=now_ms,lease=lease,
+                          sealed_goal=goal,sealed_constraints=constraints,_reject=True)
+                raise RunStateError('task_amend_too_late')
+        return result
 
-    def settle_expired_or_business(self, operation_id, *, now_ms):
+    def settle_expired_or_business(self, operation_id, *, now_ms, failure_code=None):
         """Rebuild factual output after authoritative v1 recovery/phone reports."""
         from personal_agent.api import events
         def work(s):
             run=self._one(s,self.runs,self.runs.c.operation_id,operation_id)
             op=self._one(s,Operation.__table__,Operation.operation_id,operation_id)
             if run['state'] in {'completed','partial','cancelled'}:return
+            # A structured duplicate decision transfers the same business task
+            # to a legacy recovery-only operation. Its outcome owns the slot.
+            if run['superseded_by_operation_id'] is not None and op['duplicate_check_id']:
+                op = self._one(s, Operation.__table__, Operation.operation_id, run['superseded_by_operation_id'])
+                if op['state'] not in {'succeeded','failed_safe','cancelled_pre_submit','needs_manual_review'}:return
             if op['state'] in {'accepted','interpreting','dispatching'}:
                 if now_ms<run['deadline_ms'] and run['state']!='failed':return
                 # A dispatching frozen plan is recovery-only, not proof of zero execution.
                 if op['plan_key'] is not None:return
                 if run['task_id']:
                     task=self._one(s,self.tasks,self.tasks.c.task_id,run['task_id'])
-                    if task['write_slot'] is not None:return
+                    if task['active_operation_id']==operation_id and task['write_slot'] is not None:return
                 transition_operation(s,operation_id=operation_id,current_state=op['state'],current_version=op['state_version'],target_state='failed_safe',now=_now(now_ms),failure_reason='run_budget_exhausted')
                 op['state']='failed_safe'
             if op['state'] not in {'succeeded','failed_safe','cancelled_pre_submit','needs_manual_review'}:return
@@ -249,6 +311,8 @@ class RunRepository(TaskControlStore):
                     payload=self.open('agent_run_steps','sealed_evidence',f'{operation_id}:{evidence["step_no"]}:0',evidence['sealed_evidence'])
                     if payload.get('kind')=='query_card':answer['evidence'].append(payload)
                     answer['evidence'].extend(payload.get('sources',[]))
+            if failure_code is not None:
+                answer['failure'] = {'code':failure_code,'retryable':False,'stage':'runtime'}
             existing=s.execute(select(self.outcomes).where(self.outcomes.c.operation_id==operation_id)).mappings().one_or_none()
             if existing and self.open('agent_run_outcomes','sealed_answer',operation_id,existing['sealed_answer'])==answer:return
             sealed=self.seal('agent_run_outcomes','sealed_answer',operation_id,answer)
@@ -257,18 +321,34 @@ class RunRepository(TaskControlStore):
             s.execute(update(self.runs).where(self.runs.c.operation_id==operation_id).values(state='completed' if completed else 'parked',fence=run['fence']+1))
             if run['task_id']:
                 t=self._one(s,self.tasks,self.tasks.c.task_id,run['task_id'])
-                if t['active_operation_id'] in (None,operation_id):
+                if t['active_operation_id']==operation_id or (t['active_operation_id'] is None and
+                    run['state']=='parked' and t['revision']==run['expected_task_revision'] and t['status'] in {'active','waiting','paused'}):
                     elapsed=run['active_ms'] if run['state']=='parked' or t['active_operation_id'] is None else max(run['active_ms'],min(now_ms,run['deadline_ms'])-run['started_ms'])
-                    s.execute(update(self.tasks).where(self.tasks.c.task_id==run['task_id']).values(status=answer['task_status'],active_operation_id=None,
+                    s.execute(update(self.tasks).where(self.tasks.c.task_id==run['task_id']).values(status=answer['task_status'],
+                        active_operation_id=operation_id if not completed and t['write_slot'] is not None else None,
                         active_ms=t['active_ms']+elapsed-run['active_ms'],write_slot=None if completed else t['write_slot']))
             anchor=s.execute(select(ConversationEvent.__table__).where(ConversationEvent.operation_id==operation_id,ConversationEvent.event_type=='user_message')).mappings().first()
-            if anchor:events.append_event(s,self.keyring,conversation_id=anchor['conversation_id'],session_id=anchor['session_id'],turn_id=anchor['turn_id'],
-                event_type=events.OPERATION_RESULT,operation_id=operation_id,content={'state':op['state'],'result_envelope':answer},now=_now(now_ms))
+            if anchor:
+                from personal_agent.api.app import _operation_event_content
+                operation = s.get(Operation, op['operation_id']); s.refresh(operation)
+                content = _operation_event_content(self.keyring, operation)
+                content['result_envelope'] = answer
+                events.append_event(s,self.keyring,conversation_id=anchor['conversation_id'],session_id=anchor['session_id'],turn_id=anchor['turn_id'],
+                    event_type=events.OPERATION_RESULT,operation_id=operation_id,content=content,now=_now(now_ms))
         self._write(work)
 
     def sweep(self, *, now_ms):
-        with self.sessions() as s:
-            ids=s.execute(select(self.runs.c.operation_id).where(self.runs.c.state.not_in(['completed','partial','cancelled'])).order_by(self.runs.c.started_ms).limit(100)).scalars().all()
-        for op in ids:
-            self.recover(op,now_ms=now_ms)
-            self.settle_expired_or_business(op,now_ms=now_ms)
+        cursor = None
+        while True:
+            with self.sessions() as s:
+                query = select(self.runs.c.started_ms, self.runs.c.operation_id).where(
+                    self.runs.c.state.not_in(['completed','partial','cancelled']), self.runs.c.started_ms <= now_ms)
+                if cursor is not None:
+                    from sqlalchemy import tuple_
+                    query = query.where(tuple_(self.runs.c.started_ms, self.runs.c.operation_id) > cursor)
+                rows = s.execute(query.order_by(self.runs.c.started_ms, self.runs.c.operation_id).limit(100)).all()
+            if not rows: return
+            for _, op in rows:
+                self.recover(op,now_ms=now_ms)
+                self.settle_expired_or_business(op,now_ms=now_ms)
+            cursor = tuple(rows[-1])

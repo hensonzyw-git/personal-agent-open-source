@@ -149,7 +149,7 @@ class TaskControlStore(RunLeaseStore):
                 submitted = session.execute(select(self.steps.c.call_id).where(
                     self.steps.c.operation_id == old['operation_id'], self.steps.c.kind == 'write',
                     self.steps.c.status.in_(['submitted','sent']))).first()
-                if submitted or not can_cancel_pre_submit(operation['state']):
+                if submitted or old['superseded_by_operation_id'] is not None or not can_cancel_pre_submit(operation['state']):
                     result = 'too_late'
             elif task['write_slot'] is not None:
                 result = 'too_late'

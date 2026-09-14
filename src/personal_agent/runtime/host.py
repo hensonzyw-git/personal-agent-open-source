@@ -11,6 +11,7 @@ from personal_agent.runtime.response_witness import AttemptBinding,ResponseViola
 from personal_agent.runtime.run_tools import ToolResult
 from personal_agent.runtime.run_repository import RunRepository
 from personal_agent.runtime.run_store import RunStateError
+from personal_agent.runtime.task_contracts import freeze_comparisons, validate_evidence_scope
 from personal_agent.runtime.run_catalog import catalog
 from personal_agent.runtime.answers import EvidenceCatalog,AnswerError,canonical
 from personal_agent.runtime.prompt import build_system_prompt,business_rules
@@ -102,7 +103,7 @@ class DurableRunHost:
         attempt=AttemptBinding(self.operation_id,run['llm_used']+1,1)
         if run['task_id'] is None:
             budgets=self.repo.reserve_prebind(self.operation_id,list(self.candidates),now_ms=now,attempt_key=attempt.nonce,lease=self.lease)
-            for b in budgets:self.candidates[b.task_id]['resumable']=b.resumable
+            for b in budgets:self.candidates[b.task_id].update(resumable=b.resumable, amendable=b.amendable, unavailable_reason=b.reason)
         else:self.repo.reserve_bound(self.operation_id,now_ms=now,llm_add=1,attempt_key=attempt.nonce,lease=self.lease)
         self.envelope=self.build_context()
         declared={json.loads(c.text)['function']['name'] for c in self.envelope.components if c.kind.value=='tool_declaration'}
@@ -153,6 +154,8 @@ class DurableRunHost:
         reads=sum(next(s.kind for s in self.specs if s.name==c.name)=='read' for c in calls)
         web=sum(c.business_name.startswith('search.') for c in calls)
         if run['read_used']+reads>3 or run['web_used']+web>2:raise RunStateError('batch_budget')
+        if any(c.args.get('response_mode') == 'card' for c in calls) and len(calls) != 1:
+            raise RunStateError('card_requires_exclusive_read')
         metadata=[c.args.get('task') for c in calls if 'task' in c.args]
         if metadata:
             if any(canonical(m)!=canonical(metadata[0]) for m in metadata):raise RunStateError('mixed_task_batch')
@@ -170,16 +173,24 @@ class DurableRunHost:
             run=self.repo.snapshot(self.operation_id)
             chosen=task_ref or run['task_id'] or 'task_'+uuid4().hex
             if run['task_id'] is not None and chosen!=run['task_id']:raise RunStateError('cannot_rebind')
+            for call in calls:
+                if next(s.kind for s in self.specs if s.name==call.name) == 'write':
+                    self.repo.validate_write_sources(m, call.args.get('write_source_refs', m['source_refs']),
+                        current_source=self.anchor.event_id, timeline=self.payload.conversation_id, task_id=task_ref or run['task_id'])
+            previous = self.pending_metadata or (old or {}).get('metadata')
+            m = freeze_comparisons(m, previous, task_id=chosen, revision=run['expected_task_revision'] or (old or {}).get('revision', 1))
             if run['task_id'] is None:
                 def bind(s):
                     bound=self.repo.bind(self.operation_id,task_id=task_ref,new_task_id=chosen,now_ms=self.now(),lease=self.lease,
                         sealed_goal=self.repo.seal('agent_tasks','sealed_goal',chosen,m['goal']),
                         sealed_constraints=self.repo.seal('agent_tasks','sealed_constraints',chosen,m['constraints']),_session=s)
-                    if not bound.accepted:raise RunStateError('task_binding_conflict')
-                    s.execute(update(self.repo.runs).where(self.repo.runs.c.operation_id==self.operation_id).values(
-                        candidate_operation_id=old.get('source_operation_id') if old else None,
-                        expected_source_version=old.get('source_version') if old else None))
-                self.repo._write(bind)
+                    if bound.accepted:
+                        s.execute(update(self.repo.runs).where(self.repo.runs.c.operation_id==self.operation_id).values(
+                            candidate_operation_id=old.get('source_operation_id') if old else None,
+                            expected_source_version=old.get('source_version') if old else None))
+                    return bound.accepted
+                if not self.repo._write(bind):
+                    raise RunStateError('task_binding_conflict')
             self.pending_metadata=m
             # Persist the model-extracted comparison contract before using it.
             def persist(s):
@@ -188,6 +199,9 @@ class DurableRunHost:
                 snapshot=self.repo.open('agent_runs','sealed_input_snapshot',self.operation_id,run['sealed_input_snapshot'])
                 snapshot['task_metadata']=m
                 s.execute(update(self.repo.runs).where(self.repo.runs.c.operation_id==self.operation_id).values(sealed_input_snapshot=self.repo.seal('agent_runs','sealed_input_snapshot',self.operation_id,snapshot)))
+                s.execute(update(self.repo.tasks).where(self.repo.tasks.c.task_id==run['task_id']).values(
+                    sealed_constraints=self.repo.seal('agent_tasks','sealed_constraints',run['task_id'],m['constraints']),
+                    source_refs=self.repo.seal('agent_tasks','source_refs',run['task_id'],m)))
             self.repo._write(persist)
             for comparison in m.get('comparisons',[]):
                 with self.deps.session_factory() as s:self.repo.validate_sources(s,self.payload.conversation_id,comparison['source_refs'])
@@ -205,7 +219,7 @@ class DurableRunHost:
             items,cursor=self._discover(args.get('cursor',0))
             if self.repo.snapshot(self.operation_id)['task_id'] is None:
                 budgets=self.repo.reserve_prebind(self.operation_id,list(self.candidates),now_ms=self.now(),llm_add=0,read_add=1,attempt_key=call.call_id,lease=self.lease)
-                for b in budgets:self.candidates[b.task_id]['resumable']=b.resumable
+                for b in budgets:self.candidates[b.task_id].update(resumable=b.resumable, amendable=b.amendable, unavailable_reason=b.reason)
             else:self.repo.reserve_bound(self.operation_id,now_ms=self.now(),read_add=1,attempt_key=call.call_id,lease=self.lease)
             result={'tasks':[self.candidates[t['task_ref']] for t in items],'next_cursor':cursor}
             self.results.append(result); self.repo.evidence_step(self.lease,call.call_id,result,now_ms=self.now())
@@ -224,7 +238,11 @@ class DurableRunHost:
                     sealed_goal=self.repo.seal('agent_tasks','sealed_goal',old['task_ref'],m['goal']) if m else None,
                     sealed_constraints=self.repo.seal('agent_tasks','sealed_constraints',old['task_ref'],m['constraints']) if m else None)
             self.results.append({'control':args['action'],'result':r})
-            if args['action']=='amend' and r=='applied':self.candidates[old['task_ref']]={**old,'revision':old['revision']+1,'goal':m['goal'],'constraints':m['constraints']}
+            if args['action']=='amend' and r=='applied':
+                self.candidates[old['task_ref']]={**old,'revision':old['revision']+1,'goal':m['goal'],'constraints':m['constraints']}
+                run = self.repo.snapshot(self.operation_id)
+                self.pending_metadata = self.repo.open('agent_runs','sealed_input_snapshot',self.operation_id,run['sealed_input_snapshot'])['task_metadata']
+                self.evidence.comparisons = {c['comparison_ref']:c for c in self.pending_metadata.get('comparisons',[])}
             else:self.candidates.pop(old['task_ref'])
             if args['action']!='amend' or r!='applied':
                 tid='task_'+uuid4().hex
@@ -239,7 +257,14 @@ class DurableRunHost:
         if name=='calendar.create_event' and 'items' in args:
             return ToolResult(await asyncio.to_thread(self._calendar_plan,args['items']),stop=True)
         if name=='agent.finish':
-            try:answer=self.evidence.answer(args['answer'])
+            try:
+                answer=self.evidence.answer(args['answer'])
+                if answer['coverage']=='complete' and answer['kind'] not in {'clarification','limitation'}:
+                    required = set(self.evidence.comparisons)
+                    supplied = {n['comparison_ref'] for n in answer.get('analysis_nodes', []) if n['kind']=='comparison'}
+                    if not required <= supplied:raise AnswerError('missing_required_comparison')
+                    for evidence in answer['evidence']:
+                        if evidence['kind']=='query_card':validate_evidence_scope(evidence,self.pending_metadata)
             except AnswerError:
                 answer={'version':2,'kind':'limitation','task_status':'waiting','coverage':'partial','text':'分析未完成；已完成的查询结果保留。','evidence':list(self.evidence.evidence.values()),'failure':{'code':'analysis_incomplete','retryable':False,'stage':'render'}}
             close_source=not self.read_failed and not answer.get('failure')
@@ -269,13 +294,15 @@ class DurableRunHost:
             with self.deps.session_factory() as s:
                 reserved=s.execute(select(self.repo.steps.c.call_id).where(self.repo.steps.c.operation_id==self.operation_id,self.repo.steps.c.call_id==call.call_id)).first()
             if reserved:self.repo.evidence_step(self.lease,call.call_id,result,now_ms=self.now())
+            if self.read_failed:raise RunStateError('read_batch_failed')
             return ToolResult(result)
         spec=next(s for s in self.specs if s.business_name==name)
         cleaned=self.deps.build_authorizer(self.auth)(tool=name,model_args=args['arguments'])
         if spec.kind=='read':
             request={'tool':name,'arguments':cleaned}
             cached=self.repo.cached_read(self.operation_id,request)
-            if cached is not None:return ToolResult(cached)
+            if cached is not None:
+                return self._read_result(call, cached)
             self.repo.reserve_read(self.lease,call.call_id,request,now_ms=self.now())
             with self.deps.session_factory() as s:op=s.get(Operation,self.operation_id); trace=op.trace_id; key=op.idempotency_key
             outcome=await asyncio.to_thread(self.deps.build_dispatcher(self.auth,trace).resolve,tool=name,model_args=cleaned,idempotency_key=key)
@@ -286,9 +313,34 @@ class DurableRunHost:
                 self.results.append(result)
             else:result={'error':'query_incomplete'};self.results.append(result);self.read_failed=True
             self.repo.evidence_step(self.lease,call.call_id,result,now_ms=self.now())
-            return ToolResult(result)
+            if self.read_failed:raise RunStateError('read_batch_failed')
+            return self._read_result(call, result)
         answer=await asyncio.to_thread(self._write,name,cleaned)
         return ToolResult(answer,stop=True)
+
+    def _read_result(self, call, result):
+        if call.args.get('response_mode', 'analyze') != 'card':
+            return ToolResult(result)
+        if result.get('kind') != 'query_card' or not result.get('query_result'):
+            raise RunStateError('query_card_unavailable')
+        try:validate_evidence_scope(result, self.pending_metadata)
+        except AnswerError:raise RunStateError('evidence_scope_mismatch') from None
+        if self.pending_metadata.get('comparisons'):
+            raise RunStateError('comparison_requires_analysis')
+        if call.business_name == 'finance.query_expenses':
+            from personal_agent.api.finance_query_projection import decode_finance_query_projection, summarise_query_projection
+            text = summarise_query_projection(decode_finance_query_projection(result['query_result']))
+        else:
+            text = '日历查询结果如下。'
+        partial = bool(result['query_result'].get('next_cursor') or result['query_result'].get('mirror_stale'))
+        if partial:text += ' 当前结果仅覆盖部分数据。'
+        answer = {'version':2,'kind':'query','task_status':'waiting' if partial else 'completed','coverage':'partial' if partial else 'complete',
+                  'text':text,'evidence':list(self.evidence.evidence.values())}
+        self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=self.event_writer,metadata=self.pending_metadata,close_source=not partial)
+        return ToolResult(answer,stop=True)
+
+    async def batch_failed(self, calls):
+        self.repo.record_not_executed(self.lease, calls, now_ms=self.now())
 
     def _write(self,name,args):
         from personal_agent.api.intent import WriteIntent
@@ -360,7 +412,7 @@ class DurableRunHost:
             self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=self.event_writer,close_source=False)
         except RunStateError:
             self.repo.recover(self.operation_id,now_ms=self.now())
-            self.repo.settle_expired_or_business(self.operation_id,now_ms=self.now())
+            self.repo.settle_expired_or_business(self.operation_id,now_ms=self.now(), failure_code=code)
 
     def _calendar_plan(self, items):
         from personal_agent.api.intent import WriteIntent

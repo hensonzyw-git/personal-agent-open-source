@@ -120,5 +120,39 @@
         "text": "合成测试"
       }
     }
+  ],
+  "history_cases": [
+    {
+      "name": "income_receipt",
+      "content": {
+        "state": "succeeded",
+        "tool": "finance.log_income",
+        "record_id": "synthetic-record",
+        "result_envelope": {
+          "version": 2,
+          "kind": "action",
+          "task_status": "completed",
+          "text": "合成回执",
+          "evidence": []
+        }
+      },
+      "outcome": "recorded"
+    },
+    {
+      "name": "duplicate_decision",
+      "content": {
+        "state": "waiting_for_duplicate_decision",
+        "tool": "finance.log_income",
+        "duplicate_check_id": "dup-history",
+        "result_envelope": {
+          "version": 2,
+          "kind": "action",
+          "task_status": "waiting",
+          "text": "合成回执",
+          "evidence": []
+        }
+      },
+      "outcome": "needsDuplicateDecision"
+    }
   ]
 }

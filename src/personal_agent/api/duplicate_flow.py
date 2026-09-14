@@ -147,6 +147,20 @@ def decide_duplicate(
         target_state="cancelled_pre_submit",
         now=now,
     )
+    if new_operation is not None:
+        from sqlalchemy import select, update
+        from personal_agent.runtime.run_repository import RunRepository
+        repo = RunRepository(None, keyring)
+        run = session.execute(select(repo.runs).where(repo.runs.c.operation_id == parked.operation_id)).mappings().one_or_none()
+        if run is None:
+            run = session.execute(select(repo.runs).join(Operation,Operation.operation_id==repo.runs.c.operation_id).where(
+                repo.runs.c.superseded_by_operation_id == parked.operation_id,
+                Operation.duplicate_check_id.is_not(None))).mappings().one_or_none()
+        if run is not None:
+            session.execute(update(repo.runs).where(repo.runs.c.operation_id == run['operation_id']).values(
+                superseded_by_operation_id=new_operation.operation_id))
+            session.execute(update(repo.tasks).where(repo.tasks.c.task_id == run['task_id']).values(
+                status='waiting', active_operation_id=run['operation_id'], write_slot=new_operation.idempotency_key))
     return DuplicateDecisionOutcome(
         decision=decision, new_operation=new_operation
     )

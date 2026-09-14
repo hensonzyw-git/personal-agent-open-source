@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from sqlalchemy import func, insert, select, update
 
-from personal_agent.storage.models import Base
+from personal_agent.storage.models import Base, Operation
 from personal_agent_core.sqlite import run_write_transaction
 
 
@@ -30,6 +30,7 @@ class CandidateBudget:
     resumable: bool
     control_available: bool = True
     reason: str | None = None
+    amendable: bool = False
 
 
 @dataclass(frozen=True)
@@ -148,8 +149,17 @@ class RunBudgetStore:
                 if task["timeline_id"] != run["timeline_id"]:
                     raise RunStateError("candidate_not_available")
                 held = self._held(session, task_id, exclude_run=operation_id)
+                amendable = False
+                if task['active_operation_id'] is not None:
+                    active = self._one(session, self.runs, self.runs.c.operation_id, task['active_operation_id'])
+                    op = self._one(session, Operation.__table__, Operation.operation_id, active['operation_id'])
+                    submitted = session.execute(select(self.steps.c.call_id).where(
+                        self.steps.c.operation_id == active['operation_id'], self.steps.c.kind == 'write',
+                        self.steps.c.status.in_(['submitted', 'sent']))).first()
+                    from personal_agent.api.operation_state import can_cancel_pre_submit
+                    amendable = can_cancel_pre_submit(op['state']) and not submitted and active['superseded_by_operation_id'] is None
                 eligible = (task["status"] in {"active", "waiting", "paused"}
-                    and task["active_operation_id"] is None
+                    and ((task["active_operation_id"] is None and task['write_slot'] is None) or amendable)
                     and all(task[USAGE_COLUMNS[key]] + held[key] + desired[key] <= TASK_LIMITS[key] for key in TASK_LIMITS))
                 r = self.reservations
                 old = session.execute(select(r).where(r.c.operation_id == operation_id,
@@ -166,8 +176,8 @@ class RunBudgetStore:
                             reservation_no=0, **values))
                 # Do not release an earlier hold on degradation: an already
                 # dispatched attempt must still be charged after a crash.
-                candidates.append(CandidateBudget(task_id, task["revision"], eligible,
-                    reason=None if eligible else "candidate_not_resumable"))
+                candidates.append(CandidateBudget(task_id, task["revision"], eligible and not amendable,
+                    reason=None if eligible else "candidate_not_resumable", amendable=eligible and amendable))
             if not prior:
                 step_no = self._next_step(session, operation_id)
                 session.execute(insert(self.steps).values(operation_id=operation_id, step_no=step_no,
@@ -183,7 +193,7 @@ class RunBudgetStore:
         return self._write(work)
 
     def bind(self, operation_id, *, task_id, now_ms, sealed_goal, sealed_constraints,
-             new_task_id=None, lease=None, _session=None):
+             new_task_id=None, lease=None, _session=None, _reject=False):
         def work(session):
             run = self._one(session, self.runs, self.runs.c.operation_id, operation_id)
             self._guard_lease(run, lease, now_ms)
@@ -205,8 +215,8 @@ class RunBudgetStore:
                     r.c.task_id == task_id, r.c.reservation_no == 0, r.c.state == "held")).mappings().one_or_none()
                 if reservation is None or any(reservation[key] < costs[key] for key in costs):
                     raise RunStateError("candidate_not_reserved")
-                accepted = (task["revision"] == reservation["task_revision"]
-                    and task["active_operation_id"] is None and task["status"] in {"active", "waiting", "paused"})
+                accepted = (not _reject and task["revision"] == reservation["task_revision"]
+                    and task["active_operation_id"] is None and task['write_slot'] is None and task["status"] in {"active", "waiting", "paused"})
                 updates = {USAGE_COLUMNS[k]: task[USAGE_COLUMNS[k]] + costs[k] for k in costs}
                 if accepted:
                     updates.update(active_operation_id=operation_id, status="active")

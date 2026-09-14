@@ -41,7 +41,8 @@ def anchor(session,deps,operation,payload,source_version):
 
 
 def project(session,keyring,operation,client_wire_version):
-    if row(session,operation.operation_id) is None:
+    run = row(session,operation.operation_id)
+    if run is None:
         if operation.plan_key:
             parent=session.execute(select(Operation.operation_id).where(Operation.idempotency_key==operation.plan_key)).scalar_one_or_none()
             if parent and row(session,parent) is not None and client_wire_version<4:raise unavailable('client_upgrade_required')
@@ -53,6 +54,9 @@ def project(session,keyring,operation,client_wire_version):
     answer=r.open('agent_run_outcomes','sealed_answer',operation.operation_id,out['sealed_answer'])
     # Live operation truth wins over a pre-receipt action envelope.
     if answer['kind']=='action':
+        if operation.duplicate_check_id and run['superseded_by_operation_id']:
+            operation = session.execute(select(Operation).where(
+                Operation.operation_id == run['superseded_by_operation_id'])).scalar_one()
         answer['task_status']='completed' if operation.state in {'succeeded','failed_safe','cancelled_pre_submit'} else 'waiting'
         answer['text']='操作已完成。' if operation.state=='succeeded' else '操作尚未完成。'
         if operation.plan_key:
@@ -82,11 +86,15 @@ def process(deps,auth,operation_id):
             envelope=context();s.commit();return envelope
         def write_event(db,answer):
             operation=db.get(Operation,operation_id)
+            db.refresh(operation)
             if answer['kind']=='clarification':
                 operation.api_request.encrypted_request_payload=seal_chat_request(deps.keyring,request_id=operation.request_id,
                     payload=with_clarification_question(payload,answer['text']))
+            from personal_agent.api.app import _operation_event_content
+            content = _operation_event_content(deps.keyring, operation)
+            content['result_envelope'] = answer
             events.append_event(db,deps.keyring,conversation_id=payload.conversation_id,session_id=anchor_event.session_id,
-                turn_id=anchor_event.turn_id,event_type=events.OPERATION_RESULT,content={'state':operation.state,'result_envelope':answer},operation_id=operation_id,now=deps.now())
+                turn_id=anchor_event.turn_id,event_type=events.OPERATION_RESULT,content=content,operation_id=operation_id,now=deps.now())
         s.commit()
         repository=RunRepository(deps.session_factory,deps.keyring)
         try:

@@ -27,6 +27,7 @@ from pydantic import PrivateAttr
 from personal_agent.runtime.response_witness import AttemptBinding, ResponseViolation, arguments_hash
 from personal_agent.runtime.run_tools import AcceptedCall, RunTool, RunToolSpec, ToolResult
 from personal_agent.runtime.witnessed_model import WitnessedLiteLlm
+from personal_agent.runtime.run_store import RunStateError
 
 
 @dataclass(frozen=True)
@@ -212,7 +213,11 @@ class AdkRuntime:
             return self.result
         except BaseException as exc:
             self.failed = True
-            code = str(exc) if isinstance(exc, ResponseViolation) else "run_failed"
+            code = str(exc) if isinstance(exc, (ResponseViolation, RunStateError)) else "run_failed"
+            unstarted = tuple(c for c in self.accepted.values() if c.call_id not in self.claimed)
+            if unstarted and hasattr(self.host, 'batch_failed'):
+                try:await self.host.batch_failed(unstarted)
+                except RunStateError:pass  # A revoked fence cannot mutate the new owner's steps.
             retry = code == 'finish_required' and getattr(self.host, 'allow_format_retry', lambda: False)()
             if not retry:await self.host.failed_run(code)
             if isinstance(exc, asyncio.CancelledError):
