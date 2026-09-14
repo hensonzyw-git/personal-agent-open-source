@@ -17,9 +17,9 @@ def test_total_budget_persists_and_does_not_oversubscribe(tmp_path):
         try:return m.reserve('model',path)
         except RuntimeError:return None
     with ThreadPoolExecutor(max_workers=8) as pool:
-        results=list(pool.map(attempt,range(110)))
-    assert sorted(x for x in results if x is not None)==list(range(1,101))
-    assert json.loads(path.read_text())=={'model':100,'anysearch':0}
+        results=list(pool.map(attempt,range(310)))
+    assert sorted(x for x in results if x is not None)==list(range(1,301))
+    assert json.loads(path.read_text())=={'model':300,'anysearch':0}
     assert m.reserve('anysearch',path)==1
 
 
@@ -70,3 +70,9 @@ def test_migrated_counter_continues_from_history(tmp_path):
     path=tmp_path/'budget.json';path.write_text('{"model":84,"anysearch":19}');path.chmod(0o600)
     assert m.reserve('model',path)==85
     assert json.loads(path.read_text())=={'model':85,'anysearch':19}
+
+
+def test_search_limit_is_not_increased(tmp_path):
+    path=tmp_path/'budget.json';path.write_text('{"model":100,"anysearch":100}');path.chmod(0o600)
+    with pytest.raises(RuntimeError,match='authorization_exhausted'):m.reserve('anysearch',path)
+    assert m.reserve('model',path)==101

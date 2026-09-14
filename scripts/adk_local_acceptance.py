@@ -12,6 +12,7 @@ import httpx
 ROOT = Path(__file__).resolve().parents[1]
 STATE = Path('/home/example/private-path')
 ENV = Path('/home/example/private-path')
+LIMITS = {'model': 300, 'anysearch': 100}
 EXPIRES = datetime.fromisoformat('2026-09-16T00:00:00+08:00')
 CASES = [
  ('greeting', '你好', None, 'conversation; one model; no business call'),
@@ -57,9 +58,9 @@ def reserve(provider, path=None):
         raw = f.read()
         try: data = json.loads(raw)
         except ValueError: raise RuntimeError('authorization_ledger_invalid') from None
-        if not isinstance(data, dict) or any(type(data.get(k)) is not int or not 0 <= data[k] <= 100 for k in ('model','anysearch')):
+        if not isinstance(data, dict) or any(type(data.get(k)) is not int or not 0 <= data[k] <= LIMITS[k] for k in ('model','anysearch')):
             raise RuntimeError('authorization_ledger_invalid')
-        if provider not in data or data[provider] >= 100: raise RuntimeError('authorization_exhausted')
+        if provider not in LIMITS or data[provider] >= LIMITS[provider]: raise RuntimeError('authorization_exhausted')
         data[provider] += 1
         f.seek(0); json.dump(data, f); f.truncate(); f.flush(); os.fsync(f.fileno())
         return data[provider]
@@ -131,7 +132,7 @@ def models(values, repetitions, selected=None):
     for repetition in range(1,repetitions+1):
       for case_id,utterance,fixture,rubric in CASES + (WEB_CASES if selected else []):
         if selected and case_id not in selected:continue
-        if STATE.exists() and json.loads(STATE.read_text()).get('model',0)>96:return rows
+        if STATE.exists() and json.loads(STATE.read_text()).get('model',0)>=LIMITS['model']:return rows
         trace=[]; business=[]; web_trace=[]
         class ReadOnlyFixture(FakeDispatcher):
             def resolve(self,**kw):
