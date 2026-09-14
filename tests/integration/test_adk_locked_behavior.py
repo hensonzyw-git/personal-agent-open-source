@@ -234,24 +234,30 @@ def test_locked_litellm_must_not_repair_arguments_before_batch_validation(raw, a
     Real LiteLlm + Runner; only the completion counterparty is synthetic.
     This tests the information visible at after_model, not a fake ADK parser.
     """
-    from google.adk.models.lite_llm import LiteLlm, LiteLLMClient
+    import httpx
     from jsonschema import validate
-    from litellm import ModelResponse
+    from personal_agent.runtime.response_witness import AttemptBinding, ResponseViolation
+    from personal_agent.runtime.witnessed_model import WitnessedLiteLlm
 
-    class RawCompletion(LiteLLMClient):
-        async def acompletion(self, model, messages, tools, **kwargs):
-            return ModelResponse(choices=[{
-                "index": 0,
-                "finish_reason": "tool_calls",
+    binding = AttemptBinding("synthetic-request", 1, 1)
+    sent = []
+    async def raw_http(request):
+        sent.append(request)
+        return httpx.Response(200, json={
+            "id": "synthetic-response", "object": "chat.completion", "created": 1,
+            "model": "synthetic", "choices": [{
+                "index": 0, "finish_reason": "tool_calls",
                 "message": {"role": "assistant", "content": None, "tool_calls": [{
                     "id": "raw-c1", "type": "function",
                     "function": {"name": "write_handoff", "arguments": raw},
                 }]},
-            }])
+            }], "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+        })
 
     class SchemaCheckingHarness(Harness):
         async def after_model(self, callback_context, llm_response):
-            # Even an actual strict business schema cannot recover lost syntax.
+            self.model.verify_response(llm_response, binding=binding)
+            # Schema validation supplements raw syntax/provenance validation.
             parts = llm_response.content.parts
             assert len(parts) == 1
             assert parts[0].function_call.name == "write_handoff"
@@ -261,12 +267,15 @@ def test_locked_litellm_must_not_repair_arguments_before_batch_validation(raw, a
             })
             await super().after_model(callback_context, llm_response)
 
-    model = LiteLlm(model="openai/synthetic", llm_client=RawCompletion())
+    model = WitnessedLiteLlm(model="openai/synthetic", provider_name="zhipu",
+        api_key="synthetic-test-key", binding=binding, transport=httpx.MockTransport(raw_http))
     h = SchemaCheckingHarness([], model=model)
     try:
         asyncio.run(h.run())
-    except (ValueError, TypeError):
-        pass  # A strict parser rejection is the expected safe behavior.
+    except ResponseViolation:
+        if allowed:
+            raise
+    assert len(sent) == 1
     assert any(x.startswith("start:") for x in h.trace) is allowed, (
         "Raw invalid/duplicate arguments became executable before the callback; "
         f"callback saw {h.accepted!r}"

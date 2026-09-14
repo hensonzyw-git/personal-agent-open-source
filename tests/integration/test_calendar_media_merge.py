@@ -15,10 +15,15 @@ def test_calendar_and_media_heads_converge(tmp_path, previous):
     engine = create_database_engine(tmp_path / "merged.sqlite")
     try:
         scripts = ScriptDirectory.from_config(db.alembic_config(engine))
-        assert scripts.get_heads() == ["0012_calendar_media_merge"]
+        assert len(scripts.get_heads()) == 1
+        assert set(scripts.get_revision("0012_calendar_media_merge").down_revision) == {
+            "0011_action_plan", "0010_media_upload_idempotency",
+        }
         db.upgrade(engine, previous)
         previous_tables = set(inspect(engine).get_table_names())
-        db.upgrade(engine)
+        # Verify this historical merge itself, even after later migrations add
+        # a new head. The final upgrade below also exercises the current head.
+        db.upgrade(engine, "0012_calendar_media_merge")
         expected_tables = set(inspect(engine).get_table_names())
         assert {"media_objects", "media_attempts", "operations"} <= expected_tables
         columns = {column["name"] for column in inspect(engine).get_columns("operations")}
