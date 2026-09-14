@@ -613,10 +613,10 @@ private final class HeaderStubProtocol: URLProtocol {
 struct ClientWireVersionTests {
     @Test("this build declares the version it actually implements")
     func versionIsTheImplementedOne() {
-        // v3 adds a per-window sync epoch to v2's calendar actions.
-        // The mirror's prepare/capture/upload flow implements that contract.
-        #expect(ClientWireVersion.version == 3)
-        #expect(ClientWireVersion.value == "3")
+        // v4 adds model-led chat results to v3's calendar sync epoch.
+        // This build decodes ResultEnvelope v2 and declares that capability.
+        #expect(ClientWireVersion.version == 4)
+        #expect(ClientWireVersion.value == "4")
         #expect(ClientWireVersion.header == "X-Client-Wire-Version")
     }
 
