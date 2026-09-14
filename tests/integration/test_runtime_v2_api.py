@@ -1,6 +1,7 @@
 """Real API -> durable Host -> real ADK/SDK, with synthetic HTTP only."""
 import json
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 from test_agent_api import engine,token_ring,keyring,_auth,NOW,FakeInterpreter,FakeDispatcher,DirectAnswer
 from cap001_fixtures import CURSOR_KEY,IDENTIFIER_KEY
@@ -153,6 +154,18 @@ def test_full_catalog_leaves_room_for_context():
     capability_line='\n本轮工具清单：'+','.join(sorted(available))+'\n'
     size=len((capability_line+canonical([t.model_dump(mode='json',exclude_none=True) for t in tools])+build_system_prompt(today='2026-09-14',runtime_v2=True)+business_rules('finance.',today='2026-09-14')+business_rules('calendar.',today='2026-09-14')).encode())
     assert size+4000<=24000,size
+    # A real follow-up must fit search results too, not only the empty catalog.
+    from personal_agent.runtime.web_projection import model_results
+    sources = [{'kind':'web_source','ref':'web_'+str(i)*64,'source_ref':'web_'+str(i)*64,
+                'provider_request_id':'11111111-1111-4111-8111-111111111111',
+                'title':'Official documentation', 'url':f'https://docs.example.org/library/{i}',
+                'snippet':'s'*2000,'content':'c'*8000,'content_present':True,'truncated':False}
+               for i in range(5)]
+    raw = len(canonical([{'sources':sources}]).encode())
+    bounded = len(canonical(model_results([{'sources':sources}])).encode())
+    assert size + 512 + raw > 24000
+    assert size + 512 + bounded + 1000 <= 24000
+
 
 
 def test_automatic_task_selection_closes_only_selected_source(engine,token_ring,keyring):
@@ -192,22 +205,27 @@ def test_model_cancel_closes_waiting_operation_without_charging_user_wait(engine
         assert client.get('/v1/operations/'+first['operation_id'],headers=h).json()['state']=='cancelled_pre_submit'
 
 
-def test_search_is_wired_through_sdk_host_and_sealed_audit(engine,token_ring,keyring):
+@pytest.mark.parametrize('full_catalog', [False, True])
+def test_search_is_wired_through_sdk_host_and_sealed_audit(engine,token_ring,keyring,full_catalog):
     from personal_agent.search.adapter import SearchAdapter,SearchConfig
     from personal_agent.storage.models import Device,Base
     from sqlalchemy import select
     from uuid import uuid4
     def search(c,m):return [fc('search_web','search',arguments={'query':'public documentation'},task=m)]
     def finish(c,m):
-        ref=c['completed_results'][0]['sources'][0]['ref']
+        ref=c['completed_results'][0]['sources'][0]['source_ref']
         return [fc('agent_finish','finish',task=m,answer={'kind':'analysis','coverage':'complete','evidence_refs':[ref],'analysis_nodes':[{'kind':'web_claim','text':'合成公开信息','source_refs':[ref]}],'commentary':''})]
-    client,calls,deps=client_for(engine,token_ring,keyring,[search,finish])
+    from personal_agent_core.tool_ir import TOOL_CONTRACTS
+    from personal_agent.policy.bridge import VisibleTool
+    tools = [VisibleTool(t.name,t.summary,t.model_input_schema,t.risk_level,t.required_scopes)
+             for t in TOOL_CONTRACTS if t.enabled and t.model_callable and not t.name.startswith('search.')] if full_catalog else []
+    client,calls,deps=client_for(engine,token_ring,keyring,[search,finish],tools=tools)
     with deps.session_factory() as s:
         d=s.get(Device,'dev-1');scopes=json.loads(d.scopes);scopes.append('public_web.read');d.scopes=json.dumps(scopes);s.commit()
     requests=[]
     def transport(req):
         requests.append(req)
-        return httpx.Response(200,json={'code':0,'request_id':str(uuid4()),'data':{'results':[{'title':'Public','url':'https://example.org/','snippet':'Synthetic'}]}})
+        return httpx.Response(200,json={'code':0,'request_id':str(uuid4()),'data':{'results':[{'title':'Public','url':'https://example.org/','snippet':'Synthetic '*200,'content':'Public content '*500} for _ in range(5 if full_catalog else 1)]}})
     deps.v2_search_allowed=lambda auth,tool:True
     deps.v2_search_adapter=SearchAdapter(SearchConfig(enabled=True,auth_mode='anonymous'),transport=httpx.MockTransport(transport),resolve=lambda host:['8.8.8.8'])
     with client:

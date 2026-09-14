@@ -16,6 +16,7 @@ from personal_agent.runtime.run_catalog import catalog
 from personal_agent.runtime.answers import EvidenceCatalog,AnswerError,canonical
 from personal_agent.runtime.prompt import build_system_prompt,business_rules
 from personal_agent.runtime.model_input import image_parts
+from personal_agent.runtime.web_projection import model_results
 from personal_agent.runtime.model_providers import provider_from_env,credential_from_env,resolved_model_id
 from personal_agent.runtime.witnessed_model import WitnessedLiteLlm
 from personal_agent.storage.models import Operation,Device
@@ -116,7 +117,7 @@ class DurableRunHost:
         available_tools={s.business_name for s in self.specs if not s.business_name.startswith('agent.')}
         system=build_system_prompt(today=today,runtime_v2=True)+'\n本轮工具清单：'+(','.join(sorted(available_tools)) or '无')+'\n'+ '\n'.join(business_rules(d+'.',today=today,available_tools=available_tools) for d in sorted(domains))
         data={'current_user_source_ref':self.anchor.event_id,'current_input':self.payload.text,
-            'candidates':list(self.candidates.values()),'completed_results':self.results,'metrics':[asdict(m) for m in self.evidence.metrics.values()],
+            'candidates':list(self.candidates.values()),'completed_results':model_results(self.results),'metrics':[asdict(m) for m in self.evidence.metrics.values()],
             'tool_evidence_refs':list(self.evidence.evidence),
             'comparisons':self.evidence.comparisons,'format_error':self.format_error,'required_context':mandatory,'bound_task':({**self.pending_metadata,'task_ref':run['task_id']} if self.pending_metadata else None)}
         images=image_parts(self.envelope.input_parts)
