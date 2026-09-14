@@ -745,6 +745,20 @@ async def agent_service(
     )
     # The one assembly point for model context.
     context_builder = ContextBuilder(context_config, compactor=compactor)
+    from personal_agent.runtime.input_budget import input_budget_from_env
+    from personal_agent.context.budget import ContextBudgeter
+    from dataclasses import replace
+    v2_input_budget = input_budget_from_env()
+    v2_context_builder = context_builder
+    if v2_input_budget:
+        v2_context_config = replace(context_config, name='adk-200k-v1',
+            hard_limit_tokens=v2_input_budget.limit,
+            soft_limit_tokens=min(160000, v2_input_budget.limit-1),
+            product_ceiling_tokens=v2_input_budget.limit+v2_input_budget.output_limit+4096,
+            reserved_output_tokens=v2_input_budget.output_limit)
+        v2_context_config.require_within_model_limit(declared_context_limit())
+        v2_context_builder = ContextBuilder(v2_context_config, compactor=compactor,
+            budgeter=ContextBudgeter(v2_context_config, estimator=v2_input_budget))
 
     with _engine_for(config.database) as engine:
         sessions = session_factory(engine)
@@ -835,7 +849,7 @@ async def agent_service(
                 from personal_agent.storage.models import ConversationEvent
                 event = session.get(ConversationEvent, current_event_id)
                 is_v2 = event is not None and runtime_row(session, event.operation_id) is not None
-                return context_builder.build(
+                return (v2_context_builder if is_v2 else context_builder).build(
                     session,
                     keyring,
                     identifier_key,
@@ -984,6 +998,7 @@ async def agent_service(
             yield ComposedAgentService(
                 deps=AgentApiDeps(
                     session_factory=sessions,
+                    v2_input_budget=v2_input_budget,
                     v2_device_ids=config.v2_device_ids,
                     v2_execution_enabled=config.v2_execution_enabled,
                     v2_search_adapter=_search_adapter(config.search_config),

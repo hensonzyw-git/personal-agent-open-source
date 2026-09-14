@@ -53,7 +53,7 @@ def test_provider_failure_shapes_are_bounded(status,body,header):
     assert len(calls)==len(reserved)==1
 
 
-def test_extract_sends_only_pinned_url_and_marks_truncation():
+def test_extract_sends_only_pinned_url_and_preserves_body():
     from uuid import uuid4
     rid=str(uuid4());requests=[]
     def transport(request):
@@ -64,4 +64,4 @@ def test_extract_sends_only_pinned_url_and_marks_truncation():
     import json
     assert json.loads(requests[0].content)=={'url':'https://example.org/'}
     assert str(requests[0].url)=='https://api.anysearch.com/v1/extract'
-    assert result[0]['truncated'] and len(result[0]['content'])==8000
+    assert not result[0]['truncated'] and len(result[0]['content'])==9000

@@ -314,6 +314,7 @@ class AgentApiDeps:
     #: composed, and the signal is then recorded and not acted on.
     v2_device_ids: frozenset[str] = frozenset()
     v2_execution_enabled: bool = True
+    v2_input_budget: Any = None
     v2_model_factory: Callable | None = None
     v2_search_adapter: Any = None
     v2_search_allowed: Callable[[AuthContext, str], bool] = lambda auth, tool: False

@@ -50,6 +50,7 @@ def _private_sdk_defaults():
 
 
 class WitnessedLiteLlm(BaseLlm):
+    _input_budget: object = PrivateAttr(default=None)
     _binding: AttemptBinding = PrivateAttr()
     _key: str = PrivateAttr()
     _provider_name: str = PrivateAttr()
@@ -63,7 +64,7 @@ class WitnessedLiteLlm(BaseLlm):
 
     def __init__(self, *, model: str, provider_name: str, api_key: str,
                  binding: AttemptBinding, transport=None, timeout: float = 25,
-                 expected_images: tuple = (), text_required: bool = False):
+                 expected_images: tuple = (), text_required: bool = False, input_budget=None):
         if provider_name not in PROVIDERS or not model.startswith("openai/"):
             raise ResponseViolation("unsupported_provider")
         if not 0 < timeout <= 25:
@@ -71,6 +72,7 @@ class WitnessedLiteLlm(BaseLlm):
         super().__init__(model=model)
         self._provider_name = provider_name
         self._key = api_key
+        self._input_budget = input_budget
         self._binding = binding
         self._transport = transport
         self._timeout = timeout
@@ -80,6 +82,18 @@ class WitnessedLiteLlm(BaseLlm):
     @property
     def binding(self):
         return self._binding
+
+    async def _check_input_budget(self, request):
+        if self._input_budget is None:
+            return
+        from personal_agent.runtime.response_witness import strict_json
+        try:
+            self._input_budget.check_request(strict_json(request.content),
+                sum(i.token_upper_bound for i in self._images))
+        except ValueError as exc:
+            if self._guard is not None:
+                self._guard.invalidate(str(exc))
+            raise ResponseViolation(str(exc)) from None
 
     async def generate_content_async(self, llm_request, stream=False):
         if self._used or stream:
@@ -103,7 +117,7 @@ class WitnessedLiteLlm(BaseLlm):
             expected_model=self.model.removeprefix("openai/"))
         self._guard = guard
         image_witness = A2Witness(pinned_host=provider.host) if self._images else None
-        hooks = {"request": ([image_witness] if image_witness else []) + [self._check_outbound_images]}
+        hooks = {"request": ([image_witness] if image_witness else []) + [self._check_outbound_images, self._check_input_budget]}
         client = httpx.AsyncClient(transport=guard, event_hooks=hooks,
             follow_redirects=False, trust_env=False, timeout=self._timeout)
         sdk = AsyncOpenAI(api_key=self._key, base_url=base, http_client=client, max_retries=0)
