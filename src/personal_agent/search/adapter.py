@@ -73,8 +73,8 @@ class SearchAdapter:
                         if not isinstance(title,str) or not isinstance(snippet,str) or (content is not None and not isinstance(content,str)): raise SearchError('invalid_search_response')
                         ref='web_'+hashlib.sha256((rid+url).encode()).hexdigest()
                         result.append({'kind':'web_source','ref':ref,'source_ref':ref,'title':title[:512],'url':url,
-                            'snippet':snippet[:2000],'content':content[:8000] if content is not None else None,
-                            'content_present':content is not None,'truncated':bool(content and len(content)>8000),'provider_request_id':rid})
+                            'snippet':snippet[:2000],'content':content,
+                            'content_present':content is not None,'truncated':False,'provider_request_id':rid})
                     return result
         except SearchError: raise
         except Exception:

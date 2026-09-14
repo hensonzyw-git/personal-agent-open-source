@@ -314,3 +314,41 @@ def test_business_clarification_and_source_replacement_rollback_together(engine,
         assert result.status_code==200,result.text
         assert result.json()['result_envelope']['kind']=='limitation'
         assert client.get('/v1/operations/'+first['operation_id'],headers=h).json()['state']=='waiting_for_clarification'
+
+
+def test_200k_full_catalog_keeps_web_body_tail(engine,token_ring,keyring):
+    import os
+    from personal_agent.runtime.input_budget import input_budget_from_env
+    from personal_agent_core.tool_ir import TOOL_CONTRACTS
+    from personal_agent.policy.bridge import VisibleTool
+    from personal_agent.storage.models import Device
+    from personal_agent.search.adapter import SearchAdapter,SearchConfig
+    from uuid import uuid4
+    path=os.environ.get('ADK_TEST_TOKENIZER_PATH')
+    if not path:pytest.skip('official tokenizer required')
+    budget=input_budget_from_env({'ADK_INPUT_TOKEN_LIMIT':'200000','MODEL_PROVIDER':'deepseek',
+        'MODEL_ID':'deepseek-flash','MODEL_CONTEXT_TOKENS':'1000000','ADK_TOKENIZER_PATH':path})
+    text='开头事实。'+'中文和 English 正文。'*10000+'尾部事实是蓝色。'
+    def read(c,m):return [fc('search_read_page','read',arguments={'public_url':'https://example.org/'},task=m)]
+    def finish(c,m):
+        content=c['completed_results'][0]['sources'][0]['content']
+        assert content==text
+        ref=c['completed_results'][0]['sources'][0]['source_ref']
+        return [fc('agent_finish','finish',task=m,answer={'kind':'analysis','coverage':'complete','evidence_refs':[ref],
+             'analysis_nodes':[{'kind':'web_claim','text':'尾部事实是蓝色。','source_refs':[ref]}],'commentary':''})]
+    tools=[VisibleTool(t.name,t.summary,t.model_input_schema,t.risk_level,t.required_scopes)
+           for t in TOOL_CONTRACTS if t.enabled and t.model_callable and not t.name.startswith('search.')]
+    client,calls,deps=client_for(engine,token_ring,keyring,[read,finish],tools=tools)
+    deps.v2_input_budget=budget
+    deps.v2_search_allowed=lambda a,t:True
+    deps.v2_search_adapter=SearchAdapter(SearchConfig(True,True,'anonymous'),resolve=lambda h:['8.8.8.8'],
+        transport=httpx.MockTransport(lambda r:httpx.Response(200,json={'code':0,'request_id':str(uuid4()),
+            'data':{'url':'https://example.org/','title':'Public','content':text}})))
+    with deps.session_factory() as s:
+        s.get(Device,'dev-1').scopes=json.dumps(['public_web.read']);s.commit()
+    with client:
+        response=client.post('/v1/chat/messages',headers={**_auth(token_ring),'X-Client-Wire-Version':'4'},
+                            json={'conversation_id':'c1','text':'阅读公开网页，说明尾部事实。'})
+        assert response.json()['result_envelope']['kind']=='analysis',response.text
+        assert len(calls)==2
+        assert calls[-1]['max_completion_tokens']==8192

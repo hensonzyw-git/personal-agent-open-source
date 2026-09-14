@@ -887,6 +887,7 @@ dependencies = [
 adk = [
     { name = "google-adk" },
     { name = "litellm" },
+    { name = "tokenizers" },
 ]
 
 [package.dev-dependencies]
@@ -910,6 +911,7 @@ requires-dist = [
     { name = "pyjwt", specifier = ">=2.13,<3" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
+    { name = "tokenizers", marker = "extra == 'adk'", specifier = "==0.23.1" },
     { name = "uvicorn", specifier = ">=0.51,<1" },
 ]
 provides-extras = ["adk"]

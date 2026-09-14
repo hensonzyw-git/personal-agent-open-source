@@ -29,6 +29,7 @@ adk = [
   # Upgrade only after the locked ADK behavior gate is rerun.
   "google-adk==2.5.0",
   "litellm>=1.83,<1.92",
+  "tokenizers==0.23.1",
 ]
 
 [dependency-groups]

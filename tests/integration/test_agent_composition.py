@@ -2264,7 +2264,16 @@ def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
 
 
 @pytest.mark.parametrize("read_first", [False, True])
-def test_v2_uses_production_context_and_real_sdk(keys,agent_db,finance,read_first):
+@pytest.mark.parametrize("expanded", [False, True])
+def test_v2_uses_production_context_and_real_sdk(keys,agent_db,finance,read_first,expanded,monkeypatch):
+    if expanded:
+        import os
+        tokenizer=os.environ.get('ADK_TEST_TOKENIZER_PATH')
+        if not tokenizer:pytest.skip('official tokenizer required')
+        for key,value in {'ADK_INPUT_TOKEN_LIMIT':'200000','ADK_TOKENIZER_PATH':tokenizer,
+                          'MODEL_PROVIDER':'deepseek','MODEL_ID':'deepseek-flash',
+                          'MODEL_CONTEXT_TOKENS':'1000000','DEEPSEEK_API_KEY':'synthetic'}.items():
+            monkeypatch.setenv(key,value)
     from dataclasses import replace
     from personal_agent.runtime.witnessed_model import WitnessedLiteLlm
     from test_witnessed_model import wire
