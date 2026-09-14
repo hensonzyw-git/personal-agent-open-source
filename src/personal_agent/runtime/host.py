@@ -116,7 +116,8 @@ class DurableRunHost:
         system=build_system_prompt(today=today,runtime_v2=True)+'\n'+ '\n'.join(business_rules(d+'.',today=today) for d in sorted(domains))
         data={'current_user_source_ref':self.anchor.event_id,'current_input':self.payload.text,
             'candidates':list(self.candidates.values()),'completed_results':self.results,'metrics':[asdict(m) for m in self.evidence.metrics.values()],
-            'comparisons':self.evidence.comparisons,'format_error':self.format_error,'required_context':mandatory,'bound_task':self.pending_metadata}
+            'tool_evidence_refs':list(self.evidence.evidence),
+            'comparisons':self.evidence.comparisons,'format_error':self.format_error,'required_context':mandatory,'bound_task':({**self.pending_metadata,'task_ref':run['task_id']} if self.pending_metadata else None)}
         images=image_parts(self.envelope.input_parts)
         tool_json=canonical([t.model_dump(mode='json',exclude_none=True) for t in tools])
         def size():return 512+len((system+tool_json+canonical(data)+canonical(history)).encode())+sum(i.token_upper_bound for i in images)

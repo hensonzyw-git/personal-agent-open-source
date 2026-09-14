@@ -20,7 +20,7 @@ TASK_VALIDATION=obj({'task_ref':{'type':'string'},'goal':STR,'source_refs':REFS,
 # The shared metadata shape is described once in the core instruction. Host
 # validates TASK_VALIDATION before admitting the whole batch; provider-side
 # duplication of it on every tool wastes the conservative byte budget.
-TASK={'type':'object'}
+TASK={'type':'object','required':['goal','source_refs','constraints']}
 NODE={'oneOf':[obj({'kind':{'const':'metric'},'metric_ref':STR}),
     obj({'kind':{'const':'comparison'},'current_metric_ref':STR,'baseline_metric_ref':STR,'comparison_ref':STR}),
     obj({'kind':{'const':'web_claim'},'text':STR,'source_refs':REFS})]}
