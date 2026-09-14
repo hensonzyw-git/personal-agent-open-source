@@ -4,7 +4,7 @@ No provider call without --run. Counters survive processes and failed attempts.
 No full-eval score or deployment gate is produced by this diagnostic.
 """
 from __future__ import annotations
-import argparse, asyncio, fcntl, hashlib, json, logging, os, shlex, sys, tempfile, time
+import argparse, asyncio, fcntl, hashlib, json, logging, os, shlex, stat, sys, tempfile, time
 from datetime import datetime, timezone
 from pathlib import Path
 import httpx
@@ -41,13 +41,24 @@ def config():
     return values
 
 
-def reserve(provider, path=STATE):
+def reserve(provider, path=None):
     # Separate from product daily quotas: this is the total user authorization.
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    if datetime.now(timezone.utc) >= EXPIRES: raise RuntimeError('authorization_expired')
+    path = STATE if path is None else path
+    # A missing/malformed migrated ledger is never a fresh allocation.
+    fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+        os.close(fd)
+        raise RuntimeError('authorization_ledger_permissions')
     with os.fdopen(fd, 'r+') as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         if datetime.now(timezone.utc) >= EXPIRES: raise RuntimeError('authorization_expired')
-        raw = f.read(); data = json.loads(raw) if raw else {'model':0,'anysearch':0}
+        raw = f.read()
+        try: data = json.loads(raw)
+        except ValueError: raise RuntimeError('authorization_ledger_invalid') from None
+        if not isinstance(data, dict) or any(type(data.get(k)) is not int or not 0 <= data[k] <= 100 for k in ('model','anysearch')):
+            raise RuntimeError('authorization_ledger_invalid')
         if provider not in data or data[provider] >= 100: raise RuntimeError('authorization_exhausted')
         data[provider] += 1
         f.seek(0); json.dump(data, f); f.truncate(); f.flush(); os.fsync(f.fileno())
@@ -172,9 +183,13 @@ def models(values, repetitions, selected=None):
 
 
 def main():
+    global STATE, ENV
     parser=argparse.ArgumentParser();parser.add_argument('--run',choices=['search','model']);parser.add_argument('--repetitions',type=int,choices=[1,2,3],default=3);parser.add_argument('--out',type=Path)
     parser.add_argument('--case',action='append',choices=[c[0] for c in CASES+WEB_CASES])
+    parser.add_argument('--state', type=Path, default=STATE)
+    parser.add_argument('--env-file', type=Path, default=ENV)
     args=parser.parse_args()
+    STATE, ENV = args.state, args.env_file
     if not args.run:print(json.dumps(CASES,ensure_ascii=False,indent=2));return
     if not args.out:parser.error('--out is required')
     logging.disable(logging.CRITICAL)

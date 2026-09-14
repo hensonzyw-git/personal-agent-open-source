@@ -12,7 +12,8 @@ public final class AcceptanceFileStore: CredentialStore, @unchecked Sendable {
         CredentialKey.enrollment, CredentialKey.pendingChatSend,
         CredentialKey.pendingDuplicateDecisions, CredentialKey.pendingMediaSend,
         CredentialKey.claimedOverrideActions, CredentialKey.deviceKeyBlob,
-        CredentialKey.deviceKeyKind, CredentialKey.deviceID, CredentialKey.baseURL
+        CredentialKey.deviceKeyKind, CredentialKey.deviceID, CredentialKey.baseURL,
+        "acceptance-protection-probe"
     ]
     public enum Failure: Error { case invalidPath, closed, unexpectedFile }
 
@@ -92,6 +93,26 @@ public final class AcceptanceFileStore: CredentialStore, @unchecked Sendable {
         let url = try path(key)
         if try exists(url) { try fm.removeItem(at: url)
         }
+    }
+    /// Synthetic bytes only, using the same replacement path as enrollment.
+    public func prepareProtectionProbe() throws -> String {
+        let key = "acceptance-protection-probe"
+        try write(key, value: Data("before".utf8))
+        try write(key, value: Data("after".utf8))
+        lock.lock(); defer { lock.unlock() }
+        let url = try path(key)
+        let attrs = try fm.attributesOfItem(atPath: url.path)
+        let excluded = try url.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true
+        let permissions = (attrs[.posixPermissions] as? NSNumber)?.intValue == 0o600
+        #if os(iOS)
+        let complete = attrs[.protectionKey] as? FileProtectionType == .complete
+        #else
+        let complete = false
+        #endif
+        return "替换后：complete=\(complete)，排除备份=\(excluded)，0600=\(permissions)"
+    }
+    public func readProtectionProbe() throws -> Bool {
+        try read("acceptance-protection-probe") == Data("after".utf8)
     }
     /// Called only after the acceptance UI has drained its operations.
     /// Old references permanently refuse access, including after a new store is opened.

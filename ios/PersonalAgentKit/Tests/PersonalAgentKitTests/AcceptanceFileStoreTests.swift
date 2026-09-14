@@ -3,6 +3,18 @@ import XCTest
 @testable import PersonalAgentKit
 
 final class AcceptanceFileStoreTests: XCTestCase {
+    func testSyntheticProtectionProbeReplacementAndClear() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try AcceptanceFileStore(testDirectory: root)
+        let result = try store.prepareProtectionProbe()
+        XCTAssertTrue(result.contains("排除备份=true"))
+        XCTAssertTrue(result.contains("0600=true"))
+        XCTAssertTrue(try store.readProtectionProbe())
+        try store.closeAndClear()
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+        XCTAssertThrowsError(try store.readProtectionProbe())
+    }
     func testAtomicReplacementAndUnknownKeys() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

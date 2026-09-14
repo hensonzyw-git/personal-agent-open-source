@@ -12,6 +12,7 @@ m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 
 def test_total_budget_persists_and_does_not_oversubscribe(tmp_path):
     path=tmp_path/'budget.json'
+    path.write_text(json.dumps({'model':0,'anysearch':0}));path.chmod(0o600)
     def attempt(_):
         try:return m.reserve('model',path)
         except RuntimeError:return None
@@ -47,3 +48,25 @@ def test_provider_failure_still_charged(monkeypatch):
     transport=m.CountedTransport('model',{'https://api.example.org/chat'},trace,inner=httpx.MockTransport(fail))
     with pytest.raises(httpx.ConnectError):asyncio.run(transport.handle_async_request(httpx.Request('POST','https://api.example.org/chat',content=b'{}')))
     assert called==['model'] and trace[0]['request_number']==1
+
+@pytest.mark.parametrize('content', ['', '{}', '{"model": -1, "anysearch": 19}', '{"model": true, "anysearch": 19}'])
+def test_invalid_ledger_never_resets(tmp_path, content):
+    path=tmp_path/'budget.json';path.write_text(content);path.chmod(0o600)
+    with pytest.raises(RuntimeError, match='authorization_ledger_invalid'):m.reserve('model',path)
+    assert path.read_text()==content
+
+
+def test_missing_or_symlink_ledger_refused(tmp_path):
+    path=tmp_path/'missing'
+    with pytest.raises(FileNotFoundError):m.reserve('model',path)
+    assert not path.exists()
+    target=tmp_path/'target';target.write_text('{"model":84,"anysearch":19}');target.chmod(0o600)
+    path.symlink_to(target)
+    with pytest.raises(OSError):m.reserve('model',path)
+    assert json.loads(target.read_text())['model']==84
+
+
+def test_migrated_counter_continues_from_history(tmp_path):
+    path=tmp_path/'budget.json';path.write_text('{"model":84,"anysearch":19}');path.chmod(0o600)
+    assert m.reserve('model',path)==85
+    assert json.loads(path.read_text())=={'model':85,'anysearch':19}

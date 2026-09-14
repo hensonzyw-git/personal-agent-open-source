@@ -42,6 +42,53 @@ private final class AcceptanceModel {
     var error: String?
     var deviceID: String?
     var busy = false
+    var protectionResult = ""
+    private var protectionTask: Task<Void, Never>?
+    private var backgroundID: UIBackgroundTaskIdentifier = .invalid
+
+    func checkProtection() {
+        guard protectionTask == nil, let store else { return }
+        do { protectionResult = try store.prepareProtectionProbe() }
+        catch { protectionResult = "探针准备失败：\(error)"; return }
+        protectionResult += "\n请现在锁屏 15 秒再解锁（30 秒观察窗口）"
+        backgroundID = UIApplication.shared.beginBackgroundTask(withName: "ADK file protection") { [weak self] in
+            Task { @MainActor in self?.protectionTask?.cancel() }
+        }
+        protectionTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if backgroundID != .invalid { UIApplication.shared.endBackgroundTask(backgroundID); backgroundID = .invalid }
+                protectionTask = nil
+            }
+            var denied = false
+            var observed = false
+            for _ in 0..<60 {
+                if Task.isCancelled { break }
+                if !UIApplication.shared.isProtectedDataAvailable {
+                    observed = true
+                    do {
+                        let readable = try store.readProtectionProbe()
+                        protectionResult += "\n锁屏读取未被拒绝：\(readable)（失败）"
+                    } catch {
+                        let ns = error as NSError
+                        // Report the actual error; unrelated failures are not accepted as denial.
+                        denied = ns.domain == NSCocoaErrorDomain && ns.code == NSFileReadNoPermissionError
+                        protectionResult += "\n锁屏拒读=\(denied)，错误=\(ns.domain)/\(ns.code)"
+                    }
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+            if !observed { protectionResult += "\n未观察到受保护数据不可用，不能判通过" }
+            if denied { protectionResult += "\n解锁后点“检查解锁读取”完成恢复验证" }
+        }
+    }
+    func checkUnlockedRead() {
+        guard UIApplication.shared.isProtectedDataAvailable, let store else { return }
+        do { protectionResult += "\n解锁读取=\(try store.readProtectionProbe())" }
+        catch { protectionResult += "\n解锁读取失败：\(error)" }
+    }
+
     private var store: AcceptanceFileStore?
     private var session: DeviceSession?
     private var network: URLSession?
@@ -90,6 +137,9 @@ private final class AcceptanceModel {
         }
     }
     func clear() async {
+        protectionTask?.cancel()
+        await protectionTask?.value
+        protectionResult = ""
         let previous = work
         busy = true
         network?.invalidateAndCancel()
@@ -117,6 +167,11 @@ struct ADKAcceptanceScene: View {
         NavigationStack {
             VStack(spacing: 8) {
                 Text("合成数据验收 · 固定模型响应").font(.caption).foregroundStyle(.orange)
+                DisclosureGroup("文件保护验收") {
+                    Text(model.protectionResult).font(.caption).textSelection(.enabled)
+                    Button("开始锁屏检查") { model.checkProtection() }.disabled(model.busy)
+                    Button("检查解锁读取") { model.checkUnlockedRead() }.disabled(model.busy)
+                }
                 if let error = model.error { Text(error).font(.caption).textSelection(.enabled) }
                 if let chat = model.chat {
                     Menu("选择验收输入") {
