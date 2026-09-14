@@ -1120,6 +1120,10 @@ def test_source_in_progress_is_durable_before_the_external_commit(
 
     class CrashingDispatcher(FakeDispatcher):
         def commit(self, **kwargs):
+            # Even the refresh snapshot must end before any external dispatch.
+            assert not session.in_transaction()
+            with session_factory(session.get_bind())() as observer:
+                assert observer.get(Operation, op.operation_id).state == "source_in_progress"
             raise RuntimeError("process died after Finance accepted the call")
 
     with pytest.raises(RuntimeError):

@@ -72,6 +72,12 @@ public struct ResultEnvelope: Decodable, Sendable, Equatable {
         case taskStatus = "task_status"
         case analysisNodes = "analysis_nodes"
     }
+    public static let unavailable = ResultEnvelope()
+    private init() {
+        version = 2; kind = "limitation"; taskStatus = "partial"
+        text = "结果暂时无法读取，请稍后重试。"
+        coverage = nil; analysisNodes = nil; commentary = nil; evidence = []
+    }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         version = try c.decode(Int.self, forKey: .version)

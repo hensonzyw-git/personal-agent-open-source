@@ -85,6 +85,7 @@ class CountedTransport(httpx.AsyncBaseTransport):
                 row['response_sha256'] = hashlib.sha256(raw).hexdigest()
                 try:
                     body = json.loads(raw)
+                    row['response_model'] = body.get('model')
                     row['tool_calls'] = [c.get('message', {}).get('tool_calls', []) for c in body.get('choices', [])]
                 except (ValueError, TypeError):
                     row['response_shape'] = 'non_json'

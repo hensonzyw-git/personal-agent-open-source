@@ -56,4 +56,28 @@ final class ResultEnvelopeV2Tests: XCTestCase {
             }
         }
     }
+    func testMalformedEnvelopeDoesNotLoseReceiptOrTurnIntoRecordedSuccess() throws {
+        for bad in ["[]", "42", "{}", #"{"version":3,"kind":"action","task_status":"completed","text":"x","evidence":[]}"#] {
+            let raw = """
+            {"operation_id":"synthetic","state":"succeeded","cancel_requested":false,"client_detached":false,
+             "tool":"finance.log_income","record_id":"synthetic-record","result_envelope":\(bad)}
+            """
+            let receipt = try JSONDecoder().decode(OperationReceipt.self, from: Data(raw.utf8))
+            XCTAssertEqual(receipt.operationID, "synthetic")
+            XCTAssertEqual(receipt.resultEnvelope, .unavailable)
+            guard case .answeredV2(let envelope) = receipt.outcome else {
+                XCTFail("Malformed v2 envelope became business success"); continue
+            }
+            XCTAssertEqual(envelope.kind, "limitation")
+            let content = try JSONDecoder().decode([String: JSONValue].self, from: Data(raw.utf8))
+            let event = TimelineEvent(eventID: "bad", eventType: "operation_result",
+                                      operationID: "synthetic", createdAt: "2026-09-14", content: content)
+            guard case .operationResult(let outcome, _, _) = event.kind,
+                  case .answeredV2(let history) = outcome else {
+                XCTFail("Malformed history lost its limitation"); continue
+            }
+            XCTAssertEqual(history, .unavailable)
+        }
+    }
+
 }

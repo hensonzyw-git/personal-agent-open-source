@@ -167,7 +167,8 @@ class ResponseWitnessTransport(httpx.AsyncBaseTransport):
 
     def __init__(self, *, binding: AttemptBinding, endpoint: str,
                  transport: httpx.AsyncBaseTransport | None = None,
-                 max_response_bytes: int = 512 * 1024):
+                 max_response_bytes: int = 512 * 1024, expected_model: str | None = None):
+        self.expected_model = expected_model
         self.binding = binding
         self.endpoint = httpx.URL(endpoint)
         if (self.endpoint.scheme != "https" or self.endpoint.username or
@@ -198,6 +199,8 @@ class ResponseWitnessTransport(httpx.AsyncBaseTransport):
             outgoing = strict_json(body)
             if not isinstance(outgoing, dict) or outgoing.get("stream", False) is not False:
                 raise ResponseViolation("unsupported_request")
+            if self.expected_model is not None and outgoing.get("model") != self.expected_model:
+                raise ResponseViolation("request_model_mismatch")
             # Request the bounded, uncompressed JSON wire shape we can verify.
             request.headers["accept-encoding"] = "identity"
             result = await self._transport.handle_async_request(request)
@@ -212,6 +215,10 @@ class ResponseWitnessTransport(httpx.AsyncBaseTransport):
                         raise ResponseViolation("response_too_large")
                     buffer.extend(chunk)
                 raw = bytes(buffer)
+                if self.expected_model is not None:
+                    data = strict_json(raw)
+                    if not isinstance(data, dict) or data.get("model") != self.expected_model:
+                        raise ResponseViolation("response_model_mismatch")
                 stamps = _raw_calls(raw)
                 self._receipt = ResponseReceipt(self.binding, hashlib.sha256(body).hexdigest(), stamps)
                 headers = dict(result.headers)

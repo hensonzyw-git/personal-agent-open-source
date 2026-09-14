@@ -899,7 +899,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.18,<2" },
     { name = "cryptography", specifier = ">=49,<50" },
     { name = "fastapi", specifier = ">=0.139,<1" },
-    { name = "google-adk", marker = "extra == 'adk'" },
+    { name = "google-adk", marker = "extra == 'adk'", specifier = "==2.5.0" },
     { name = "h2", specifier = ">=4,<5" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "httpx2", specifier = ">=2.5,<3" },

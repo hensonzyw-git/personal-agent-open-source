@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import update, insert, select
 
 from personal_agent.storage.engine import create_all, create_database_engine
 from personal_agent.storage.models import Base, Conversation
@@ -12,6 +12,28 @@ from personal_agent.runtime.run_store import RunBudgetStore, RunStateError
 from test_agent_storage import make_device, NOW, SEALED
 from personal_agent.storage.engine import session_factory
 from personal_agent.api.operation_store import open_operation
+
+
+class FixtureBudgetStore(RunBudgetStore):
+    """Synthetic anchors only; production anchors belong to API transactions."""
+    def create_task(self, task_id, *, timeline_id, sealed_goal, sealed_constraints,
+                    llm_used=0, read_used=0, web_used=0, active_ms=0):
+        self._write(lambda session: session.execute(insert(self.tasks).values(
+            task_id=task_id, timeline_id=timeline_id, sealed_goal=sealed_goal,
+            sealed_constraints=sealed_constraints, llm_used=llm_used, read_used=read_used,
+            web_used=web_used, active_ms=active_ms)))
+
+    def start_message(self, operation_id, *, timeline_id, now_ms, sealed_input):
+        def work(session):
+            existing = session.execute(select(self.runs).where(self.runs.c.operation_id == operation_id)).mappings().one_or_none()
+            if existing:
+                if existing["timeline_id"] != timeline_id:
+                    raise RunStateError("timeline_mismatch")
+                return
+            session.execute(insert(self.runs).values(operation_id=operation_id,
+                timeline_id=timeline_id, started_ms=now_ms, deadline_ms=now_ms + 60000,
+                sealed_input_snapshot=sealed_input))
+        self._write(work)
 
 
 @pytest.fixture()
@@ -23,7 +45,7 @@ def setup(tmp_path):
         session.add(make_device())
         session.add(Conversation(conversation_id="timeline", created_at=NOW))
         session.commit()
-    store = RunBudgetStore(factory)
+    store = FixtureBudgetStore(factory)
     def run(name, now=0):
         with factory() as session:
             opened = open_operation(session, device_id="dev-1", client_request_id=name,

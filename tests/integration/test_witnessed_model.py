@@ -240,3 +240,40 @@ def test_image_outbound_and_response_witnesses_are_both_required(authorized):
         with pytest.raises(ResponseViolation):
             asyncio.run(scenario())
         assert sent == []
+
+@pytest.mark.parametrize('reported', [None, 'other-model', 42])
+def test_response_model_must_match_requested_model(reported):
+    async def http(request):
+        data = wire(); data['model'] = reported
+        return httpx.Response(200, json=data)
+    binding = AttemptBinding('model-check', 1, 1)
+    h = CheckedHarness(WitnessedLiteLlm(model='openai/synthetic', provider_name='zhipu',
+        api_key='synthetic-key', binding=binding, transport=httpx.MockTransport(http)), binding)
+    with pytest.raises(ResponseViolation, match='response_model_mismatch'):
+        asyncio.run(h.run())
+    assert not any(x.startswith('start:') for x in h.trace)
+
+
+def test_callbacks_and_verbose_logs_cannot_observe_private_input(monkeypatch, capsys, caplog):
+    import litellm
+    import logging
+    observed = []
+    def spy(*args, **kwargs): observed.append((args, kwargs))
+    for name in ('callbacks', 'input_callback', 'success_callback', 'failure_callback',
+                 '_async_input_callback', '_async_success_callback', '_async_failure_callback'):
+        monkeypatch.setattr(litellm, name, [spy])
+    monkeypatch.setattr(litellm, 'set_verbose', True)
+    caplog.set_level(logging.DEBUG)
+    async def http(request):
+        assert request.headers['authorization'] == 'Bearer private-api-key-marker'
+        return httpx.Response(200, json=wire())
+    async def run():
+        model = WitnessedLiteLlm(model='openai/synthetic', provider_name='zhipu',
+            api_key='private-api-key-marker', binding=AttemptBinding('private', 1, 1), transport=httpx.MockTransport(http))
+        request = LlmRequest(contents=[types.Content(role='user', parts=[types.Part(text='private-prompt-marker')])])
+        async for _ in model.generate_content_async(request): pass
+    asyncio.run(run())
+    captured = capsys.readouterr()
+    assert not observed
+    for secret in ('private-api-key-marker', 'private-prompt-marker'):
+        assert secret not in captured.out + captured.err + caplog.text

@@ -1,5 +1,6 @@
 """Version choice in the chat anchor; persisted versions win over switches."""
-from sqlalchemy import select,insert
+from sqlalchemy import select,insert,inspect
+from personal_agent_core.crypto import CryptoError
 from personal_agent.storage.models import Base,Operation
 from personal_agent.runtime.run_repository import RunRepository
 from personal_agent.runtime.run_store import RunStateError
@@ -40,6 +41,34 @@ def anchor(session,deps,operation,payload,source_version):
         expected_source_version=source_version))
 
 
+def unavailable_result():
+    return {'version': 2, 'kind': 'limitation', 'task_status': 'partial',
+            'text': '结果暂时无法读取，请稍后重试。', 'evidence': []}
+
+
+def valid_result(answer):
+    """Validate persisted projection shape before it reaches API consumers.
+
+    This is not model-output admission; evidence was checked when sealed.
+    Unknown optional extension fields remain compatible with newer writers.
+    """
+    if not isinstance(answer, dict): return False
+    if type(answer.get('version')) is not int or answer['version'] != 2: return False
+    if not isinstance(answer.get('kind'), str) or answer['kind'] not in {'conversation','query','analysis','action','clarification','limitation'}: return False
+    if not isinstance(answer.get('task_status'), str) or answer['task_status'] not in {'completed','waiting','partial','cancelled'}: return False
+    if not isinstance(answer.get('text'), str): return False
+    if not isinstance(answer.get('evidence'), list): return False
+    if any(not isinstance(e, dict) or not isinstance(e.get('kind'), str) for e in answer['evidence']): return False
+    for field in ('coverage', 'commentary'):
+        if answer.get(field) is not None and not isinstance(answer[field], str): return False
+    nodes = answer.get('analysis_nodes')
+    if nodes is not None:
+        if not isinstance(nodes, list) or len(nodes) > 16: return False
+        for node in nodes:
+            if not isinstance(node, dict) or not isinstance(node.get('kind'), str) or not isinstance(node.get('text'), str): return False
+    return True
+
+
 def project(session,keyring,operation,client_wire_version):
     run = row(session,operation.operation_id)
     if run is None:
@@ -49,9 +78,13 @@ def project(session,keyring,operation,client_wire_version):
         return None
     if client_wire_version<4:raise unavailable('client_upgrade_required')
     r=RunRepository(None,keyring)
-    out=session.execute(select(r.outcomes).where(r.outcomes.c.operation_id==operation.operation_id)).mappings().one_or_none()
-    if out is None:return None
-    answer=r.open('agent_run_outcomes','sealed_answer',operation.operation_id,out['sealed_answer'])
+    try:
+        out=session.execute(select(r.outcomes).where(r.outcomes.c.operation_id==operation.operation_id)).mappings().one_or_none()
+        if out is None:return None
+        answer=r.open('agent_run_outcomes','sealed_answer',operation.operation_id,out['sealed_answer'])
+    except (CryptoError, ValueError, TypeError, UnicodeError, RecursionError):
+        return unavailable_result()
+    if not valid_result(answer): return unavailable_result()
     # Live operation truth wins over a pre-receipt action envelope.
     if answer['kind']=='action':
         if operation.duplicate_check_id and run['superseded_by_operation_id']:
@@ -114,6 +147,17 @@ def process(deps,auth,operation_id):
                 break # Host records bounded failure or preserves write recovery.
         s.expire_all();op=_owned_operation(s,operation_id,device_id=auth.device_id)
         return _ProcessedChat(_operation_response(deps.keyring,op,client_wire_version=auth.client_wire_version))
+
+
+def recovery_needed(deps):
+    if not deps.v2_execution_enabled: return False
+    with deps.session_factory() as s:
+        if not inspect(s.get_bind()).has_table('agent_runs'): return False
+        if deps.v2_device_ids: return True
+        runs = Base.metadata.tables['agent_runs']
+        # Removing admission grants must not abandon previously accepted work.
+        return s.execute(select(runs.c.operation_id).where(
+            runs.c.state.not_in(['completed','partial','cancelled'])).limit(1)).first() is not None
 
 
 def resumable(deps):

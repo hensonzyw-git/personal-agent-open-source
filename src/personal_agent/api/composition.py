@@ -896,6 +896,18 @@ async def agent_service(
                 # path that only production exercises.
                 return RecordingDispatcher(dispatcher, recorder)
 
+            def search_allowed(auth: AuthContext, tool: str) -> bool:
+                device = device_for(auth)
+                search = config.search_config
+                return bool(search and search.enabled and config.v2_execution_enabled
+                    and auth.client_wire_version >= 4 and auth.device_id in config.v2_device_ids
+                    and device is not None and device.status == "active"
+                    and device.allowed_tools_version == manifest_version
+                    and "public_web.read" in device.scopes
+                    and tool in {"search.web", "search.read_page"}
+                    and tool in allowlist and tool in device.allowed_tools
+                    and (tool != "search.read_page" or search.extract_enabled))
+
             def capabilities(auth: AuthContext) -> list[dict[str, Any]]:
                 device = device_for(auth)
                 if device is None:
@@ -911,11 +923,10 @@ async def agent_service(
                     if tool.alias in model_callable_tools
                 ]
 
-                if device.status == "active" and config.search_config and config.search_config.enabled and "public_web.read" in device.scopes and device.allowed_tools_version==manifest_version:
-                    from personal_agent_core.tool_ir import SEARCH_WEB,SEARCH_READ_PAGE
-                    for tool in (SEARCH_WEB,SEARCH_READ_PAGE):
-                        if tool.name in allowlist and tool.name in device.allowed_tools and (tool.name!='search.read_page' or config.search_config.extract_enabled):
-                            result.append({'alias':tool.name,'description':tool.summary,'risk_level':tool.risk_level,'required_scopes':list(tool.required_scopes)})
+                from personal_agent_core.tool_ir import SEARCH_WEB,SEARCH_READ_PAGE
+                for tool in (SEARCH_WEB,SEARCH_READ_PAGE):
+                    if search_allowed(auth, tool.name):
+                        result.append({'alias':tool.name,'description':tool.summary,'risk_level':tool.risk_level,'required_scopes':list(tool.required_scopes)})
                 return result
 
             def sync_ingest(auth: AuthContext, body: dict[str, Any]) -> dict[str, Any]:
@@ -976,12 +987,7 @@ async def agent_service(
                     v2_device_ids=config.v2_device_ids,
                     v2_execution_enabled=config.v2_execution_enabled,
                     v2_search_adapter=_search_adapter(config.search_config),
-                    v2_search_allowed=lambda auth, tool: (
-                        (d := device_for(auth)) is not None and d.status == "active"
-                        and d.allowed_tools_version == manifest_version
-                        and tool in d.allowed_tools and tool in _allowlist(config, enabled_tools)
-                        and "public_web.read" in d.scopes
-                    ),
+                    v2_search_allowed=search_allowed,
                     token_ring=token_ring,
                     keyring=keyring,
                     identifier_key=identifier_key,

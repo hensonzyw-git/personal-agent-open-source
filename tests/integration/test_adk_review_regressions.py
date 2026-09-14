@@ -349,3 +349,76 @@ def test_calendar_card_does_not_claim_incomplete_mirror_complete(engine, token_r
         result = send(client, token_ring, '查日历').json()['result_envelope']
         assert len(calls) == 1 and result['kind'] == 'query'
         assert result['coverage'] == 'partial' and result['task_status'] == 'waiting'
+
+@pytest.mark.parametrize('damaged', [None, [], {}, {'version': 2, 'kind': 'action'}, {'version': 2, 'kind': []}, 'broken-ciphertext'])
+def test_corrupt_outcome_is_a_limitation_without_losing_operation(engine, token_ring, keyring, damaged):
+    client, _, deps = client_for(engine, token_ring, keyring, [answer()])
+    with client:
+        original = send(client, token_ring, 'synthetic').json()
+        repo = RunRepository(deps.session_factory, keyring)
+        sealed = repo.seal('agent_run_outcomes', 'sealed_answer', original['operation_id'], damaged)
+        if damaged == 'broken-ciphertext': sealed['tag'] = 'AAAAAAAAAAAAAAAAAAAAAA'
+        with deps.session_factory() as s:
+            s.execute(update(repo.outcomes).where(repo.outcomes.c.operation_id == original['operation_id']).values(sealed_answer=sealed))
+            s.commit()
+        polled = client.get('/v1/operations/' + original['operation_id'], headers={**_auth(token_ring), 'X-Client-Wire-Version':'4'})
+        assert polled.status_code == 200
+        assert polled.json()['state'] == original['state']
+        assert polled.json()['result_envelope']['kind'] == 'limitation'
+        with deps.session_factory() as s:
+            assert s.execute(select(repo.outcomes.c.sealed_answer).where(repo.outcomes.c.operation_id == original['operation_id'])).scalar_one() == sealed
+
+
+def test_amend_operation_cas_failure_is_binding_conflict(setup, keyring, monkeypatch):
+    from personal_agent.api.operation_state import StaleOperationVersionError
+    import personal_agent.api.operation_store as control
+    controls, proposal, lease, factory = prepared(setup)
+    controls.reserve_prebind(lease.operation_id, ['task'], now_ms=4, lease=lease)
+    repo = RunRepository(factory, keyring)
+    before = repo.task_snapshot('task')
+    def stale(*args, **kwargs): raise StaleOperationVersionError('synthetic-cas')
+    monkeypatch.setattr(control, 'transition_operation', stale)
+    with pytest.raises(ValueError, match='task_binding_conflict'):
+        repo.amend_and_bind(lease, task_id='task', expected_revision=1, control_id='cas', metadata={'goal':'changed','constraints':[]}, now_ms=6)
+    after = repo.task_snapshot('task')
+    assert after['llm_used'] == before['llm_used'] + 1
+    assert after['revision'] == before['revision']
+    assert after['write_slot'] == before['write_slot']
+    assert state(factory, proposal.lease.operation_id) == 'dispatching'
+
+
+def test_sweep_skips_unchanged_waits_but_selects_old_late_receipt(setup, monkeypatch):
+    _, new_run, factory = setup
+    repo = RunRepository(factory, None)
+    ids = [new_run(str(i)) for i in range(105)]
+    with factory() as s:
+        s.execute(update(repo.runs).values(state='parked'))
+        # Old completed business work still needs settlement; age must not hide it.
+        s.execute(update(Operation).where(Operation.operation_id == ids[-1]).values(state='succeeded'))
+        s.commit()
+    recovered, settled = [], []
+    monkeypatch.setattr(repo, 'recover', lambda op, **kw: recovered.append(op))
+    monkeypatch.setattr(repo, 'settle_expired_or_business', lambda op, **kw: settled.append(op))
+    repo.sweep(now_ms=10**12)
+    assert recovered == settled == [ids[-1]]
+
+
+def test_recovery_startup_preserves_existing_runs_without_device_grants(setup):
+    from types import SimpleNamespace
+    from personal_agent.api.runtime_v2 import recovery_needed
+    _, new_run, factory = setup
+    deps = SimpleNamespace(session_factory=factory, v2_execution_enabled=True, v2_device_ids=frozenset())
+    assert not recovery_needed(deps)
+    new_run('existing')
+    assert recovery_needed(deps)
+    deps.v2_execution_enabled = False
+    assert not recovery_needed(deps)
+
+
+def test_recovery_startup_without_migration_is_quiet(tmp_path):
+    from types import SimpleNamespace
+    from personal_agent.storage.engine import create_database_engine, session_factory
+    from personal_agent.api.runtime_v2 import recovery_needed
+    engine = create_database_engine(tmp_path / 'legacy.sqlite')
+    assert not recovery_needed(SimpleNamespace(session_factory=session_factory(engine), v2_execution_enabled=True, v2_device_ids={'synthetic'}))
+    engine.dispose()

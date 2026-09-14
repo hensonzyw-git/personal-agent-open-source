@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
+import litellm
 from contextlib import aclosing
 
 import httpx
@@ -23,6 +25,28 @@ from personal_agent.runtime.model_providers import PROVIDERS, canonical_api_base
 from personal_agent.runtime.response_witness import (
     AttemptBinding, ResponseViolation, ResponseWitnessTransport,
 )
+
+
+def _private_sdk_defaults():
+    """This service never exports private model traffic to SDK telemetry.
+
+    Process-wide, sticky defaults: restoring callbacks after an attempt would
+    reopen a concurrent attempt's logging channel. Host audit is separate.
+    """
+    for name in ("callbacks", "input_callback", "success_callback", "failure_callback",
+                 "_async_input_callback", "_async_success_callback", "_async_failure_callback",
+                 "audit_log_callbacks", "pre_call_rules", "post_call_rules"):
+        setattr(litellm, name, [])
+    litellm.set_verbose = False
+    litellm.suppress_debug_info = True
+    litellm.turn_off_message_logging = True
+    litellm.log_raw_request_response = False
+    litellm.redact_messages_in_exceptions = True
+    litellm.redact_user_api_key_info = True
+    # ADK/OpenAI also have debug request loggers, outside LiteLLM callbacks.
+    for name in ("LiteLLM", "LiteLLM Proxy", "LiteLLM Router",
+                 "google_adk.google.adk.models.lite_llm", "openai._base_client"):
+        logging.getLogger(name).disabled = True
 
 
 class WitnessedLiteLlm(BaseLlm):
@@ -62,6 +86,7 @@ class WitnessedLiteLlm(BaseLlm):
             raise ResponseViolation("attempt_reused_or_streaming")
         if llm_request.model not in (None, self.model):
             raise ResponseViolation("model_projection_mismatch")
+        _private_sdk_defaults()
         self._used = True
         # Host projection admits only text and authorized inline images. Remote
         # file parts could cause SDK-side fetching outside the pinned transport.
@@ -74,7 +99,8 @@ class WitnessedLiteLlm(BaseLlm):
         provider = PROVIDERS[self._provider_name]
         base = canonical_api_base(provider)
         guard = ResponseWitnessTransport(binding=self._binding,
-            endpoint=base + "chat/completions", transport=self._transport)
+            endpoint=base + "chat/completions", transport=self._transport,
+            expected_model=self.model.removeprefix("openai/"))
         self._guard = guard
         image_witness = A2Witness(pinned_host=provider.host) if self._images else None
         hooks = {"request": ([image_witness] if image_witness else []) + [self._check_outbound_images]}
@@ -82,7 +108,7 @@ class WitnessedLiteLlm(BaseLlm):
             follow_redirects=False, trust_env=False, timeout=self._timeout)
         sdk = AsyncOpenAI(api_key=self._key, base_url=base, http_client=client, max_retries=0)
         try:
-            model = LiteLlm(model=self.model, api_key=self._key, api_base=base,
+            model = LiteLlm(model=self.model, api_key="witnessed-client-only", api_base=base,
                 client=sdk, timeout=self._timeout, num_retries=0,
                 extra_body=_thinking_request_params(self.model, self._provider_name))
             async with asyncio.timeout(self._timeout):

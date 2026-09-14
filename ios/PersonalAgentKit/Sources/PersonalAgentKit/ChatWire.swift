@@ -989,7 +989,11 @@ extension OperationReceipt: Decodable {
             String.self, forKey: .duplicateExisting
         )
         answer = try container.decodeIfPresent(String.self, forKey: .answer)
-        resultEnvelope = try container.decodeIfPresent(ResultEnvelope.self, forKey: .resultEnvelope)
+        do {
+            resultEnvelope = try container.decodeIfPresent(ResultEnvelope.self, forKey: .resultEnvelope)
+        } catch is DecodingError {
+            resultEnvelope = .unavailable
+        }
         // A malformed `query_result` is a query this build cannot render, not a
         // reason to lose the whole receipt: it decodes to `nil` and the screen
         // fails closed on the query card while everything else still works.
@@ -1412,7 +1416,7 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                     clarification: content["clarification"]?.stringValue,
                     duplicateExisting: content["duplicate_existing"]?.stringValue,
                     answer: content["answer"]?.stringValue,
-                    resultEnvelope: decodeProjection(ResultEnvelope.self, from: content["result_envelope"]),
+                    resultEnvelope: decodeResultEnvelope(content["result_envelope"]),
                     queryResult: queryResult,
                     calendarQuery: calendarQuery,
                     record: record,
@@ -1572,6 +1576,12 @@ public enum TimelineDirection: String, Sendable {
 /// the bytes the projection types already know how to read. A body that will
 /// not decode returns `nil` and the caller fails closed -- history never gets
 /// a second, more permissive reader than the live receipt.
+private func decodeResultEnvelope(_ value: JSONValue?) -> ResultEnvelope? {
+    guard let value else { return nil }
+    if case .null = value { return nil }
+    return decodeProjection(ResultEnvelope.self, from: value) ?? .unavailable
+}
+
 private func decodeProjection<T: Decodable>(
     _ type: T.Type, from value: JSONValue?
 ) -> T? {

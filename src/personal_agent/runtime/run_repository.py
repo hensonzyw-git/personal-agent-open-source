@@ -6,6 +6,7 @@ from personal_agent.runtime.task_control import TaskControlStore, _now
 from personal_agent.runtime.run_store import RunStateError, TASK_LIMITS, USAGE_COLUMNS
 from personal_agent.storage.models import Operation, ConversationEvent
 from personal_agent.api.operation_store import transition_operation
+from personal_agent.api.operation_state import StaleOperationVersionError
 from personal_agent.runtime.answers import canonical
 
 
@@ -256,10 +257,10 @@ class RunRepository(TaskControlStore):
             return 'applied'
         try:
             result = self._write(work)
-        except RunStateError as exc:
+        except (RunStateError, StaleOperationVersionError) as exc:
             # The amendment transaction must roll back the old proposal, but
             # cannot refund the already reserved model attempt on that task.
-            if str(exc) not in {'stale_or_foreign_task','terminal_task','amend_binding_conflict'}:
+            if not isinstance(exc, StaleOperationVersionError) and str(exc) not in {'stale_or_foreign_task','terminal_task','amend_binding_conflict'}:
                 raise
             self.bind(lease.operation_id,task_id=task_id,now_ms=now_ms,lease=lease,
                       sealed_goal=goal,sealed_constraints=constraints,_reject=True)
@@ -341,8 +342,26 @@ class RunRepository(TaskControlStore):
         cursor = None
         while True:
             with self.sessions() as s:
+                from sqlalchemy import or_, and_, exists
+                op = Operation.__table__
+                terminal = ['succeeded','failed_safe','cancelled_pre_submit']
+                settled = exists(select(op.c.operation_id).where(
+                    op.c.operation_id == self.runs.c.operation_id,
+                    op.c.state.in_(terminal)))
+                handed_back = exists(select(op.c.operation_id).where(
+                    op.c.operation_id == self.runs.c.operation_id,
+                    op.c.state.in_(terminal + ['needs_manual_review'])))
+                child_done = exists(select(op.c.operation_id).where(
+                    op.c.operation_id == self.runs.c.superseded_by_operation_id,
+                    op.c.state.in_(terminal)))
+                child_handed_back = exists(select(op.c.operation_id).where(
+                    op.c.operation_id == self.runs.c.superseded_by_operation_id,
+                    op.c.state.in_(terminal + ['needs_manual_review'])))
                 query = select(self.runs.c.started_ms, self.runs.c.operation_id).where(
-                    self.runs.c.state.not_in(['completed','partial','cancelled']), self.runs.c.started_ms <= now_ms)
+                    self.runs.c.started_ms <= now_ms,
+                    or_(self.runs.c.state.in_(['accepted','thinking','reading','finalizing','failed']),
+                        and_(self.runs.c.state == 'parked', or_(settled, child_done)),
+                        and_(self.runs.c.state == 'handoff', or_(handed_back, child_handed_back))))
                 if cursor is not None:
                     from sqlalchemy import tuple_
                     query = query.where(tuple_(self.runs.c.started_ms, self.runs.c.operation_id) > cursor)

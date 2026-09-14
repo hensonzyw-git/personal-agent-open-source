@@ -570,11 +570,12 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         stop=asyncio.Event()
-        recovery=asyncio.create_task(resume_v2(stop))
+        from personal_agent.api.runtime_v2 import recovery_needed
+        recovery=asyncio.create_task(resume_v2(stop)) if await asyncio.to_thread(recovery_needed,deps) else None
         try:yield
         finally:
             stop.set()
-            await recovery
+            if recovery is not None: await recovery
             await drain_background_tasks()
 
     app = FastAPI(lifespan=lifespan)
@@ -4182,8 +4183,8 @@ def _operation_event_content(
     """
     # A Timeline event is history, not a hand-off, and it deliberately never
     # carried the action: `device_actions` is not among the names copied below.
-    # So the version passed here decides nothing -- it is version 1 to say so,
-    # rather than to claim this call site speaks for a client it does not have.
+    # Wire v4 preserves v2 result envelopes in history. Delivery endpoints
+    # separately enforce each client version; this grants no device action.
     projection = _operation_projection(
         keyring, operation, client_wire_version=4
     )

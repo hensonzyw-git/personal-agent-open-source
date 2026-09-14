@@ -42,3 +42,40 @@ def test_nonempty_budget_history_blocks_destructive_downgrade(tmp_path):
             assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0013_adk_model_led"
     finally:
         engine.dispose()
+
+
+def test_matching_create_all_tables_are_adopted_without_losing_data(tmp_path):
+    from personal_agent.storage.engine import create_all
+    engine = create_database_engine(tmp_path / 'created.sqlite')
+    db.upgrade(engine, '0012_calendar_media_merge')
+    create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(insert(Base.metadata.tables['search_budget_days']).values(
+            provider='synthetic', utc_day='2026-09-14', reserved_count=2, limit_snapshot=100))
+    db.upgrade(engine)
+    with engine.connect() as conn:
+        assert conn.execute(text('SELECT reserved_count FROM search_budget_days')).scalar_one() == 2
+        assert conn.execute(text('PRAGMA foreign_key_check')).all() == []
+    engine.dispose()
+
+
+@pytest.mark.parametrize('damage', ['partial', 'missing_index', 'wrong_column'])
+def test_existing_v2_schema_must_match_before_adoption(tmp_path, damage):
+    from personal_agent.storage.engine import create_all
+    engine = create_database_engine(tmp_path / 'damaged.sqlite')
+    db.upgrade(engine, '0012_calendar_media_merge')
+    if damage == 'partial':
+        Base.metadata.tables['search_budget_days'].create(engine)
+    else:
+        create_all(engine)
+        with engine.begin() as conn:
+            if damage == 'wrong_column':
+                conn.execute(text('ALTER TABLE search_budget_days ADD COLUMN unexpected TEXT'))
+            else:
+                index = inspect(conn).get_indexes('agent_runs')[0]['name']
+                conn.execute(text(f'DROP INDEX "{index}"'))
+    with pytest.raises(RuntimeError, match='existing v2 schema'):
+        db.upgrade(engine)
+    with engine.connect() as conn:
+        assert conn.execute(text('SELECT version_num FROM alembic_version')).scalar_one() == '0012_calendar_media_merge'
+    engine.dispose()

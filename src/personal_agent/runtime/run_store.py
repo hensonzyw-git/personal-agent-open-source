@@ -83,25 +83,6 @@ class RunBudgetStore:
         with self.sessions() as session:
             return self._held(session, task_id)
 
-    def create_task(self, task_id, *, timeline_id, sealed_goal, sealed_constraints,
-                    llm_used=0, read_used=0, web_used=0, active_ms=0):
-        self._write(lambda session: session.execute(insert(self.tasks).values(
-            task_id=task_id, timeline_id=timeline_id, sealed_goal=sealed_goal,
-            sealed_constraints=sealed_constraints, llm_used=llm_used, read_used=read_used,
-            web_used=web_used, active_ms=active_ms)))
-
-    def start_message(self, operation_id, *, timeline_id, now_ms, sealed_input):
-        def work(session):
-            existing = session.execute(select(self.runs).where(self.runs.c.operation_id == operation_id)).mappings().one_or_none()
-            if existing:
-                if existing["timeline_id"] != timeline_id:
-                    raise RunStateError("timeline_mismatch")
-                return
-            session.execute(insert(self.runs).values(operation_id=operation_id,
-                timeline_id=timeline_id, started_ms=now_ms, deadline_ms=now_ms + 60000,
-                sealed_input_snapshot=sealed_input))
-        self._write(work)
-
     def _live(self, run, now_ms):
         if run["state"] not in {"accepted", "thinking", "reading"} or not run["started_ms"] + run["active_ms"] <= now_ms < run["deadline_ms"]:
             raise RunStateError("run_expired_or_stopped")
