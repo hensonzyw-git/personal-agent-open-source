@@ -31,11 +31,11 @@ import hashlib
 import hmac
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Final
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from personal_agent.keys import HmacKey, HmacKeyRing
@@ -44,6 +44,7 @@ from personal_agent.storage.models import (
     Conversation,
     ConversationAlias,
     ConversationEvent,
+    MediaBinding,
 )
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
@@ -400,6 +401,22 @@ def read_page(
         rows = rows[:limit]
 
     entries = tuple(_entry(keyring, event) for event in rows)
+    # Existing messages store media in bindings, not in encrypted event text.
+    # Project only this page's references; model history continues to use _entry.
+    user_ids = [entry.event_id for entry in entries if entry.event_type == USER_MESSAGE]
+    if user_ids:
+        references: dict[str, list[dict[str, str]]] = {}
+        for event_id, media_id in session.execute(
+            select(MediaBinding.event_id, MediaBinding.media_id)
+            .where(MediaBinding.event_id.in_(user_ids))
+            .order_by(MediaBinding.event_id, MediaBinding.ordinal)
+        ):
+            references.setdefault(event_id, []).append({"type": "image_ref", "media_id": media_id})
+        entries = tuple(
+            replace(entry, content={**entry.content, "parts": references[entry.event_id]})
+            if entry.event_id in references else entry
+            for entry in entries
+        )
     if not entries:
         # An empty page still has to say honestly whether more exists in the
         # direction that was asked for, and must not mint a cursor that anchors

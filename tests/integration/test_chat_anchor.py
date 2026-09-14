@@ -1006,3 +1006,24 @@ def _bindings(engine, media_id) -> list[dict]:
             {"id": media_id},
         )
         return [dict(row._mapping) for row in rows]
+
+
+@pytest.mark.parametrize("caption", ["", "photo caption"])
+def test_timeline_projects_existing_image_bindings(session, store, keyring, engine, timeline, caption):
+    media_id = _publish(session, store, keyring)
+    _anchor(_deps(engine, keyring, store), timeline=timeline, key="timeline-photo", media_id=media_id, text=caption)
+    with session_factory(engine)() as reopened:
+        page = events.read_page(reopened, keyring, _hmac("cursor"), conversation_id=timeline,
+                                cursor=None, direction="older", limit=20)
+        entry = next(e for e in page.entries if e.event_type == events.USER_MESSAGE)
+        assert entry.content["text"] == caption
+        assert entry.content["parts"] == [{"type": "image_ref", "media_id": media_id}]
+        # Projection does not rewrite the archived message or change model history.
+        original = events._entry(keyring, reopened.get(ConversationEvent, entry.event_id))
+        assert "parts" not in original.content
+        # A removed image retains its reference for the client's unavailable placeholder.
+        delete_media(reopened, keyring=keyring, media_id=media_id, device_id="dev", now=NOW)
+        reopened.commit()
+        page = events.read_page(reopened, keyring, _hmac("cursor"), conversation_id=timeline,
+                                cursor=None, direction="older", limit=20)
+        assert next(e for e in page.entries if e.event_id == entry.event_id).content["parts"] == entry.content["parts"]

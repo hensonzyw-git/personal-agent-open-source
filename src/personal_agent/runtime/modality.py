@@ -93,18 +93,16 @@ G1_APPROVAL: Approval | None = Approval(
     evidence="docs/evidence/多模态输入spike阶段一_2026-09-10.md (+阶段二/三)",
 )
 
-#: §0 G2, after the option-1 revision: the narrowed scanner exemption. The
-#: frozen upstream design (Agent横向能力技术方案 §12.2) requires a "恶意文件扫描
-#: 状态" in the model's pre-flight check, and this project has no scanner. The
-#: exemption object is narrow -- the server never decodes, and its only code
-#: path that touches untrusted bytes is §5.4's bounded header probe (#10) --
-#: but narrow is not approved. **None means not approved.**
-#:
-#: Filling this in is the change that unblocks images, and it is Henson's
-#: decision to make, not this code's: §0 G2's row says the exemption is pending
-#: and §10 says the switch stays closed, without self-downgrade, until it is
-#: granted.
-SCANNER_EXEMPTION: Approval | None = None
+#: Henson accepted the scanner exemption for single-user chat images on
+#: 2026-09-14. This is risk acceptance, not a successful malware scan.
+#: Header/size/resource limits and outbound image integrity remain mandatory.
+SCANNER_EXEMPTION: Approval | None = Approval(
+    term="scanner_exemption",
+    decided="Temporarily exempt independent malware scanning for single-user chat images; retain all other image controls",
+    approved_by="Henson",
+    approved_on=date(2026, 9, 14),
+    evidence="docs/gates/multimodal-input.md",
+)
 
 
 @dataclass(frozen=True)
