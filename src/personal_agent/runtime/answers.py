@@ -1,5 +1,6 @@
 """Trusted evidence references and deterministic analysis rendering."""
 from dataclasses import dataclass, asdict
+import copy
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -11,6 +12,29 @@ class AnswerError(ValueError):
 
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
+
+
+def _comparison_filter_json(requested):
+    """Expand only approved request defaults; never fill missing evidence.
+
+    The frozen metadata, comparison identity and provider arguments stay intact.
+    Explicit values and unknown keys are retained for the exact scope check.
+    """
+    from personal_agent_core.tool_ir import QUERY_EXPENSES
+
+    if not isinstance(requested, dict):
+        raise AnswerError('evidence_scope_mismatch')
+    filters = copy.deepcopy(requested)
+    properties = QUERY_EXPENSES.model_input_schema['properties']
+    for key, schema in properties.items():
+        if key not in {'view', 'cursor'} and 'default' in schema:
+            filters.setdefault(key, copy.deepcopy(schema['default']))
+    amount = filters.get('personal_amount_cny')
+    if isinstance(amount, dict):
+        for key, schema in properties['personal_amount_cny']['properties'].items():
+            if 'default' in schema:
+                amount.setdefault(key, copy.deepcopy(schema['default']))
+    return canonical(filters)
 
 
 def _keys(value, required, optional=()):
@@ -90,7 +114,7 @@ class EvidenceCatalog:
             _keys(node,('kind','current_metric_ref','baseline_metric_ref','comparison_ref'))
             a,b=self._metric(node['current_metric_ref']),self._metric(node['baseline_metric_ref'])
             req=self.comparisons.get(node['comparison_ref'])
-            if (not req or a.filters_json!=canonical(req['current']) or b.filters_json!=canonical(req['baseline']) or
+            if (not req or a.filters_json!=_comparison_filter_json(req['current']) or b.filters_json!=_comparison_filter_json(req['baseline']) or
                 a.metric_kind!=b.metric_kind or a.metric_kind!=req['metric_kind'] or
                 (a.unit,a.currency)!=(b.unit,b.currency) or a.data_status!='complete' or b.data_status!='complete'):
                 raise AnswerError('evidence_scope_mismatch')
