@@ -105,14 +105,25 @@ class RunBudgetStore:
         if run["state"] not in {"accepted", "thinking", "reading"} or not run["started_ms"] + run["active_ms"] <= now_ms < run["deadline_ms"]:
             raise RunStateError("run_expired_or_stopped")
 
+    def _guard_lease(self, run, lease, now_ms):
+        # Unleased rows support offline construction; once acquired, every
+        # budget mutation requires current durable ownership, even after expiry.
+        if run["lease_owner"] is None and lease is None:
+            return
+        if (lease is None or lease.operation_id != run["operation_id"] or
+                lease.owner != run["lease_owner"] or lease.fence != run["fence"] or
+                run["lease_until_ms"] is None or now_ms >= run["lease_until_ms"]):
+            raise RunStateError("stale_run_lease")
+
     def reserve_prebind(self, operation_id, task_ids, *, now_ms, llm_add=1, read_add=0,
-                        attempt_key=None):
+                        attempt_key=None, lease=None):
         if (llm_add, read_add) not in {(1, 0), (0, 1)} or len(set(task_ids)) != len(task_ids):
             raise RunStateError("invalid_prebind_attempt")
         attempt_key = attempt_key or uuid4().hex
         fingerprint = hashlib.sha256(json.dumps([task_ids, llm_add, read_add]).encode()).hexdigest()
         def work(session):
             run = self._one(session, self.runs, self.runs.c.operation_id, operation_id)
+            self._guard_lease(run, lease, now_ms)
             self._live(run, now_ms)
             if run["task_id"] is not None:
                 raise RunStateError("already_bound")
@@ -168,9 +179,10 @@ class RunBudgetStore:
         return self._write(work)
 
     def bind(self, operation_id, *, task_id, now_ms, sealed_goal, sealed_constraints,
-             new_task_id=None):
+             new_task_id=None, lease=None):
         def work(session):
             run = self._one(session, self.runs, self.runs.c.operation_id, operation_id)
+            self._guard_lease(run, lease, now_ms)
             chosen = task_id or new_task_id
             if not chosen:
                 raise RunStateError("missing_new_task_id")
@@ -217,12 +229,13 @@ class RunBudgetStore:
         return self._write(work)
 
     def reserve_bound(self, operation_id, *, now_ms, llm_add=0, read_add=0, web_add=0,
-                      attempt_key=None):
+                      attempt_key=None, lease=None):
         if any(type(x) is not int or x < 0 for x in (llm_add, read_add, web_add)) or web_add > read_add or llm_add + read_add != 1:
             raise RunStateError("invalid_attempt")
         attempt_key = attempt_key or uuid4().hex
         def work(session):
             run = self._one(session, self.runs, self.runs.c.operation_id, operation_id)
+            self._guard_lease(run, lease, now_ms)
             self._live(run, now_ms)
             task = self._one(session, self.tasks, self.tasks.c.task_id, run["task_id"])
             if task["active_operation_id"] != operation_id or task["revision"] != run["expected_task_revision"] or task["status"] != "active":
@@ -250,11 +263,14 @@ class RunBudgetStore:
                 kind="model" if llm_add else "read", status="in_flight", started_ms=now_ms))
         self._write(work)
 
-    def recover_prebind(self, operation_id):
+    def recover_prebind(self, operation_id, *, now_ms=None):
         def work(session):
             run = self._one(session, self.runs, self.runs.c.operation_id, operation_id)
             if run["task_id"] is not None or run["state"] == "failed":
                 return
+            if run["lease_owner"] is not None and (now_ms is None or
+                    now_ms < max(run["lease_until_ms"], run["started_ms"] + run["active_ms"])):
+                raise RunStateError("live_or_unchecked_lease")
             r = self.reservations
             for reservation in session.execute(select(r).where(r.c.operation_id == operation_id,
                 r.c.state == "held")).mappings().all():
@@ -265,5 +281,5 @@ class RunBudgetStore:
                     r.c.reservation_no == reservation["reservation_no"]).values(state="orphan_charge",
                     **{f"charged_{k}": reservation[k] for k in TASK_LIMITS}))
             session.execute(update(self.runs).where(self.runs.c.operation_id == operation_id).values(
-                state="failed", active_ms=60000))
+                state="failed", active_ms=60000, fence=run["fence"] + 1))
         self._write(work)
