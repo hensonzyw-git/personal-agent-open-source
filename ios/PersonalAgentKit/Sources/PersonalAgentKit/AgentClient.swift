@@ -246,6 +246,7 @@ public struct AgentClient: Sendable {
               let url = Self.url(path: "/v1/media/\(mediaID)", query: [], relativeTo: baseURL)
         else { throw AgentClientError.malformedResponse }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.setValue(ClientWireVersion.value, forHTTPHeaderField: ClientWireVersion.header)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw AgentClientError.malformedResponse }
@@ -696,6 +697,7 @@ public struct AgentClient: Sendable {
         request.httpMethod = method
         request.timeoutInterval = 45
         request.httpBody = body
+        request.setValue(ClientWireVersion.value, forHTTPHeaderField: ClientWireVersion.header)
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }

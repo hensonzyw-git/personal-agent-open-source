@@ -630,6 +630,12 @@ struct ClientWireVersionTests {
         _ = try? await client.sendChatMessage(
             conversationID: "tl_1", text: "hi", idempotencyKey: key, token: "t"
         )
+        _ = try? await client.sendChatMessage(
+            conversationID: "tl_1", parts: [.text("photo"), .imageReference(mediaID: key)],
+            idempotencyKey: key, token: "t"
+        )
+        _ = try? await client.putMediaContent(mediaID: key, body: Data([0xff, 0xd8, 0xff]), token: "t")
+        _ = try? await client.readMedia(mediaID: key, token: "t")
         _ = try? await client.operation(operationID: "op_1", token: "t")
         _ = try? await client.reportDeviceActionResult(
             actionID: key, body: .failed(detail: nil), token: "t"
@@ -647,7 +653,7 @@ struct ClientWireVersionTests {
 
         // The requests really went out; a stub that recorded nothing would
         // make the assertion below pass for the wrong reason.
-        #expect(HeaderStubProtocol.count("/v1/chat/messages") == 1)
+        #expect(HeaderStubProtocol.count("/v1/chat/messages") == 2)
         #expect(HeaderStubProtocol.count("/v1/calendar/sync") == 1)
         #expect(
             HeaderStubProtocol.unanimousHeader(ClientWireVersion.header)
