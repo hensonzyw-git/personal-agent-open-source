@@ -63,7 +63,15 @@ class CountedTransport(httpx.AsyncBaseTransport):
         try:
             response = await self.inner.handle_async_request(request)
             row['http_status'] = response.status_code
-            # Do not consume error bodies; they can contain credentials.
+            # Successful synthetic model responses may be inspected; never error bodies.
+            if self.provider == 'model' and response.status_code == 200:
+                raw = await response.aread()
+                row['response_sha256'] = hashlib.sha256(raw).hexdigest()
+                try:
+                    body = json.loads(raw)
+                    row['tool_calls'] = [c.get('message', {}).get('tool_calls', []) for c in body.get('choices', [])]
+                except (ValueError, TypeError):
+                    row['response_shape'] = 'non_json'
             return response
         finally: row['headers_latency_ms'] = round((time.monotonic()-start)*1000)
     async def aclose(self): await self.inner.aclose()
@@ -90,7 +98,7 @@ async def search(values):
     return rows
 
 
-def models(values, repetitions):
+def models(values, repetitions, selected=None):
     sys.path[:0]=[str(ROOT/'tests'),str(ROOT/'tests/integration')]
     from test_agent_api import engine,token_ring,keyring,_auth,_query_total_result,decode_finance_query_projection,FakeDispatcher
     from test_runtime_v2_api import client_for,answer
@@ -107,6 +115,7 @@ def models(values, repetitions):
     rows=[]
     for repetition in range(1,repetitions+1):
       for case_id,utterance,fixture,rubric in CASES:
+        if selected and case_id not in selected:continue
         if STATE.exists() and json.loads(STATE.read_text()).get('model',0)>96:return rows
         trace=[]; business=[]
         class ReadOnlyFixture(FakeDispatcher):
@@ -152,6 +161,7 @@ def models(values, repetitions):
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--run',choices=['search','model']);parser.add_argument('--repetitions',type=int,choices=[1,2,3],default=3);parser.add_argument('--out',type=Path)
+    parser.add_argument('--case',action='append',choices=[c[0] for c in CASES])
     args=parser.parse_args()
     if not args.run:print(json.dumps(CASES,ensure_ascii=False,indent=2));return
     if not args.out:parser.error('--out is required')
@@ -159,7 +169,7 @@ def main():
     values=config()
     result={'scope':'local diagnostic; real provider; synthetic business; no release gate',
             'started_at':datetime.now(timezone.utc).isoformat(),'cases':CASES,
-            'rows':asyncio.run(search(values)) if args.run=='search' else models(values,args.repetitions)}
+            'rows':asyncio.run(search(values)) if args.run=='search' else models(values,args.repetitions,args.case)}
     # Never persist any supplied credential even if echoed in a response.
     encoded=json.dumps(result,ensure_ascii=False,indent=2)
     for k,v in values.items():
