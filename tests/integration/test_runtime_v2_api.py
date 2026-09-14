@@ -149,7 +149,9 @@ def test_full_catalog_leaves_room_for_context():
     specs=catalog(declarations)
     from google.genai import types
     tools=[types.Tool(function_declarations=[types.FunctionDeclaration(name=s.name,description=s.description,parameters_json_schema=s.schema) for s in specs])]
-    size=len((canonical([t.model_dump(mode='json',exclude_none=True) for t in tools])+build_system_prompt(today='2026-09-14',runtime_v2=True)+business_rules('finance.',today='2026-09-14')+business_rules('calendar.',today='2026-09-14')).encode())
+    available={s.business_name for s in specs if not s.business_name.startswith('agent.')}
+    capability_line='\n本轮工具清单：'+','.join(sorted(available))+'\n'
+    size=len((capability_line+canonical([t.model_dump(mode='json',exclude_none=True) for t in tools])+build_system_prompt(today='2026-09-14',runtime_v2=True)+business_rules('finance.',today='2026-09-14')+business_rules('calendar.',today='2026-09-14')).encode())
     assert size+4000<=24000,size
 
 

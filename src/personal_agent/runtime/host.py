@@ -113,7 +113,8 @@ class DurableRunHost:
         mandatory=[c.text for c in self.envelope.components if c.kind.value in {'checkpoint','clarification_context'}]
         domains={s.business_name.split('.')[0] for s in self.specs}
         today=self.deps.now().astimezone(__import__('zoneinfo').ZoneInfo('Asia/Shanghai')).date().isoformat()
-        system=build_system_prompt(today=today,runtime_v2=True)+'\n'+ '\n'.join(business_rules(d+'.',today=today) for d in sorted(domains))
+        available_tools={s.business_name for s in self.specs if not s.business_name.startswith('agent.')}
+        system=build_system_prompt(today=today,runtime_v2=True)+'\n本轮工具清单：'+(','.join(sorted(available_tools)) or '无')+'\n'+ '\n'.join(business_rules(d+'.',today=today,available_tools=available_tools) for d in sorted(domains))
         data={'current_user_source_ref':self.anchor.event_id,'current_input':self.payload.text,
             'candidates':list(self.candidates.values()),'completed_results':self.results,'metrics':[asdict(m) for m in self.evidence.metrics.values()],
             'tool_evidence_refs':list(self.evidence.evidence),

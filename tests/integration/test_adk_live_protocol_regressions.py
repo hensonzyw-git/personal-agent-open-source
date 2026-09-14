@@ -63,3 +63,38 @@ def test_original_invalid_shapes_still_fail_without_dispatch(engine,token_ring,k
         assert result['result_envelope']['kind']=='limitation'
         assert result['result_envelope'].get('failure')
         assert dispatcher.resolve_calls==[] and dispatcher.commit_calls==[]
+
+
+def test_readonly_prompt_matches_admitted_catalog(engine,token_ring,keyring):
+    client,calls,_=client_for(engine,token_ring,keyring,[answer()],tools=QUERY)
+    with client:
+        send(client,token_ring,'你好')
+    system='\n'.join(m['content'] for m in calls[0]['messages'] if m['role']=='system')
+    assert '本轮工具清单：finance.query_expenses\n' in system
+    names={t['function']['name'] for t in calls[0]['tools']}
+    assert 'finance_query_expenses' in names
+    assert not any(n.startswith(('finance_log','calendar_')) for n in names)
+    assert 'finance.log_expense：' not in system
+    assert 'finance.log_income：' not in system
+    assert 'finance.update_family_fund：' not in system
+    assert '日期缺失默认今天' not in system
+    assert 'view/cursor 只放在 arguments' in system
+
+
+def test_original_view_constraint_is_still_rejected():
+    from personal_agent.runtime.task_contracts import validate_evidence_scope
+    from personal_agent.runtime.answers import AnswerError
+    data=json.loads((Path(__file__).resolve().parents[2]/'docs/evidence/adk_supplement_live_20260914.json').read_text())
+    row=next(r for r in data['rows'] if r['case']=='analysis' and r['repeat']==3)
+    metadata=json.loads(row['trace'][0]['tool_calls'][0][0]['function']['arguments'])['task']
+    with pytest.raises(AnswerError,match='evidence_scope_mismatch'):
+        validate_evidence_scope(row['response']['result_envelope']['evidence'][0],metadata)
+
+
+def test_batch_only_keeps_expense_rules_without_income_rules():
+    from personal_agent.runtime.prompt import business_rules
+    rules=business_rules('finance.',today='2026-09-14',available_tools={'finance.log_expense_batch'})
+    assert 'finance.log_expense：' in rules
+    assert '不默认、不继承历史' in rules
+    assert 'finance.log_income：' not in rules
+    assert 'finance.update_family_fund：' not in rules
