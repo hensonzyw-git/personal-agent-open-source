@@ -158,8 +158,12 @@ class RunBudgetStore:
                 session.execute(insert(self.steps).values(operation_id=operation_id, step_no=step_no,
                     call_no=0, attempt_no=1, call_id=attempt_key, attempt_nonce=attempt_key,
                     args_hash=fingerprint, kind="model" if llm_add else "discovery", status="in_flight", started_ms=now_ms))
-                session.execute(update(self.runs).where(self.runs.c.operation_id == operation_id).values(
-                    llm_used=run["llm_used"], read_used=run["read_used"], state="thinking"))
+            # Persist the observed elapsed time even for an idempotent replay.
+            # Before binding this is a clock floor, not a charge to any Task;
+            # bind still transfers the full elapsed cost exactly once.
+            session.execute(update(self.runs).where(self.runs.c.operation_id == operation_id).values(
+                llm_used=run["llm_used"], read_used=run["read_used"],
+                active_ms=now_ms-run["started_ms"], state="thinking"))
             return candidates
         return self._write(work)
 

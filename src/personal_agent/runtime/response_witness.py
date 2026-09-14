@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 import httpx
+from openai.types.completion_usage import CompletionUsage
+from pydantic import ValidationError
 
 
 class ResponseViolation(ValueError):
@@ -82,6 +84,16 @@ def _raw_calls(body: bytes) -> tuple[CallStamp, ...]:
     data = strict_json(body)
     if not isinstance(data, dict) or data.get("error") is not None:
         raise ResponseViolation("invalid_response")
+    # The SDK constructs responses without validating usage first. Serializing
+    # a malformed counter can therefore warn with its raw input_value before
+    # our outer exception sanitizer runs. Validate the locked SDK's nested
+    # usage schema strictly, without coercing/replacing the original payload.
+    # Missing/null usage and provider extension fields remain supported.
+    if data.get("usage") is not None:
+        try:
+            CompletionUsage.model_validate(data["usage"], strict=True)
+        except ValidationError:
+            raise ResponseViolation("invalid_response_usage") from None
     choices = data.get("choices")
     if not isinstance(choices, list) or len(choices) != 1:
         raise ResponseViolation("response_count")

@@ -123,6 +123,57 @@ def test_real_sdk_errors_do_not_retry_or_leak_body(status, caplog):
     assert not any(x.startswith("start:") for x in h.trace)
 
 
+@pytest.mark.parametrize("usage", [
+    "SYNTHETIC_PRIVATE_USAGE", ["SYNTHETIC_PRIVATE_USAGE"], {},
+    *({"prompt_tokens": value, "completion_tokens": 10, "total_tokens": 30}
+      for value in ("SYNTHETIC_PRIVATE_USAGE", "20", True, 20.0, None,
+                    {"private": "SYNTHETIC_PRIVATE_USAGE"})),
+    {"prompt_tokens": 20, "completion_tokens": "SYNTHETIC_PRIVATE_USAGE", "total_tokens": 30},
+    {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": "SYNTHETIC_PRIVATE_USAGE"},
+    {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30,
+     "prompt_tokens_details": {"cached_tokens": "SYNTHETIC_PRIVATE_USAGE"}},
+    {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30,
+     "completion_tokens_details": {"reasoning_tokens": "SYNTHETIC_PRIVATE_USAGE"}},
+])
+def test_malformed_usage_is_rejected_without_sdk_warning_leaks(usage, capfd, caplog, recwarn):
+    sent = []
+    async def http(request):
+        sent.append(request)
+        body = wire()
+        body["usage"] = usage
+        return httpx.Response(200, json=body)
+    binding = AttemptBinding("usage", 1, 1)
+    h = CheckedHarness(WitnessedLiteLlm(model="openai/synthetic", provider_name="zhipu",
+        api_key="synthetic-key", binding=binding, transport=httpx.MockTransport(http)), binding)
+    with pytest.raises(ResponseViolation) as caught:
+        asyncio.run(h.run())
+    captured = capfd.readouterr()
+    diagnostics = captured.out + captured.err + caplog.text + str(caught.value)
+    diagnostics += "".join(str(w.message) for w in recwarn)
+    assert "SYNTHETIC_PRIVATE_USAGE" not in diagnostics
+    assert str(caught.value) == "invalid_response_usage"
+    assert len(sent) == 1 and h.cleaned
+    assert not any(x.startswith("start:") for x in h.trace)
+
+
+@pytest.mark.parametrize("usage", [None, {
+    "prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30,
+    "prompt_tokens_details": {"cached_tokens": 5, "audio_tokens": None},
+    "completion_tokens_details": {"reasoning_tokens": 3},
+    "prompt_cache_hit_tokens": 5,
+}])
+def test_valid_optional_usage_and_provider_extensions_keep_original_response(usage):
+    async def http(request):
+        body = wire()
+        body["usage"] = usage
+        return httpx.Response(200, json=body)
+    binding = AttemptBinding("usage-valid", 1, 1)
+    h = CheckedHarness(WitnessedLiteLlm(model="openai/synthetic", provider_name="zhipu",
+        api_key="synthetic-key", binding=binding, transport=httpx.MockTransport(http)), binding)
+    asyncio.run(h.run())
+    assert "start:finish" in h.trace and h.cleaned
+
+
 def test_cancellation_closes_http_attempt_and_invalidates_receipt():
     async def scenario():
         entered, closed = asyncio.Event(), asyncio.Event()

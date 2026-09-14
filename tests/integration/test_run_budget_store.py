@@ -191,3 +191,46 @@ def test_run_replay_keeps_original_deadline(setup):
     op = run("accept")
     store.start_message(op, timeline_id="timeline", now_ms=40000, sealed_input=SEALED)
     assert store.snapshot(op)["deadline_ms"] == 60000
+
+
+@pytest.mark.parametrize("action", ["model", "discovery", "replay", "bind_new", "bind_old"])
+def test_prebind_clock_rollback_is_refused_across_store_instances(setup, action):
+    store, run, factory = setup
+    old = task(store)
+    op = run("prebind-clock")
+    store.reserve_prebind(op, [old], now_ms=50000, attempt_key="first")
+    before = store.snapshot(op)
+    reopened = RunBudgetStore(factory)
+    with pytest.raises(RunStateError, match="run_expired_or_stopped"):
+        if action.startswith("bind"):
+            reopened.bind(op, task_id=old if action == "bind_old" else None,
+                new_task_id="new", now_ms=1000, sealed_goal=SEALED, sealed_constraints=SEALED)
+        else:
+            reopened.reserve_prebind(op, [old], now_ms=1000,
+                llm_add=0 if action == "discovery" else 1,
+                read_add=1 if action == "discovery" else 0,
+                attempt_key="first" if action == "replay" else "second")
+    assert reopened.snapshot(op) == before
+    assert reopened.task_snapshot(old)["active_ms"] == 0
+    assert reopened.held(old)["time_ms"] == 60000
+
+
+def test_prebind_replay_advances_clock_without_double_charging(setup):
+    store, run, factory = setup
+    old = task(store)
+    op = run("prebind-replay-clock")
+    for now in (50000, 55000):
+        store.reserve_prebind(op, [old], now_ms=now, attempt_key="same")
+    reopened = RunBudgetStore(factory)
+    with pytest.raises(RunStateError):
+        reopened.bind(op, task_id=old, now_ms=51000,
+            sealed_goal=SEALED, sealed_constraints=SEALED)
+    assert reopened.snapshot(op)["llm_used"] == 1
+    assert reopened.task_snapshot(old)["active_ms"] == 0
+    bound = reopened.bind(op, task_id=old, now_ms=56000,
+        sealed_goal=SEALED, sealed_constraints=SEALED)
+    assert bound.accepted and bound.deadline_ms == 60000
+    assert reopened.task_snapshot(old)["llm_used"] == 1
+    assert reopened.task_snapshot(old)["active_ms"] == 56000
+    reopened.reserve_bound(op, now_ms=57000, read_add=1)
+    assert reopened.task_snapshot(old)["active_ms"] == 57000
