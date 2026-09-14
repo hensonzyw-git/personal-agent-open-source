@@ -1,7 +1,7 @@
-"""T2 transactional proposal/control authority, before production Host wiring.
+"""Transactional proposal/control authority used by the production durable Host.
 
 Inputs here are Host-authorized references and sealed data, never raw model
-arguments. Semantic source validation and dispatch consumption remain Host work.
+arguments. The production Host validates semantic source references and consumes dispatch claims.
 A submitted proposal is recovery-only; this module never repeats an external call.
 """
 from dataclasses import dataclass
@@ -34,6 +34,18 @@ def guard_submission(session, operation_id, submission, now):
     store = TaskControlStore(None)
     run = session.execute(select(store.runs).where(store.runs.c.operation_id == operation_id)).mappings().one_or_none()
     if run is None:
+        operation=session.execute(select(Operation.__table__).where(Operation.operation_id==operation_id)).mappings().one_or_none()
+        if operation is not None and operation['plan_key']:
+            parent=session.execute(select(Operation.__table__).where(Operation.idempotency_key==operation['plan_key'])).mappings().one_or_none()
+            parent_run=None if parent is None else session.execute(select(store.runs).where(store.runs.c.operation_id==parent['operation_id'])).mappings().one_or_none()
+            if parent_run is not None:
+                # The complete immutable plan was frozen before the first item
+                # claimed submission. Later items are recovery, not new intent.
+                submitted=session.execute(select(store.steps.c.call_id).where(store.steps.c.operation_id==parent['operation_id'],
+                    store.steps.c.call_id==operation['plan_key'],store.steps.c.kind=='write',store.steps.c.status.in_(['submitted','sent']))).first()
+                if not submitted or parent_run['state'] not in {'handoff','parked','completed'} or operation['encrypted_request'] is None:
+                    raise RunStateError('unclaimed_plan_item')
+                return
         if submission is not None:
             raise RunStateError('unexpected_run_submission')
         return
@@ -84,6 +96,8 @@ class TaskControlStore(RunLeaseStore):
         operation = self._one(session, Operation.__table__, Operation.operation_id, submission.lease.operation_id)
         if operation['cancel_requested'] or operation['state'] != 'dispatching':
             raise RunStateError('operation_not_submittable')
+        from personal_agent.runtime.run_repository import close_candidate
+        close_candidate(session, run, now_ms=now_ms)
         session.execute(update(self.steps).where(self.steps.c.operation_id == run['operation_id'],
             self.steps.c.step_no == proposal['step_no'], self.steps.c.call_no == proposal['call_no']).values(
                 status='submitted', ended_ms=now_ms))
@@ -99,7 +113,7 @@ class TaskControlStore(RunLeaseStore):
         self._write(work)
 
     def mutate_task(self, lease, *, task_id, expected_revision, action, control_id,
-                    sealed_change, now_ms, sealed_goal=None, sealed_constraints=None):
+                    sealed_change, now_ms, sealed_goal=None, sealed_constraints=None, _session=None):
         if action not in {'cancel', 'pause', 'amend'} or not control_id:
             raise RunStateError('invalid_task_control')
         if (action == 'amend') != (sealed_goal is not None and sealed_constraints is not None):
@@ -125,13 +139,16 @@ class TaskControlStore(RunLeaseStore):
                 raise RunStateError('terminal_task')
             result = 'applied'
             old = None
-            if task['active_operation_id'] is not None:
-                old = self._one(session, self.runs, self.runs.c.operation_id, task['active_operation_id'])
+            active_id=task['active_operation_id']
+            if active_id is None and task['write_slot'] is None:
+                active_id=session.execute(select(self.runs.c.operation_id).join(Operation,Operation.operation_id==self.runs.c.operation_id).where(self.runs.c.task_id==task_id,Operation.state.in_(['waiting_for_clarification','waiting_for_duplicate_decision'])).order_by(self.runs.c.started_ms.desc()).limit(1)).scalar_one_or_none()
+            if active_id is not None:
+                old = self._one(session, self.runs, self.runs.c.operation_id, active_id)
                 operation = self._one(session, Operation.__table__, Operation.operation_id, old['operation_id'])
                 from personal_agent.api.operation_state import can_cancel_pre_submit
                 submitted = session.execute(select(self.steps.c.call_id).where(
                     self.steps.c.operation_id == old['operation_id'], self.steps.c.kind == 'write',
-                    self.steps.c.status == 'submitted')).first()
+                    self.steps.c.status.in_(['submitted','sent']))).first()
                 if submitted or not can_cancel_pre_submit(operation['state']):
                     result = 'too_late'
             elif task['write_slot'] is not None:
@@ -139,7 +156,7 @@ class TaskControlStore(RunLeaseStore):
             if result == 'applied':
                 elapsed = None
                 if old:
-                    elapsed = min(now_ms, old['deadline_ms']) - old['started_ms']
+                    elapsed = min(now_ms, old['deadline_ms']) - old['started_ms'] if task['active_operation_id'] and old['state']!='parked' else old['active_ms']
                     if elapsed < old['active_ms']:
                         raise RunStateError('control_clock_rollback')
                     from personal_agent.api.operation_store import transition_operation
@@ -161,4 +178,4 @@ class TaskControlStore(RunLeaseStore):
                 call_id=control_id, attempt_nonce='control:' + control_id, args_hash=fingerprint,
                 kind='control', status=result, sealed_args=sealed_change, started_ms=now_ms, ended_ms=now_ms))
             return result
-        return self._write(work)
+        return work(_session) if _session is not None else self._write(work)

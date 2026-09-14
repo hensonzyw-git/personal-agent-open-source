@@ -1648,6 +1648,32 @@ struct ChatView: View {
             case .answered(let text):
                 Text(text)
 
+            case .answeredV2(let envelope):
+                if let nodes = envelope.analysisNodes {
+                    ForEach(Array(nodes.enumerated()), id: \.offset) { _, node in
+                        Text(node.text)
+                        ForEach(Array((node.sources ?? []).enumerated()), id: \.offset) { _, source in
+                            if let url = source.publicURL { Link(source.title, destination: url) }
+                        }
+                    }
+                } else { Text(envelope.text) }
+                if let commentary = envelope.commentary, !commentary.isEmpty {
+                    Text("模型分析").font(.caption).foregroundStyle(.secondary)
+                    Text(commentary)
+                }
+                if envelope.coverage == "partial" { Text("分析未完成，已取得的结果保留。").font(.caption) }
+                ForEach(Array(envelope.evidence.enumerated()), id: \.offset) { _, evidence in
+                    if let query = evidence.queryResult {
+                        queryReceiptCard(result: query, tool: "finance.query_expenses", operationID: operationID)
+                    }
+                    if let calendar = evidence.calendarQueryResult {
+                        calendarQueryReceiptCard(result: calendar, tool: evidence.tool, operationID: operationID)
+                    }
+                    if let raw = evidence.url, let url = URL(string: raw), ["http", "https"].contains(url.scheme), url.user == nil, url.password == nil {
+                        Link(evidence.title ?? "来源", destination: url)
+                    }
+                }
+
             case .needsClarification(let question):
                 Label("需要澄清", systemImage: "questionmark.circle")
                     .foregroundStyle(.pending)
@@ -1845,7 +1871,7 @@ struct ChatView: View {
             case .unknown:
                 return TerminalBadge(text: "工具事实不可用", color: .secondary)
             }
-        case .answeredWithQuery, .answeredWithCalendarQuery:
+        case .answeredV2, .answeredWithQuery, .answeredWithCalendarQuery:
             // The query card carries its own header; a badge here would compete
             // with the structured rows it renders.
             return nil

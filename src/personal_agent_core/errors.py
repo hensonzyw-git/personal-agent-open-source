@@ -23,6 +23,8 @@ class ErrorCode(StrEnum):
 
     # Request and authorisation
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
+    CLIENT_UPGRADE_REQUIRED = "CLIENT_UPGRADE_REQUIRED"
+    RUNTIME_UNAVAILABLE = "RUNTIME_UNAVAILABLE"
     SCOPE_DENIED = "SCOPE_DENIED"
     TOOL_NOT_ALLOWLISTED = "TOOL_NOT_ALLOWLISTED"
     UNSUPPORTED_OPERATION = "UNSUPPORTED_OPERATION"
@@ -168,6 +170,8 @@ MODEL_RETRYABLE_FAILURE_REASONS: Final[frozenset[str]] = frozenset(
 #: amounts, record identifiers, Base or table identifiers.
 ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.INVALID_ARGUMENT: "请求参数不符合工具合同",
+    ErrorCode.CLIENT_UPGRADE_REQUIRED: "请升级客户端后继续此任务",
+    ErrorCode.RUNTIME_UNAVAILABLE: "此任务的运行时暂不可用，任务和回执已保留",
     ErrorCode.SCOPE_DENIED: "当前设备没有执行该操作的权限",
     ErrorCode.TOOL_NOT_ALLOWLISTED: "该工具不在服务端允许集合内",
     ErrorCode.UNSUPPORTED_OPERATION: "该操作一期不开放，请在电脑端飞书账本处理",

@@ -1,0 +1,124 @@
+{
+  "synthetic": true,
+  "cases": [
+    {
+      "name": "comparison",
+      "request": {
+        "kind": "analysis",
+        "coverage": "complete",
+        "evidence_refs": [
+          "q-current",
+          "q-baseline"
+        ],
+        "analysis_nodes": [
+          {
+            "kind": "comparison",
+            "current_metric_ref": "metric_0c79f3c0568af1324ad785471ec2b616f4ff40a2313b04074d315ba7cbf66f60",
+            "baseline_metric_ref": "metric_935e08f24fc9c66c1df2f12259b1d09846093fdb9e06ed9a140176b365257578",
+            "comparison_ref": "comparison"
+          }
+        ],
+        "commentary": "合成测试评论"
+      },
+      "response": {
+        "version": 2,
+        "kind": "analysis",
+        "task_status": "completed",
+        "coverage": "complete",
+        "evidence": [
+          {
+            "kind": "query_card",
+            "ref": "q-current"
+          },
+          {
+            "kind": "query_card",
+            "ref": "q-baseline"
+          }
+        ],
+        "analysis_nodes": [
+          {
+            "kind": "comparison",
+            "current_metric_ref": "metric_0c79f3c0568af1324ad785471ec2b616f4ff40a2313b04074d315ba7cbf66f60",
+            "baseline_metric_ref": "metric_935e08f24fc9c66c1df2f12259b1d09846093fdb9e06ed9a140176b365257578",
+            "comparison_ref": "comparison",
+            "text": "{\"month\":\"2026-09\"}：120 元；基准 {\"month\":\"2026-08\"}：100 元；增加 20 元",
+            "difference_decimal": "20",
+            "current": {
+              "metric_ref": "metric_0c79f3c0568af1324ad785471ec2b616f4ff40a2313b04074d315ba7cbf66f60",
+              "evidence_ref": "q-current",
+              "metric_kind": "total",
+              "value_decimal": "120",
+              "unit": "元",
+              "currency": "CNY",
+              "filters_json": "{\"month\":\"2026-09\"}",
+              "data_status": "complete"
+            },
+            "baseline": {
+              "metric_ref": "metric_935e08f24fc9c66c1df2f12259b1d09846093fdb9e06ed9a140176b365257578",
+              "evidence_ref": "q-baseline",
+              "metric_kind": "total",
+              "value_decimal": "100",
+              "unit": "元",
+              "currency": "CNY",
+              "filters_json": "{\"month\":\"2026-08\"}",
+              "data_status": "complete"
+            }
+          }
+        ],
+        "commentary": "合成测试评论",
+        "text": "{\"month\":\"2026-09\"}：120 元；基准 {\"month\":\"2026-08\"}：100 元；增加 20 元"
+      }
+    },
+    {
+      "name": "conversation",
+      "request": {
+        "kind": "conversation",
+        "text": "合成测试",
+        "coverage": "complete",
+        "evidence_refs": []
+      },
+      "response": {
+        "version": 2,
+        "kind": "conversation",
+        "task_status": "completed",
+        "coverage": "complete",
+        "evidence": [],
+        "text": "合成测试"
+      }
+    },
+    {
+      "name": "clarification",
+      "request": {
+        "kind": "clarification",
+        "text": "合成测试",
+        "coverage": "complete",
+        "evidence_refs": []
+      },
+      "response": {
+        "version": 2,
+        "kind": "clarification",
+        "task_status": "waiting",
+        "coverage": "complete",
+        "evidence": [],
+        "text": "合成测试"
+      }
+    },
+    {
+      "name": "limitation",
+      "request": {
+        "kind": "limitation",
+        "text": "合成测试",
+        "coverage": "complete",
+        "evidence_refs": []
+      },
+      "response": {
+        "version": 2,
+        "kind": "limitation",
+        "task_status": "completed",
+        "coverage": "complete",
+        "evidence": [],
+        "text": "合成测试"
+      }
+    }
+  ]
+}

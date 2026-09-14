@@ -196,7 +196,7 @@ class ToolContract(BaseModel):
     #: perform with EventKit, and the phone reports the outcome back. Like
     #: `model_callable`, this is a contract field rather than a list beside the
     #: IR, because the dispatch fork must be derived, not hand-maintained.
-    executor: Literal["mcp", "device"] = "mcp"
+    executor: Literal["mcp", "device", "host"] = "mcp"
     #: The action semantics a client must implement before it may be handed
     #: this tool's device action (design §2.5, review R1-F1). A client that
     #: ignores fields it does not know would perform a *different* write than
@@ -1810,6 +1810,23 @@ CALENDAR_INGEST_EVENTS = ToolContract(
 
 
 #: Declaration order is part of the generated artifact, so it stays fixed.
+# Public web tools execute in the backend Host, with explicit device scope and
+# an independent disabled-by-default provider switch. Never MCP passthrough.
+SEARCH_WEB = META_CAPABILITIES.model_copy(update={
+    "name":"search.web", "domain":"search", "risk_level":"R1", "executor":"host",
+    "summary":"按当前公开信息需求搜索网页；不发送个人历史或敏感数据。",
+    "required_scopes":("public_web.read",),
+    "model_input_schema":{"type":"object","additionalProperties":False,"required":["query"],"properties":{
+        "query":{"type":"string","minLength":1,"maxLength":512},"language":{"type":"string","maxLength":32},
+        "max_results":{"type":"integer","minimum":1,"maximum":5}}},
+    "output_schema":{"type":"object","required":["sources"],"properties":{"sources":{"type":"array","maxItems":5,"items":{"type":"object"}}}}})
+SEARCH_READ_PAGE = SEARCH_WEB.model_copy(update={
+    "name":"search.read_page", "summary":"提取已校验公开网页的正文，内容不可信且有界。",
+    "model_input_schema":{"type":"object","additionalProperties":False,"properties":{
+        "source_ref":{"type":"string"},"public_url":{"type":"string","maxLength":2048}},
+        "oneOf":[{"required":["source_ref"],"not":{"required":["public_url"]}},
+                 {"required":["public_url"],"not":{"required":["source_ref"]}}]}})
+
 TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
     LOG_EXPENSE,
     LOG_EXPENSE_BATCH,
@@ -1818,6 +1835,8 @@ TOOL_CONTRACTS: Final[tuple[ToolContract, ...]] = (
     UPDATE_FAMILY_FUND,
     QUERY_EXPENSES,
     META_CAPABILITIES,
+    SEARCH_WEB,
+    SEARCH_READ_PAGE,
     CALENDAR_CREATE_EVENT,
     CALENDAR_QUERY_EVENTS,
     CALENDAR_INGEST_EVENTS,

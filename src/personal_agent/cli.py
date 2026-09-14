@@ -175,6 +175,9 @@ def main() -> None:
         ),
         ledger_url=ledger_url,
         media=media,
+        v2_device_ids=_v2_devices_from_env(),
+        v2_execution_enabled=os.environ.get('ADK_RUNTIME_V2_EXECUTION','true')=='true',
+        search_config=_search_config_from_env(),
     )
     try:
         asyncio.run(_serve(config, args, bind, write_switch=write_switch))
@@ -226,3 +229,17 @@ def _serve_restore_read_only(database: Path, args, bind: BindTarget) -> None:
             uvicorn.run(app, host=bind.host, port=bind.port, **kwargs)
     finally:
         engine.dispose()
+
+
+def _search_config_from_env():
+    from personal_agent.search.adapter import SearchConfig
+    return SearchConfig(enabled=os.environ.get('SEARCH_ENABLED')=='true',
+        extract_enabled=os.environ.get('SEARCH_EXTRACT_ENABLED')=='true',
+        auth_mode=os.environ.get('SEARCH_AUTH_MODE'),
+        daily_limit=int(os.environ.get('SEARCH_DAILY_LIMIT','100')))
+
+
+def _v2_devices_from_env():
+    mode=os.environ.get('CHAT_RUNTIME','legacy')
+    if mode not in {'legacy','adk_v2'}:raise ValueError('CHAT_RUNTIME must be legacy or adk_v2')
+    return frozenset(x.strip() for x in os.environ.get('ADK_RUNTIME_V2_DEVICES','').split(',') if x.strip()) if mode=='adk_v2' else frozenset()

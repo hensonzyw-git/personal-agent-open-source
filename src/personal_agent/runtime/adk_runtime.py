@@ -1,8 +1,7 @@
 """V2's actual Runner composition. Durable policy/state remain on its Host.
 
 The Host contract is deliberately mandatory. This module cannot supply a fake
-default store or reach a business connector directly. API composition is wired
-in later slices after the Task/lease/budget and version-entry contracts exist.
+default store or reach a business connector directly. API composition uses DurableRunHost with persistent Task/lease/budget authority.
 """
 
 from __future__ import annotations
@@ -52,8 +51,8 @@ class RunHost(Protocol):
     async def execute(self, call: AcceptedCall, authority: object) -> ToolResult:
         """Reserve/dispatch reads or commit an exclusive control/write handoff.
 
-        No writes are executed here: the write result is a persisted proposal
-        for the existing orchestrator, which later claims submit eligibility.
+        The Host freezes a write proposal, then uses the existing orchestrator
+        to claim submit eligibility and execute the governed handoff.
         """
         ...
 
@@ -137,6 +136,8 @@ class AdkRuntime:
 
     async def after_model(self, callback_context, llm_response):
         stamps = self.model.verify_response(llm_response, binding=self.prepared.binding)
+        recorder=getattr(self.host,'record_model_usage',None)
+        if recorder is not None:await recorder(self.prepared.binding,llm_response)
         if not stamps:
             raise ResponseViolation("finish_required")
         calls = []
@@ -212,7 +213,8 @@ class AdkRuntime:
         except BaseException as exc:
             self.failed = True
             code = str(exc) if isinstance(exc, ResponseViolation) else "run_failed"
-            await self.host.failed_run(code)
+            retry = code == 'finish_required' and getattr(self.host, 'allow_format_retry', lambda: False)()
+            if not retry:await self.host.failed_run(code)
             if isinstance(exc, asyncio.CancelledError):
                 raise
             raise ResponseViolation(code) from None

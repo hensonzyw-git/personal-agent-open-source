@@ -234,6 +234,10 @@ class AuthContext:
     #: the by-id poll and a replay are each a device-authenticated request.
     client_wire_version: int
 
+    @property
+    def chat_runtime_v2(self):
+        return self.client_wire_version >= 4
+
 
 class EnvelopeFactory(Protocol):
     """Assembles one turn's model context from already-persisted state.
@@ -308,6 +312,11 @@ class AgentApiDeps:
     #: `CAP-001` design §7.3/§8. Runs the Compactor for one Session after a turn
     #: whose input crossed the soft limit. `None` means no Compactor provider is
     #: composed, and the signal is then recorded and not acted on.
+    v2_device_ids: frozenset[str] = frozenset()
+    v2_execution_enabled: bool = True
+    v2_model_factory: Callable | None = None
+    v2_search_adapter: Any = None
+    v2_search_allowed: Callable[[AuthContext, str], bool] = lambda auth, tool: False
     compact_session: Callable[[Any, str], None] | None = None
     read_record: RecordReader | None = None
     #: The server's current `allowed_tools_version`, stamped onto a device at
@@ -379,6 +388,8 @@ class AgentApiDeps:
 
 
 _STATUS_BY_CODE = {
+    ErrorCode.CLIENT_UPGRADE_REQUIRED: 409,
+    ErrorCode.RUNTIME_UNAVAILABLE: 503,
     ErrorCode.IDEMPOTENCY_CONFLICT: 409,
     ErrorCode.SCOPE_DENIED: 403,
     ErrorCode.TOOL_NOT_ALLOWLISTED: 403,
@@ -541,10 +552,30 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         await asyncio.sleep(0)
         await bounded(tuple(compaction_tasks))
 
+    async def resume_v2(stop):
+        from personal_agent.api.runtime_v2 import resumable
+        while not stop.is_set():
+            try:
+                for operation_id, auth in await asyncio.to_thread(resumable,deps):
+                    if operation_id in operation_tasks:continue
+                    task=asyncio.create_task(asyncio.to_thread(_process_chat,deps,auth,operation_id))
+                    operation_tasks[operation_id]=task
+                    task.add_done_callback(lambda done, op=operation_id: forget_task(op,done))
+            except Exception:
+                # Do not serialize provider exceptions or private snapshots.
+                logger.warning("v2 recovery discovery failed; retrying")
+            try:await asyncio.wait_for(stop.wait(),timeout=5)
+            except TimeoutError:pass
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        yield
-        await drain_background_tasks()
+        stop=asyncio.Event()
+        recovery=asyncio.create_task(resume_v2(stop))
+        try:yield
+        finally:
+            stop.set()
+            await recovery
+            await drain_background_tasks()
 
     app = FastAPI(lifespan=lifespan)
     # The service composition runs one API process. Hold admission across both
@@ -847,7 +878,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         if anchored is None:
             # This is an explicit, user-confirmed boundary. A classifier must
             # not spend a model call or be allowed to weaken that instruction.
-            if start_new_session:
+            if start_new_session or (auth.chat_runtime_v2 and auth.device_id in deps.v2_device_ids and deps.v2_execution_enabled):
                 resolved_classification = ResolvedClassification(
                     expected_session_id=None,
                     expected_last_event_at=None,
@@ -1096,6 +1127,8 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 authenticated_device_id = auth.device_id
                 _owned_operation(session, operation_id, device_id=auth.device_id)
                 request_cancel(session, operation_id=operation_id, now=deps.now())
+                from personal_agent.runtime.run_repository import RunRepository
+                RunRepository(deps.session_factory,deps.keyring).cancel_pre_submit(session,operation_id,now_ms=round(deps.now().timestamp()*1000))
                 operation = get_operation(session, operation_id)
                 return _operation_response(
                     deps.keyring,
@@ -1129,7 +1162,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             ) from exc
         with deps.session_factory() as session:
             def work():
-                authenticate(request, session)
+                auth=authenticate(request, session)
                 timeline_id = events.resolve_timeline(
                     session,
                     deps.identifier_key,
@@ -1145,6 +1178,9 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                     direction=direction,
                     limit=limit,
                 )
+                if auth.client_wire_version<4 and any(isinstance(entry.content,dict) and entry.content.get('result_envelope',{}).get('version')==2 for entry in page.entries):
+                    from personal_agent.api.runtime_v2 import unavailable
+                    raise unavailable('client_upgrade_required')
                 return JSONResponse(
                     {
                         "conversation_id": timeline_id,
@@ -1176,6 +1212,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 auth = authenticate(request, session)
                 body: dict[str, Any] = {
                     "allowed_tools_version": auth.allowed_tools_version,
+                    "chat_runtime_v2": auth.client_wire_version >= 4 and auth.device_id in deps.v2_device_ids and deps.v2_execution_enabled,
                     "tools": deps.capabilities(auth),
                     # Every enrolled device resolves to this one Timeline
                     # (design 4.2.2). The field keeps its compatibility
@@ -2266,7 +2303,10 @@ def _anchor_chat_in_transaction(
     if not opened.created:
         return _AnchoredChat(operation.operation_id, operation.state)
 
-    if start_new_session:
+    from personal_agent.api import runtime_v2
+    runtime_version, source_version = runtime_v2.choose(session, deps, auth, clarification_of, timeline_id)
+
+    if start_new_session and runtime_version == 1:
         _abandon_pre_submit_operations_in_open_session(
             session,
             deps,
@@ -2303,15 +2343,16 @@ def _anchor_chat_in_transaction(
             source_payload,
             source_operation_id=source.operation_id,
         )
-        transition_operation(
-            session,
-            operation_id=source.operation_id,
+        if runtime_version == 1:
+            transition_operation(
+                session,
+                operation_id=source.operation_id,
             current_state=source.state,
             current_version=source.state_version,
             target_state="cancelled_pre_submit",
             now=deps.now(),
         )
-    elif is_finance_retry_request(text):
+    elif runtime_version == 1 and is_finance_retry_request(text):
         retry_source, retry_context = _eligible_finance_retry(
             session,
             deps,
@@ -2397,6 +2438,8 @@ def _anchor_chat_in_transaction(
             reuse_lineage=_reuse_lineage(clarification_of, retry_source),
             now=deps.now(),
         )
+    if runtime_version == 2:
+        runtime_v2.anchor(session, deps, operation, payload, source_version)
     logger.info(
         "session boundary %s",
         json.dumps(decision.audit_record(), sort_keys=True),
@@ -2526,6 +2569,12 @@ def _process_chat(
     operation_id: str,
 ) -> _ProcessedChat:
     """Run one accepted operation in a worker-owned database session."""
+
+    from personal_agent.api import runtime_v2
+    with deps.session_factory() as check_session:
+        is_v2 = runtime_v2.row(check_session, operation_id) is not None
+    if is_v2:
+        return runtime_v2.process(deps, auth, operation_id)
 
     with deps.session_factory() as session:
         try:
@@ -4136,7 +4185,7 @@ def _operation_event_content(
     # So the version passed here decides nothing -- it is version 1 to say so,
     # rather than to claim this call site speaks for a client it does not have.
     projection = _operation_projection(
-        keyring, operation, client_wire_version=DEFAULT_CLIENT_WIRE_VERSION
+        keyring, operation, client_wire_version=4
     )
     content: dict[str, Any] = {
         "state": projection["state"],
@@ -4403,6 +4452,9 @@ def _plan_rows(operation: Operation) -> list[Operation]:
 def _operation_projection(
     keyring: KeyRing, operation: Operation, *, client_wire_version: int
 ) -> dict[str, Any]:
+    from personal_agent.api import runtime_v2
+    db = object_session(operation)
+    v2_answer = runtime_v2.project(db, keyring, operation, client_wire_version) if db is not None else None
     projection = {
         "operation_id": operation.operation_id,
         "state": operation.state,
@@ -4510,6 +4562,9 @@ def _operation_projection(
         )
         if record is not None:
             projection["record"] = record.to_dict()
+    if v2_answer is not None:
+        projection["result_envelope"] = v2_answer
+        projection["answer"] = v2_answer["text"]
     return projection
 
 

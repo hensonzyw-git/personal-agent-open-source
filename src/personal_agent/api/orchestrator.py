@@ -1159,9 +1159,11 @@ def _apply_resolve(
     prior_clarification_question: str | None = None,
     action_keyring: KeyRing | None = None,
     intent: WriteIntent | None = None,
+    run_submission=None,
+    defer_result_commit=False,
 ) -> RunResult:
     if isinstance(outcome, ReadCompleted):
-        _step(session, operation, "succeeded", now, safe_result=outcome.result)
+        _step(session, operation, "succeeded", now, safe_result=outcome.result, commit_transition=not defer_result_commit)
         if outcome.projection is not None:
             # A Finance projection carries a to_dict(); a calendar projection
             # is already the decoded display dict. Both are strict decoders'
@@ -1186,13 +1188,14 @@ def _apply_resolve(
             "waiting_for_clarification",
             now,
             safe_result=outcome.reason,
+            commit_transition=not defer_result_commit,
         )
         return RunResult(
             state="waiting_for_clarification", clarification=outcome.reason
         )
 
     if isinstance(outcome, ResolveFailedSafe):
-        _step(session, operation, "failed_safe", now, failure_reason=outcome.reason)
+        _step(session, operation, "failed_safe", now, failure_reason=outcome.reason, commit_transition=not defer_result_commit)
         return RunResult(state="failed_safe", failure_reason=outcome.reason)
 
     if isinstance(outcome, PossibleDuplicate):
@@ -1221,6 +1224,7 @@ def _apply_resolve(
             keyring=keyring,
             now=now,
             prior_clarification_question=prior_clarification_question,
+            run_submission=run_submission,
         )
 
     if isinstance(outcome, DeviceActionIssued):
@@ -1263,6 +1267,7 @@ def _apply_resolve(
             "source_in_progress",
             now,
             tool=outcome.tool,
+            run_submission=run_submission,
             encrypted_device_action=seal_device_action(
                 action_keyring,
                 operation_id=operation.operation_id,
@@ -1396,18 +1401,21 @@ def _commit(
     keyring: KeyRing,
     now: Clock,
     prior_clarification_question: str | None = None,
+    run_submission=None,
 ) -> RunResult:
     # Commit `source_in_progress` before the write can occur: from here a cancel
     # can no longer be reported as a clean pre-submit cancellation.
-    _step(session, operation, "source_in_progress", now, tool=intent.tool)
+    _step(session, operation, "source_in_progress", now, tool=intent.tool, run_submission=run_submission)
     # This is deliberately a real transaction boundary, not merely a flush.
     # If the process dies after Finance accepts the idempotency key, startup
     # recovery must see a post-submit Agent operation and project Finance truth.
     session.commit()
     session.refresh(operation)
+    dispatch_key = operation.idempotency_key
+    session.commit()  # Close the refresh snapshot before claim consumption/network.
     outcome = dispatcher.commit(
         intent=intent,
-        idempotency_key=operation.idempotency_key,
+        idempotency_key=dispatch_key,
         duplicate_override=duplicate_override,
     )
     if isinstance(outcome, Written):
@@ -1594,6 +1602,8 @@ def _step(
     encrypted_request: dict[str, Any] | None = None,
     failure_reason: str | None = None,
     zero_write_proven: bool = False,
+    run_submission=None,
+    commit_transition=True,
 ) -> None:
     session.refresh(operation)
     transition_operation(
@@ -1610,13 +1620,15 @@ def _step(
         encrypted_request=encrypted_request,
         failure_reason=failure_reason,
         zero_write_proven=zero_write_proven,
+        run_submission=run_submission,
     )
     # Each transition is durable on its own, and the transaction closes here
     # rather than staying open across the next model or MCP call. The state
     # machine is forward-only, so there is nothing a later failure would want
     # to take back -- and a half-hour-old read snapshot is exactly what makes
     # a later write fail.
-    session.commit()
+    if commit_transition:
+        session.commit()
     session.refresh(operation)
 
 

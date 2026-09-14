@@ -183,7 +183,7 @@ class RunBudgetStore:
         return self._write(work)
 
     def bind(self, operation_id, *, task_id, now_ms, sealed_goal, sealed_constraints,
-             new_task_id=None, lease=None):
+             new_task_id=None, lease=None, _session=None):
         def work(session):
             run = self._one(session, self.runs, self.runs.c.operation_id, operation_id)
             self._guard_lease(run, lease, now_ms)
@@ -230,10 +230,10 @@ class RunBudgetStore:
                 task_id=chosen, expected_task_revision=task["revision"], active_ms=elapsed,
                 deadline_ms=deadline, state="thinking" if accepted else "failed"))
             return BoundBudget(accepted, chosen, deadline)
-        return self._write(work)
+        return work(_session) if _session is not None else self._write(work)
 
     def reserve_bound(self, operation_id, *, now_ms, llm_add=0, read_add=0, web_add=0,
-                      attempt_key=None, lease=None):
+                      attempt_key=None, lease=None, _session=None):
         if any(type(x) is not int or x < 0 for x in (llm_add, read_add, web_add)) or web_add > read_add or llm_add + read_add != 1:
             raise RunStateError("invalid_attempt")
         attempt_key = attempt_key or uuid4().hex
@@ -265,7 +265,7 @@ class RunBudgetStore:
                 step_no=self._next_step(session, operation_id), call_no=0, attempt_no=1,
                 call_id=attempt_key, attempt_nonce=attempt_key, args_hash=fingerprint,
                 kind="model" if llm_add else "read", status="in_flight", started_ms=now_ms))
-        self._write(work)
+        return work(_session) if _session is not None else self._write(work)
 
     def recover_prebind(self, operation_id, *, now_ms=None):
         def work(session):

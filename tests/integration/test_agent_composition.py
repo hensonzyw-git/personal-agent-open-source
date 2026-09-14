@@ -2261,3 +2261,30 @@ def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
         assert operation.state == "source_in_progress"
         assert operation.encrypted_device_action is not None
     engine.dispose()
+
+
+@pytest.mark.parametrize("read_first", [False, True])
+def test_v2_uses_production_context_and_real_sdk(keys,agent_db,finance,read_first):
+    from dataclasses import replace
+    from personal_agent.runtime.witnessed_model import WitnessedLiteLlm
+    from test_witnessed_model import wire
+    from test_adk_runtime import fc
+    calls=[]
+    def model(prepared):
+        async def transport(request):
+            body=json.loads(request.content);calls.append(body)
+            context=json.loads(next(m['content'] for m in body['messages'] if m['role']=='user').split('\n',1)[1])['task_context']
+            metadata={'goal':'合成普通交流','source_refs':[context['current_user_source_ref']],'constraints':[]}
+            if read_first and len(calls)==1:return httpx.Response(200,json=wire(calls=[fc('meta_capabilities','read',arguments={},task=metadata)]))
+            if read_first:assert context['completed_results']
+            return httpx.Response(200,json=wire(calls=[fc('agent_finish','done',task=metadata,answer={'kind':'conversation','text':'你好','coverage':'complete','evidence_refs':[]})]))
+        return WitnessedLiteLlm(model='openai/synthetic',provider_name='zhipu',api_key='synthetic',binding=prepared.binding,transport=httpx.MockTransport(transport))
+    async def scenario():
+        async with agent_service(replace(config_for(agent_db,finance),v2_device_ids=frozenset({DEVICE_ID})),build_gateway=lambda:FakeGateway(ProposedAnswer('legacy')),write_switch=shared_enabled_write_switch()) as service:
+            service.deps.v2_model_factory=model
+            async with http_for(service.deps) as client:
+                return await client.post('/v1/chat/messages',json={'conversation_id':'c1','text':'你好'},headers={**chat_headers(),'X-Client-Wire-Version':'4'})
+    response=asyncio.run(scenario())
+    assert response.status_code==200,response.text
+    assert response.json()['result_envelope']['text']=='你好'
+    assert len(calls)==(2 if read_first else 1)
