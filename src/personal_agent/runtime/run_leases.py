@@ -18,13 +18,13 @@ class RunLease:
 
 
 class RunLeaseStore(RunBudgetStore):
-    def _task_authority(self, session, run):
+    def _task_authority(self, session, run, *, action_id=None):
         if run['task_id'] is None:
             return None
         task = self._one(session, self.tasks, self.tasks.c.task_id, run['task_id'])
         if (task['revision'] != run['expected_task_revision'] or
                 task['active_operation_id'] != run['operation_id'] or
-                task['status'] != 'active' or task['write_slot'] is not None):
+                task['status'] != 'active' or task['write_slot'] != action_id):
             raise RunStateError('stale_task_authority')
         return task
 
@@ -59,13 +59,13 @@ class RunLeaseStore(RunBudgetStore):
             return RunLease(operation_id, owner, fence)
         return self._write(work)
 
-    def check_in_transaction(self, session, lease, *, now_ms):
+    def check_in_transaction(self, session, lease, *, now_ms, action_id=None):
         run = self._one(session, self.runs, self.runs.c.operation_id, lease.operation_id)
         self._live(run, now_ms)
         if (run['lease_owner'] != lease.owner or run['fence'] != lease.fence or
                 run['lease_until_ms'] is None or now_ms >= run['lease_until_ms']):
             raise RunStateError('stale_run_lease')
-        task = self._task_authority(session, run)
+        task = self._task_authority(session, run, action_id=action_id)
         self._observe(session, run, task, now_ms)
         return run
 

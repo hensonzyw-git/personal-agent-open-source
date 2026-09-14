@@ -446,6 +446,7 @@ def transition_operation(
     encrypted_request: dict[str, Any] | None = None,
     device_result: str | None = None,
     zero_write_proven: bool = False,
+    run_submission=None,
 ) -> int:
     """Move one operation forward, returning its new `state_version`.
 
@@ -457,60 +458,68 @@ def transition_operation(
     False, so parking a possibly-submitted operation is refused unless the caller
     explicitly carries the fact source's zero-write evidence.
     """
-    assert_transition(
-        current_state, target_state, zero_write_proven=zero_write_proven
-    )
+    # Roll back the claim too if validation/CAS fails and a caller catches it.
+    with session.begin_nested():
+        if target_state == "source_in_progress":
+            # A v2 run cannot bypass Task/fence authority through the legacy entry.
+            # Claim persistence and this operation CAS share the caller transaction.
+            from personal_agent.runtime.task_control import guard_submission
+            guard_submission(session, operation_id, run_submission, now)
 
-    values: dict[str, Any] = {
-        "state": target_state,
-        "state_version": current_version + 1,
-        "updated_at": now,
-    }
-    if failure_reason is not None:
-        values["failure_reason"] = failure_reason
-    if tool is not None:
-        values["tool"] = tool
-    if duplicate_check_id is not None:
-        values["duplicate_check_id"] = duplicate_check_id
-    if safe_result is not None:
-        values["safe_result"] = safe_result
-    if encrypted_result_record is not None:
-        values["encrypted_result_record"] = encrypted_result_record
-    # The device-action seal is set on entry to `source_in_progress` (with the
-    # explicit argument) and cleared on leaving it (the automatic branch):
-    # delivery and refusal are both expressed by this one column, so a
-    # settlement that forgot to refuse delivery cannot happen at the store
-    # level. The schema CHECK is the backstop, not the mechanism. (R6.)
-    if encrypted_device_action is not None:
-        values["encrypted_device_action"] = encrypted_device_action
-    elif current_state == "source_in_progress" and target_state != (
-        "source_in_progress"
-    ):
-        values["encrypted_device_action"] = None
-    # The retained request has no such lifecycle: it is written once, on the
-    # same transition that issues the action, and kept afterwards -- settlement
-    # is when the override that needs it becomes possible, not when it stops
-    # being needed. Nothing clears it, so there is deliberately no `else`.
-    if encrypted_request is not None:
-        values["encrypted_request"] = encrypted_request
-    if device_result is not None:
-        values["device_result"] = device_result
+        assert_transition(
+            current_state, target_state, zero_write_proven=zero_write_proven
+        )
 
-    result = session.execute(
-        update(Operation)
-        .where(
-            Operation.operation_id == operation_id,
-            Operation.state == current_state,
-            Operation.state_version == current_version,
+        values: dict[str, Any] = {
+            "state": target_state,
+            "state_version": current_version + 1,
+            "updated_at": now,
+        }
+        if failure_reason is not None:
+            values["failure_reason"] = failure_reason
+        if tool is not None:
+            values["tool"] = tool
+        if duplicate_check_id is not None:
+            values["duplicate_check_id"] = duplicate_check_id
+        if safe_result is not None:
+            values["safe_result"] = safe_result
+        if encrypted_result_record is not None:
+            values["encrypted_result_record"] = encrypted_result_record
+        # The device-action seal is set on entry to `source_in_progress` (with the
+        # explicit argument) and cleared on leaving it (the automatic branch):
+        # delivery and refusal are both expressed by this one column, so a
+        # settlement that forgot to refuse delivery cannot happen at the store
+        # level. The schema CHECK is the backstop, not the mechanism. (R6.)
+        if encrypted_device_action is not None:
+            values["encrypted_device_action"] = encrypted_device_action
+        elif current_state == "source_in_progress" and target_state != (
+            "source_in_progress"
+        ):
+            values["encrypted_device_action"] = None
+        # The retained request has no such lifecycle: it is written once, on the
+        # same transition that issues the action, and kept afterwards -- settlement
+        # is when the override that needs it becomes possible, not when it stops
+        # being needed. Nothing clears it, so there is deliberately no `else`.
+        if encrypted_request is not None:
+            values["encrypted_request"] = encrypted_request
+        if device_result is not None:
+            values["device_result"] = device_result
+
+        result = session.execute(
+            update(Operation)
+            .where(
+                Operation.operation_id == operation_id,
+                Operation.state == current_state,
+                Operation.state_version == current_version,
+            )
+            .values(**values)
         )
-        .values(**values)
-    )
-    if result.rowcount != 1:
-        raise StaleOperationVersionError(
-            f"{operation_id} is no longer at {current_state}/v{current_version}; "
-            "another worker moved it first"
-        )
-    return current_version + 1
+        if result.rowcount != 1:
+            raise StaleOperationVersionError(
+                f"{operation_id} is no longer at {current_state}/v{current_version}; "
+                "another worker moved it first"
+            )
+        return current_version + 1
 
 
 @dataclass(frozen=True)

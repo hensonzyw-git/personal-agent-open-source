@@ -105,6 +105,10 @@ class RunBudgetStore:
         if run["state"] not in {"accepted", "thinking", "reading"} or not run["started_ms"] + run["active_ms"] <= now_ms < run["deadline_ms"]:
             raise RunStateError("run_expired_or_stopped")
 
+    def _next_step(self, session, operation_id):
+        return session.execute(select(func.coalesce(func.max(self.steps.c.step_no), 0) + 1).where(
+            self.steps.c.operation_id == operation_id)).scalar_one()
+
     def _guard_lease(self, run, lease, now_ms):
         # Unleased rows support offline construction; once acquired, every
         # budget mutation requires current durable ownership, even after expiry.
@@ -165,7 +169,7 @@ class RunBudgetStore:
                 candidates.append(CandidateBudget(task_id, task["revision"], eligible,
                     reason=None if eligible else "candidate_not_resumable"))
             if not prior:
-                step_no = run["llm_used"] + run["read_used"]
+                step_no = self._next_step(session, operation_id)
                 session.execute(insert(self.steps).values(operation_id=operation_id, step_no=step_no,
                     call_no=0, attempt_no=1, call_id=attempt_key, attempt_nonce=attempt_key,
                     args_hash=fingerprint, kind="model" if llm_add else "discovery", status="in_flight", started_ms=now_ms))
@@ -238,7 +242,7 @@ class RunBudgetStore:
             self._guard_lease(run, lease, now_ms)
             self._live(run, now_ms)
             task = self._one(session, self.tasks, self.tasks.c.task_id, run["task_id"])
-            if task["active_operation_id"] != operation_id or task["revision"] != run["expected_task_revision"] or task["status"] != "active":
+            if task["active_operation_id"] != operation_id or task["revision"] != run["expected_task_revision"] or task["status"] != "active" or task["write_slot"] is not None:
                 raise RunStateError("task_execution_stale")
             prior = session.execute(select(self.steps).where(self.steps.c.operation_id == operation_id,
                 self.steps.c.attempt_nonce == attempt_key)).mappings().one_or_none()
@@ -258,7 +262,7 @@ class RunBudgetStore:
             session.execute(update(self.runs).where(self.runs.c.operation_id == operation_id).values(
                 **{USAGE_COLUMNS[k]: run[USAGE_COLUMNS[k]] + costs[k] for k in costs}))
             session.execute(insert(self.steps).values(operation_id=operation_id,
-                step_no=run["llm_used"]+run["read_used"]+1, call_no=0, attempt_no=1,
+                step_no=self._next_step(session, operation_id), call_no=0, attempt_no=1,
                 call_id=attempt_key, attempt_nonce=attempt_key, args_hash=fingerprint,
                 kind="model" if llm_add else "read", status="in_flight", started_ms=now_ms))
         self._write(work)
