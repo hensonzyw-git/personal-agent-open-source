@@ -94,7 +94,7 @@ def test_config_off_existing_episode_blocks_policy_lease(composed, world, monkey
     with session_factory(world)() as s:
         assert s.scalar(select(func.count()).select_from(Lease)) == before
     from dataclasses import replace
-    assert transport.prelaunch_context(replace(lease, job_id='j')) is None
+    assert transport.prelaunch_context(replace(lease, job_id='j', lease_epoch=3)) is None
     def forbidden(*args, **kwargs): pytest.fail('disabled claim consumed pending intent')
     monkeypatch.setattr('personal_agent_dal.machine.resume_dispatch.consume_pending', forbidden)
     transport.claim()

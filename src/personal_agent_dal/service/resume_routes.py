@@ -110,15 +110,13 @@ def mount_routes(app, engine, service, config):
     @app.post('/worker/jobs/{job_id}/prelaunch-context')
     def context(job_id: str, body: PrelaunchRequest, worker_id=Depends(worker)):
         from personal_agent_dal.machine.resume_dispatch import prelaunch_context
-        if config is None:
-            from sqlalchemy import select
-            from personal_agent_dal.storage.engine import session_factory
-            from personal_agent_dal.storage.machine_models import ResumeEpisode
-            with session_factory(engine)() as session:
-                if session.scalar(select(ResumeEpisode.intent_id).where(ResumeEpisode.job_id == job_id)):
-                    enabled()
-            return {'context': None}
-        return {'context':call(prelaunch_context,job_id=job_id,worker_id=worker_id,**body.model_dump())}
+        try:
+            result=prelaunch_context(engine,job_id=job_id,worker_id=worker_id,
+                enabled=config is not None,**body.model_dump())
+        except ValueError as exc:
+            status=503 if str(exc)=='DAL_RESUME_UNAVAILABLE' else 409
+            raise HTTPException(status,str(exc)) from exc
+        return {'context':result}
 
     @app.post('/worker/jobs/{job_id}/prelaunch-manifest')
     def manifest(job_id: str, body: PrelaunchManifestRequest, worker_id=Depends(worker)):

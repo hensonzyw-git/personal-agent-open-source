@@ -122,15 +122,22 @@ def _issue_policy_lease(s, *, episode, intent, attempt, action, job, worker_id):
     return lease
 
 
-def _context(s,*,job_id,worker_id,job_lease_epoch):
+def _context(s,*,job_id,worker_id,job_lease_epoch,enabled=True):
+    # Fresh database authority, before any episode-dependent response. Keep
+    # this read and the episode lookup in the caller's single transaction.
+    job=s.scalar(select(WorkerJob).where(WorkerJob.job_id==job_id)
+        .execution_options(populate_existing=True))
+    if (not job or job.worker_id!=worker_id or job.state not in ('leased','running')
+            or job.lease_epoch!=job_lease_epoch or job.lease_expires_at is None
+            or job.lease_expires_at<=utc_now()):
+        raise ValueError('JOB_LEASE_STALE')
     episode=s.scalar(select(ResumeEpisode).where(ResumeEpisode.job_id==job_id))
     if not episode:return None
+    if not enabled:raise ValueError('DAL_RESUME_UNAVAILABLE')
     intent=s.get(DispatchIntent,episode.intent_id)
     attempt,action,selection,snapshot,old,isolation=_binding(s,intent)
     if attempt.state!='prepared' or attempt.dispatch_started_at is not None:
         raise ValueError('ATTEMPT_ALREADY_DISPATCHED')
-    job=s.get(WorkerJob,job_id)
-    if not job or job.lease_epoch!=job_lease_epoch:raise ValueError('JOB_LEASE_STALE')
     lease=_issue_policy_lease(s,episode=episode,intent=intent,attempt=attempt,action=action,
         job=job,worker_id=worker_id)
     refusal=_leases(job,lease,action.feature_id,worker_id,utc_now())
@@ -143,8 +150,9 @@ def _context(s,*,job_id,worker_id,job_lease_epoch):
         isolation=isolation)
 
 
-def prelaunch_context(engine,*,job_id,worker_id,job_lease_epoch):
-    return _transaction(engine,lambda s:_context(s,job_id=job_id,worker_id=worker_id,job_lease_epoch=job_lease_epoch))
+def prelaunch_context(engine,*,job_id,worker_id,job_lease_epoch,enabled=True):
+    return _transaction(engine,lambda s:_context(s,job_id=job_id,worker_id=worker_id,
+        job_lease_epoch=job_lease_epoch,enabled=enabled))
 
 
 def validate_manifest(s,*,attempt,job,lease,owner):
