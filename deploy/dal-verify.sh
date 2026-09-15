@@ -36,6 +36,14 @@ check() { # <description> <command...>
   if "$@" >/dev/null 2>&1; then pass "$desc"; else fail "$desc"; fi
 }
 
+# BEGIN internal ingress probe
+internal_ingress_blocked() {
+  local code
+  code="$(curl -s --path-as-is --request POST -o /dev/null -w '%{http_code}' \
+    --max-time 10 "$1")" && [ "$code" = 403 ]
+}
+# END internal ingress probe
+
 DAL_USER=personal-agent-dal
 API_USER=personal-agent-api
 BACKUP_USER=personal-agent-backup
@@ -160,18 +168,29 @@ else
 fi
 # Unauthenticated operator call through the real Nginx TLS path: 401 with the
 # operator envelope proves routing AND the operator identity domain in one call.
-OP_BODY="$(curl -s --max-time 10 "https://agent.example.invalid/dal/transport/v1/operator/jobs")"
-if printf '%s\n' "$OP_BODY" | grep -q '"dal.operator-transport/1.0"'; then
+if OP_BODY="$(curl -s --max-time 10 "https://agent.example.invalid/dal/transport/v1/operator/jobs")" && printf '%s\n' "$OP_BODY" | grep -q '"dal.operator-transport/1.0"'; then
   pass "unauthenticated /operator/jobs answers the operator envelope via Nginx"
 else
-  fail "unauthenticated /operator/jobs body lacks the operator envelope: $OP_BODY"
+  fail "unauthenticated /operator/jobs request failed or body lacks the operator envelope"
 fi
-OP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://agent.example.invalid/dal/transport/v1/operator/jobs")"
-if [ "$OP_CODE" = 401 ]; then
+if OP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://agent.example.invalid/dal/transport/v1/operator/jobs")" && [ "$OP_CODE" = 401 ]; then
   pass "unauthenticated /operator/jobs is 401"
 else
   fail "unauthenticated /operator/jobs answered $OP_CODE, want 401"
 fi
+
+# Public internal paths must be denied after URI normalization, including POST.
+for blocked_path in \
+  "/internal" "/internal/" "/internal/human-decisions" "/internal/resume-proposals" \
+  "/dal/transport/v1/internal" "/dal/transport/v1/internal/" \
+  "/dal/transport/v1/internal/human-decisions" "/dal/transport/v1/internal/resume-proposals" \
+  "/%69nternal/" "/dal/transport/v1/%69nternal/" \
+  "/dal/transport/v1/./internal/" "/dal/transport/v1/x/../internal/" \
+  "/x/../internal/" "//internal/" "/dal/transport/v1//internal/" \
+  "/dal/transport/v1/%2e/internal/" "/dal/transport/v1/x/%2e%2e/internal/"; do
+  check "public internal path denied: $blocked_path" \
+    internal_ingress_blocked "https://agent.example.invalid$blocked_path"
+done
 
 # --- the personal site must still be reachable -----------------------------------
 SITE_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://zhuyawei.com)"

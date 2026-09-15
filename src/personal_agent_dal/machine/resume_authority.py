@@ -142,20 +142,31 @@ def revoke_decision(engine, *, decision_id, body=None, actor='local-service'):
 def import_decision(engine, *, assertion, keys, issuer, audience, now=None):
     from personal_agent.api.dal_client import verify_decision
     timestamp = now or utc_now()
-    claims = verify_decision(assertion, keys=keys, issuer=issuer, audience=audience,
-                             now_epoch=int(timestamp.timestamp()))
+    # Both closed shapes undergo identical signature/time/identity checks before SQL.
+    # A malformed new shape cannot fit the legacy schema (extra fields forbidden).
+    legacy = False
+    try:
+        claims = verify_decision(assertion, keys=keys, issuer=issuer, audience=audience,
+                                 now_epoch=int(timestamp.timestamp()))
+    except ValueError:
+        claims = verify_decision(assertion, keys=keys, issuer=issuer, audience=audience,
+                                 now_epoch=int(timestamp.timestamp()), legacy_replay=True)
+        legacy = True
     sha = digest(claims)
     def work(s):
         if s.get(ResumeRevocation, claims['decision_id']): raise ValueError('APPROVAL_REVOKED')
         previous = s.scalar(select(ResumeApprovalBinding).where(
             (ResumeApprovalBinding.decision_id == claims['decision_id']) | (ResumeApprovalBinding.jti == claims['jti'])))
         if previous:
-            if previous.claims_sha256 != sha: raise ValueError('DECISION_CONFLICT')
+            if (previous.decision_id != claims['decision_id'] or previous.jti != claims['jti']
+                    or previous.claims_sha256 != sha):
+                raise ValueError('LEGACY_DECISION_REAPPROVAL_REQUIRED' if legacy else 'DECISION_CONFLICT')
             return dict(decision_id=previous.decision_id, approval_id=previous.approval_id, status='accepted')
+        if legacy: raise ValueError('LEGACY_DECISION_REAPPROVAL_REQUIRED')
         if claims['decision'] == 'reject': raise ValueError('DECISION_REJECTED')
-        p = s.scalar(select(ResumeProposal).where(ResumeProposal.binding_sha256 == claims['binding_sha256'],
-            ResumeProposal.expires_at > timestamp).order_by(ResumeProposal.expires_at.desc()).limit(1))
+        p = s.get(ResumeProposal, claims['proposal_id'])
         if not p or p.expires_at <= timestamp: raise ValueError('PROPOSAL_EXPIRED')
+        if p.binding_sha256 != claims['binding_sha256']: raise ValueError('PROPOSAL_DIGEST_MISMATCH')
         binding = json.loads(p.binding)
         current, f, _, action, _ = _binding(s, binding['feature_id'], binding['selection_id'], evidence_id=binding['isolation_id'])
         if action.execution_snapshot_sha256 != p.source_snapshot_sha256: raise ValueError('SOURCE_SNAPSHOT_STALE')

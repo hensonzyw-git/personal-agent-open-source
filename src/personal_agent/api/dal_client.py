@@ -8,7 +8,8 @@ from typing import Literal, Annotated
 from pydantic import Field
 
 
-class DecisionClaims(Closed):
+class LegacyDecisionClaims(Closed):
+    """Closed pre-upgrade shape, usable only for historical import replay."""
     iss: Id
     aud: Id
     jti: Id
@@ -20,6 +21,10 @@ class DecisionClaims(Closed):
     key_thumbprint: Annotated[str, Field(strict=True, pattern=r"^[A-Za-z0-9_-]{43}$")]
     decision: Literal['approve_once', 'approve_once_accept_duplicate_cost', 'reject']
     binding_sha256: Digest
+
+
+class DecisionClaims(LegacyDecisionClaims):
+    proposal_id: Id
 
 
 def sign_decision(claims, *, key, kid):
@@ -61,9 +66,9 @@ def verify_closed_assertion(assertion, *, keys, now_epoch, schema, issuer=None, 
         raise ValueError('ASSERTION_INVALID') from exc
 
 
-def verify_decision(assertion, *, keys, issuer, audience, now_epoch):
+def verify_decision(assertion, *, keys, issuer, audience, now_epoch, legacy_replay=False):
     body = verify_closed_assertion(assertion, keys=keys, issuer=issuer, audience=audience,
-                                   now_epoch=now_epoch, schema=DecisionClaims)
+                                   now_epoch=now_epoch, schema=LegacyDecisionClaims if legacy_replay else DecisionClaims)
     if body['subject_id'] != 'device:'+body['device_id'] or len(body['key_thumbprint']) != 43:
         raise ValueError('ASSERTION_IDENTITY_INVALID')
     return body
@@ -84,8 +89,12 @@ class ProposalBridgeClaims(Closed):
 class FixedDalTransport:
     def __init__(self, *, base_url, key, kid, issuer, audience):
         from urllib.parse import urlsplit
+        # Reject raw control/space spellings before urlsplit can normalize them.
+        if not isinstance(base_url, str) or any(ord(c) <= 32 or ord(c) == 127 for c in base_url):
+            raise ValueError('DAL_DESTINATION_INVALID')
         parsed=urlsplit(base_url)
-        if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
+        if base_url != 'http://127.0.0.1:8820' and (
+                parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
                 or parsed.query or parsed.fragment or parsed.path not in ('','/')):
             raise ValueError('DAL_DESTINATION_INVALID')
         self.base_url=base_url.rstrip('/')

@@ -560,8 +560,11 @@ sudo systemctl enable --now personal-agent-dal-reconcile.timer
 #    daily offsite snapshot before the 16:07 backup window:
 sudo systemctl enable --now personal-agent-dal-db-backup.timer
 
-# 4. Nginx: add the /dal/ locations to agent.example.invalid-ssl.conf
-#    (snippet below), then:
+# 4. Nginx: back up the existing DAL snippet and TLS vhost first.
+#    Update the shared snippet as well as the /dal/ and internal-deny
+#    locations below; preserve unrelated vhost customizations.
+sudo install -m 0644 ~/personal-agent-deploy/nginx/dal-upstream.conf /etc/nginx/snippets/dal-upstream.conf
+#    Then:
 sudo nginx -t && sudo systemctl reload nginx
 
 # 5. Acceptance:
@@ -572,6 +575,12 @@ Nginx locations to add inside the existing `agent.example.invalid` 443 server
 block, before the catch-all `location /`:
 
 ```nginx
+    # Public ingress must not forward the signed PA-only bridge.
+    location = /internal { return 403; }
+    location ^~ /internal/ { return 403; }
+    location = /dal/transport/v1/internal { return 403; }
+    location ^~ /dal/transport/v1/internal/ { return 403; }
+
     # DAL Dev Workflow Service (R08): loopback 8820, snippet dal-upstream.conf.
     location /dal/transport/v1/jobs/ {
         limit_req zone=pa_poll burst=30 nodelay;
@@ -588,6 +597,17 @@ block, before the catch-all `location /`:
         include /etc/nginx/snippets/dal-upstream.conf;
     }
 ```
+
+For co-located PA/DAL renewal delivery, PA uses exactly
+`http://127.0.0.1:8820` as its bridge base URL, with dedicated ES256 assertion
+verification still mandatory. No trailing slash or public transport prefix is
+accepted. Existing HTTPS root destinations remain supported for a separately
+configured trusted channel; this does not make the public internal ingress
+available. Update both PA and DAL together for required signed `proposal_id`.
+Do not rewrite old queued claims: legacy imports are replay-only for exact
+previously imported records. Preserve both databases and delivery uncertainty.
+See [renewal handoff](../docs/dal/DAL_mini_preflight.md) for coordinated rollout
+and recovery; none of these production commands is run by local tests.
 
 ### Operator token issuing channel
 

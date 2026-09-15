@@ -102,7 +102,7 @@ class ResumeBridge:
             claims=dict(iss=self.issuer,aud=self.audience,jti=new_id(),iat=int(now.timestamp()),
                 exp=min(int(p.expires_at.timestamp()),int(now.timestamp())+900),decision_id=decision_id,
                 device_id=d.device_id,subject_id=auth.subject_id,key_thumbprint=d.device_key_thumbprint,
-                decision=body.decision,binding_sha256=body.binding_sha256)
+                decision=body.decision,proposal_id=p.proposal_id,binding_sha256=body.binding_sha256)
             row=DalResumeDecision(decision_id=decision_id,request_id=body.request_id,request_sha256=sha,
                 proposal_id=p.proposal_id,device_id=d.device_id,subject_id=auth.subject_id,
                 key_thumbprint=d.device_key_thumbprint,decision=body.decision,claims=canonical_json(claims),expires_at=p.expires_at)

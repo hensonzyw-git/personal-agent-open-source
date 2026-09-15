@@ -59,7 +59,7 @@ def setup_resume(engine, *, same_snapshot=False):
     now = int(utc_now().timestamp())
     claims = dict(iss='pa-resume', aud='dal-resume', jti='jti', iat=now, exp=now+600,
         decision_id='decision', device_id='phone', subject_id='device:phone', key_thumbprint='a'*43,
-        decision='approve_once', binding_sha256=proposal['binding_sha256'])
+        decision='approve_once', proposal_id=proposal['proposal_id'], binding_sha256=proposal['binding_sha256'])
     return a, proposal, key, claims
 
 
