@@ -16,8 +16,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from alembic.script import ScriptDirectory
 from sqlalchemy import text
 
+from personal_agent_dal.storage.db import alembic_config
 from personal_agent_dal.storage.engine import create_database_engine
 from personal_agent_dal.worker.config import (
     LocalTransportConfig,
@@ -147,18 +149,19 @@ def _healthcheck(config: WorkerConfig) -> int:
 
 
 def _local_problems(transport: LocalTransportConfig) -> list[str]:
-    """Local mode: the database must exist and be at the worker revision."""
+    """Local mode: require the bundled migration heads without migrating."""
     if not transport.database_path.exists():
         return ["database_path missing"]
     try:
         engine = create_database_engine(transport.database_path)
         try:
             with engine.connect() as connection:
-                revision = connection.execute(
+                revisions = set(connection.scalars(
                     text("SELECT version_num FROM alembic_version")
-                ).scalar_one()
-            if revision != "0006":
-                return ["database schema is not at worker revision 0006"]
+                ))
+            heads = set(ScriptDirectory.from_config(alembic_config(engine)).get_heads())
+            if revisions != heads:
+                return ["database schema is not at current migration heads"]
         finally:
             engine.dispose()
     except Exception:  # noqa: BLE001 - healthcheck reports a bounded category

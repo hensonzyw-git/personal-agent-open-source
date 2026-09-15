@@ -1,6 +1,8 @@
 """Authenticated resume and prelaunch transport; provider launch remains disabled."""
 import json
+import logging
 from typing import Annotated
+from sqlalchemy import inspect, select
 from pydantic import Field, StrictInt
 from fastapi import Depends, HTTPException, Request
 from personal_agent_core.timeutil import utc_now
@@ -9,6 +11,10 @@ from personal_agent.api.dal_client import ProposalBridgeClaims, verify_closed_as
 from personal_agent_dal.machine.workflow_selection import Closed, SelectionRequest, register_profile, select_workflow
 from personal_agent_dal.machine.resume_authority import ResumeRequest, propose, import_decision, resume, decision_status, RevokeRequest, revoke_decision
 from personal_agent_dal.machine.isolation_evidence import import_evidence, issue_challenge
+from personal_agent_dal.storage.machine_models import DispatchIntent, ResumeEpisode
+
+
+logger = logging.getLogger(__name__)
 
 
 class AssertionRequest(Closed):
@@ -41,6 +47,17 @@ def mount_routes(app, engine, service, config):
     from personal_agent_dal.service.app import _OperatorAuth, transport_body_guard
     if config is not None:
         for profile in config['profiles']: register_profile(engine,**profile)
+    else:
+        with engine.connect() as connection:
+            schema = inspect(connection)
+            if schema.has_table('dispatch_intents') and schema.has_table('resume_episodes'):
+                unmaterialized = select(DispatchIntent.intent_id).where(
+                    ~select(ResumeEpisode.intent_id).where(
+                        ResumeEpisode.intent_id == DispatchIntent.intent_id
+                    ).correlate(DispatchIntent).exists()
+                ).exists()
+                if connection.scalar(select(unmaterialized)):
+                    logger.error('DAL_RESUME_DISABLED_PENDING_INTENTS')
     def enabled():
         if config is None: raise HTTPException(503,'DAL_RESUME_UNAVAILABLE')
     def call(fn,**kwargs):
