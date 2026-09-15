@@ -47,7 +47,7 @@ class FinanceQueryProjectionError(ValueError):
     """
 
 
-_VIEWS = frozenset({"total", "by_category", "records"})
+_VIEWS = frozenset({"total", "by_category", "records", "by_trip"})
 _METRIC = "personal_spend_total_cny"
 _SOURCE_SYSTEM = "feishu_bitable"
 
@@ -65,6 +65,8 @@ _TOP_LEVEL_FIELDS = frozenset(
         "evidence",
         "personal_spend_total_cny",
         "by_category",
+        "by_trip",
+        "coverage",
         "records",
         "next_cursor",
     }
@@ -82,6 +84,8 @@ _EVIDENCE_FIELDS = frozenset(
         "matched_count",
         "started_at",
         "completed_at",
+        "parser_version",
+        "result_checksum",
     }
 )
 
@@ -146,6 +150,8 @@ class FinanceQueryProjection:
     by_category: tuple[QueryCategoryBucket, ...] = ()
     records: tuple[QueryRecordRow, ...] = ()
     next_cursor: str | None = None
+    by_trip: tuple[dict[str, Any], ...] = ()
+    coverage: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         base: dict[str, Any] = {
@@ -157,7 +163,12 @@ class FinanceQueryProjection:
             "source_system": self.source_system,
             "evidence": self.evidence,
         }
-        if self.view == "total":
+        if self.coverage is not None:
+            base['coverage'] = self.coverage
+        if self.view == 'by_trip':
+            base['personal_spend_total_cny'] = self.personal_spend_total_cny
+            base['by_trip'] = list(self.by_trip)
+        elif self.view == "total":
             base["personal_spend_total_cny"] = self.personal_spend_total_cny
         elif self.view == "by_category":
             base["personal_spend_total_cny"] = self.personal_spend_total_cny
@@ -217,9 +228,23 @@ def decode_finance_query_projection(
 
     evidence = _decode_evidence(data.get("evidence"))
 
+    trip = view == 'by_trip' or filters_applied.get('trip_tag') is not None
+    if trip:
+        from personal_agent_core.trip_query import validate_trip_result
+        try:
+            validate_trip_result(data)
+        except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
+            raise FinanceQueryProjectionError('invalid trip result') from exc
+    elif 'coverage' in data or 'by_trip' in data:
+        raise FinanceQueryProjectionError('unexpected trip extension')
+    if view == 'by_trip':
+        return FinanceQueryProjection(view=view, metric=_METRIC, record_count=record_count,
+            filters_applied=filters_applied, source_system=_SOURCE_SYSTEM, evidence=evidence,
+            personal_spend_total_cny=data['personal_spend_total_cny'], by_trip=tuple(data['by_trip']), coverage=data['coverage'])
     if view == "total":
         return FinanceQueryProjection(
             view=view,
+            coverage=data.get("coverage"),
             metric=_METRIC,
             record_count=record_count,
             filters_applied=filters_applied,
@@ -236,6 +261,7 @@ def decode_finance_query_projection(
             raise FinanceQueryProjectionError("by_category is not a list")
         return FinanceQueryProjection(
             view=view,
+            coverage=data.get("coverage"),
             metric=_METRIC,
             record_count=record_count,
             filters_applied=filters_applied,
@@ -255,6 +281,7 @@ def decode_finance_query_projection(
         raise FinanceQueryProjectionError("next_cursor is not a string or null")
     return FinanceQueryProjection(
         view=view,
+        coverage=data.get("coverage"),
         metric=_METRIC,
         record_count=record_count,
         filters_applied=filters_applied,
@@ -271,6 +298,23 @@ def summarise_query_projection(projection: FinanceQueryProjection) -> str:
     Never model prose: it is derived solely from the validated projection, so
     the compatibility ``answer`` and the structured card can never disagree.
     """
+    if projection.coverage is not None:
+        c = projection.coverage
+        years = '、'.join(str(y) for y in c['source_years'])
+        scope = '净个人支出' if c['scope_coverage'] == 'complete' else f'已接入 {years} 账本内的净个人支出小计（覆盖有限）'
+        label = projection.filters_applied.get('trip_tag') or '旅行场次'
+        text = f"{label}：{scope} ¥{projection.personal_spend_total_cny or '—'}，共 {projection.record_count} 笔。"
+        dates = projection.filters_applied.get('date_range')
+        text += f" 账单日期 {dates['start']} 至 {dates['end']}。" if dates else ' 未限定账单日期。'
+        if projection.record_count == 0 and c['scope_coverage'] != 'complete':
+            text += ' 已接入账本未找到匹配记录，不能据此判断完整场次总花费为零。'
+        if projection.view == 'by_trip':
+            text += '\n' + '\n'.join(f"{b['trip_tag'] or '未归属场次'}：¥{b['personal_spend_total_cny']}，{b['record_count']} 笔" for b in projection.by_trip)
+        if not c['assignment_complete']:
+            text += f"\n扫描范围内 {c['unassigned_record_count']} 笔未能归属场次。"
+        if projection.view == 'records':
+            text += ' 本页为场次明细。' + ('还有更多。' if projection.next_cursor else '')
+        return text
     if projection.view == "total":
         return (
             f"共 {projection.record_count} 条记录，"

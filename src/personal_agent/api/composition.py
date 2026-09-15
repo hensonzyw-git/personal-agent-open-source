@@ -209,6 +209,7 @@ class AgentServiceConfig:
     media: MediaConfig | None = None
     v2_device_ids: frozenset[str] = frozenset()
     v2_execution_enabled: bool = True
+    trip_query_enabled: bool = False
     search_config: Any = None
 
 
@@ -322,6 +323,7 @@ class DeviceBoundDispatcher:
         enabled_tools: frozenset[str],
         manifest_version: str,
         client_wire_version: int,
+        trip_query_enabled: bool = False,
         run: Callable[[Any], Any] = asyncio.run,
     ) -> None:
         self._device_id = device_id
@@ -335,6 +337,7 @@ class DeviceBoundDispatcher:
         self._enabled_tools = enabled_tools
         self._manifest_version = manifest_version
         self._client_wire_version = client_wire_version
+        self._trip_query_enabled = trip_query_enabled
         self._run = run
 
     def _dispatcher(self) -> McpFinanceDispatcher | None:
@@ -370,6 +373,9 @@ class DeviceBoundDispatcher:
         idempotency_key: str | None = None,
         skip_local_dedup: bool = False,
     ) -> ResolveOutcome:
+        from personal_agent_core.trip_query import uses_trip_query
+        if tool == 'finance.query_expenses' and uses_trip_query(model_args) and (not self._trip_query_enabled or self._client_wire_version < 5):
+            return ResolveFailedSafe(reason='CLIENT_UPGRADE_REQUIRED' if self._client_wire_version < 5 else 'RUNTIME_UNAVAILABLE')
         dispatcher = self._dispatcher()
         if dispatcher is None:
             return ResolveFailedSafe(reason="policy_denied")
@@ -845,6 +851,18 @@ async def agent_service(
                         if tool.alias in model_callable_tools
                     ]
                 )
+                if not (config.trip_query_enabled and auth.client_wire_version >= 5):
+                    from dataclasses import replace
+                    import copy
+                    legacy_tools = []
+                    for visible in tools:
+                        if visible.alias == 'finance.query_expenses':
+                            schema = copy.deepcopy(visible.input_schema)
+                            schema['properties'].pop('trip_tag', None)
+                            schema['properties']['view']['enum'] = ['total', 'by_category', 'records']
+                            visible = replace(visible, input_schema=schema)
+                        legacy_tools.append(visible)
+                    tools = legacy_tools
                 from personal_agent.api.runtime_v2 import row as runtime_row
                 from personal_agent.storage.models import ConversationEvent
                 event = session.get(ConversationEvent, current_event_id)
@@ -904,6 +922,7 @@ async def agent_service(
                     enabled_tools=enabled_tools,
                     manifest_version=manifest_version,
                     client_wire_version=auth.client_wire_version,
+                    trip_query_enabled=config.trip_query_enabled,
                 )
                 # Always wrapped, on every composition. A recorder that is
                 # disabled records nothing; a conditional wrap would be one more
@@ -1001,6 +1020,7 @@ async def agent_service(
                     v2_input_budget=v2_input_budget,
                     v2_device_ids=config.v2_device_ids,
                     v2_execution_enabled=config.v2_execution_enabled,
+                    trip_query_enabled=config.trip_query_enabled,
                     v2_search_adapter=_search_adapter(config.search_config),
                     v2_search_allowed=search_allowed,
                     token_ring=token_ring,

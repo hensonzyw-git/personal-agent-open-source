@@ -42,7 +42,7 @@ def validate_evidence_scope(evidence, metadata):
     for constraint in constraints:
         key, value = constraint['key'], constraint['value']
         if key == 'trip_tag':
-            valid = isinstance(value, str) and value and ('#' + value) in filters.get('name_contains', [])
+            valid = isinstance(value, str) and value and (filters.get('trip_tag') == value if 'trip_tag' in filters else ('#' + value) in filters.get('name_contains', []))
         elif key == 'category':
             valid = filters.get('categories') == [value]
         elif key == 'is_family_expense':

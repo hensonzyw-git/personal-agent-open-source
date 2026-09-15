@@ -615,8 +615,8 @@ struct ClientWireVersionTests {
     func versionIsTheImplementedOne() {
         // v4 adds model-led chat results to v3's calendar sync epoch.
         // This build decodes ResultEnvelope v2 and declares that capability.
-        #expect(ClientWireVersion.version == 4)
-        #expect(ClientWireVersion.value == "4")
+        #expect(ClientWireVersion.version == 5)
+        #expect(ClientWireVersion.value == "5")
         #expect(ClientWireVersion.header == "X-Client-Wire-Version")
     }
 

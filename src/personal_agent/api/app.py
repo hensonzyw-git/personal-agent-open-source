@@ -314,6 +314,7 @@ class AgentApiDeps:
     #: composed, and the signal is then recorded and not acted on.
     v2_device_ids: frozenset[str] = frozenset()
     v2_execution_enabled: bool = True
+    trip_query_enabled: bool = False
     v2_input_budget: Any = None
     v2_model_factory: Callable | None = None
     v2_search_adapter: Any = None
@@ -1183,6 +1184,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 if auth.client_wire_version<4 and any(isinstance(entry.content,dict) and entry.content.get('result_envelope',{}).get('version')==2 for entry in page.entries):
                     from personal_agent.api.runtime_v2 import unavailable
                     raise unavailable('client_upgrade_required')
+                from personal_agent.api.runtime_v2 import compatible_event
                 return JSONResponse(
                     {
                         "conversation_id": timeline_id,
@@ -1194,7 +1196,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                                 "event_type": entry.event_type,
                                 "operation_id": entry.operation_id,
                                 "created_at": entry.created_at.isoformat(),
-                                "content": entry.content,
+                                "content": compatible_event(entry.content, auth.client_wire_version),
                             }
                             for entry in page.entries
                         ],

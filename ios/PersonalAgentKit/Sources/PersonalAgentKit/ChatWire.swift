@@ -248,6 +248,7 @@ public struct FinanceQueryResult: Sendable, Equatable {
     public enum View: String, Sendable, Equatable {
         case total
         case byCategory = "by_category"
+        case byTrip = "by_trip"
         case records
     }
 
@@ -276,6 +277,8 @@ public struct FinanceQueryResult: Sendable, Equatable {
     public let sourceSystem: String
     /// `personal_spend_total_cny`; present for `total` and `by_category`.
     public let amount: String?
+    public let byTrip: [TripBucket]
+    public let coverage: TripCoverage?
     public let byCategory: [CategoryBucket]
     public let records: [RecordRow]
     /// Present only when a `records` page has a next page to continue into.
@@ -289,6 +292,8 @@ extension FinanceQueryResult: Decodable {
         case filtersApplied = "filters_applied"
         case sourceSystem = "source_system"
         case amount = "personal_spend_total_cny"
+        case byTrip = "by_trip"
+        case coverage
         case byCategory = "by_category"
         case records
         case nextCursor = "next_cursor"
@@ -320,6 +325,10 @@ extension FinanceQueryResult: Decodable {
         self.records =
             try container.decodeIfPresent([RecordRow].self, forKey: .records) ?? []
         self.nextCursor = try container.decodeIfPresent(String.self, forKey: .nextCursor)
+        self.byTrip = try container.decodeIfPresent([TripBucket].self, forKey: .byTrip) ?? []
+        self.coverage = try container.decodeIfPresent(TripCoverage.self, forKey: .coverage)
+        try validateTrip()
+        try validateTripObject([String: JSONValue](from: decoder))
     }
 }
 

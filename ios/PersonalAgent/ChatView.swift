@@ -1356,6 +1356,8 @@ struct ChatView: View {
                     queryTotal(result)
                 case .byCategory:
                     queryByCategory(result)
+                case .byTrip:
+                    queryByTrip(result)
                 case .records:
                     queryRecords(result)
                 }
@@ -1380,6 +1382,13 @@ struct ChatView: View {
     /// under, so the figure is not read as "everything" when it is not.
     @ViewBuilder
     private func queryScope(_ result: FinanceQueryResult) -> some View {
+        if let coverage = result.coverage {
+            Text("账本覆盖：\(coverage.sourceYears.map(String.init).joined(separator: "、"))；\(coverage.isLimited ? "仅为已接入账本小计" : "请求范围已覆盖")")
+                .font(.footnote).foregroundStyle(.secondary)
+            if !coverage.assignmentComplete {
+                Text("\(coverage.unassignedRecordCount) 笔未能归属场次").font(.footnote).foregroundStyle(.secondary)
+            }
+        }
         let dates = result.filtersApplied["date_range"]?.objectValue
         let start = dates?["start"]?.stringValue
         let end = dates?["end"]?.stringValue
@@ -1417,7 +1426,7 @@ struct ChatView: View {
     private func queryTotal(_ result: FinanceQueryResult) -> some View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                Text("个人支出合计").font(.callout).foregroundStyle(.secondary)
+                Text(result.coverage?.isLimited == true ? "已接入账本小计" : "个人支出合计").font(.callout).foregroundStyle(.secondary)
                 Spacer(minLength: 12)
                 Text("¥\(result.amount ?? "—")")
                     .font(.title3.weight(.semibold))
@@ -1428,6 +1437,22 @@ struct ChatView: View {
             fieldRow("记录数", "\(result.recordCount)")
             if !result.sourceSystem.isEmpty {
                 fieldRow("数据源", result.sourceSystem)
+            }
+        }
+    }
+
+    private func queryByTrip(_ result: FinanceQueryResult) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            queryTotal(result)
+            DisclosureGroup("旅行场次（\(result.byTrip.count) 组）") {
+                ForEach(Array(result.byTrip.enumerated()), id: \.offset) { _, bucket in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(bucket.tripTag ?? "未归属场次")
+                        Spacer()
+                        Text("¥\(bucket.amount) · \(bucket.recordCount) 笔").monospacedDigit()
+                    }
+                    .font(.callout).padding(.vertical, 4)
+                }
             }
         }
     }

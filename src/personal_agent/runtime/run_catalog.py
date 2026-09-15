@@ -17,6 +17,10 @@ TASK_VALIDATION=obj({'task_ref':{'type':'string'},'goal':STR,'source_refs':REFS,
     'constraints':{'type':'array','items':CONSTRAINT,'maxItems':32},
     'comparisons':{'type':'array','maxItems':8,'items':obj({'comparison_ref':STR,'metric_kind':{'enum':['total','count','category_total']},'current':FILTERS,'baseline':FILTERS,'source_refs':REFS}, ['metric_kind','current','baseline','source_refs'])}},
     ['goal','source_refs','constraints'])
+TASK_VALIDATION['properties']['query_requirement'] = obj({
+    'domain': {'const':'finance'}, 'result_kind': {'enum':['trip_breakdown','trip_total']},
+    'trip_tag': QUERY_EXPENSES.model_input_schema['properties']['trip_tag'],
+    'date_range': QUERY_EXPENSES.model_input_schema['properties']['date_range'], 'source_refs':REFS})
 # The shared metadata shape is described once in the core instruction. Host
 # validates TASK_VALIDATION before admitting the whole batch; provider-side
 # duplication of it on every tool wastes the conservative byte budget.
@@ -41,7 +45,7 @@ def _compact_schema(value, *, strip_defaults=False):
     return value
 
 
-def catalog(declarations):
+def catalog(declarations, *, trip_enabled=False):
     specs=[]
     for d in declarations:
         f=d['function']
@@ -51,6 +55,10 @@ def catalog(declarations):
         read=contract_by_name(alias).effect=='read'
         arguments = _compact_schema(f['parameters'], strip_defaults=alias=='finance.query_expenses')
         if alias == 'finance.query_expenses':
+            if not trip_enabled:
+                arguments.get('properties', {}).pop('trip_tag', None)
+                if 'enum' in arguments.get('properties', {}).get('view', {}):
+                    arguments['properties']['view']['enum'] = [v for v in arguments['properties']['view']['enum'] if v != 'by_trip']
             # Mirror the MCP cursor contract without changing device grants.
             # The original schema already forbids other property names.
             arguments = {**arguments, 'anyOf': [

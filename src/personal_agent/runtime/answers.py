@@ -88,8 +88,8 @@ class EvidenceCatalog:
         card = projection.to_dict() if hasattr(projection,'to_dict') else projection
         self.evidence[ref] = {'kind':'query_card','ref':ref,'query_result':card,'tool':tool}
         if isinstance(projection, FinanceQueryProjection):
-            status = 'partial' if projection.next_cursor else 'complete'
-            if projection.view in {'total','by_category'}:
+            status = 'partial' if projection.next_cursor or (projection.coverage or {}).get('scope_coverage', 'complete') != 'complete' else 'complete'
+            if projection.view in {'total','by_category','by_trip'}:
                 if projection.personal_spend_total_cny is not None:self.metric(ref,'total',projection.personal_spend_total_cny,'元','CNY',projection.filters_applied,status)
                 for bucket in projection.by_category:
                     self.metric(ref,'category_total',bucket.personal_spend_total_cny,'元','CNY',{**projection.filters_applied,'category':bucket.category},status)

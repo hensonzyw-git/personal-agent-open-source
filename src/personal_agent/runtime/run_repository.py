@@ -71,6 +71,8 @@ class RunRepository(TaskControlStore):
             raise RunStateError('invalid_task_metadata')
         with self.sessions() as s:
             self.validate_sources(s,timeline,metadata.get('source_refs'))
+            if metadata.get('query_requirement'):
+                self.validate_sources(s, timeline, metadata['query_requirement']['source_refs'])
             for comparison in metadata.get('comparisons',[]):self.validate_sources(s,timeline,comparison['source_refs'])
             for c in constraints:
                 if not isinstance(c,dict) or set(c)!={'key','value','source_refs'} or not isinstance(c['key'],str): raise RunStateError('invalid_constraint')

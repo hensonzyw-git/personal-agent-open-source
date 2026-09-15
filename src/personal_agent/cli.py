@@ -177,6 +177,7 @@ def main() -> None:
         media=media,
         v2_device_ids=_v2_devices_from_env(),
         v2_execution_enabled=os.environ.get('ADK_RUNTIME_V2_EXECUTION','true')=='true',
+        trip_query_enabled=os.environ.get('FINANCE_TRIP_QUERY_ENABLED','false')=='true',
         search_config=_search_config_from_env(),
     )
     try:
