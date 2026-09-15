@@ -24,7 +24,7 @@ import hashlib
 import hmac
 import json
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Callable, Final
@@ -53,9 +53,13 @@ from personal_data_mcp.finance.schema_validator import SchemaValidation
 from personal_data_mcp.finance.source_guard import require_validated_source
 
 
+from personal_data_mcp.finance.trip_query_tags import query_tag, valid_tag, PARSER_VERSION
+
 PAGE_SIZE: Final[int] = 500
 MAX_PAGES: Final[int] = 200
 RECORDS_PAGE_SIZE: Final[int] = 50
+MAX_TRIP_GROUPS = 1000
+MAX_TRIP_RESULT_BYTES = 512 * 1024
 CURSOR_VERSION: Final[int] = 2
 CURSOR_TTL: Final[timedelta] = timedelta(minutes=10)
 MIN_CURSOR_SECRET_BYTES: Final[int] = 32
@@ -77,6 +81,7 @@ class QueryFilters:
     name_contains: tuple[str, ...]
     is_family_expense: str
     personal_amount: AmountRange | None
+    trip_tag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +187,11 @@ def _parse_filters(arguments: dict[str, Any]) -> QueryFilters:
             maximum_inclusive=maximum_inclusive,
         )
 
+    tag = arguments.get('trip_tag')
+    if tag is not None:
+        if not isinstance(tag, str) or not valid_tag(tag.strip()):
+            raise _invalid('invalid trip_tag')
+        tag = tag.strip()
     return QueryFilters(
         date_start=start,
         date_end=end,
@@ -189,11 +199,13 @@ def _parse_filters(arguments: dict[str, Any]) -> QueryFilters:
         name_contains=tuple(raw_names),
         is_family_expense=family,
         personal_amount=amount,
+        trip_tag=tag,
     )
 
 
 def _serialise_filters(filters: QueryFilters) -> dict[str, Any]:
     return {
+        **({"trip_tag": filters.trip_tag} if filters.trip_tag is not None else {}),
         "date_range": (
             {"start": format_ledger_date(filters.date_start), "end": format_ledger_date(filters.date_end)}
             if filters.date_start is not None and filters.date_end is not None
@@ -233,6 +245,7 @@ def _require_bounded(filters: QueryFilters) -> None:
         and not filters.name_contains
         and filters.is_family_expense == "all"
         and filters.personal_amount is None
+        and filters.trip_tag is None
     ):
         raise AppError(
             ErrorCode.CLARIFICATION_REQUIRED,
@@ -250,7 +263,8 @@ def _encode_cursor(
     secret: bytes,
 ) -> str:
     payload = {
-        "v": CURSOR_VERSION,
+        "v": 3 if filters.trip_tag is not None else CURSOR_VERSION,
+        **({"parser_version": PARSER_VERSION} if filters.trip_tag is not None else {}),
         "view": "records",
         "filters": _serialise_filters(filters),
         "offset": offset,
@@ -281,7 +295,10 @@ def _decode_cursor(
         payload = json.loads(raw)
         if (
             not isinstance(payload, dict)
-            or payload.get("v") != CURSOR_VERSION
+            or payload.get("v") not in (CURSOR_VERSION, 3)
+            or (payload.get("v") == 3 and payload.get("parser_version") != PARSER_VERSION)
+            or not isinstance(payload.get("filters"), dict)
+            or (payload.get("v") == 2 and "trip_tag" in payload["filters"])
             or payload.get("view") != "records"
             or not isinstance(payload.get("filters"), dict)
             or type(payload.get("offset")) is not int
@@ -306,6 +323,8 @@ def _decode_cursor(
 
 
 def _matches(row: QueryExpense, filters: QueryFilters) -> bool:
+    if filters.trip_tag is not None and query_tag(row.name) != filters.trip_tag:
+        return False
     if filters.date_start is not None and (
         row.occurred_on is None
         or row.occurred_on < filters.date_start
@@ -357,6 +376,8 @@ async def _read_all_matching_source_rows(
     # formula is always necessary: every view uses signed personal spend, never
     # the raw stored amount.
     required = {"personal_spend"}
+    if view == "by_trip" or filters.trip_tag is not None:
+        required.update({"name", "category"})
     if view == "records":
         required.update({"name", "occurred_on", "category", "is_family_expense"})
     elif view == "by_category":
@@ -373,6 +394,7 @@ async def _read_all_matching_source_rows(
     rows: list[QueryExpense] = []
     page_token: str | None = None
     seen_page_tokens: set[str] = set()
+    seen_records: set[str] = set()
 
     for page_number in range(1, MAX_PAGES + 1):
         query = {"page_size": str(PAGE_SIZE)}
@@ -403,6 +425,9 @@ async def _read_all_matching_source_rows(
                     ErrorCode.SOURCE_UNAVAILABLE,
                     internal_detail="expense query returned a malformed record",
                 )
+            if record_id in seen_records:
+                raise AppError(ErrorCode.SOURCE_UNAVAILABLE, internal_detail='duplicate source record')
+            seen_records.add(record_id)
             personal_spend = as_personal_spend_formula(
                 cells.get(fields["personal_spend"].expected_name)
             )
@@ -440,6 +465,7 @@ async def _read_all_matching_source_rows(
                 logical_name
                 for logical_name, parsed in parsed_required.items()
                 if logical_name in required and parsed is None
+                and not (logical_name == "name" and (view == "by_trip" or filters.trip_tag is not None))
             ]
             if malformed_required:
                 raise AppError(
@@ -482,7 +508,7 @@ async def _read_all_matching_source_rows(
         seen_page_tokens.add(page_token)
 
     raise AppError(
-        ErrorCode.SOURCE_UNAVAILABLE,
+        ErrorCode.QUERY_CAPACITY_EXCEEDED if view == "by_trip" or filters.trip_tag is not None else ErrorCode.SOURCE_UNAVAILABLE,
         internal_detail="expense query did not terminate source pagination",
     )
 
@@ -535,8 +561,8 @@ async def query_expenses(
     if not isinstance(arguments, dict):
         raise _invalid("query arguments must be an object")
     view = arguments.get("view")
-    if view not in {"total", "by_category", "records"}:
-        raise _invalid("view must be total, by_category or records")
+    if view not in {"total", "by_category", "records", "by_trip"}:
+        raise _invalid("view must be total, by_category, records or by_trip")
 
     started_at = to_utc(now())
     cursor = arguments.get("cursor")
@@ -553,6 +579,7 @@ async def query_expenses(
                 "name_contains",
                 "is_family_expense",
                 "personal_amount_cny",
+                "trip_tag",
             )
         ):
             raise _invalid("a cursor continuation must not replace its filters")
@@ -568,6 +595,11 @@ async def query_expenses(
     else:
         filters = _parse_filters(arguments)
         _require_bounded(filters)
+    trip_mode = view == 'by_trip' or filters.trip_tag is not None
+    if trip_mode:
+        if view == 'by_category' or (filters.categories and filters.categories != ('旅行',)):
+            raise _invalid('trip query requires travel category and a trip-compatible view')
+        filters = replace(filters, categories=('旅行',))
     known_categories = config.tables["expense"].fields["category"].options or ()
     if any(category not in known_categories for category in filters.categories):
         raise _invalid("categories contains a value not allowed by the active ledger")
@@ -605,7 +637,26 @@ async def query_expenses(
         },
     }
 
-    if view == "total":
+    if trip_mode:
+        unassigned = sum(query_tag(r.name) is None for r in source_rows if _matches(r, replace(filters, trip_tag=None)))
+        scope = ('unknown' if filters.date_start is None else
+                 'complete' if config.effective_from <= filters.date_start <= filters.date_end <= config.effective_to else 'limited')
+        result['coverage'] = {'scan_complete': True, 'scope_coverage': scope,
+                              'assignment_complete': unassigned == 0, 'source_years': [config.ledger_year],
+                              'unassigned_record_count': unassigned}
+        result['evidence'].update(parser_version=PARSER_VERSION, result_checksum=_records_snapshot_checksum(matching))
+    if view == 'by_trip':
+        buckets = {}
+        for row in matching:
+            tag = query_tag(row.name)
+            amount, count = buckets.get(tag, (Decimal('0.00'), 0))
+            buckets[tag] = (amount + row.personal_spend_cny, count + 1)
+        if len(buckets) > MAX_TRIP_GROUPS:
+            raise AppError(ErrorCode.QUERY_CAPACITY_EXCEEDED, internal_detail='trip group capacity exceeded')
+        result['personal_spend_total_cny'] = format_cny(personal_total)
+        result['by_trip'] = [{'trip_tag': tag, 'personal_spend_total_cny': format_cny(amount), 'record_count': count}
+                             for tag, (amount, count) in sorted(buckets.items(), key=lambda pair: (pair[0] is None, -pair[1][0], pair[0] or ''))]
+    elif view == "total":
         result["personal_spend_total_cny"] = format_cny(personal_total)
     elif view == "by_category":
         buckets: dict[str | None, list[QueryExpense]] = {}
@@ -669,4 +720,12 @@ async def query_expenses(
             if next_offset < len(matching)
             else None
         )
+    if trip_mode:
+        from personal_agent_core.trip_query import validate_trip_result
+        try:
+            validate_trip_result(result)
+        except (ValueError, TypeError, KeyError, ArithmeticError) as exc:
+            raise AppError(ErrorCode.SOURCE_UNAVAILABLE, internal_detail='trip result failed consistency check') from exc
+    if trip_mode and len(canonical_json(result).encode('utf-8')) > MAX_TRIP_RESULT_BYTES:
+        raise AppError(ErrorCode.QUERY_CAPACITY_EXCEEDED, internal_detail='trip result capacity exceeded')
     return result

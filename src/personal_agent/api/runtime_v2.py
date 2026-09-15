@@ -97,7 +97,7 @@ def project(session,keyring,operation,client_wire_version):
             if any(state not in {'succeeded','failed_safe','cancelled_pre_submit'} for state in states):
                 answer['task_status']='waiting';answer['text']='该批日程仍有项目等待可信回执。'
         answer['evidence']=[{'kind':'action_card','state':operation.state,'record_id':operation.safe_result if operation.state=='succeeded' else None}]
-    return answer
+    return compatible_answer(answer, client_wire_version)
 
 
 def process(deps,auth,operation_id):
@@ -184,3 +184,32 @@ def resumable(deps):
             scopes=json.loads(device.scopes) if isinstance(device.scopes,str) else device.scopes
             result.append((run['operation_id'],AuthContext(device.device_id,tuple(scopes),device.allowed_tools_version,4)))
         return result
+
+
+def compatible_answer(answer, client_wire_version):
+    """Read-only v4 history downgrade, including partial failed-run evidence."""
+    if client_wire_version >= 5 or not isinstance(answer, dict):
+        return answer
+    import copy
+    from personal_agent.api.finance_query_projection import decode_finance_query_projection, summarise_query_projection
+    result = copy.deepcopy(answer)
+    cards = [e for e in result.get('evidence', []) if e.get('query_result', {}).get('coverage') is not None]
+    if not cards:
+        return result
+    try:
+        texts = [summarise_query_projection(decode_finance_query_projection(e['query_result'])) for e in cards]
+    except (ValueError, TypeError, KeyError):
+        return unavailable_result()
+    result['evidence'] = [e for e in result.get('evidence', []) if e not in cards]
+    text = result.get('text', '') + '\n' + '\n'.join(texts)
+    if len(text) > 8000:
+        result.update(kind='limitation', coverage='partial', task_status='partial', text='\n'.join(t.split('\n', 1)[0] for t in texts)[:7000] + '\n请升级 App 查看完整旅行场次汇总。')
+    else:
+        result['text'] = text
+    return result
+
+
+def compatible_event(content, client_wire_version):
+    if not isinstance(content, dict) or 'result_envelope' not in content:
+        return content
+    return {**content, 'result_envelope': compatible_answer(content['result_envelope'], client_wire_version)}

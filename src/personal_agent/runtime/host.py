@@ -64,7 +64,8 @@ class DurableRunHost:
                 if not deps.v2_search_allowed(auth,tool.name):continue
                 if tool.name=='search.read_page' and not self.search.config.extract_enabled:continue
                 declarations.append({'function':{'name':tool.name,'description':tool.summary,'parameters':tool.model_input_schema}})
-        self.specs=catalog(declarations)
+        self.trip_enabled = deps.trip_query_enabled and auth.client_wire_version >= 5
+        self.specs=catalog(declarations, trip_enabled=self.trip_enabled)
         self.evidence=EvidenceCatalog(); self.results=[]; self.candidates={}; self.format_error=None; self.pending_metadata=None; self.read_failed=False
         self.model_factory=model_factory
         self._discover(0)
@@ -116,6 +117,9 @@ class DurableRunHost:
         today=self.deps.now().astimezone(__import__('zoneinfo').ZoneInfo('Asia/Shanghai')).date().isoformat()
         available_tools={s.business_name for s in self.specs if not s.business_name.startswith('agent.')}
         system=build_system_prompt(today=today,runtime_v2=True)+'\n本轮工具清单：'+(','.join(sorted(available_tools)) or '无')+'\n'+ '\n'.join(business_rules(d+'.',today=today,available_tools=available_tools) for d in sorted(domains))
+        if self.trip_enabled:
+            from personal_agent.runtime.trip_queries import TRIP_PROMPT
+            system += '\n' + TRIP_PROMPT
         budget=self.deps.v2_input_budget
         data={'current_user_source_ref':self.anchor.event_id,'current_input':self.payload.text,
             'candidates':list(self.candidates.values()),'completed_results':model_results(self.results,budget=budget),'metrics':[asdict(m) for m in self.evidence.metrics.values()],
@@ -177,6 +181,7 @@ class DurableRunHost:
         if run['read_used']+reads>3 or run['web_used']+web>2:raise RunStateError('batch_budget')
         if any(c.args.get('response_mode') == 'card' for c in calls) and len(calls) != 1:
             raise RunStateError('card_requires_exclusive_read')
+        self.accepted_batch_ids = frozenset(c.call_id for c in calls)
         metadata=[c.args.get('task') for c in calls if 'task' in c.args]
         if metadata:
             if any(canonical(m)!=canonical(metadata[0]) for m in metadata):raise RunStateError('mixed_task_batch')
@@ -199,6 +204,21 @@ class DurableRunHost:
                     self.repo.validate_write_sources(m, call.args.get('write_source_refs', m['source_refs']),
                         current_source=self.anchor.event_id, timeline=self.payload.conversation_id, task_id=task_ref or run['task_id'])
             previous = self.pending_metadata or (old or {}).get('metadata')
+            from personal_agent.runtime.trip_queries import freeze_requirement
+            if self.trip_enabled:
+                m = freeze_requirement(m, previous, self.payload.text)
+                if m.get('query_requirement'):
+                    req = m['query_requirement']
+                    with self.deps.session_factory() as session:
+                        self.repo.validate_sources(session, self.payload.conversation_id, req['source_refs'])
+                    if not (previous or {}).get('query_requirement') and req['source_refs'] != [self.anchor.event_id]:
+                        raise RunStateError('trip_requirement_current_source_required')
+                    if req['result_kind'] == 'trip_total' and not req.get('trip_tag'):
+                        raise RunStateError('trip_tag_required')
+                if any(c.business_name == 'finance.query_expenses' and (c.args.get('arguments', {}).get('view') == 'by_trip' or (c.args.get('arguments', {}).get('view') == 'total' and c.args.get('arguments', {}).get('trip_tag') is not None)) for c in calls) and not m.get('query_requirement'):
+                    raise RunStateError('trip_requirement_missing')
+            elif m.get('query_requirement'):
+                raise RunStateError('client_upgrade_required')
             m = freeze_comparisons(m, previous, task_id=chosen, revision=run['expected_task_revision'] or (old or {}).get('revision', 1))
             if run['task_id'] is None:
                 def bind(s):
@@ -250,7 +270,10 @@ class DurableRunHost:
             if old is None or self.anchor.event_id not in args['source_refs']:raise RunStateError('control_current_source_required')
             with self.deps.session_factory() as s:self.repo.validate_sources(s,self.payload.conversation_id,args['source_refs'])
             m=args.get('replacement')
-            if args['action']=='amend':self.repo.validate_metadata(m,current_source=self.anchor.event_id,timeline=self.payload.conversation_id,old=old['constraints'])
+            if args['action']=='amend':
+                self.repo.validate_metadata(m,current_source=self.anchor.event_id,timeline=self.payload.conversation_id,old=old['constraints'])
+                from personal_agent.runtime.trip_queries import amend_requirement
+                m = amend_requirement(m, text=self.payload.text, current_source=self.anchor.event_id, enabled=self.trip_enabled)
             if args['action']=='amend':
                 r=self.repo.amend_and_bind(self.lease,task_id=old['task_ref'],expected_revision=old['revision'],control_id=call.call_id,metadata=m,now_ms=self.now())
             else:
@@ -275,19 +298,25 @@ class DurableRunHost:
                 self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=self.event_writer,close_source=False)
                 return ToolResult(answer,stop=True)
             return ToolResult(self.results[-1])
+        if name == 'finance.query_expenses' and (args.get('arguments', {}).get('view') == 'by_trip' or args.get('arguments', {}).get('trip_tag') is not None):
+            if not self.trip_enabled:
+                raise RunStateError('client_upgrade_required')
         if name=='calendar.create_event' and 'items' in args:
             return ToolResult(await asyncio.to_thread(self._calendar_plan,args['items']),stop=True)
         if name=='agent.finish':
             try:
                 answer=self.evidence.answer(args['answer'])
+                from personal_agent.runtime.trip_queries import check_completion
+                check_completion(answer, self.pending_metadata)
                 if answer['coverage']=='complete' and answer['kind'] not in {'clarification','limitation'}:
                     required = set(self.evidence.comparisons)
                     supplied = {n['comparison_ref'] for n in answer.get('analysis_nodes', []) if n['kind']=='comparison'}
                     if not required <= supplied:raise AnswerError('missing_required_comparison')
                     for evidence in answer['evidence']:
                         if evidence['kind']=='query_card':validate_evidence_scope(evidence,self.pending_metadata)
-            except AnswerError:
-                answer={'version':2,'kind':'limitation','task_status':'waiting','coverage':'partial','text':'分析未完成；已完成的查询结果保留。','evidence':list(self.evidence.evidence.values()),'failure':{'code':'analysis_incomplete','retryable':False,'stage':'render'}}
+            except AnswerError as exc:
+                failure = str(exc) if str(exc) in {'trip_summary_required', 'trip_coverage_incomplete'} else 'analysis_incomplete'
+                answer={'version':2,'kind':'limitation','task_status':'waiting','coverage':'partial','text':'分析未完成；已完成的查询结果保留。','evidence':list(self.evidence.evidence.values()),'failure':{'code':failure,'retryable':False,'stage':'render'}}
             close_source=not self.read_failed and not answer.get('failure')
             if not close_source and self.repo.snapshot(self.operation_id)['candidate_operation_id']:answer['task_status']='waiting'
             self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=self.event_writer,close_source=close_source,metadata=self.pending_metadata)
@@ -353,7 +382,11 @@ class DurableRunHost:
         return ToolResult(answer,stop=True)
 
     def _read_result(self, call, result):
-        if call.args.get('response_mode', 'analyze') != 'card':
+        from personal_agent.runtime.trip_queries import matches_requirement, check_completion
+        trip_summary = (matches_requirement(result, self.pending_metadata) and getattr(self, 'accepted_batch_ids', frozenset()) == frozenset({call.call_id})
+                        and not (self.pending_metadata or {}).get('comparisons')
+                        and call.args.get('response_mode') != 'analyze')
+        if not trip_summary and call.args.get('response_mode', 'analyze') != 'card':
             return ToolResult(result)
         if result.get('kind') != 'query_card' or not result.get('query_result'):
             raise RunStateError('query_card_unavailable')
@@ -366,10 +399,12 @@ class DurableRunHost:
             text = summarise_query_projection(decode_finance_query_projection(result['query_result']))
         else:
             text = '日历查询结果如下。'
-        partial = bool(result['query_result'].get('next_cursor') or result['query_result'].get('mirror_stale'))
+        partial = bool(result['query_result'].get('next_cursor') or result['query_result'].get('mirror_stale') or result['query_result'].get('coverage', {}).get('scope_coverage', 'complete') != 'complete')
         if partial:text += ' 当前结果仅覆盖部分数据。'
         answer = {'version':2,'kind':'query','task_status':'waiting' if partial else 'completed','coverage':'partial' if partial else 'complete',
                   'text':text,'evidence':list(self.evidence.evidence.values())}
+        try:check_completion(answer, self.pending_metadata)
+        except AnswerError as exc:raise RunStateError(str(exc)) from None
         self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=self.event_writer,metadata=self.pending_metadata,close_source=not partial)
         return ToolResult(answer,stop=True)
 
@@ -444,6 +479,10 @@ class DurableRunHost:
             answer={'version':2,'kind':'limitation','task_status':'waiting','text':'本轮未能完成；已取得的结果保留。','coverage':'partial','evidence':list(self.evidence.evidence.values()),'failure':{'code':code,'retryable':True,'stage':'runtime'}}
             if code == 'finance_cursor_filter_conflict':
                 answer['text'] = '分页查询参数冲突：续页只能携带游标和视图，不能重复筛选条件；已取得的结果保留。'
+                answer['failure']['retryable'] = False
+            elif code == 'QUERY_CAPACITY_EXCEEDED':
+                from personal_agent_core.errors import ERROR_MESSAGES, ErrorCode
+                answer['text'] = ERROR_MESSAGES[ErrorCode.QUERY_CAPACITY_EXCEEDED] + '。'
                 answer['failure']['retryable'] = False
             elif code == 'INVALID_ARGUMENT':
                 answer['text'] = '查询参数不符合工具合同；已取得的结果保留。'

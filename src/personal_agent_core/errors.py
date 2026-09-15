@@ -23,6 +23,7 @@ class ErrorCode(StrEnum):
 
     # Request and authorisation
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
+    QUERY_CAPACITY_EXCEEDED = "QUERY_CAPACITY_EXCEEDED"
     CLIENT_UPGRADE_REQUIRED = "CLIENT_UPGRADE_REQUIRED"
     RUNTIME_UNAVAILABLE = "RUNTIME_UNAVAILABLE"
     SCOPE_DENIED = "SCOPE_DENIED"
@@ -170,6 +171,7 @@ MODEL_RETRYABLE_FAILURE_REASONS: Final[frozenset[str]] = frozenset(
 #: amounts, record identifiers, Base or table identifiers.
 ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.INVALID_ARGUMENT: "请求参数不符合工具合同",
+    ErrorCode.QUERY_CAPACITY_EXCEEDED: "查询结果超过处理容量，请缩小查询范围；未返回不完整统计",
     ErrorCode.CLIENT_UPGRADE_REQUIRED: "请升级客户端后继续此任务",
     ErrorCode.RUNTIME_UNAVAILABLE: "此任务的运行时暂不可用，任务和回执已保留",
     ErrorCode.SCOPE_DENIED: "当前设备没有执行该操作的权限",

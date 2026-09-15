@@ -91,7 +91,7 @@
     "calendar.create_event",
     "calendar.query_events"
   ],
-  "allowed_tools_version": "2224193dda056f77e413f2afd808457f9a75e355b2b0f6f988e41d4d1b772ed6",
+  "allowed_tools_version": "3881544d07a691ae626f595e6e2736128477b69f90c52cc4c7c7e9a5c27ba81c",
   "tools": [
     {
       "name": "finance.log_expense",
@@ -1287,7 +1287,7 @@
     },
     {
       "name": "finance.query_expenses",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "domain": "finance",
       "effect": "read",
       "risk_level": "R1",
@@ -1311,7 +1311,8 @@
             "enum": [
               "total",
               "by_category",
-              "records"
+              "records",
+              "by_trip"
             ],
             "description": "total 返回净个人支出总额；by_category 返回分类统计；records 返回分页明细。"
           },
@@ -1415,6 +1416,15 @@
             },
             "description": "对飞书“个人支出”公式字段的有符号 CNY 值做范围过滤；默认包含负数退款和 AA 收款。"
           },
+          "trip_tag": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[^#\\x00-\\x1f\\x7f]+$"
+          },
           "cursor": {
             "type": [
               "string",
@@ -1444,7 +1454,8 @@
             "enum": [
               "total",
               "by_category",
-              "records"
+              "records",
+              "by_trip"
             ]
           },
           "filters_applied": {
@@ -1462,6 +1473,78 @@
           },
           "by_category": {
             "type": "array"
+          },
+          "by_trip": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "trip_tag",
+                "personal_spend_total_cny",
+                "record_count"
+              ],
+              "properties": {
+                "trip_tag": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[^#\\x00-\\x1f\\x7f]+$"
+                },
+                "personal_spend_total_cny": {
+                  "type": "string",
+                  "pattern": "^-?(0|[1-9][0-9]*)\\.[0-9]{2}$"
+                },
+                "record_count": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          "coverage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scan_complete",
+              "scope_coverage",
+              "assignment_complete",
+              "source_years",
+              "unassigned_record_count"
+            ],
+            "properties": {
+              "scan_complete": {
+                "const": true
+              },
+              "scope_coverage": {
+                "enum": [
+                  "complete",
+                  "limited",
+                  "unknown"
+                ]
+              },
+              "assignment_complete": {
+                "type": "boolean"
+              },
+              "source_years": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "integer",
+                  "minimum": 2000,
+                  "maximum": 2100
+                }
+              },
+              "unassigned_record_count": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
           },
           "records": {
             "type": "array"
@@ -1513,6 +1596,13 @@
               },
               "completed_at": {
                 "type": "string"
+              },
+              "parser_version": {
+                "const": "trip-query-v1"
+              },
+              "result_checksum": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
               }
             }
           }
@@ -1562,12 +1652,13 @@
         "HOST_CONTEXT_MISMATCH",
         "IDEMPOTENCY_CONFLICT",
         "CLARIFICATION_REQUIRED",
+        "QUERY_CAPACITY_EXCEEDED",
         "SOURCE_SCHEMA_CHANGED",
         "SOURCE_UNAVAILABLE",
         "SOURCE_TIMEOUT_UNKNOWN"
       ],
-      "input_schema_hash": "24e4b58fa1180ed23cbce2c3c6ba06ce733aec235aacf351db9abb61cb4c753b",
-      "contract_hash": "7c5617f6118bda89c437aa7d8cf7dc393cfed7b86752404bb972bacd15abc778"
+      "input_schema_hash": "986562183c39f0c24921b75a53cba887173d9a61d548c258dfb928ea38302ad6",
+      "contract_hash": "47201aed4ccd1e5310f5e5468ceb073059e1a86397767ce7f53d8f614d3cba68"
     },
     {
       "name": "meta.capabilities",

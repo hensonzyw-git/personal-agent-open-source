@@ -150,7 +150,7 @@ class AdkRuntime:
             if spec is not None and spec.business_name == 'finance.query_expenses':
                 args = fc.args.get('arguments') if isinstance(fc.args, dict) else None
                 if isinstance(args, dict) and args.get('cursor') is not None and any(
-                    field in args for field in ('date_range', 'categories', 'name_contains', 'is_family_expense', 'personal_amount_cny')
+                    field in args for field in ('date_range', 'categories', 'name_contains', 'is_family_expense', 'personal_amount_cny', 'trip_tag')
                 ):
                     raise ResponseViolation('finance_cursor_filter_conflict')
             if spec is None or not self.validators[fc.name].is_valid(fc.args):

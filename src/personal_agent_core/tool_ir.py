@@ -931,9 +931,11 @@ UPDATE_FAMILY_FUND = ToolContract(
 )
 
 
+from personal_agent_core.trip_query import TAG_SCHEMA, BUCKET_SCHEMA, COVERAGE_SCHEMA
+
 QUERY_EXPENSES = ToolContract(
     name="finance.query_expenses",
-    version="1.0.0",
+    version="1.1.0",
     domain="finance",
     effect="read",
     risk_level="R1",
@@ -948,7 +950,7 @@ QUERY_EXPENSES = ToolContract(
         "properties": {
             "view": {
                 "type": "string",
-                "enum": ["total", "by_category", "records"],
+                "enum": ["total", "by_category", "records", "by_trip"],
                 "description": (
                     "total 返回净个人支出总额；by_category 返回分类统计；"
                     "records 返回分页明细。"
@@ -1021,6 +1023,7 @@ QUERY_EXPENSES = ToolContract(
                     "默认包含负数退款和 AA 收款。"
                 ),
             },
+            "trip_tag": TAG_SCHEMA,
             "cursor": {
                 "type": ["string", "null"],
                 "default": None,
@@ -1043,12 +1046,14 @@ QUERY_EXPENSES = ToolContract(
         ],
         "properties": {
             "status": {"const": "ok"},
-            "view": {"enum": ["total", "by_category", "records"]},
+            "view": {"enum": ["total", "by_category", "records", "by_trip"]},
             "filters_applied": {"type": "object"},
             "metric": {"const": "personal_spend_total_cny"},
             "record_count": {"type": "integer", "minimum": 0},
             "personal_spend_total_cny": {"type": "string"},
             "by_category": {"type": "array"},
+            "by_trip": {"type":"array", "maxItems":1000, "items":BUCKET_SCHEMA},
+            "coverage": COVERAGE_SCHEMA,
             "records": {"type": "array"},
             "next_cursor": {"type": ["string", "null"]},
             "source_system": {"const": "feishu_bitable"},
@@ -1073,6 +1078,8 @@ QUERY_EXPENSES = ToolContract(
                     "matched_count": {"type": "integer", "minimum": 0},
                     "started_at": {"type": "string"},
                     "completed_at": {"type": "string"},
+                    "parser_version": {"const":"trip-query-v1"},
+                    "result_checksum": {"type":"string", "pattern":"^[0-9a-f]{64}$"},
                 },
             },
         },
@@ -1094,6 +1101,7 @@ QUERY_EXPENSES = ToolContract(
     errors=(
         *_GOVERNANCE_ERRORS,
         ErrorCode.CLARIFICATION_REQUIRED,
+        ErrorCode.QUERY_CAPACITY_EXCEEDED,
         ErrorCode.SOURCE_SCHEMA_CHANGED,
         ErrorCode.SOURCE_UNAVAILABLE,
         ErrorCode.SOURCE_TIMEOUT_UNKNOWN,

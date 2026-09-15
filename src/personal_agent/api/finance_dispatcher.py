@@ -271,6 +271,9 @@ class McpFinanceDispatcher:
             remote = self._remote_name(tool)
         except AppError as error:
             return ResolveFailedSafe(reason=_reason(error))
+        from personal_agent_core.trip_query import uses_trip_query
+        if remote == 'finance.query_expenses' and uses_trip_query(model_args) and self._context.client_wire_version < 5:
+            return ResolveFailedSafe(reason='CLIENT_UPGRADE_REQUIRED')
         contract = _device_contract(remote)
         if contract is not None:
             # Device-executed write: authorise exactly like any governed
