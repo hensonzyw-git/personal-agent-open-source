@@ -147,6 +147,12 @@ class AdkRuntime:
                 continue  # Neither prose nor thought is execution evidence.
             fc = part.function_call
             spec = self.specs.get(fc.name)
+            if spec is not None and spec.business_name == 'finance.query_expenses':
+                args = fc.args.get('arguments') if isinstance(fc.args, dict) else None
+                if isinstance(args, dict) and args.get('cursor') is not None and any(
+                    field in args for field in ('date_range', 'categories', 'name_contains', 'is_family_expense', 'personal_amount_cny')
+                ):
+                    raise ResponseViolation('finance_cursor_filter_conflict')
             if spec is None or not self.validators[fc.name].is_valid(fc.args):
                 raise ResponseViolation("invalid_business_call")
             calls.append(AcceptedCall(fc.id, fc.name, spec.business_name,

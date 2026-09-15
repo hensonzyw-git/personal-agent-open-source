@@ -119,15 +119,16 @@ class RunRepository(TaskControlStore):
             existing=s.execute(select(self.outcomes).where(self.outcomes.c.operation_id==lease.operation_id)).first()
             if existing: raise RunStateError('outcome_already_committed')
             op=self._one(s,Operation.__table__,Operation.operation_id,lease.operation_id)
-            target='waiting_for_clarification' if answer['kind']=='clarification' else 'succeeded'
+            failure_code = answer.get('failure', {}).get('code')
+            target = 'failed_safe' if failure_code else ('waiting_for_clarification' if answer['kind']=='clarification' else 'succeeded')
             if op['state']=='accepted':
                 v=transition_operation(s,operation_id=op['operation_id'],current_state='accepted',current_version=op['state_version'],target_state='interpreting',now=_now(now_ms))
                 op.update(state='interpreting',state_version=v)
-            transition_operation(s,operation_id=op['operation_id'],current_state=op['state'],current_version=op['state_version'],target_state=target,now=_now(now_ms))
+            transition_operation(s,operation_id=op['operation_id'],current_state=op['state'],current_version=op['state_version'],target_state=target,now=_now(now_ms),failure_reason=failure_code)
             if close_source:close_candidate(s,run,now_ms=now_ms)
             s.execute(insert(self.outcomes).values(operation_id=lease.operation_id,version=2,
-                outcome_kind=answer['kind'],task_status=answer['task_status'],sealed_answer=self.seal('agent_run_outcomes','sealed_answer',lease.operation_id,answer)))
-            s.execute(update(self.runs).where(self.runs.c.operation_id==lease.operation_id).values(state='parked' if target.startswith('waiting') else 'completed'))
+                outcome_kind=answer['kind'],task_status=answer['task_status'],failure_code=failure_code,sealed_answer=self.seal('agent_run_outcomes','sealed_answer',lease.operation_id,answer)))
+            s.execute(update(self.runs).where(self.runs.c.operation_id==lease.operation_id).values(state='partial' if failure_code else ('parked' if target.startswith('waiting') else 'completed')))
             s.execute(update(self.tasks).where(self.tasks.c.task_id==run['task_id']).values(status=answer['task_status'],active_operation_id=None))
             if metadata is not None and close_source:
                 s.execute(update(self.tasks).where(self.tasks.c.task_id==run['task_id']).values(

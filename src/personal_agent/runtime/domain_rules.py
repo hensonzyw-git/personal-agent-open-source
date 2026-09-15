@@ -10,7 +10,7 @@ name 保留原购买/动作词，不润色纠错缩写，不含金额、旅行�
 occurred_on 是实际付款日，今天为未来行程付款仍记今天。缺归属、精确金额、退款语义、明确币种/日期/分类才澄清；其他已有默认值不重复问。还了某人若性质不明须问，债务偿还/普通转账不改为消费。
 finance.log_income：清晰正收入；只提取事项、金额、币种、实际入账日，不问家庭属性或分类。工资由服务端映射工资，其他映射其他并保留事项。退款/AA 走支出冲减。
 finance.update_family_fund：仅记账不转账。充值X用top_up+正recharge_amount_cny；补到X用interest_reconcile+target_balance_cny。读取余额、差额/除二、备注由服务端做，不写负数；意图/金额不清须问。
-finance.query_expenses：总额/一共多少用total，分类聚合用by_category，仅明确列表/明细用records；筛选不能改变视图。自然月/月末或自然年12月31日为范围边界，不能截到今天；转绝对date_range。无日期且无其他界定筛选须问。cursor 原样续传，不构造；全量分页和个人支出公式口径由服务端处理。
+finance.query_expenses：总额用total，分类用by_category，仅明细用records；筛选不改视图。自然月/月末或自然年12月31日为范围边界，不能截到今天；转绝对date_range。无日期且无其他筛选须问。续页仅传view="records"和原样cursor，勿重复筛选；task.constraints保留；服务端全量分页并按个人支出公式计算。
 """
 CALENDAR_RULES = """日历以可见 schema 和设备协议为准。标题保留用户措辞。日历按参与语义：自己打网球→【日常安排】，看比赛→【演出&活动】，出行/住宿/多日行程→【出游计划】；语义不明须问，没有默认日历。
 起止时间用绝对带偏移时刻；模糊时刻须问，不猜整点。未说结束时间可默认一小时并告知。普通事件省略 timezone 为 Asia/Shanghai；跨时区按目的地推断 IANA 时区并告知，不确定须问。
