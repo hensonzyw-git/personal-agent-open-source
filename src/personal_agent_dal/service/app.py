@@ -204,6 +204,8 @@ def _upsert_enrollment(
         else:
             if row.revoked_at is not None:
                 raise _http(403, "worker_revoked")
+            if row.registration_epoch is not None:
+                row.registration_epoch += 1
             row.machine_id = machine_id
             row.capabilities = caps
 
@@ -608,6 +610,7 @@ def create_app(
     lease_ttl_seconds: int = LEASE_TTL_SECONDS,
     max_attempts: int = MAX_ATTEMPTS,
     github_adapter: Any | None = None,
+    resume_config: dict | None = None,
 ) -> FastAPI:
     service = Service(
         engine,
@@ -619,6 +622,8 @@ def create_app(
         max_attempts=max_attempts,
     )
     app = FastAPI(title="DAL Worker Transport", version="1.0.0")
+    from personal_agent_dal.service.resume_routes import mount_routes
+    mount_routes(app, engine, service, resume_config)
 
     def _envelope_for(request: Request) -> str:
         # Operator endpoints answer with the operator envelope; everything else
@@ -688,6 +693,9 @@ def create_app(
         # worker has no reclaim endpoint and must never expire another worker's
         # lease. Reclaiming before the CAS claim is what lets a job whose worker
         # was killed become claimable again without a shared SQLite file.
+        if resume_config is not None:
+            from personal_agent_dal.machine.resume_dispatch import consume_pending
+            consume_pending(engine)
         queue.reclaim_expired(engine, max_attempts=service.max_attempts)
         job_id = queue.claim_job(
             engine, worker_id=worker_id, lease_ttl_seconds=service.lease_ttl_seconds
@@ -727,6 +735,10 @@ def create_app(
     ) -> dict[str, Any]:
         worker_id, _ = identity
         _check_worker(body, worker_id, job_id)
+        from personal_agent_dal.machine.resume_dispatch import check_episode_heartbeat
+        if not check_episode_heartbeat(engine, job_id=job_id, worker_id=worker_id,
+                job_lease_epoch=body.lease_epoch):
+            return {"schema_version": SCHEMA_VERSION, "cancel_requested": True}
         ok = queue.heartbeat(
             engine,
             job_id=job_id,

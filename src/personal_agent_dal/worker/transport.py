@@ -192,6 +192,16 @@ class WorkerTransport(ABC):
         """Submit the terminal result for this fenced lease."""
 
     @abstractmethod
+    def prelaunch_context(self, lease: JobLease):
+        """Custom fixture transports have no replacement episodes."""
+        return None
+
+    def acknowledge_prelaunch(self, lease: JobLease, assertion: str):
+        raise TransportError('prelaunch_transport_unavailable')
+
+    def dispatch_prelaunch(self, lease: JobLease, manifest_sha256: str):
+        raise TransportError('prelaunch_transport_unavailable')
+
     def close(self) -> None:
         """Release whatever this transport holds open."""
 
@@ -252,6 +262,21 @@ class LocalSQLiteAdapter(WorkerTransport):
             task_description_sha256=record.task_description_sha256,
         )
 
+    def prelaunch_context(self, lease):
+        from personal_agent_dal.machine.resume_dispatch import prelaunch_context
+        return prelaunch_context(self._engine, job_id=lease.job_id,
+            worker_id=self._worker_id, job_lease_epoch=lease.lease_epoch)
+
+    def acknowledge_prelaunch(self, lease, assertion):
+        from personal_agent_dal.machine.resume_dispatch import acknowledge_manifest
+        return acknowledge_manifest(self._engine, job_id=lease.job_id,
+            worker_id=self._worker_id, job_lease_epoch=lease.lease_epoch, assertion=assertion)
+
+    def dispatch_prelaunch(self, lease, manifest_sha256):
+        from personal_agent_dal.machine.resume_dispatch import dispatch_prelaunch
+        return dispatch_prelaunch(self._engine, job_id=lease.job_id,
+            worker_id=self._worker_id, job_lease_epoch=lease.lease_epoch, manifest_sha256=manifest_sha256)
+
     def mark_running(self, lease: JobLease) -> HeartbeatOutcome:
         started = queue.mark_running(
             self._engine,
@@ -266,6 +291,10 @@ class LocalSQLiteAdapter(WorkerTransport):
         return HeartbeatOutcome(alive=False, cancel_requested=cancelled)
 
     def heartbeat(self, lease: JobLease) -> HeartbeatOutcome:
+        from personal_agent_dal.machine.resume_dispatch import check_episode_heartbeat
+        if not check_episode_heartbeat(self._engine, job_id=lease.job_id,
+                worker_id=self._worker_id, job_lease_epoch=lease.lease_epoch):
+            return HeartbeatOutcome(alive=False, cancel_requested=True)
         alive = queue.heartbeat(
             self._engine,
             job_id=lease.job_id,

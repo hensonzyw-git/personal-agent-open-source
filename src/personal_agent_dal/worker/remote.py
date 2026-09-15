@@ -490,6 +490,27 @@ class RemoteHttpAdapter(WorkerTransport):
         payload = _closed(_json(response), _CLAIM_FIELDS, "claim")
         return _lease_from(payload)
 
+    def _prelaunch_request(self, lease, operation, **extra):
+        response = self._authenticated('/worker/jobs/'+lease.job_id+'/'+operation,
+            {'job_lease_epoch':lease.lease_epoch, **extra}, retry_server_errors=False)
+        if response.status_code != 200:
+            raise TransportError('prelaunch_refused:'+_error_code(response), job_id=lease.job_id)
+        body = _json(response)
+        fields = {'context'} if operation == 'prelaunch-context' else (
+            {'manifest_sha256'} if operation == 'prelaunch-manifest' else {'code'})
+        if not isinstance(body, dict) or set(body) != fields:
+            raise TransportError('prelaunch_response_shape', job_id=lease.job_id)
+        return body
+
+    def prelaunch_context(self, lease):
+        return self._prelaunch_request(lease, 'prelaunch-context')['context']
+
+    def acknowledge_prelaunch(self, lease, assertion):
+        return self._prelaunch_request(lease, 'prelaunch-manifest', assertion=assertion)
+
+    def dispatch_prelaunch(self, lease, manifest_sha256):
+        return self._prelaunch_request(lease, 'prelaunch-dispatch', manifest_sha256=manifest_sha256)
+
     def mark_running(self, lease: JobLease) -> HeartbeatOutcome:
         # The contract has no separate `running` transition: the first heartbeat
         # is the start announcement, and it exercises the same lease fence, so a

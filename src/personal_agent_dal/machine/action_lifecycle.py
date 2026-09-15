@@ -123,6 +123,7 @@ def create_provider_action(
 def claim_dispatch(
     engine: Engine, *, attempt_id: str, expected_version: int, owner_id: str,
     job_id: str | None = None, lease_id: str | None = None, now: datetime | None = None,
+    manifest_sha256: str | None = None,
 ) -> LifecycleOutcome:
     """Claim an action for a currently authorised Worker; omitted leases deny."""
     _non_empty(owner_id, 'owner_id')
@@ -130,6 +131,10 @@ def claim_dispatch(
         refusal = _authority(session, row, action, gate)
         if refusal:
             return LifecycleOutcome(refusal)
+        from personal_agent_dal.storage.machine_models import ReplacementBudget
+        replacement = session.scalar(select(ReplacementBudget).where(ReplacementBudget.new_attempt_id == row.attempt_id))
+        if replacement and manifest_sha256 is None:
+            return LifecycleOutcome('REPLACEMENT_EPISODE_REQUIRED')
         if row.state != 'prepared':
             return LifecycleOutcome('ATTEMPT_UNKNOWN' if row.state == 'unknown' else 'ATTEMPT_OWNERSHIP_LOST')
         job = session.get(WorkerJob, job_id) if job_id else None
@@ -137,6 +142,15 @@ def claim_dispatch(
         refusal = _leases(job, lease, action.feature_id, owner_id, timestamp)
         if refusal:
             return LifecycleOutcome(refusal)
+        if replacement:
+            from personal_agent_dal.machine.resume_dispatch import validate_manifest
+            from personal_agent_dal.storage.transport_models import SupervisorLaunchManifest
+            manifest = session.get(SupervisorLaunchManifest, row.attempt_id)
+            if not manifest or manifest.sha256 != manifest_sha256:
+                return LifecycleOutcome('MANIFEST_ACKNOWLEDGEMENT_REQUIRED')
+            refusal = validate_manifest(session, attempt=row, job=job, lease=lease, owner=owner_id)
+            if refusal:
+                return LifecycleOutcome(refusal)
         row.state = 'dispatching'
         row.version += 1
         row.owner_id = owner_id

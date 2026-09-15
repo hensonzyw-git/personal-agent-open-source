@@ -1004,3 +1004,144 @@ class CommitCapability(Base):
         CheckConstraint("expires_at >= 0", name="expires_at_non_negative"),
         Index("ix_commit_capabilities_feature_id", "feature_id"),
     )
+
+
+class WorkflowProfileRevision(Base):
+    __tablename__ = "workflow_profile_revisions"
+
+    revision_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    profile: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    sha256: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+
+    __table_args__ = (
+        CheckConstraint("profile IN ('A', 'B')", name='profile'),
+        CheckConstraint('revision >= 1', name='revision'),
+        UniqueConstraint("profile", "revision", name="uq_workflow_profile_revision"),
+    )
+
+
+class ExecutionSnapshot(Base):
+    __tablename__ = "execution_snapshots"
+
+    sha256: Mapped[str] = mapped_column(Text, primary_key=True)
+    revision_id: Mapped[str] = mapped_column(Text, ForeignKey("workflow_profile_revisions.revision_id", ondelete="RESTRICT"), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class WorkflowSelection(Base):
+    __tablename__ = "workflow_selections"
+
+    selection_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    feature_id: Mapped[str] = mapped_column(Text, ForeignKey("features.feature_id", ondelete="RESTRICT"), nullable=False)
+    feature_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    gate_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_sha256: Mapped[str] = mapped_column(Text, ForeignKey("execution_snapshots.sha256", ondelete="RESTRICT"), nullable=False)
+    actor: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint('feature_version >= 1 AND gate_version >= 1', name='versions'),
+    )
+
+
+class ResumeProposal(Base):
+    __tablename__ = "resume_proposals"
+
+    source_snapshot_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+
+    proposal_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    binding: Mapped[str] = mapped_column(Text, nullable=False)
+    binding_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class ResumeApprovalBinding(Base):
+    __tablename__ = "resume_approval_bindings"
+
+    approval_id: Mapped[str] = mapped_column(Text, ForeignKey("approvals.approval_id", ondelete="RESTRICT"), primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(Text, ForeignKey("resume_proposals.proposal_id", ondelete="RESTRICT"), nullable=False)
+    decision_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    jti: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    claims: Mapped[str] = mapped_column(Text, nullable=False)
+    claims_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    key_thumbprint: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ResumeRevocation(Base):
+    __tablename__ = "resume_revocations"
+
+    decision_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class ResumeReceipt(Base):
+    __tablename__ = "resume_receipts"
+
+    receipt_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class ReplacementBudget(Base):
+    __tablename__ = "replacement_budgets"
+
+    old_attempt_id: Mapped[str] = mapped_column(Text, ForeignKey("provider_attempts.attempt_id", ondelete="RESTRICT"), primary_key=True)
+    new_attempt_id: Mapped[str] = mapped_column(Text, ForeignKey("provider_attempts.attempt_id", ondelete="RESTRICT"), nullable=False, unique=True)
+    old_action_id: Mapped[str] = mapped_column(Text, ForeignKey("workflow_actions.action_id", ondelete="RESTRICT"), nullable=False)
+    new_action_id: Mapped[str] = mapped_column(Text, ForeignKey("workflow_actions.action_id", ondelete="RESTRICT"), nullable=False)
+    approval_id: Mapped[str] = mapped_column(Text, ForeignKey("approvals.approval_id", ondelete="RESTRICT"), nullable=False, unique=True)
+    receipt_id: Mapped[str] = mapped_column(Text, ForeignKey("resume_receipts.receipt_id", ondelete="RESTRICT"), nullable=False, unique=True)
+
+    __table_args__ = (
+        CheckConstraint('old_attempt_id <> new_attempt_id', name='different_attempt'),
+    )
+
+
+class DispatchIntent(Base):
+    __tablename__ = "dispatch_intents"
+
+    intent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(Text, ForeignKey("provider_attempts.attempt_id", ondelete="RESTRICT"), nullable=False, unique=True)
+    receipt_id: Mapped[str] = mapped_column(Text, ForeignKey("resume_receipts.receipt_id", ondelete="RESTRICT"), nullable=False, unique=True)
+    selection_id: Mapped[str] = mapped_column(Text, ForeignKey("workflow_selections.selection_id", ondelete="RESTRICT"), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status = 'awaiting_episode'", name='status'),
+    )
+
+
+class ResumeEpisode(Base):
+    """Unique replacement scheduling binding; never rewrites the old Job."""
+    __tablename__ = 'resume_episodes'
+    intent_id: Mapped[str] = mapped_column(Text, ForeignKey('dispatch_intents.intent_id', ondelete='RESTRICT'), primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(Text, ForeignKey('provider_attempts.attempt_id', ondelete='RESTRICT'), nullable=False, unique=True)
+    job_id: Mapped[str] = mapped_column(Text, ForeignKey('worker_jobs.job_id', ondelete='RESTRICT'), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class ResumeRevokeReceipt(Base):
+    __tablename__ = 'resume_revoke_receipts'
+    request_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    receipt_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    decision_id: Mapped[str] = mapped_column(Text, ForeignKey('resume_revocations.decision_id', ondelete='RESTRICT'), nullable=False)
+    actor_id: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class ResumeLeaseIssuance(Base):
+    __tablename__ = 'resume_lease_issuances'
+    intent_id: Mapped[str] = mapped_column(Text, ForeignKey('resume_episodes.intent_id', ondelete='RESTRICT'), primary_key=True)
+    job_lease_epoch: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lease_id: Mapped[str] = mapped_column(Text, ForeignKey('leases.lease_id', ondelete='RESTRICT'), nullable=False, unique=True)
+    __table_args__ = (CheckConstraint('job_lease_epoch >= 1', name='positive_epoch'),)

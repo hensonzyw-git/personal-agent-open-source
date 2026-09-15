@@ -138,6 +138,8 @@ class AuthContext:
     device_id: str
     scopes: tuple[str, ...]
     allowed_tools_version: str
+    subject_id: str | None = None
+    key_thumbprint: str | None = None
 
 
 class EnvelopeFactory(Protocol):
@@ -196,6 +198,7 @@ class AgentApiDeps:
     #: `CAP-001` design §7.3/§8. Runs the Compactor for one Session after a turn
     #: whose input crossed the soft limit. `None` means no Compactor provider is
     #: composed, and the signal is then recorded and not acted on.
+    dal_resume: Any | None = None
     compact_session: Callable[[Any, str], None] | None = None
     read_record: RecordReader | None = None
     #: The server's current `allowed_tools_version`, stamped onto a device at
@@ -335,8 +338,48 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        yield
-        await drain_background_tasks()
+        async def deliveries():
+            import sqlite3
+            import threading
+            from sqlalchemy.exc import OperationalError
+            failures = 0
+            while True:
+                # Cancellation cannot stop a running thread. Drain it before the
+                # lifespan releases dependencies; never start another delivery.
+                stop = threading.Event()
+                flight = asyncio.create_task(asyncio.to_thread(deps.dal_resume.deliver_pending, stop_event=stop))
+                try:
+                    await asyncio.shield(flight)
+                except asyncio.CancelledError:
+                    stop.set()
+                    await asyncio.gather(flight, return_exceptions=True)
+                    raise
+                except (sqlite3.OperationalError, OperationalError, OSError):
+                    failures += 1
+                    if failures >= 3:
+                        logger.error("DAL resume delivery stopped: transient retry budget exhausted")
+                        raise
+                    logger.warning("DAL resume delivery transient failure; retry %d/2", failures)
+                    await asyncio.sleep(0.25 * 2 ** (failures - 1))
+                    continue
+                except Exception:
+                    logger.error("DAL resume delivery stopped: unexpected failure")
+                    raise
+                failures = 0
+                await asyncio.sleep(5)
+        task = asyncio.create_task(deliveries()) if deps.dal_resume else None
+        _app.state.dal_resume_delivery_task = task
+        if task:
+            # Retrieve failures promptly; logs above contain fixed classifications,
+            # never the exception's SQL, assertion, URL or response body.
+            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        try:
+            yield
+        finally:
+            if task:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            await drain_background_tasks()
 
     app = FastAPI(lifespan=lifespan)
     # Tests and embedded hosts that do not drive ASGI lifespan can still perform
@@ -390,6 +433,8 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             raise _Unauthenticated("device is not active")
         return AuthContext(
             device_id=device.device_id,
+            subject_id=claims["sub"],
+            key_thumbprint=claims["device_key_thumbprint"],
             scopes=tuple(claims.get("scopes", [])),
             # A short-lived token proves enrollment, but it intentionally does
             # not freeze the device's governed tool binding.  Rebinding tools
@@ -397,6 +442,9 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             # describe the same current database row enforced by dispatch.
             allowed_tools_version=device.allowed_tools_version,
         )
+
+    from personal_agent.api.dal_resume import mount_routes
+    mount_routes(app, deps, authenticate)
 
     def idempotency_key(request: Request) -> str:
         key = request.headers.get("idempotency-key", "").strip()

@@ -559,7 +559,8 @@ def _run_stage(
     with tempfile.TemporaryDirectory(prefix="personal-agent-dal-stage-") as raw_temp:
         temp_path = Path(raw_temp)
         os.chmod(temp_path, 0o700)
-        process = subprocess.Popen(
+        from personal_agent_dal.worker.supervisor import spawn_unaccepted
+        process = spawn_unaccepted(
             _sandboxed_argv(
                 spec.command,
                 repo_path,
@@ -640,7 +641,8 @@ def run_sandboxed_command(
     with tempfile.TemporaryDirectory(prefix="personal-agent-dal-cmd-") as raw_temp:
         temp_path = Path(raw_temp)
         os.chmod(temp_path, 0o700)
-        process = subprocess.Popen(
+        from personal_agent_dal.worker.supervisor import spawn_unaccepted
+        process = spawn_unaccepted(
             _sandboxed_argv(command, repo_path, temp_path, forbidden_paths, read_only_paths),
             cwd=str(repo_path),
             stdin=subprocess.DEVNULL,

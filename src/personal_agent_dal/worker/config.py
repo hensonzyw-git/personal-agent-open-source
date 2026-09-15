@@ -38,6 +38,7 @@ _KNOWN_KEYS: Final[frozenset[str]] = frozenset(
         "max_attempts",
         "repos",
         "coder_token_path",
+        "supervisor_config_path",
     }
 )
 _REPO_KEYS: Final[frozenset[str]] = frozenset({"local_path"})
@@ -147,6 +148,7 @@ class WorkerConfig:
     #: Optional owner-only file holding the claude -> CCR appkey (DAL-R07B).
     #: Present only when the worker may run the real-coder route.
     coder_token_path: Path | None = None
+    supervisor_config_path: Path | None = None
 
 
 def load_worker_config(path: Path) -> WorkerConfig:
@@ -211,6 +213,7 @@ def load_worker_config(path: Path) -> WorkerConfig:
         max_attempts=max_attempts,
         repos=repos,
         coder_token_path=coder_token_path,
+        supervisor_config_path=_path_field(body, "supervisor_config_path") if body.get("supervisor_config_path") is not None else None,
     )
 
 

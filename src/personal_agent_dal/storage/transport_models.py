@@ -42,6 +42,7 @@ class WorkerEnrollment(Base):
     worker_id: Mapped[str] = mapped_column(Text, primary_key=True)
     machine_id: Mapped[str] = mapped_column(Text, nullable=False)
     capabilities: Mapped[str] = mapped_column(Text, nullable=False)  # JSON array
+    registration_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
 
@@ -82,3 +83,49 @@ class WorkerCheckpoint(Base):
         ),
         Index("ix_worker_checkpoints_job_id", "job_id"),
     )
+
+
+class SupervisorIdentity(Base):
+    __tablename__ = "supervisor_identities"
+
+    kid: Mapped[str] = mapped_column(Text, primary_key=True)
+    worker_id: Mapped[str] = mapped_column(Text, ForeignKey("worker_enrollments.worker_id", ondelete="RESTRICT"), nullable=False)
+    machine_id: Mapped[str] = mapped_column(Text, nullable=False)
+    registration_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    boot_id: Mapped[str] = mapped_column(Text, nullable=False)
+    supervisor_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint('registration_epoch >= 1 AND supervisor_epoch >= 1', name='epochs'),
+    )
+
+
+class IsolationChallenge(Base):
+    __tablename__ = "isolation_challenges"
+
+    challenge_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
+
+
+class IsolationEvidence(Base):
+    __tablename__ = "isolation_evidence"
+
+    isolation_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    challenge_id: Mapped[str] = mapped_column(Text, ForeignKey("isolation_challenges.challenge_id", ondelete="RESTRICT"), nullable=False, unique=True)
+    binding: Mapped[str] = mapped_column(Text, nullable=False)
+    binding_sha256: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    reserved_by: Mapped[str | None] = mapped_column(Text, ForeignKey("provider_attempts.attempt_id", ondelete="RESTRICT"), nullable=True)
+
+
+class SupervisorLaunchManifest(Base):
+    """Signed pre-launch record; legacy attempts have no inferred manifest."""
+    __tablename__ = 'supervisor_launch_manifests'
+    attempt_id: Mapped[str] = mapped_column(Text, ForeignKey("provider_attempts.attempt_id", ondelete="RESTRICT"), primary_key=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    sha256: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)

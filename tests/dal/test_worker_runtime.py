@@ -58,6 +58,40 @@ BASE_SHA = "0" * 40
 
 
 @pytest.fixture()
+def synthetic_only_executor(monkeypatch, tmp_path):
+    """Historical sandbox/receipt coverage, not production machine acceptance.
+
+    Only explicitly opted-in tests may launch commands in their temporary
+    synthetic workspace. Keep the real sandbox argv/environment intact.
+    """
+    from personal_agent_dal.worker import supervisor
+
+    popen = subprocess.Popen
+
+    def spawn(argv, **kwargs):
+        assert Path(kwargs["cwd"]).resolve().is_relative_to(tmp_path.resolve())
+        assert argv[0] == toolchain.SANDBOX_EXEC and argv[1] == "-p"
+        return popen(argv, **kwargs)
+
+    monkeypatch.setattr(supervisor, "spawn_unaccepted", spawn)
+
+
+@pytest.fixture()
+def synthetic_only_coder_boundary(monkeypatch, synthetic_only_executor):
+    """Reach legacy parser checks only with a local test fake, never a CLI."""
+    import importlib
+    from personal_agent_dal.worker import supervisor
+
+    poll_module = importlib.import_module("personal_agent_dal.worker.poll_once")
+
+    def accept_fake_only():
+        # The opted-in test must install its fake before reaching this gate.
+        assert poll_module.run_coder.__module__ == __name__
+
+    monkeypatch.setattr(supervisor, "require_machine_acceptance", accept_fake_only)
+
+
+@pytest.fixture()
 def engine(tmp_path: Path):
     eng = create_database_engine(tmp_path / "worker.db")
     db.upgrade(eng)
@@ -473,6 +507,7 @@ def test_manifest_timeout_is_clamped(tmp_path: Path) -> None:
     assert manifest.stages["format"].timeout_s == 600.0
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_execute_toolchain_times_out(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -496,6 +531,7 @@ def test_execute_toolchain_times_out(tmp_path: Path) -> None:
     assert not result.succeeded
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_run_sandboxed_command_bounds_output_and_clears_env(
     tmp_path: Path, monkeypatch,
 ) -> None:
@@ -521,6 +557,7 @@ def test_run_sandboxed_command_bounds_output_and_clears_env(
     assert "clean" in output2
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_toolchain_child_gets_closed_environment(tmp_path: Path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -535,6 +572,7 @@ def test_toolchain_child_gets_closed_environment(tmp_path: Path, monkeypatch) ->
     assert result.succeeded
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_toolchain_child_cannot_read_or_write_login_user_sibling(
     tmp_path: Path,
 ) -> None:
@@ -563,6 +601,7 @@ def test_toolchain_child_cannot_read_or_write_login_user_sibling(
     assert canary.read_text() == "must-stay-private"
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_toolchain_child_cannot_stat_credential_subtree(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -604,6 +643,7 @@ def test_toolchain_child_cannot_stat_credential_subtree(
     assert canary.read_text() == "must-stay-private"
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_toolchain_child_cannot_escape_through_worktree_symlink(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -628,6 +668,7 @@ def test_toolchain_child_cannot_escape_through_worktree_symlink(tmp_path: Path) 
     assert canary.read_text() == "must-stay-private"
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_toolchain_child_can_write_current_worktree_and_private_tmp(
     tmp_path: Path,
 ) -> None:
@@ -649,6 +690,7 @@ def test_toolchain_child_can_write_current_worktree_and_private_tmp(
     assert (repo / "tracked-output").read_text() == "inside"
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_timeout_kills_descendant_process_group(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -680,6 +722,7 @@ def test_timeout_kills_descendant_process_group(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_toolchain_network_is_denied_by_runtime_sandbox(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -697,6 +740,7 @@ def test_toolchain_network_is_denied_by_runtime_sandbox(tmp_path: Path) -> None:
     assert result.succeeded
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_toolchain_cannot_read_supervisor_control_files(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -720,6 +764,7 @@ def test_toolchain_cannot_read_supervisor_control_files(tmp_path: Path) -> None:
     assert result.succeeded
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_toolchain_cannot_write_read_only_repo_metadata(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -744,6 +789,7 @@ def test_toolchain_cannot_write_read_only_repo_metadata(tmp_path: Path) -> None:
     assert not (protected / "mutated").exists()
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_toolchain_cannot_overwrite_current_worktree_git_marker(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -875,6 +921,7 @@ def _seed_job_for(engine, base_sha: str, *, repository_id="synthetic") -> str:
     )
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_poll_once_succeeds_end_to_end(engine, config, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     base_sha = _make_synthetic_repo(repo)
@@ -905,6 +952,7 @@ def test_poll_once_succeeds_end_to_end(engine, config, tmp_path: Path) -> None:
     assert bundle.test_results == {"format": 0, "lint": 0, "build": 0, "test": 0}
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_poll_once_heartbeats_during_long_stage(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
@@ -936,6 +984,7 @@ def test_poll_once_heartbeats_during_long_stage(
     assert calls >= 5
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_poll_once_resumes_from_bound_checkpoint(engine, config, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     base_sha = _make_synthetic_repo(repo)
@@ -995,6 +1044,7 @@ def test_poll_once_resumes_from_bound_checkpoint(engine, config, tmp_path: Path)
     assert not (worktree / "lint-reran").exists()
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_poll_once_restores_nonempty_patch_after_supervisor_crash(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
@@ -1096,6 +1146,7 @@ def test_kill_switch_prevents_claim(engine, config, tmp_path: Path) -> None:
     assert queue.get_job(engine, job_id=job_id).state == "pending"
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_kill_switch_stops_an_active_toolchain(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
@@ -1150,6 +1201,7 @@ def test_poll_once_leaves_a_lost_lease_to_reclaim(
 # --- DAL-R07A fixture slice --------------------------------------------------
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_poll_once_fixture_slice_succeeds(engine, config, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     base_sha = _make_synthetic_repo(repo, fixture=True)
@@ -1168,6 +1220,7 @@ def test_poll_once_fixture_slice_succeeds(engine, config, tmp_path: Path) -> Non
     assert "fixture feat-demo" in bundle.patch
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_poll_once_fixture_slice_fails_on_a_failed_test(
     engine, config, tmp_path: Path
 ) -> None:
@@ -1184,6 +1237,7 @@ def test_poll_once_fixture_slice_fails_on_a_failed_test(
     assert record.result_sha256 is not None
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_poll_once_fixture_slice_fails_on_an_empty_diff(
     engine, config, tmp_path: Path
 ) -> None:
@@ -1227,6 +1281,7 @@ def test_poll_once_fixture_slice_refuses_a_missing_registry(
     assert queue.get_job(engine, job_id=job_id).state == "failed"
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_poll_once_fixture_slice_leaves_a_lost_lease_to_reclaim(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
@@ -1432,6 +1487,7 @@ def _coder_config(tmp_path: Path, config: WorkerConfig) -> WorkerConfig:
     return dataclasses.replace(config, coder_token_path=token)
 
 
+@pytest.mark.usefixtures("synthetic_only_coder_boundary")
 def test_poll_once_provider_coder_succeeds(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
@@ -1455,6 +1511,7 @@ def test_poll_once_provider_coder_succeeds(
     assert "coder change" in bundle.patch
 
 
+@pytest.mark.usefixtures("synthetic_only_coder_boundary")
 def test_poll_once_provider_coder_refused_intent_is_not_a_policy_failure(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
@@ -1488,6 +1545,7 @@ def test_poll_once_provider_coder_refused_intent_is_not_a_policy_failure(
     )
 
 
+@pytest.mark.usefixtures("synthetic_only_coder_boundary")
 def test_poll_once_provider_coder_dangling_tool_use_is_not_an_execution(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
@@ -1553,6 +1611,7 @@ def test_poll_once_provider_coder_dangling_tool_use_is_not_an_execution(
     )
 
 
+@pytest.mark.usefixtures("synthetic_only_coder_boundary")
 def test_poll_once_provider_coder_refuses_a_provider_error(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
@@ -1573,6 +1632,7 @@ def test_poll_once_provider_coder_refuses_a_provider_error(
     assert outcome.error.startswith("coder_provider_error")
 
 
+@pytest.mark.usefixtures("synthetic_only_coder_boundary")
 def test_poll_once_provider_coder_refuses_an_empty_diff(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
@@ -1593,6 +1653,7 @@ def test_poll_once_provider_coder_refuses_an_empty_diff(
     assert outcome.error.startswith(("coder_failed", "coder_blocked"))
 
 
+@pytest.mark.usefixtures("synthetic_only_coder_boundary")
 def test_poll_once_provider_coder_refuses_unparseable_output(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
@@ -1611,6 +1672,7 @@ def test_poll_once_provider_coder_refuses_unparseable_output(
     assert outcome.error == "coder_output_unparseable"
 
 
+@pytest.mark.usefixtures("synthetic_only_coder_boundary")
 def test_poll_once_provider_coder_distinguishes_truncated_from_unparseable(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
@@ -1653,6 +1715,7 @@ def _make_prompt_capturing_fake(base_sha: str, captured: dict):
     return fake
 
 
+@pytest.mark.usefixtures("synthetic_only_coder_boundary")
 def test_coder_prompt_receives_the_task_description(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
@@ -1712,6 +1775,7 @@ def test_coder_prompt_receives_the_task_description(
     assert captured["prompt"] == f"Feature feat-demo: {body}"
 
 
+@pytest.mark.usefixtures("synthetic_only_coder_boundary")
 def test_coder_prompt_without_the_placeholder_is_unchanged(
     engine, config, tmp_path: Path, monkeypatch
 ) -> None:
@@ -1815,6 +1879,7 @@ def test_launchd_template_runs_as_login_user() -> None:
     assert body["StartInterval"] == 300
 
 
+@pytest.mark.usefixtures("synthetic_only_executor")
 def test_poll_once_toolchain_failure_records_receipt(engine, config, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     base_sha = _make_synthetic_repo(repo, test_cmd=("false",))
@@ -1854,3 +1919,25 @@ def test_poll_once_no_pending_job_is_a_noop(engine, config) -> None:
     outcome = _poll(engine, config)
     assert not outcome.claimed
     assert outcome.state is None
+
+
+def test_toolchain_requires_supervisor_before_process_creation(tmp_path, monkeypatch):
+    """The historical executor cannot bypass the new prelaunch supervisor."""
+    from personal_agent_dal.worker.supervisor import SupervisorRefusal
+    calls=[]
+    monkeypatch.setattr(subprocess,'Popen',lambda *args,**kw:calls.append(1))
+    with pytest.raises(SupervisorRefusal,match='MACHINE_PROOF_REQUIRED'):
+        run_sandboxed_command(('/usr/bin/true',),tmp_path,timeout_s=5)
+    assert calls==[]
+
+
+def test_historical_real_coder_is_blocked_before_token_read(engine,config,tmp_path,monkeypatch):
+    repo=tmp_path/'repo'
+    base_sha=_make_synthetic_repo(repo,coder=True)
+    _seed_job_for(engine,base_sha)
+    calls=[]
+    monkeypatch.setattr('personal_agent_dal.worker.poll_once._read_coder_token',lambda *args:calls.append('token'))
+    monkeypatch.setattr('personal_agent_dal.worker.poll_once.run_coder',lambda *args,**kw:calls.append('provider'))
+    result=_poll(engine,dataclasses.replace(config,coder_token_path=tmp_path/'never-read'))
+    assert result.error=='MINI_ACCEPTANCE_REQUIRED'
+    assert calls==[]

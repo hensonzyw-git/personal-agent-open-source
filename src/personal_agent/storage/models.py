@@ -733,3 +733,42 @@ class DeletionManifest(Base):
     backup_expiry_after: Mapped[datetime | None] = mapped_column(
         UtcTimestamp, nullable=True
     )
+
+
+class DalResumeProposal(Base):
+    __tablename__ = "dal_resume_proposals"
+    proposal_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    device_id: Mapped[str] = mapped_column(Text, ForeignKey("devices.device_id", ondelete="RESTRICT"), nullable=False)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class DalResumeDecision(Base):
+    __tablename__ = "dal_resume_decisions"
+    decision_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    proposal_id: Mapped[str] = mapped_column(Text, ForeignKey("dal_resume_proposals.proposal_id", ondelete="RESTRICT"), nullable=False)
+    device_id: Mapped[str] = mapped_column(Text, ForeignKey("devices.device_id", ondelete="RESTRICT"), nullable=False)
+    subject_id: Mapped[str] = mapped_column(Text, nullable=False)
+    key_thumbprint: Mapped[str] = mapped_column(Text, nullable=False)
+    decision: Mapped[str] = mapped_column(Text, nullable=False)
+    claims: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class DalResumeDelivery(Base):
+    __tablename__ = "dal_resume_deliveries"
+    decision_id: Mapped[str] = mapped_column(Text, ForeignKey("dal_resume_decisions.decision_id", ondelete="RESTRICT"), primary_key=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    __table_args__ = (
+        CheckConstraint("status IN ('queued','accepted','rejected','expired','delivery_unknown')", name='delivery_status'),
+        CheckConstraint('attempts >= 0', name='delivery_attempts'),
+        CheckConstraint("status <> 'expired' OR attempts = 0", name='expired_never_attempted'),
+        CheckConstraint("status <> 'delivery_unknown' OR attempts > 0", name='unknown_attempted'),
+        CheckConstraint("(status = 'accepted' AND approval_id IS NOT NULL AND attempts > 0) OR (status <> 'accepted' AND approval_id IS NULL)", name='delivery_evidence'),
+    )

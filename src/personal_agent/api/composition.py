@@ -166,6 +166,7 @@ class AgentServiceConfig:
     #: configuration, not a secret; `None` omits the field from
     #: `/v1/capabilities` and the app then offers no jump.
     ledger_url: str | None = None
+    dal_resume_config: Path | None = None
 
 
 @dataclass
@@ -588,6 +589,11 @@ async def agent_service(
 
     with _engine_for(config.database) as engine:
         sessions = session_factory(engine)
+        from personal_agent.api.dal_client import load_bridge
+        try:
+            dal_resume = load_bridge(config.dal_resume_config, session_factory=sessions, token_ring=token_ring) if config.dal_resume_config else None
+        except (ValueError, TypeError, KeyError, OSError):
+            raise CompositionError('DAL resume configuration refused') from None
         registry = ConnectorRegistry()
         client = McpClientCore(
             config.connector_id,
@@ -725,6 +731,7 @@ async def agent_service(
             yield ComposedAgentService(
                 deps=AgentApiDeps(
                     session_factory=sessions,
+                    dal_resume=dal_resume,
                     token_ring=token_ring,
                     keyring=keyring,
                     identifier_key=identifier_key,

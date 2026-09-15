@@ -5,7 +5,8 @@ the G3 offline receipt that covers the pure classifier. These tests pin what the
 launcher *builds* — argv, environment, the isolated settings file, and the
 sandbox profile — and prove that timeout and cancellation SIGKILL the whole
 process group. The real `claude -p` spawn is DAL-006 §9 P2/P3 work; here
-`subprocess.Popen` is mocked, never a real launch.
+the supervisor spawn seam is mocked, never a real launch. This exercises
+historical stream handling only; it grants no mini acceptance.
 """
 
 from __future__ import annotations
@@ -131,7 +132,7 @@ def test_timeout_kills_the_whole_process_group(
     """A wall-clock overflow SIGKILLs the group and reports `timed_out`."""
     fake_process = mock.Mock()
     fake_process.pid = 4242
-    monkeypatch.setattr(subprocess, "Popen", mock.Mock(return_value=fake_process))
+    monkeypatch.setattr("personal_agent_dal.worker.supervisor.spawn_unaccepted", mock.Mock(return_value=fake_process))
     kills: list[tuple[int, int]] = []
     monkeypatch.setattr(os, "killpg", lambda pid, sig: kills.append((pid, sig)))
 
@@ -151,7 +152,7 @@ def test_cancel_kills_the_whole_process_group(
     """A cancel event SIGKILLs the group and reports `cancelled`."""
     fake_process = mock.Mock()
     fake_process.pid = 4242
-    monkeypatch.setattr(subprocess, "Popen", mock.Mock(return_value=fake_process))
+    monkeypatch.setattr("personal_agent_dal.worker.supervisor.spawn_unaccepted", mock.Mock(return_value=fake_process))
     kills: list[tuple[int, int]] = []
     monkeypatch.setattr(os, "killpg", lambda pid, sig: kills.append((pid, sig)))
 
@@ -173,7 +174,7 @@ def test_clean_exit_captures_the_returncode(
     fake_process.pid = 4242
     fake_process.communicate.return_value = ('{"type":"final"}\n', None)
     fake_process.returncode = 0
-    monkeypatch.setattr(subprocess, "Popen", mock.Mock(return_value=fake_process))
+    monkeypatch.setattr("personal_agent_dal.worker.supervisor.spawn_unaccepted", mock.Mock(return_value=fake_process))
     monkeypatch.setattr(os, "killpg", mock.Mock())
 
     spec = _spec(run_root=tmp_path)
@@ -211,7 +212,7 @@ def _run_with_output(monkeypatch, tmp_path: Path, text: str):
     fake_process.pid = 4242
     fake_process.communicate.return_value = (text, None)
     fake_process.returncode = 0
-    monkeypatch.setattr(subprocess, "Popen", mock.Mock(return_value=fake_process))
+    monkeypatch.setattr("personal_agent_dal.worker.supervisor.spawn_unaccepted", mock.Mock(return_value=fake_process))
     monkeypatch.setattr(os, "killpg", mock.Mock())
     return run_coder(_spec(run_root=tmp_path), monotonic=lambda: 0.0)
 
@@ -339,7 +340,7 @@ def test_environment_injects_claude_code_tmpdir_inside_the_temp_block(
         process.returncode = 0
         return process
 
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("personal_agent_dal.worker.supervisor.spawn_unaccepted", fake_popen)
     monkeypatch.setattr(os, "killpg", mock.Mock())
 
     run_coder(_spec(run_root=tmp_path), monotonic=lambda: 0.0)
@@ -391,3 +392,12 @@ def test_output_at_exact_cap_is_not_truncated(
     over = _run_with_output(monkeypatch, tmp_path, at_cap_text + " ")
     assert over.truncated is True
     assert len(over.output.encode()) == cap
+
+
+def test_production_launcher_refuses_before_subprocess(monkeypatch, tmp_path):
+    from personal_agent_dal.worker.supervisor import SupervisorRefusal
+    calls=[]
+    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **kw: calls.append(1))
+    with pytest.raises(SupervisorRefusal, match='MACHINE_PROOF_REQUIRED'):
+        run_coder(_spec(run_root=tmp_path))
+    assert calls==[]

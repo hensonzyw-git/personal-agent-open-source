@@ -620,3 +620,14 @@ class ResultConflictError(RuntimeError):
 
     def __init__(self, job_id: str) -> None:
         super().__init__(f"conflicting result for worker job {job_id}")
+
+
+def enqueue_job_in_session(session, *, feature_id, repository_id, base_sha,
+                           branch_name, toolchain_ref, now):
+    """Replacement producer: no intake key, no commit, caller owns atomicity."""
+    job_id = new_id()
+    session.execute(insert(WorkerJob).values(job_id=job_id, feature_id=feature_id,
+        repository_id=repository_id, base_sha=base_sha, branch_name=branch_name,
+        toolchain_ref=toolchain_ref, state='pending', attempt_count=0, lease_epoch=0,
+        created_at=now, updated_at=now))
+    return job_id

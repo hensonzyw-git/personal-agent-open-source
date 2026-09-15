@@ -147,6 +147,20 @@ def run_poll_once(
             claimed=False, job_id=None, state=None, error=None, reclaimed=reclaimed
         )
 
+    # Replacement jobs never enter the historical feature-worktree/parser path.
+    # Refusal here is an unconsumed prelaunch, not a fabricated terminal result.
+    try:
+        context = transport.prelaunch_context(lease)
+        if context is not None:
+            from personal_agent_dal.worker.prelaunch import worker_prelaunch
+            worker_prelaunch(transport, config, lease, context)
+            raise ValueError('PRELAUNCH_RETURNED_WITHOUT_PERMISSION')
+    except Exception as error:
+        from personal_agent_dal.worker.supervisor import SupervisorRefusal
+        return PollOutcome(claimed=True, job_id=lease.job_id, state=None,
+            error=str(error) if isinstance(error, SupervisorRefusal) else 'PRELAUNCH_ERROR',
+            reclaimed=reclaimed)
+
     try:
         result = _execute_job(transport, config, lease, now=now)
     except _Abandoned as abandoned:
@@ -581,6 +595,11 @@ def _execute_job(
 
         if config.coder_token_path is None:
             return _refuse("coder_token_missing")
+        from personal_agent_dal.worker.supervisor import require_machine_acceptance, SupervisorRefusal
+        try:
+            require_machine_acceptance()
+        except SupervisorRefusal as error:
+            return _refuse(str(error))
         try:
             upstream_token = _read_coder_token(config.coder_token_path)
         except ValueError:

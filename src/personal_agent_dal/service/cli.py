@@ -162,17 +162,29 @@ def main(argv: list[str] | None = None) -> int:
             print(f"github adapter composition refused: {error}", file=sys.stderr)
             return 1
 
+    from personal_agent_dal.service.resume_routes import load_config
+    resume_path = os.environ.get("PERSONAL_AGENT_DAL_RESUME_CONFIG")
+    try:
+        resume_config = load_config(resume_path) if resume_path else None
+    except (ValueError, TypeError, KeyError, OSError):
+        print("DAL resume configuration refused", file=sys.stderr)
+        return 1
     engine = create_database_engine(args.database)
     try:
-        app = create_app(
-            engine,
-            service_key=service_key,
-            enrollment_secret=enrollment_secret,
-            kill_switch_path=args.kill_switch_path,
-            lease_ttl_seconds=args.lease_ttl_seconds,
-            max_attempts=args.max_attempts,
-            github_adapter=github_adapter,
-        )
+        try:
+            app = create_app(
+                engine,
+                service_key=service_key,
+                enrollment_secret=enrollment_secret,
+                kill_switch_path=args.kill_switch_path,
+                lease_ttl_seconds=args.lease_ttl_seconds,
+                max_attempts=args.max_attempts,
+                github_adapter=github_adapter,
+                resume_config=resume_config,
+            )
+        except (ValueError, TypeError, KeyError, OSError):
+            print("DAL resume configuration refused", file=sys.stderr)
+            return 1
         uvicorn.run(
             app,
             host=args.host,

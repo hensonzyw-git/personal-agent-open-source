@@ -88,6 +88,10 @@ class TokenKeyRing:
     def active_kid(self) -> str:
         return self._active.kid
 
+    def verification_keys(self) -> tuple[ec.EllipticCurvePublicKey, ...]:
+        """Public verification material, including retained rotation keys."""
+        return tuple(key.public_key for key in self._keys.values())
+
     def verification_key(self, kid: str) -> ec.EllipticCurvePublicKey:
         try:
             return self._keys[kid].public_key

@@ -154,6 +154,7 @@ def main() -> None:
             frozenset(args.allowed_tools) if args.allowed_tools else None
         ),
         ledger_url=ledger_url,
+        dal_resume_config=Path(os.environ["PERSONAL_AGENT_DAL_RESUME_BRIDGE_CONFIG"]) if os.environ.get("PERSONAL_AGENT_DAL_RESUME_BRIDGE_CONFIG") else None,
     )
     try:
         asyncio.run(_serve(config, args, bind, write_switch=write_switch))

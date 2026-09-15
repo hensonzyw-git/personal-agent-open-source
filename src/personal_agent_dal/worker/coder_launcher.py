@@ -340,8 +340,8 @@ def run_coder(
     The wall clock is enforced by the same heartbeat + process-group kill the
     toolchain uses: on timeout the whole group is SIGKILLed and the result
     reports `timed_out` (the caller maps this to `budget_limit`); on cancel the
-    group is SIGKILLed and the result reports `cancelled`. No orphan process
-    survives either path. The command itself comes only from `spec`, never from
+    group is SIGKILLed and the result reports `cancelled`. Group exit does
+    not prove that detached descendants have stopped. The command itself comes only from `spec`, never from
     a model, issue text or the environment.
     """
     settings_path = write_settings_file(spec.run_root)
@@ -363,7 +363,8 @@ def run_coder(
         # shared with the operator's own Claude Code sessions.
         environment = coder_environment(upstream_token)
         environment["CLAUDE_CODE_TMPDIR"] = str(temp_path) + "/"
-        process = subprocess.Popen(
+        from personal_agent_dal.worker.supervisor import spawn_unaccepted
+        process = spawn_unaccepted(
             sandboxed_coder_argv(argv, spec.cwd, temp_path, spec.run_root),
             cwd=str(spec.cwd),
             stdin=subprocess.DEVNULL,
