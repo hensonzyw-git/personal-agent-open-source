@@ -30,13 +30,14 @@ ANSWER={'oneOf':[obj({'kind':{'enum':['conversation','clarification','limitation
     'commentary':STR,'coverage':{'enum':['complete','partial']},'evidence_refs':{'type':'array','items':STR,'maxItems':32},'remaining_question':STR},['kind','analysis_nodes','commentary','coverage','evidence_refs'])]}
 
 
-def _compact_schema(value):
+def _compact_schema(value, *, strip_defaults=False):
     # Business instructions are versioned once in domain_rules, not repeated
-    # inside each model-facing parameter schema. Canonical IR stays unchanged.
+    # inside each model-facing parameter schema. Query defaults are optional
+    # annotations, not instructions to repeat filters on cursor continuations.
     if isinstance(value,dict):
-        return {k:({name:_compact_schema(schema) for name,schema in v.items()} if k in {'properties','$defs','definitions','patternProperties'} else _compact_schema(v))
-                for k,v in value.items() if k not in {'$schema','title','description'}}
-    if isinstance(value,list):return [_compact_schema(x) for x in value]
+        return {k:({name:_compact_schema(schema, strip_defaults=strip_defaults) for name,schema in v.items()} if k in {'properties','$defs','definitions','patternProperties'} else _compact_schema(v, strip_defaults=strip_defaults))
+                for k,v in value.items() if k not in ({'$schema','title','description','default'} if strip_defaults else {'$schema','title','description'})}
+    if isinstance(value,list):return [_compact_schema(x, strip_defaults=strip_defaults) for x in value]
     return value
 
 
@@ -48,7 +49,16 @@ def catalog(declarations):
         if alias.startswith('agent.'): continue
         from personal_agent_core.tool_ir import contract_by_name
         read=contract_by_name(alias).effect=='read'
-        fields={'arguments':_compact_schema(f['parameters']),'task':TASK}
+        arguments = _compact_schema(f['parameters'], strip_defaults=alias=='finance.query_expenses')
+        if alias == 'finance.query_expenses':
+            # Mirror the MCP cursor contract without changing device grants.
+            # The original schema already forbids other property names.
+            arguments = {**arguments, 'anyOf': [
+                {'properties': {'cursor': {'type': 'null'}}},
+                {'maxProperties': 2, 'properties': {
+                    'view': {'const': 'records'}, 'cursor': {'type': 'string', 'minLength': 1}}},
+            ]}
+        fields={'arguments':arguments,'task':TASK}
         if read and alias in {'finance.query_expenses','calendar.query_events'}:
             fields['response_mode']={'enum':['card','analyze']}
         if not read:

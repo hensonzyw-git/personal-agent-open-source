@@ -338,9 +338,16 @@ class DurableRunHost:
                 ref='query_'+call.call_id
                 result=self.evidence.add_query(ref,outcome.projection,tool=name) if outcome.projection is not None else {'text':outcome.result,'ref':ref}
                 self.results.append(result)
-            else:result={'error':'query_incomplete'};self.results.append(result);self.read_failed=True
+            else:
+                # Preserve only contract codes, never raw remote/provider text.
+                from personal_agent_core.errors import ErrorCode
+                safe_codes = {c.value for c in ErrorCode} | {'source_unavailable', 'query_result_unreadable'}
+                code = outcome.reason if isinstance(outcome, ResolveFailedSafe) and outcome.reason in safe_codes else 'query_incomplete'
+                result = {'error': code}
+                self.results.append(result)
+                self.read_failed = True
             self.repo.evidence_step(self.lease,call.call_id,result,now_ms=self.now())
-            if self.read_failed:raise RunStateError('read_batch_failed')
+            if self.read_failed:raise RunStateError(result['error'])
             return self._read_result(call, result)
         answer=await asyncio.to_thread(self._write,name,cleaned)
         return ToolResult(answer,stop=True)
@@ -428,13 +435,21 @@ class DurableRunHost:
         # Never rewrite post-submit truth. Partial reads remain in the result.
         try:
             run=self.repo.snapshot(self.operation_id)
-            if run['state'] in {'completed','parked','handoff'}:return
+            if run['state'] in {'completed','partial','parked','handoff'}:return
             if run['task_id'] is None:
                 tid='task_'+uuid4().hex
                 self.repo.bind(self.operation_id,task_id=None,new_task_id=tid,now_ms=self.now(),lease=self.lease,
                     sealed_goal=self.repo.seal('agent_tasks','sealed_goal',tid,self.payload.text),
                     sealed_constraints=self.repo.seal('agent_tasks','sealed_constraints',tid,[]))
             answer={'version':2,'kind':'limitation','task_status':'waiting','text':'本轮未能完成；已取得的结果保留。','coverage':'partial','evidence':list(self.evidence.evidence.values()),'failure':{'code':code,'retryable':True,'stage':'runtime'}}
+            if code == 'finance_cursor_filter_conflict':
+                answer['text'] = '分页查询参数冲突：续页只能携带游标和视图，不能重复筛选条件；已取得的结果保留。'
+                answer['failure']['retryable'] = False
+            elif code == 'INVALID_ARGUMENT':
+                answer['text'] = '查询参数不符合工具合同；已取得的结果保留。'
+                answer['failure']['retryable'] = False
+            elif code in {'source_unavailable', 'SOURCE_UNAVAILABLE'}:
+                answer['text'] = '查询数据源暂时不可用，请稍后重试；已取得的结果保留。'
             if self.repo.snapshot(self.operation_id)['candidate_operation_id']:answer['task_status']='waiting'
             self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=self.event_writer,close_source=False)
         except RunStateError:
