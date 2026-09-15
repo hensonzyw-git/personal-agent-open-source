@@ -80,6 +80,9 @@ def _replay(session: Session, command_id: str, digest: str) -> RecoveryOutcome |
 
 
 def _eligible(session: Session, row: ProviderAttempt, now: datetime) -> str | None:
+    from personal_agent_dal.machine.execution_results import has_complete_evidence
+    if row.result_consumed_at or row.report_receipt_id or row.result_digest is not None or has_complete_evidence(session, row.attempt_id):
+        return 'RECOVERY_NOT_NEEDED'
     if row.state not in ('dispatching', 'unknown'):
         return 'RECOVERY_NOT_NEEDED'
     if row.owner_id is None or row.fence < 1 or row.dispatch_started_at is None:

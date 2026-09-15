@@ -316,18 +316,19 @@ async def transport_body_guard(request: Request) -> None:
     field (request_id/job_id/lease_epoch) against tampering; a missing,
     malformed or mismatching digest is a 400, never a silent repair.
     """
+    limit = 256*1024 if request.url.path.endswith("/execution-result") else MAX_BODY_BYTES
     length = request.headers.get("content-length")
     if length is not None:
         try:
             declared = int(length)
         except ValueError:
             raise _http(400, "invalid_content_length") from None
-        if declared > MAX_BODY_BYTES:
+        if declared > limit:
             raise _http(413, "oversized_body")
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
-        if len(body) > MAX_BODY_BYTES:
+        if len(body) > limit:
             raise _http(413, "oversized_body")
     # Starlette caches `_body` for `request.body()`; downstream parsing reuses it.
     request._body = bytes(body)  # noqa: SLF001
@@ -791,6 +792,9 @@ def create_app(
     ) -> dict[str, Any]:
         worker_id, _ = identity
         _check_worker(body, worker_id, job_id)
+        record = queue.get_job(engine, job_id=job_id)
+        if record and record.execution_mode == 'provider_v1':
+            raise _http(409, 'PROVIDER_EXECUTION_RESULT_REQUIRED')
         # Idempotent replay is classified before the write: a job already terminal
         # with the identical result returns the original receipt without a second
         # transition. `finish_job` remains the atomic authority for the fresh path.

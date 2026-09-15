@@ -142,7 +142,7 @@ def claim_dispatch(
         refusal = _leases(job, lease, action.feature_id, owner_id, timestamp)
         if refusal:
             return LifecycleOutcome(refusal)
-        if replacement:
+        if replacement or job.execution_mode == 'provider_v1' or action.execution_contract_version is not None:
             from personal_agent_dal.machine.resume_dispatch import validate_manifest
             from personal_agent_dal.storage.transport_models import SupervisorLaunchManifest
             manifest = session.get(SupervisorLaunchManifest, row.attempt_id)
@@ -164,7 +164,7 @@ def claim_dispatch(
 
 def record_result(
     engine: Engine, *, attempt_id: str, expected_version: int, owner_id: str,
-    fence: int, digest: str, now: datetime | None = None,
+    fence: int, digest: str, now: datetime | None = None, transaction_session=None,
 ) -> LifecycleOutcome:
     """Persist every valid arrival for a known attempt, including refusal evidence."""
     _non_empty(owner_id, 'owner_id')
@@ -192,13 +192,13 @@ def record_result(
         row.result_recorded_at = row.updated_at = timestamp
         return LifecycleOutcome('RESULT_RECORDED')
     return _mutate_attempt(engine, attempt_id, expected_version, now, work,
-                           observation=(owner_id, fence, digest))
+                           observation=(owner_id, fence, digest), transaction_session=transaction_session)
 
 
 def consume_result(
     engine: Engine, *, attempt_id: str, expected_version: int,
     command: TransitionCommand | None = None, facts: GuardFacts | None = None,
-    now: datetime | None = None,
+    now: datetime | None = None, transaction_session=None,
 ) -> LifecycleOutcome:
     """Apply the existing feature transition and consume in one retryable transaction.
 
@@ -210,6 +210,8 @@ def consume_result(
         return LifecycleOutcome('TRANSITION_REQUIRED')
     command = replace(command, idempotency_key=f'provider-consume:{attempt_id}')
     def work(session, row, action, gate, timestamp):
+        if action.completion_mode == 'report_only' or row.report_receipt_id is not None:
+            return LifecycleOutcome('REPORT_ONLY_NOT_CONSUMABLE')
         bound_command = replace(command, command_parameters={
             **command.command_parameters, 'provider_attempt_id': row.attempt_id,
             'provider_result_digest': row.result_digest,
@@ -249,7 +251,7 @@ def consume_result(
         row.consumption_receipt_id = receipt.receipt_id
         row.version += 1
         return LifecycleOutcome('APPLIED', receipt.receipt_id)
-    return _mutate_attempt(engine, attempt_id, expected_version, now, work, replay_consumption=True)
+    return _mutate_attempt(engine, attempt_id, expected_version, now, work, replay_consumption=True, transaction_session=transaction_session)
 
 
 def cancel_execution(
@@ -298,7 +300,7 @@ def _stop_gate(session, feature_id, expected_gate_version, mode, timestamp):
 
 
 def _mutate_attempt(engine, attempt_id, expected_version, now, mutation, *,
-                    observation=None, replay_consumption=False):
+                    observation=None, replay_consumption=False, transaction_session=None):
     _non_empty(attempt_id, 'attempt_id')
     _integer(expected_version)
     def work(session):
@@ -320,6 +322,10 @@ def _mutate_attempt(engine, attempt_id, expected_version, now, mutation, *,
                 recorded_at=timestamp,
             ))
         return outcome
+    if transaction_session is not None:
+        transaction_session.flush()
+        transaction_session.expire_all()
+        return work(transaction_session)
     return _transaction(engine, work)
 
 
@@ -360,6 +366,27 @@ def _issued_leases(session, row, action, timestamp):
         return 'JOB_LEASE_STALE'
     if row.policy_lease_epoch != lease.epoch:
         return 'POLICY_LEASE_STALE'
+    if action.execution_contract_version:
+        from personal_agent_dal.storage.machine_models import (
+            ExecutionJobBinding, ExecutionPolicyLeaseIssuance, ExecutionStartReceipt,
+            ResumeEpisode, DispatchIntent,
+        )
+        binding = session.get(ExecutionJobBinding, row.attempt_id)
+        issuance = session.get(ExecutionPolicyLeaseIssuance, (row.attempt_id, job.lease_epoch))
+        if not binding or not issuance or issuance.lease_id != lease.lease_id:
+            return 'POLICY_LEASE_BINDING_CONFLICT'
+        if binding.origin == 'initial':
+            receipt = session.scalar(select(ExecutionStartReceipt).where(ExecutionStartReceipt.attempt_id == row.attempt_id))
+            if not receipt or receipt.expires_at <= timestamp or receipt.action_id != action.action_id or receipt.selection_id != binding.selection_id:
+                return 'START_AUTHORIZATION_STALE'
+        else:
+            from personal_agent_dal.machine.resume_dispatch import _issue_policy_lease
+            episode = session.scalar(select(ResumeEpisode).where(ResumeEpisode.attempt_id == row.attempt_id))
+            if not episode: return 'REPLACEMENT_EPISODE_REQUIRED'
+            try:
+                _issue_policy_lease(session, episode=episode, intent=session.get(DispatchIntent, episode.intent_id),
+                    attempt=row, action=action, job=job, worker_id=row.owner_id)
+            except ValueError as exc: return str(exc)
     return None
 
 
@@ -389,3 +416,13 @@ def _non_empty(value, field):
 def _digest(value, field):
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
         raise ActionLifecycleRefusal('INVALID_ARGUMENT')
+
+
+def _record_result_in_session(session, **kwargs):
+    """Caller owns commit and retry; no external effects."""
+    return record_result(session.get_bind(), transaction_session=session, **kwargs)
+
+
+def _consume_result_in_session(session, **kwargs):
+    """Caller owns commit and retry; reuse the sole Feature transition path."""
+    return consume_result(session.get_bind(), transaction_session=session, **kwargs)

@@ -149,6 +149,10 @@ class WorkerConfig:
     #: Present only when the worker may run the real-coder route.
     coder_token_path: Path | None = None
     supervisor_config_path: Path | None = None
+    schema_version: str = CONFIG_SCHEMA
+    runtime_policy_revision: str | None = None
+    adapter_config_ref: Path | None = None
+    execution_protocol: str | None = None
 
 
 def load_worker_config(path: Path) -> WorkerConfig:
@@ -159,12 +163,19 @@ def load_worker_config(path: Path) -> WorkerConfig:
     # Version first: a 1.0 config's `database_path` is an unknown key here, and
     # reporting it as one would send the reader hunting for a typo instead of
     # telling them the shape changed.
-    if body.get("schema_version") != CONFIG_SCHEMA:
+    version=body.get("schema_version")
+    v2_keys={"runtime_policy_revision","adapter_config_ref","execution_protocol","production_enabled"}
+    if version == "dal.worker-config/2.0":
+        if not v2_keys <= set(body) or body["production_enabled"] is not False or body["runtime_policy_revision"] != "trusted-single-user/1.0" or body["execution_protocol"] != "dal.worker-execution-transport/1.0":
+            raise ValueError("invalid candidate runtime policy")
+        if not body.get("supervisor_config_path") or body["max_attempts"] != 1:
+            raise ValueError("candidate supervisor and one launch required")
+    if version not in (CONFIG_SCHEMA,"dal.worker-config/2.0"):
         raise ValueError(
             f"unsupported worker config schema: {body.get('schema_version')!r}; "
             f"expected {CONFIG_SCHEMA} with an explicit transport"
         )
-    unknown = set(body) - _KNOWN_KEYS
+    unknown = set(body) - (_KNOWN_KEYS | (v2_keys if version == "dal.worker-config/2.0" else set()))
     if unknown:
         raise ValueError(f"unknown worker config keys: {sorted(unknown)!r}")
 
@@ -205,6 +216,10 @@ def load_worker_config(path: Path) -> WorkerConfig:
 
     return WorkerConfig(
         worker_id=worker_id,
+        schema_version=version,
+        runtime_policy_revision=body.get("runtime_policy_revision"),
+        adapter_config_ref=_path_field(body,"adapter_config_ref") if version == "dal.worker-config/2.0" else None,
+        execution_protocol=body.get("execution_protocol"),
         transport=transport,
         worktree_root=worktree_root,
         checkpoint_root=checkpoint_root,

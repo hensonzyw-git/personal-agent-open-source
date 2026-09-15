@@ -14,6 +14,12 @@ from personal_agent_dal.machine.isolation_evidence import import_evidence, issue
 from personal_agent_dal.storage.machine_models import DispatchIntent, ResumeEpisode
 
 
+from personal_agent_dal.machine.execution_start import (
+    PrepareExecutionRequest, StartExecutionRequest, prepare_execution, start_execution,
+)
+
+from personal_agent_dal.machine.execution_protocol import ExecutionResultRequest
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,6 +69,20 @@ def mount_routes(app, engine, service, config):
     def call(fn,**kwargs):
         try: return fn(engine,**kwargs)
         except ValueError as exc: raise HTTPException(409,str(exc)) from exc
+    @app.post('/operator/features/{feature_id}/execution-selections')
+    def prepare(feature_id: str, body: PrepareExecutionRequest,
+                actor=Depends(_OperatorAuth(service,'control')), _=Depends(transport_body_guard)):
+        enabled()
+        return call(prepare_execution, feature_id=feature_id, actor=actor, body=body,
+                    kill_switch=lambda: service.kill_switch)
+
+    @app.post('/operator/features/{feature_id}/executions')
+    def start(feature_id: str, body: StartExecutionRequest,
+              actor=Depends(_OperatorAuth(service,'control')), _=Depends(transport_body_guard)):
+        enabled()
+        return call(start_execution, feature_id=feature_id, actor=actor, body=body,
+                    kill_switch=lambda: service.kill_switch)
+
     @app.post('/operator/features/{feature_id}/workflow-selection')
     def selection(feature_id: str, body: SelectionRequest, actor=Depends(_OperatorAuth(service,'control'))):
         enabled()
@@ -136,3 +156,16 @@ def mount_routes(app, engine, service, config):
         if service.kill_switch:raise HTTPException(503,'kill_switch_active')
         from personal_agent_dal.machine.resume_dispatch import consume_intent
         return {'job_id':call(consume_intent,intent_id=intent_id)}
+
+    @app.get('/worker/jobs/{job_id}/execution-status')
+    def execution_status_route(job_id: str, request: Request, identity=Depends(service.auth)):
+        if request.query_params or getattr(request, '_body', b''):
+            raise HTTPException(400, 'EXECUTION_STATUS_REQUEST_INVALID')
+        from personal_agent_dal.machine.execution_results import execution_status
+        return call(execution_status, job_id=job_id, worker_id=identity[0], kill_switch=lambda: service.kill_switch)
+
+    @app.post('/worker/jobs/{job_id}/execution-result')
+    def execution_result_route(job_id: str, body: ExecutionResultRequest, identity=Depends(service.auth)):
+        from personal_agent_dal.machine.execution_results import submit_execution_result
+        return call(submit_execution_result, job_id=job_id, worker_id=identity[0], request=body,
+                    kill_switch=lambda: service.kill_switch)

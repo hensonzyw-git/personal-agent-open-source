@@ -50,7 +50,7 @@ def _binding(s,intent):
 def consume_intent(engine,*,intent_id):
     def work(s):
         intent=s.get(DispatchIntent,intent_id)
-        attempt,action,_,_,old,_=_binding(s,intent)
+        attempt,action,selection,snapshot,old,_=_binding(s,intent)
         existing=s.get(ResumeEpisode,intent_id)
         if existing:return existing.job_id
         if attempt.state!='prepared' or attempt.dispatch_started_at is not None:
@@ -59,7 +59,20 @@ def consume_intent(engine,*,intent_id):
         if not source or source.feature_id!=action.feature_id:
             raise ValueError('WORKER_OPERATION_BINDING_UNIMPLEMENTED')
         job_id=enqueue_job_in_session(s,feature_id=source.feature_id,repository_id=source.repository_id,
-            base_sha=source.base_sha,branch_name=source.branch_name,toolchain_ref=source.toolchain_ref,now=utc_now())
+            base_sha=source.base_sha,branch_name=source.branch_name,toolchain_ref=source.toolchain_ref,now=utc_now(),
+            execution_mode='provider_v1' if action.execution_contract_version else 'legacy_unclassified')
+        if action.execution_contract_version:
+            from personal_agent_dal.storage.machine_models import ExecutionJobBinding
+            from personal_agent_dal.machine.execution_start import ExecutionInput
+            inp=ExecutionInput.model_validate(json.loads(action.execution_input_body))
+            if digest(inp.model_dump(by_alias=True)) != action.input_binding_sha256:
+                raise ValueError('INPUT_BINDING_INVALID')
+            if any(getattr(source,k)!=getattr(inp,k) for k in ('repository_id','base_sha','branch_name','toolchain_ref')):
+                raise ValueError('JOB_INPUT_MISMATCH')
+            attempt.job_id=job_id
+            s.add(ExecutionJobBinding(attempt_id=attempt.attempt_id,job_id=job_id,
+                selection_id=selection.selection_id,snapshot_sha256=snapshot.sha256,
+                input_binding_sha256=action.input_binding_sha256,origin='replacement',created_at=utc_now()))
         s.add(ResumeEpisode(intent_id=intent_id,attempt_id=attempt.attempt_id,job_id=job_id,created_at=utc_now()))
         return job_id
     return _transaction(engine,work)
@@ -99,7 +112,12 @@ def _issue_policy_lease(s, *, episode, intent, attempt, action, job, worker_id):
     if issued:
         lease=s.get(Lease,issued.lease_id)
         if _leases(job,lease,action.feature_id,worker_id,now):raise ValueError('POLICY_LEASE_STALE')
+        if job.execution_mode == 'provider_v1':
+            from personal_agent_dal.storage.machine_models import ExecutionPolicyLeaseIssuance
+            generic=s.get(ExecutionPolicyLeaseIssuance,(attempt.attempt_id,job.lease_epoch))
+            if not generic or generic.lease_id!=lease.lease_id: raise ValueError('POLICY_LEASE_BINDING_CONFLICT')
         return lease
+    if s.get(SupervisorLaunchManifest, attempt.attempt_id): raise ValueError('MANIFEST_LEASE_IMMUTABLE')
     # Fresh reclaim gets a distinct lease, within the original approval and
     # first-issuance ceiling. It never revives the old lease.
     previous=list(s.scalars(select(ResumeLeaseIssuance).where(ResumeLeaseIssuance.intent_id==episode.intent_id)))
@@ -119,6 +137,9 @@ def _issue_policy_lease(s, *, episode, intent, attempt, action, job, worker_id):
     s.add(lease)
     s.flush()
     s.add(ResumeLeaseIssuance(intent_id=episode.intent_id,job_lease_epoch=job.lease_epoch,lease_id=lease.lease_id))
+    if job.execution_mode == 'provider_v1':
+        from personal_agent_dal.storage.machine_models import ExecutionPolicyLeaseIssuance
+        s.add(ExecutionPolicyLeaseIssuance(attempt_id=attempt.attempt_id,job_lease_epoch=job.lease_epoch,lease_id=lease.lease_id))
     return lease
 
 
@@ -132,10 +153,20 @@ def _context(s,*,job_id,worker_id,job_lease_epoch,enabled=True):
             or job.lease_expires_at<=utc_now()):
         raise ValueError('JOB_LEASE_STALE')
     episode=s.scalar(select(ResumeEpisode).where(ResumeEpisode.job_id==job_id))
-    if not episode:return None
+    if not episode:
+        if job.execution_mode == 'provider_v1':
+            if not enabled: raise ValueError('DAL_RESUME_UNAVAILABLE')
+            from personal_agent_dal.machine.execution_start import initial_context
+            return initial_context(s, job=job, worker_id=worker_id)
+        if job.execution_mode == 'legacy_non_provider': return None
+        raise ValueError('EXECUTION_MODE_UNCLASSIFIED')
     if not enabled:raise ValueError('DAL_RESUME_UNAVAILABLE')
     intent=s.get(DispatchIntent,episode.intent_id)
     attempt,action,selection,snapshot,old,isolation=_binding(s,intent)
+    if job.execution_mode == 'provider_v1':
+        from personal_agent_dal.machine.execution_start import execution_binding
+        binding, action, selection, snapshot, inp = execution_binding(s, attempt, job)
+        if binding.origin != 'replacement': raise ValueError('REPLACEMENT_BINDING_MISSING')
     if attempt.state!='prepared' or attempt.dispatch_started_at is not None:
         raise ValueError('ATTEMPT_ALREADY_DISPATCHED')
     lease=_issue_policy_lease(s,episode=episode,intent=intent,attempt=attempt,action=action,
@@ -143,11 +174,17 @@ def _context(s,*,job_id,worker_id,job_lease_epoch,enabled=True):
     refusal=_leases(job,lease,action.feature_id,worker_id,utc_now())
     if refusal:raise ValueError(refusal)
     if isolation and isolation['worker_id']!=worker_id:raise ValueError('ISOLATION_WORKER_MISMATCH')
-    return dict(intent_id=intent.intent_id,attempt_id=attempt.attempt_id,attempt_version=attempt.version,
+    context = dict(intent_id=intent.intent_id,attempt_id=attempt.attempt_id,attempt_version=attempt.version,
         feature_id=action.feature_id,action_id=action.action_id,job_id=job_id,worker_id=worker_id,
         job_lease_epoch=job.lease_epoch,lease_id=lease.lease_id,policy_lease_epoch=lease.epoch,
         snapshot_sha256=snapshot.sha256,snapshot=json.loads(snapshot.body),selection_id=selection.selection_id,
-        isolation=isolation)
+        isolation=isolation, isolation_reserved_by=(s.scalar(select(IsolationEvidence.reserved_by).where(
+            IsolationEvidence.reserved_by==attempt.attempt_id)) if isolation else None))
+
+    if job.execution_mode == 'provider_v1':
+        from personal_agent_dal.machine.execution_protocol import complete_context
+        return complete_context(context, action=action, attempt=attempt, lease=lease, inp=inp)
+    return context
 
 
 def prelaunch_context(engine,*,job_id,worker_id,job_lease_epoch,enabled=True):
@@ -157,6 +194,12 @@ def prelaunch_context(engine,*,job_id,worker_id,job_lease_epoch,enabled=True):
 
 def validate_manifest(s,*,attempt,job,lease,owner):
     episode=s.scalar(select(ResumeEpisode).where(ResumeEpisode.attempt_id==attempt.attempt_id))
+    if job.execution_mode == 'provider_v1':
+        from personal_agent_dal.machine.execution_start import execution_binding
+        try: execution_binding(s, attempt, job)
+        except ValueError as exc: return str(exc)
+        from personal_agent_dal.machine.execution_manifest import validate_execution_manifest
+        return validate_execution_manifest(s, attempt=attempt, job=job, lease=lease, owner=owner)
     if not episode or episode.job_id!=job.job_id:return 'REPLACEMENT_EPISODE_REQUIRED'
     try:context=_context(s,job_id=job.job_id,worker_id=owner,job_lease_epoch=job.lease_epoch)
     except ValueError as exc:return str(exc)
@@ -208,7 +251,19 @@ def check_episode_heartbeat(engine, *, job_id, worker_id, job_lease_epoch):
     """Both leases must still be live; an expired policy lease is never revived."""
     def work(s):
         episode=s.scalar(select(ResumeEpisode).where(ResumeEpisode.job_id==job_id))
-        if not episode:return True
+        if not episode:
+            job=s.get(WorkerJob,job_id)
+            if not job or job.execution_mode != 'provider_v1': return True
+            from personal_agent_dal.storage.machine_models import ExecutionJobBinding, ExecutionPolicyLeaseIssuance
+            binding=s.scalar(select(ExecutionJobBinding).where(ExecutionJobBinding.job_id==job_id))
+            if not binding: return False
+            attempt=s.get(ProviderAttempt,binding.attempt_id)
+            action=s.get(WorkflowAction,attempt.action_id)
+            if _authority(s,attempt,action,s.get(ExecutionGate,action.feature_id)): return False
+            issuance=s.get(ExecutionPolicyLeaseIssuance,(attempt.attempt_id,job_lease_epoch))
+            if not issuance: return False
+            lease=s.get(Lease,issuance.lease_id)
+            return job.lease_epoch==job_lease_epoch and not _leases(job,lease,action.feature_id,worker_id,utc_now())
         attempt,action,*_=_binding(s,s.get(DispatchIntent,episode.intent_id))
         job=s.get(WorkerJob,job_id)
         if not job or job.lease_epoch!=job_lease_epoch:return False

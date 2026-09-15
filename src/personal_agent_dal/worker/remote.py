@@ -383,21 +383,22 @@ class RemoteHttpAdapter(WorkerTransport):
     # --- transport primitives ------------------------------------------------
 
     def _send(
-        self, path: str, body: dict[str, Any], *, headers: dict[str, str]
+        self, path: str, body: dict[str, Any], *, headers: dict[str, str], method: str = "POST"
     ) -> httpx.Response:
         """One request: exact bytes, digest of those bytes, no redirect.
 
         The digest is computed from `payload` — the same object handed to
         `client.post` — so the header and the socket cannot disagree.
         """
-        payload = canonical_json(body).encode("utf-8")
+        payload = b"" if method == "GET" else canonical_json(body).encode("utf-8")
         request_headers = {
             "content-type": "application/json",
             BODY_DIGEST_HEADER: hashlib.sha256(payload).hexdigest(),
             **headers,
         }
         try:
-            response = self._client.post(path, content=payload, headers=request_headers)
+            response = (self._client.get(path, headers=request_headers) if method == "GET" else
+                        self._client.post(path, content=payload, headers=request_headers))
         except httpx.HTTPError as error:
             raise TransportError(f"network:{type(error).__name__}") from error
         if 300 <= response.status_code < 400:
@@ -413,6 +414,7 @@ class RemoteHttpAdapter(WorkerTransport):
         *,
         job_id: str | None = None,
         retry_server_errors: bool = True,
+        method: str = "POST",
     ) -> httpx.Response:
         """Send an authenticated request with bounded retries.
 
@@ -434,7 +436,7 @@ class RemoteHttpAdapter(WorkerTransport):
         while True:
             token = self._current_token()
             response = self._send(
-                path, body, headers={"authorization": f"Bearer {token}"}
+                path, body, headers={"authorization": f"Bearer {token}"}, **({"method":method} if method != "POST" else {})
             )
             status = response.status_code
             if status == 401 and reauths < _MAX_REAUTH:
@@ -503,13 +505,40 @@ class RemoteHttpAdapter(WorkerTransport):
         return body
 
     def prelaunch_context(self, lease):
-        return self._prelaunch_request(lease, 'prelaunch-context')['context']
+        context = self._prelaunch_request(lease, 'prelaunch-context')['context']
+        if context is not None and 'execution_spec' in context:
+            from personal_agent_dal.machine.execution_protocol import validate_execution_context
+            try: return validate_execution_context(context)
+            except ValueError: raise TransportError('execution_context_shape', job_id=lease.job_id) from None
+        return context
 
     def acknowledge_prelaunch(self, lease, assertion):
         return self._prelaunch_request(lease, 'prelaunch-manifest', assertion=assertion)
 
     def dispatch_prelaunch(self, lease, manifest_sha256):
         return self._prelaunch_request(lease, 'prelaunch-dispatch', manifest_sha256=manifest_sha256)
+
+    def execution_status(self, lease: JobLease) -> dict:
+        from personal_agent_dal.machine.execution_protocol import ExecutionStatus
+        response = self._authenticated('/worker/jobs/'+lease.job_id+'/execution-status', {}, method='GET', job_id=lease.job_id)
+        if response.status_code != 200: raise TransportError('execution_status_refused:'+_error_code(response), job_id=lease.job_id)
+        try:
+            body = ExecutionStatus.model_validate(_json(response)).model_dump(by_alias=True)
+            if body['job_id'] != lease.job_id: raise ValueError('job mismatch')
+            return body
+        except ValueError: raise TransportError('execution_status_shape', job_id=lease.job_id) from None
+
+    def submit_execution_result(self, lease: JobLease, request: dict) -> dict:
+        from personal_agent_dal.machine.execution_protocol import ExecutionResultRequest, ExecutionResultResponse
+        request = ExecutionResultRequest.model_validate(request).model_dump(by_alias=True)
+        response = self._authenticated('/worker/jobs/'+lease.job_id+'/execution-result', request, job_id=lease.job_id)
+        if response.status_code != 200: raise TransportError('execution_result_refused:'+_error_code(response), job_id=lease.job_id)
+        try:
+            body = ExecutionResultResponse.model_validate(_json(response)).model_dump(by_alias=True)
+            if (body['job_id'] != lease.job_id or body['attempt_id'] != request['result']['attempt_id']
+                    or body['result_sha256'] != request['result_sha256']): raise ValueError('result mismatch')
+            return body
+        except ValueError: raise TransportError('execution_result_shape', job_id=lease.job_id) from None
 
     def mark_running(self, lease: JobLease) -> HeartbeatOutcome:
         # The contract has no separate `running` transition: the first heartbeat

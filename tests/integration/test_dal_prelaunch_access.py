@@ -90,6 +90,11 @@ def test_invalid_authority_has_no_episode_oracle(composed, world, monkeypatch,
 @pytest.mark.parametrize('enabled', [True, False])
 def test_valid_plain_job_retains_legacy_context(composed, world, enabled):
     transport, *_ = composed
+    # Only explicitly classified non-provider producers retain context=None.
+    from personal_agent_dal.storage.worker_models import WorkerJob
+    from personal_agent_dal.storage.engine import session_factory
+    with session_factory(world)() as s, s.begin():
+        s.get(WorkerJob, 'j').execution_mode = 'legacy_non_provider'
     client = client_for(world, transport, enabled)
     before = snapshot(world)
     response = request(client, transport, 'j', 3)

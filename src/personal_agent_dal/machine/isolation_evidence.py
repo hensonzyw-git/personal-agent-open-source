@@ -44,7 +44,11 @@ class IsolationAssertion(Closed):
 
 def verify_isolation_assertion(assertion, *, keys, now_epoch):
     from personal_agent.api.dal_client import verify_closed_assertion
-    body = verify_closed_assertion(assertion, keys=keys, now_epoch=now_epoch, schema=IsolationAssertion)
+    from personal_agent_dal.machine.execution_manifest import IsolationV11
+    try:
+        body = verify_closed_assertion(assertion, keys=keys, now_epoch=now_epoch, schema=IsolationV11)
+    except ValueError:
+        body = verify_closed_assertion(assertion, keys=keys, now_epoch=now_epoch, schema=IsolationAssertion)
     import jwt
     if body['kid'] != jwt.get_unverified_header(assertion)['kid']:
         raise ValueError('ISOLATION_KEY_MISMATCH')
@@ -94,6 +98,9 @@ def issue_challenge(engine, *, attempt_id):
             workspace_generation=source['workspace_generation']+1,launch_manifest_sha256=manifest.sha256,
             isolation_policy_sha256=source['isolation_policy_sha256'],challenge_id=challenge_id,
             status='workspace_isolated',schema='dal.workspace-isolation/1.0')
+        if source['schema'] == 'dal.launch-manifest/1.1':
+            body.update(schema='dal.workspace-isolation/1.1', status='workspace_ready',
+                        runtime_policy_revision='trusted-single-user/1.0')
         s.add(IsolationChallenge(challenge_id=challenge_id,body=canonical_json(body),expires_at=expires,consumed_at=None))
         return dict(challenge_id=challenge_id,binding=body,expires_at=expires.isoformat())
     return _transaction(engine,work)
@@ -114,14 +121,14 @@ def import_evidence(engine, *, assertion, worker_id):
         existing = s.get(IsolationEvidence,body['isolation_id'])
         if existing:
             if existing.binding_sha256 != digest(body): raise ValueError('EVIDENCE_CONFLICT')
-            return dict(isolation_id=existing.isolation_id,status='workspace_isolated',expires_at=existing.expires_at.isoformat())
+            return dict(isolation_id=existing.isolation_id,status=body['status'],expires_at=existing.expires_at.isoformat())
         if challenge.consumed_at: raise ValueError('CHALLENGE_CONSUMED')
         challenge.consumed_at = utc_now()
         row = IsolationEvidence(isolation_id=body['isolation_id'],challenge_id=body['challenge_id'],
             binding=canonical_json(body),binding_sha256=digest(body),
             expires_at=min(challenge.expires_at,datetime.fromtimestamp(body['expires_at'],timezone.utc)),reserved_by=None)
         s.add(row)
-        return dict(isolation_id=row.isolation_id,status='workspace_isolated',expires_at=row.expires_at.isoformat())
+        return dict(isolation_id=row.isolation_id,status=body['status'],expires_at=row.expires_at.isoformat())
     return _transaction(engine,work)
 
 
@@ -202,7 +209,11 @@ def record_launch_manifest(engine, *, assertion, worker_id=None, transaction_ses
     from personal_agent_dal.storage.machine_models import ProviderAttempt
     def work(s):
         keys={r.kid:load_device_public_key(r.public_key) for r in s.scalars(select(SupervisorIdentity))}
-        body=verify_closed_assertion(assertion,keys=keys,now_epoch=int(utc_now().timestamp()),schema=LaunchManifestAssertion)
+        from personal_agent_dal.machine.execution_manifest import LaunchManifestV11
+        try:
+            body=verify_closed_assertion(assertion,keys=keys,now_epoch=int(utc_now().timestamp()),schema=LaunchManifestV11)
+        except ValueError:
+            body=verify_closed_assertion(assertion,keys=keys,now_epoch=int(utc_now().timestamp()),schema=LaunchManifestAssertion)
         import jwt
         if body['kid'] != jwt.get_unverified_header(assertion)['kid']: raise ValueError('MANIFEST_KEY_MISMATCH')
         _current(s,body)

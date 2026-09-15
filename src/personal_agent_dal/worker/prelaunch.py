@@ -68,6 +68,16 @@ def worker_prelaunch(transport,config,lease,context):
     for pin in mapped.values():
         verify_executable({'executable':pin.executable,
             'executable_sha256':pin.executable_sha256,'version':pin.version})
+    if getattr(config,'schema_version',None) != 'dal.worker-config/2.0':raise SupervisorRefusal('WORKER_CONFIG_V2_REQUIRED')
+    from personal_agent_dal.worker.role_adapter import load_adapter_config, build_plan
+    adapters = load_adapter_config(config.adapter_config_ref)
+    # Pure preparation uses declared task paths; it creates no reservation or
+    # signing material and cannot run a CLI.
+    root = Path(body['root']) / ('workspace-'+context['attempt_id'])
+    plan = build_plan(context, {'workspace':str(root/'work'),'temp':str(root/'tmp'),
+        'git':str(root/'git'),'read_roots':body['read_roots']}, body['runtime_pins'], adapters)
+    from personal_agent_dal.worker.supervisor import require_machine_acceptance
+    require_machine_acceptance()  # Real admission remains before any signing/auth reads.
     # Signing material is read only when the Worker is explicitly run with this
     # configuration, never by inventory or offline tests.
     key_path=Path(body['signing_key_path'])
@@ -85,9 +95,28 @@ def worker_prelaunch(transport,config,lease,context):
         with os.fdopen(fd,'rb',closefd=False) as stream:
             key=load_pem_private_key(stream.read(),password=None)
     finally:os.close(fd)
-    r,sha=prepare(transport,lease,context,supervisor=supervisor,pins=body['runtime_pins'],
-        read_roots=body['read_roots'],identity=body['identity'],key=key,
+    from personal_agent_dal.worker.trusted_runtime import prepare_runtime, execute_runtime
+    prepare_runtime(transport,lease,context,supervisor=supervisor,pins=body['runtime_pins'],
+        read_roots=body['read_roots'],identity=body['identity'],key=key,adapter_config=adapters,
         repository={'source':config.repos[lease.repository_id].local_path,'base_sha':lease.base_sha,'git_pin':body['git_pin']})
-    # The inventory is acknowledged, but the provider dispatch marker is not
-    # consumed merely to report an unmet machine prerequisite.
-    supervisor.launch(r['reservation_id'])
+    return execute_runtime(transport,lease,supervisor=supervisor,attempt=context['attempt_id'],
+        kill_switch=config.kill_switch_path.exists)
+
+
+def worker_reconcile(transport, config):
+    """Public local inventory reconciliation precedes claim, including idle polls."""
+    if getattr(config, 'schema_version', None) != 'dal.worker-config/2.0': return None
+    body = load_supervisor_config(config.supervisor_config_path)
+    from personal_agent_dal.worker.supervisor import current_boot_id
+    from personal_agent_dal.worker.trusted_runtime import reconcile_runtime
+    supervisor = Supervisor(Path(body['root']), boot_id=current_boot_id(), epoch=body['supervisor_epoch'])
+    # Persist a cursor so inventories larger than one page cannot starve.
+    from personal_agent_dal.worker.runtime_inventory import RuntimeInventory
+    RuntimeInventory(supervisor)
+    with supervisor._lock(), supervisor._db() as db:
+        db.execute('CREATE TABLE IF NOT EXISTS runtime_reconcile_cursor (id INTEGER PRIMARY KEY, cursor TEXT NOT NULL)')
+        row = db.execute('SELECT cursor FROM runtime_reconcile_cursor WHERE id=1').fetchone()
+    result = reconcile_runtime(supervisor, transport, after=row[0] if row else '')
+    with supervisor._lock(), supervisor._db() as db:
+        db.execute('INSERT OR REPLACE INTO runtime_reconcile_cursor VALUES (1,?)', (result['next_cursor'] or '',))
+    return result

@@ -94,18 +94,22 @@ def test_config_off_existing_episode_blocks_policy_lease(composed, world, monkey
     with session_factory(world)() as s:
         assert s.scalar(select(func.count()).select_from(Lease)) == before
     from dataclasses import replace
+    from personal_agent_dal.storage.worker_models import WorkerJob
+    # The unrelated original job is an explicitly non-provider synthetic fixture.
+    with session_factory(world)() as s, s.begin():
+        s.get(WorkerJob, 'j').execution_mode = 'legacy_non_provider'
     assert transport.prelaunch_context(replace(lease, job_id='j', lease_epoch=3)) is None
     def forbidden(*args, **kwargs): pytest.fail('disabled claim consumed pending intent')
     monkeypatch.setattr('personal_agent_dal.machine.resume_dispatch.consume_pending', forbidden)
     transport.claim()
 
 
-def test_0017_migrated_schema_matches_models(world):
+def test_0018_migrated_schema_matches_models(world):
     from alembic.migration import MigrationContext
     from alembic.autogenerate import compare_metadata
     from personal_agent_dal.storage.models import Base
     with world.connect() as connection:
-        assert connection.scalar(text('SELECT version_num FROM alembic_version')) == '0017'
+        assert connection.scalar(text('SELECT version_num FROM alembic_version')) == '0018'
         tables = {'resume_lease_issuances', 'resume_revoke_receipts'}
         def include_object(obj, name, type_, reflected, compare_to):
             return (name if type_ == 'table' else obj.table.name) in tables

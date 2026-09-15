@@ -192,6 +192,12 @@ class WorkerTransport(ABC):
         """Submit the terminal result for this fenced lease."""
 
     @abstractmethod
+    def execution_status(self, lease: JobLease) -> dict:
+        raise TransportError('execution_transport_unavailable')
+
+    def submit_execution_result(self, lease: JobLease, request: dict) -> dict:
+        raise TransportError('execution_transport_unavailable')
+
     def prelaunch_context(self, lease: JobLease):
         """Custom fixture transports have no replacement episodes."""
         return None
@@ -276,6 +282,14 @@ class LocalSQLiteAdapter(WorkerTransport):
         from personal_agent_dal.machine.resume_dispatch import dispatch_prelaunch
         return dispatch_prelaunch(self._engine, job_id=lease.job_id,
             worker_id=self._worker_id, job_lease_epoch=lease.lease_epoch, manifest_sha256=manifest_sha256)
+
+    def execution_status(self, lease: JobLease) -> dict:
+        from personal_agent_dal.machine.execution_results import execution_status
+        return execution_status(self._engine, job_id=lease.job_id, worker_id=self._worker_id)
+
+    def submit_execution_result(self, lease: JobLease, request: dict) -> dict:
+        from personal_agent_dal.machine.execution_results import submit_execution_result
+        return submit_execution_result(self._engine, job_id=lease.job_id, worker_id=self._worker_id, request=request)
 
     def mark_running(self, lease: JobLease) -> HeartbeatOutcome:
         started = queue.mark_running(

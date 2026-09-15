@@ -101,6 +101,7 @@ def select_workflow(engine, *, feature_id, actor, body):
             s.add(ExecutionSnapshot(sha256=snapshot_sha, revision_id=p.revision_id, body=canonical_json(snapshot)))
         s.flush()  # Persist the snapshot before its selection.
         row = WorkflowSelection(selection_id=new_id(), request_id=body.request_id, request_sha256=sha,
+            action_id=actions[0].action_id if actions[0].execution_contract_version else None,
             feature_id=feature_id, feature_version=f.version, gate_version=g.version,
             snapshot_sha256=snapshot_sha, actor=actor, created_at=utc_now())
         s.add(row)

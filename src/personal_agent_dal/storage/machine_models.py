@@ -373,6 +373,19 @@ EXECUTION_GATE_MODES: Final[tuple[str, ...]] = (
 )
 
 
+ACTION_EXECUTION_COMPLETE = """(
+ execution_contract_version IS NULL AND execution_role IS NULL AND
+ execution_input_body IS NULL AND completion_mode IS NULL AND completion_policy_revision IS NULL
+) OR (
+ execution_contract_version IS NOT NULL AND execution_contract_version = 'dal.action-execution/1.0'
+ AND kind = 'provider' AND execution_role IS NOT NULL AND execution_role IN ('planner','coder','reviewer')
+ AND execution_input_body IS NOT NULL AND length(execution_input_body) > 0
+ AND completion_mode IS NOT NULL AND (
+ (completion_mode = 'report_only' AND completion_policy_revision IS NULL) OR
+ (completion_mode = 'feature_transition' AND completion_policy_revision IS NOT NULL
+  AND length(completion_policy_revision) > 0 AND stage_id IS NULL)))"""
+
+
 class WorkflowAction(Base):
     """One version-bound action a feature may dispatch exactly once per key.
 
@@ -397,12 +410,18 @@ class WorkflowAction(Base):
     action_key: Mapped[str] = mapped_column(Text, nullable=False)
     input_binding_sha256: Mapped[str] = mapped_column(Text, nullable=False)
     execution_snapshot_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    execution_contract_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execution_role: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execution_input_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completion_mode: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completion_policy_revision: Mapped[str | None] = mapped_column(Text, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     active_attempt_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
 
     __table_args__ = (
+        CheckConstraint(ACTION_EXECUTION_COMPLETE, name="execution_contract_complete"),
         CheckConstraint("length(kind) > 0", name="kind_non_empty"),
         CheckConstraint("length(action_key) > 0", name="action_key_non_empty"),
         CheckConstraint(_hex_of_length("input_binding_sha256", 64, nullable=False),
@@ -452,6 +471,8 @@ class ProviderAttempt(Base):
     )
     feature_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     capability_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    report_receipt_id: Mapped[str | None] = mapped_column(
+        ForeignKey("worker_result_receipts.receipt_id", ondelete="RESTRICT"), nullable=True, unique=True)
     consumption_receipt_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
@@ -1034,6 +1055,7 @@ class WorkflowSelection(Base):
     __tablename__ = "workflow_selections"
 
     selection_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    action_id: Mapped[str | None] = mapped_column(ForeignKey("workflow_actions.action_id", ondelete="RESTRICT"), nullable=True)
     request_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
     feature_id: Mapped[str] = mapped_column(Text, ForeignKey("features.feature_id", ondelete="RESTRICT"), nullable=False)
@@ -1145,3 +1167,56 @@ class ResumeLeaseIssuance(Base):
     job_lease_epoch: Mapped[int] = mapped_column(Integer, primary_key=True)
     lease_id: Mapped[str] = mapped_column(Text, ForeignKey('leases.lease_id', ondelete='RESTRICT'), nullable=False, unique=True)
     __table_args__ = (CheckConstraint('job_lease_epoch >= 1', name='positive_epoch'),)
+
+
+class ExecutionJobBinding(Base):
+    __tablename__ = 'execution_job_bindings'
+    attempt_id: Mapped[str] = mapped_column(ForeignKey('provider_attempts.attempt_id', ondelete='RESTRICT'), primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey('worker_jobs.job_id', ondelete='RESTRICT'), nullable=False, unique=True)
+    selection_id: Mapped[str] = mapped_column(ForeignKey('workflow_selections.selection_id', ondelete='RESTRICT'), nullable=False)
+    snapshot_sha256: Mapped[str] = mapped_column(ForeignKey('execution_snapshots.sha256', ondelete='RESTRICT'), nullable=False)
+    input_binding_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    origin: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        CheckConstraint("origin IN ('initial','replacement')", name='origin'),
+        CheckConstraint(_hex_of_length('input_binding_sha256', 64, nullable=False), name='input_digest'),
+    )
+
+
+class ExecutionStartReceipt(Base):
+    __tablename__ = 'execution_start_receipts'
+    request_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    actor: Mapped[str] = mapped_column(Text, nullable=False)
+    action_id: Mapped[str] = mapped_column(ForeignKey('workflow_actions.action_id', ondelete='RESTRICT'), nullable=False, unique=True)
+    selection_id: Mapped[str] = mapped_column(ForeignKey('workflow_selections.selection_id', ondelete='RESTRICT'), nullable=False)
+    binding_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    attempt_id: Mapped[str] = mapped_column(ForeignKey('provider_attempts.attempt_id', ondelete='RESTRICT'), nullable=False, unique=True)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        CheckConstraint(_hex_of_length('request_sha256', 64, nullable=False), name='request_digest'),
+        CheckConstraint(_hex_of_length('binding_sha256', 64, nullable=False), name='binding_digest'),
+        CheckConstraint('length(actor) > 0 AND expires_at > recorded_at', name='authority'),
+    )
+
+
+class ExecutionPolicyLeaseIssuance(Base):
+    __tablename__ = 'execution_policy_lease_issuances'
+    attempt_id: Mapped[str] = mapped_column(ForeignKey('provider_attempts.attempt_id', ondelete='RESTRICT'), primary_key=True)
+    job_lease_epoch: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lease_id: Mapped[str] = mapped_column(ForeignKey('leases.lease_id', ondelete='RESTRICT'), nullable=False, unique=True)
+    __table_args__ = (CheckConstraint('job_lease_epoch >= 1', name='positive_epoch'),)
+
+
+class ExecutionResultEnvelope(Base):
+    __tablename__ = 'execution_result_envelopes'
+    attempt_id: Mapped[str] = mapped_column(ForeignKey('provider_attempts.attempt_id', ondelete='RESTRICT'), primary_key=True)
+    result_sha256: Mapped[str] = mapped_column(Text, primary_key=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        CheckConstraint(_hex_of_length('result_sha256', 64, nullable=False), name='result_digest'),
+        CheckConstraint('length(body) > 0', name='body_nonempty'),
+    )

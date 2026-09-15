@@ -132,8 +132,15 @@ def _poll(engine, config: WorkerConfig):
     )
 
 
+def _enqueue_synthetic_legacy(engine, **kwargs):
+    job_id = queue.enqueue_job(engine, **kwargs)
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE worker_jobs SET execution_mode='legacy_non_provider' WHERE job_id=:id"), {'id':job_id})
+    return job_id
+
+
 def _enqueue(engine, *, feature_id="feat-1", repository_id="synthetic", now=None) -> str:
-    return queue.enqueue_job(
+    return _enqueue_synthetic_legacy(
         engine,
         feature_id=feature_id,
         repository_id=repository_id,
@@ -911,7 +918,7 @@ def _make_synthetic_repo(
 
 
 def _seed_job_for(engine, base_sha: str, *, repository_id="synthetic") -> str:
-    return queue.enqueue_job(
+    return _enqueue_synthetic_legacy(
         engine,
         feature_id="feat-demo",
         repository_id=repository_id,
@@ -1752,7 +1759,7 @@ def test_coder_prompt_receives_the_task_description(
     with session_factory(engine)() as session, session.begin():
         session.add(feature_row(feature_id="feat-demo", version=1))
     body = "Add a boundary test for the pure-string helper."
-    job_id = queue.enqueue_job(
+    job_id = _enqueue_synthetic_legacy(
         engine,
         feature_id="feat-demo",
         repository_id="synthetic",
@@ -1792,7 +1799,7 @@ def test_coder_prompt_without_the_placeholder_is_unchanged(
     with session_factory(engine)() as session, session.begin():
         session.add(feature_row(feature_id="feat-demo", version=1))
     body = "Add a boundary test for the pure-string helper."
-    queue.enqueue_job(
+    _enqueue_synthetic_legacy(
         engine,
         feature_id="feat-demo",
         repository_id="synthetic",
@@ -1830,7 +1837,7 @@ def test_task_body_digest_mismatch_refuses(
     from personal_agent_dal.storage.engine import session_factory
     with session_factory(engine)() as session, session.begin():
         session.add(feature_row(feature_id="feat-demo", version=1))
-    job_id = queue.enqueue_job(
+    job_id = _enqueue_synthetic_legacy(
         engine,
         feature_id="feat-demo",
         repository_id="synthetic",

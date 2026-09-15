@@ -69,9 +69,11 @@ def _binding(s, feature_id, selection_id, *, evidence_id=None):
     if json.loads(snapshot.body)['input_sha256'] != a.input_binding_sha256:
         raise ValueError('SELECTION_INPUT_STALE')
     old = s.get(ProviderAttempt, a.active_attempt_id)
-    if not old or old.state == 'superseded' or old.result_consumed_at:
+    if not old or old.state == 'superseded' or old.result_consumed_at or old.report_receipt_id:
         raise ValueError('ATTEMPT_INVALID')
     if not f.artifact_sha256: raise ValueError('ARTIFACT_BINDING_MISSING')
+    from personal_agent_dal.machine.execution_results import has_complete_evidence
+    if old.result_digest is not None or has_complete_evidence(s, old.attempt_id): raise ValueError('RESULT_AVAILABLE_NOT_ACCEPTED')
     unknown = old.dispatch_started_at is not None and old.result_consumed_at is None
     isolation_id = isolation_sha = None
     if unknown:
@@ -230,8 +232,13 @@ def resume(engine, *, feature_id, body, now=None, kill_switch=None):
             a.active_attempt_id = None
             a.version += 1
             a.updated_at = timestamp
+            if a.execution_input_body is not None and digest(json.loads(a.execution_input_body)) != binding['input_sha256']:
+                raise ValueError('INPUT_BINDING_INVALID')
             a = WorkflowAction(action_id=new_id(), feature_id=feature_id, stage_id=a.stage_id, kind=a.kind,
                 action_key='resume:'+receipt_id, input_binding_sha256=binding['input_sha256'],
+                execution_contract_version=a.execution_contract_version, execution_role=a.execution_role,
+                execution_input_body=a.execution_input_body, completion_mode=a.completion_mode,
+                completion_policy_revision=a.completion_policy_revision,
                 execution_snapshot_sha256=binding['snapshot_sha256'], version=1,
                 active_attempt_id=new_attempt_id, created_at=timestamp, updated_at=timestamp)
             s.add(a)

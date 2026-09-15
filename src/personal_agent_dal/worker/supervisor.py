@@ -34,11 +34,16 @@ def _identity(path):
     return [st.st_dev,st.st_ino]
 
 
-def _tree(path):
+def _tree(path, *, approved_targets=()):
     for root, dirs, files in os.walk(path, followlinks=False):
         for name in dirs+files:
             st=(Path(root)/name).lstat()
-            if stat.S_ISLNK(st.st_mode) or (stat.S_ISREG(st.st_mode) and st.st_nlink!=1):
+            if stat.S_ISLNK(st.st_mode):
+                target=(Path(root)/name).resolve()
+                if approved_targets and any(target.is_relative_to(Path(p)) for p in approved_targets):
+                    continue
+                raise SupervisorRefusal('LINKED_WRITABLE_CONTENT')
+            if stat.S_ISREG(st.st_mode) and st.st_nlink!=1:
                 raise SupervisorRefusal('LINKED_WRITABLE_CONTENT')
             if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
                 raise SupervisorRefusal('SPECIAL_WRITABLE_CONTENT')
@@ -145,7 +150,11 @@ class Supervisor:
             path=_absolute(raw)
             self._private(path)
             if _identity(path)!=identity:raise SupervisorRefusal('DIRECTORY_SUBSTITUTED')
-        _tree(Path(body['parent']))
+        if {p.name for p in Path(body['parent']).iterdir()} != {'work','tmp','git'}:
+            raise SupervisorRefusal('RESERVATION_PARENT_CONTENT_INVALID')
+        _tree(Path(body['workspace']), approved_targets=(body['workspace'],))
+        _tree(Path(body['temp']), approved_targets=(body['temp'],))
+        _tree(Path(body['git']))
         return body
 
     def validate(self,reservation_id):
@@ -284,29 +293,40 @@ def provision_repository(supervisor,reservation_id,*,source,base_sha,git_pin):
     git=verify_executable(git_pin)
     source=_absolute(source)
     if not (source/'.git').exists():raise SupervisorRefusal('SOURCE_REPOSITORY_REQUIRED')
-    with supervisor._lock(),supervisor._db() as db:
-        body=supervisor._validate(db,reservation_id)
+    from personal_agent_dal.worker.runtime_inventory import RuntimeInventory
+    RuntimeInventory(supervisor)
+    with supervisor._lock():
+        with supervisor._db() as db:
+            body=supervisor._validate(db,reservation_id)
+            prior=db.execute('SELECT body FROM runtime_provisioning WHERE reservation_id=?',(reservation_id,)).fetchone()
         work=Path(body['workspace']);metadata=Path(body['git'])
-        if body.get('repository')=={'base_sha':base_sha,'git_pin':git_pin}:
+        binding={'base_sha':base_sha,'git_pin':git_pin,'source':str(source)}
+        if prior:
+            if json.loads(prior[0])['binding']!=binding:raise SupervisorRefusal('PROVISIONING_CONFLICT')
             return body
         if any(work.iterdir()) or any(metadata.iterdir()):
             raise SupervisorRefusal('PROVISIONING_REPLAY_REQUIRES_REVIEW')
         env={'PATH':str(git.parent)+':/usr/bin:/bin','HOME':body['temp'],'TMPDIR':body['temp'],
              'GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null','GIT_TERMINAL_PROMPT':'0','GIT_NO_REPLACE_OBJECTS':'1'}
-        commands=[['clone','--no-hardlinks','--no-checkout','--separate-git-dir',str(metadata/'repository'),'--',str(source),str(work)],
-                  ['-C',str(work),'checkout','--detach',base_sha]]
-        for args in commands:
+        def run(args, capture=False):
             result=subprocess.run([str(git),'-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null',*args],env=env,
-                stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
-                close_fds=True,timeout=60)
+                stdin=subprocess.DEVNULL,stdout=subprocess.PIPE if capture else subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                close_fds=True,timeout=60,text=True)
             if result.returncode:raise SupervisorRefusal('REPOSITORY_PROVISIONING_FAILED')
+            return result.stdout
+        source_status=run(['-C',str(source),'status','--porcelain=v1','--untracked-files=normal'],True)
+        run(['clone','--no-local','--no-checkout','--separate-git-dir',str(metadata/'repository'),'--',str(source),str(work)])
+        run(['-C',str(work),'remote','remove','origin'])
+        run(['-C',str(work),'checkout','--detach',base_sha])
+        if run(['-C',str(work),'rev-parse','HEAD'],True).strip()!=base_sha:raise SupervisorRefusal('BASE_SHA_MISMATCH')
         if (metadata/'repository'/'objects'/'info'/'alternates').exists():raise SupervisorRefusal('SHARED_GIT_OBJECTS')
-        _tree(work);_tree(metadata)
-        # Git may recreate a target directory. Capture its actual post-provision
-        # identity before signing, while the local resource lock is held.
-        body['identities']={p:_identity(Path(p)) for p in body['identities']}
-        body['repository']={'base_sha':base_sha,'git_pin':git_pin}
-        db.execute('UPDATE reservations SET body=? WHERE id=?',(canonical_json(body),reservation_id))
+        _tree(work,approved_targets=(work,));_tree(metadata)
+        for raw,identity in body['identities'].items():
+            if _identity(Path(raw))!=identity:raise SupervisorRefusal('DIRECTORY_SUBSTITUTED')
+        observation={'binding':binding,'source_status_sha256':hashlib.sha256(source_status.encode()).hexdigest(),
+                     'source_dirty':bool(source_status),'remotes':[],'production_enabled':False}
+        with supervisor._db() as db:
+            db.execute('INSERT INTO runtime_provisioning VALUES (?,?)',(reservation_id,canonical_json(observation)))
         return body
 
 

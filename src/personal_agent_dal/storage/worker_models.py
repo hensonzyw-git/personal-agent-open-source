@@ -70,6 +70,7 @@ class WorkerJob(Base):
     base_sha: Mapped[str] = mapped_column(Text, nullable=False)
     branch_name: Mapped[str] = mapped_column(Text, nullable=False)
     toolchain_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    execution_mode: Mapped[str] = mapped_column(Text, nullable=False, server_default='legacy_unclassified')
     state: Mapped[str] = mapped_column(Text, nullable=False)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
     lease_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -90,6 +91,7 @@ class WorkerJob(Base):
     intake_key: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
+        CheckConstraint("execution_mode IN ('provider_v1','legacy_non_provider','legacy_unclassified')", name='execution_mode'),
         CheckConstraint(_in_set("state", WORKER_JOB_STATES), name="state"),
         CheckConstraint(
             _hex_of_length("base_sha", 40, nullable=False), name="base_sha_hex"

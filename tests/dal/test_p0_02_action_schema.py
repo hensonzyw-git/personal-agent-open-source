@@ -21,13 +21,15 @@ def test_p0_02_action_models_have_closed_authority_columns() -> None:
         "action_id", "feature_id", "stage_id", "kind", "action_key",
         "input_binding_sha256", "execution_snapshot_sha256", "version",
         "active_attempt_id", "created_at", "updated_at",
+        "execution_contract_version", "execution_role", "execution_input_body",
+        "completion_mode", "completion_policy_revision",
     }
     assert set(ProviderAttempt.__table__.columns.keys()) == {
         "attempt_id", "action_id", "attempt_no", "state", "version",
         "owner_id", "fence", "dispatch_started_at", "job_id", "lease_id",
         "job_lease_epoch", "policy_lease_epoch", "approval_epoch",
         "result_digest", "result_recorded_at", "result_consumed_at", "created_at",
-        "updated_at", "feature_version", "capability_epoch", "consumption_receipt_id",
+        "updated_at", "feature_version", "capability_epoch", "consumption_receipt_id", "report_receipt_id",
     }
     assert set(ExecutionGate.__table__.columns.keys()) == {
         "feature_id", "version", "mode", "approval_epoch", "created_at", "updated_at",

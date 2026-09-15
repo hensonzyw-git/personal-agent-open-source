@@ -119,6 +119,11 @@ def run_poll_once(
     own success as the job's outcome.
     """
     now = now or utc_now()
+    try:
+        from personal_agent_dal.worker.prelaunch import worker_reconcile
+        worker_reconcile(transport, config)
+    except Exception:
+        return PollOutcome(claimed=False, job_id=None, state=None, error='RUNTIME_RECONCILIATION_FAILED', reclaimed=())
     if config.kill_switch_path.exists():
         return PollOutcome(
             claimed=False,
@@ -153,8 +158,10 @@ def run_poll_once(
         context = transport.prelaunch_context(lease)
         if context is not None:
             from personal_agent_dal.worker.prelaunch import worker_prelaunch
-            worker_prelaunch(transport, config, lease, context)
-            raise ValueError('PRELAUNCH_RETURNED_WITHOUT_PERMISSION')
+            result = worker_prelaunch(transport, config, lease, context)
+            return PollOutcome(claimed=True, job_id=lease.job_id,
+                state=result['job_state'] if result['accepted'] else None,
+                error=None if result['accepted'] else result['code'], reclaimed=reclaimed)
     except Exception as error:
         from personal_agent_dal.worker.supervisor import SupervisorRefusal
         return PollOutcome(claimed=True, job_id=lease.job_id, state=None,

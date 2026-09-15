@@ -25,7 +25,7 @@ from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import utc_now
 
 from personal_agent_dal.storage.engine import session_factory
-from personal_agent_dal.storage.machine_models import ProviderAttempt
+from personal_agent_dal.storage.machine_models import ProviderAttempt, ExecutionJobBinding
 from personal_agent_dal.storage.worker_models import (
     FeatureIntakeRequest,
     WorkerJob,
@@ -96,6 +96,7 @@ class JobRecord:
     last_error: str | None
     created_at: datetime
     updated_at: datetime
+    execution_mode: str = "legacy_unclassified"
     task_description: str | None = None
     task_description_sha256: str | None = None
 
@@ -280,6 +281,7 @@ def get_job(engine: Engine, *, job_id: str) -> JobRecord | None:
             last_error=row.last_error,
             created_at=row.created_at,
             updated_at=row.updated_at,
+            execution_mode=row.execution_mode,
             task_description=body,
             task_description_sha256=body_sha,
         )
@@ -313,10 +315,16 @@ def claim_job(
             ProviderAttempt.job_id == table.c.job_id,
             ProviderAttempt.dispatch_started_at.is_not(None),
         ).correlate(table).exists()
+        binding_exists = select(ExecutionJobBinding.attempt_id).join(
+            ProviderAttempt, ProviderAttempt.attempt_id == ExecutionJobBinding.attempt_id
+        ).where(ExecutionJobBinding.job_id == table.c.job_id,
+                ProviderAttempt.job_id == table.c.job_id).correlate(table).exists()
+        provider_bound = (table.c.execution_mode != 'provider_v1') | binding_exists
         candidate = session.execute(
             select(table.c.job_id)
             .where(table.c.state == "pending")
             .where(provider_not_dispatched)
+            .where(provider_bound)
             .order_by(table.c.created_at)
             .limit(1)
         ).scalar_one_or_none()
@@ -327,6 +335,7 @@ def claim_job(
             .where(table.c.job_id == candidate)
             .where(table.c.state == "pending")
             .where(provider_not_dispatched)
+            .where(provider_bound)
             .values(
                 state="leased",
                 lease_epoch=table.c.lease_epoch + 1,
@@ -394,6 +403,7 @@ def heartbeat(
             .where(table.c.state.in_(ACTIVE_JOB_STATES))
             .where(table.c.worker_id == worker_id)
             .where(table.c.lease_epoch == lease_epoch)
+            .where(table.c.lease_expires_at > now)
             .values(heartbeat_at=now, lease_expires_at=expires_at, updated_at=now)
         )
         return result.rowcount == 1
@@ -420,16 +430,43 @@ def reclaim_expired(
         stale = session.execute(
             select(table.c.job_id, table.c.attempt_count)
             .where(table.c.state.in_(ACTIVE_JOB_STATES))
-            .where(table.c.lease_expires_at < now)
+            .where(table.c.lease_expires_at <= now)
         ).all()
         if not stale:
             return []
-        requeue_ids = [
-            job_id for job_id, attempts in stale if attempts + 1 < max_attempts
-        ]
-        expire_ids = [
-            job_id for job_id, attempts in stale if attempts + 1 >= max_attempts
-        ]
+        from personal_agent_dal.storage.machine_models import (
+            ProviderAttempt, WorkflowAction, ExecutionGate, Lease, ExecutionResultEnvelope,
+        )
+        from personal_agent_dal.storage.transport_models import SupervisorLaunchManifest
+        from personal_agent_dal.machine.action_lifecycle import _stop_gate
+        blocked = set()
+        for job_id, _ in stale:
+            attempts = list(session.scalars(select(ProviderAttempt).where(ProviderAttempt.job_id == job_id)))
+            for attempt in attempts:
+                manifest = session.get(SupervisorLaunchManifest, attempt.attempt_id)
+                if attempt.dispatch_started_at is None and manifest is None:
+                    continue
+                blocked.add(job_id)
+                if attempt.result_consumed_at or attempt.report_receipt_id:
+                    continue
+                action = session.get(WorkflowAction, attempt.action_id)
+                if not action or action.active_attempt_id != attempt.attempt_id:
+                    continue
+                from personal_agent_dal.machine.execution_results import has_complete_evidence
+                known = attempt.result_digest is not None or has_complete_evidence(session, attempt.attempt_id)
+                reason = ('result_available_not_accepted' if known else
+                          'execution_effects_unknown' if attempt.dispatch_started_at is not None else 'preparation_lease_expired')
+                if attempt.dispatch_started_at is not None and not known and attempt.state != 'unknown':
+                    attempt.state = 'unknown'
+                    attempt.version += 1
+                    attempt.updated_at = now
+                gate = session.get(ExecutionGate, action.feature_id)
+                if gate and gate.mode == 'open' and gate.approval_epoch == attempt.approval_epoch:
+                    _stop_gate(session, action.feature_id, gate.version, 'paused', now)
+                session.execute(update(Lease).where(Lease.job_id == job_id, Lease.revoked_at.is_(None)).values(revoked_at=now))
+                session.execute(update(table).where(table.c.job_id == job_id).values(last_error=reason))
+        requeue_ids = [job_id for job_id, attempts in stale if job_id not in blocked and attempts + 1 < max_attempts]
+        expire_ids = [job_id for job_id, attempts in stale if job_id in blocked or attempts + 1 >= max_attempts]
         clear_values = {
             "worker_id": None,
             "lease_expires_at": None,
@@ -472,6 +509,7 @@ def finish_job(
     result_sha256: str | None = None,
     last_error: str | None = None,
     now: datetime | None = None,
+    transaction_session: Session | None = None,
 ) -> bool:
     """Atomically record a result and terminal state for this fenced lease.
 
@@ -486,6 +524,9 @@ def finish_job(
     sessions = session_factory(engine)
 
     def _body(session: Session) -> bool:
+        if transaction_session is None and session.scalar(select(WorkerJob.execution_mode).where(
+                WorkerJob.job_id == job_id)) == 'provider_v1':
+            raise ValueError('PROVIDER_EXECUTION_RESULT_REQUIRED')
         table = _jobs_table()
         receipts = _receipts_table()
         row = session.execute(
@@ -544,6 +585,8 @@ def finish_job(
         )
         return result.rowcount == 1
 
+    if transaction_session is not None:
+        return _body(transaction_session)
     with sessions() as session:
         return run_write_transaction(session, lambda: _body(session))
 
@@ -623,11 +666,16 @@ class ResultConflictError(RuntimeError):
 
 
 def enqueue_job_in_session(session, *, feature_id, repository_id, base_sha,
-                           branch_name, toolchain_ref, now):
+                           branch_name, toolchain_ref, now, execution_mode="legacy_unclassified"):
     """Replacement producer: no intake key, no commit, caller owns atomicity."""
     job_id = new_id()
     session.execute(insert(WorkerJob).values(job_id=job_id, feature_id=feature_id,
         repository_id=repository_id, base_sha=base_sha, branch_name=branch_name,
-        toolchain_ref=toolchain_ref, state='pending', attempt_count=0, lease_epoch=0,
+        toolchain_ref=toolchain_ref, execution_mode=execution_mode, state='pending', attempt_count=0, lease_epoch=0,
         created_at=now, updated_at=now))
     return job_id
+
+
+def _finish_job_in_session(session, **kwargs):
+    """Compose a Worker receipt with lifecycle writes without an inner commit."""
+    return finish_job(session.get_bind(), transaction_session=session, **kwargs)

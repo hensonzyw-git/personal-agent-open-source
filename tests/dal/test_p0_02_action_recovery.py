@@ -267,8 +267,10 @@ def test_recovery_schema_downgrade_preserves_unknown_attempt(world):
     recover(world, a)
     db.downgrade(world, '0012')
     assert 'provider_recovery_receipts' not in inspect(world).get_table_names()
-    with session_factory(world)() as s:
-        assert s.get(ProviderAttempt, a.attempt_id).state == 'unknown'
+    # Query only columns present in the deliberately downgraded schema.
+    with world.connect() as c:
+        assert c.exec_driver_sql('SELECT state FROM provider_attempts WHERE attempt_id=?',
+                                 (a.attempt_id,)).scalar_one() == 'unknown'
     db.upgrade(world)
     with world.connect() as c:
         assert c.exec_driver_sql('PRAGMA foreign_key_check').fetchall() == []

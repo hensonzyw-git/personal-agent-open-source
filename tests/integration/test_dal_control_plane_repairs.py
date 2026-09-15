@@ -12,7 +12,7 @@ from tests.dal.test_p0_02_review_regressions import world
 
 DAL_FKS = {
     'execution_snapshots': {'revision_id': 'workflow_profile_revisions.revision_id'},
-    'workflow_selections': {'feature_id': 'features.feature_id', 'snapshot_sha256': 'execution_snapshots.sha256'},
+    'workflow_selections': {'action_id': 'workflow_actions.action_id', 'feature_id': 'features.feature_id', 'snapshot_sha256': 'execution_snapshots.sha256'},
     'resume_approval_bindings': {'approval_id': 'approvals.approval_id', 'proposal_id': 'resume_proposals.proposal_id'},
     'replacement_budgets': {'old_attempt_id': 'provider_attempts.attempt_id', 'new_attempt_id': 'provider_attempts.attempt_id',
         'old_action_id': 'workflow_actions.action_id', 'new_action_id': 'workflow_actions.action_id',
@@ -69,6 +69,13 @@ def test_dal_fk_graph(world):
     claims['decision'] = 'approve_once_accept_duplicate_cost'
     approved = approve(world,key,claims)
     resume(world,feature_id='f',body=ResumeRequest(request_id='repair',approval_id=approved['approval_id']))
+    # Populate the explicit action edge on this historical synthetic selection,
+    # so the exact graph also exercises RESTRICT on deletion of its parent.
+    with world.begin() as connection:
+        connection.execute(text(
+            'UPDATE workflow_selections SET action_id = '
+            '(SELECT action_id FROM workflow_actions ORDER BY action_id LIMIT 1) '
+            'WHERE action_id IS NULL'))
     check_graph(world, Base.metadata, DAL_FKS)
 
 
