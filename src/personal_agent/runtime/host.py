@@ -181,7 +181,7 @@ class DurableRunHost:
         if run['read_used']+reads>3 or run['web_used']+web>2:raise RunStateError('batch_budget')
         if any(c.args.get('response_mode') == 'card' for c in calls) and len(calls) != 1:
             raise RunStateError('card_requires_exclusive_read')
-        self.batch_size = len(calls)
+        self.accepted_batch_ids = frozenset(c.call_id for c in calls)
         metadata=[c.args.get('task') for c in calls if 'task' in c.args]
         if metadata:
             if any(canonical(m)!=canonical(metadata[0]) for m in metadata):raise RunStateError('mixed_task_batch')
@@ -211,7 +211,7 @@ class DurableRunHost:
                     req = m['query_requirement']
                     with self.deps.session_factory() as session:
                         self.repo.validate_sources(session, self.payload.conversation_id, req['source_refs'])
-                    if not previous and req['source_refs'] != [self.anchor.event_id]:
+                    if not (previous or {}).get('query_requirement') and req['source_refs'] != [self.anchor.event_id]:
                         raise RunStateError('trip_requirement_current_source_required')
                     if req['result_kind'] == 'trip_total' and not req.get('trip_tag'):
                         raise RunStateError('trip_tag_required')
@@ -270,7 +270,10 @@ class DurableRunHost:
             if old is None or self.anchor.event_id not in args['source_refs']:raise RunStateError('control_current_source_required')
             with self.deps.session_factory() as s:self.repo.validate_sources(s,self.payload.conversation_id,args['source_refs'])
             m=args.get('replacement')
-            if args['action']=='amend':self.repo.validate_metadata(m,current_source=self.anchor.event_id,timeline=self.payload.conversation_id,old=old['constraints'])
+            if args['action']=='amend':
+                self.repo.validate_metadata(m,current_source=self.anchor.event_id,timeline=self.payload.conversation_id,old=old['constraints'])
+                from personal_agent.runtime.trip_queries import amend_requirement
+                m = amend_requirement(m, text=self.payload.text, current_source=self.anchor.event_id, enabled=self.trip_enabled)
             if args['action']=='amend':
                 r=self.repo.amend_and_bind(self.lease,task_id=old['task_ref'],expected_revision=old['revision'],control_id=call.call_id,metadata=m,now_ms=self.now())
             else:
@@ -380,7 +383,7 @@ class DurableRunHost:
 
     def _read_result(self, call, result):
         from personal_agent.runtime.trip_queries import matches_requirement, check_completion
-        trip_summary = (matches_requirement(result, self.pending_metadata) and getattr(self, 'batch_size', 1) == 1
+        trip_summary = (matches_requirement(result, self.pending_metadata) and getattr(self, 'accepted_batch_ids', frozenset()) == frozenset({call.call_id})
                         and not (self.pending_metadata or {}).get('comparisons')
                         and call.args.get('response_mode') != 'analyze')
         if not trip_summary and call.args.get('response_mode', 'analyze') != 'card':
@@ -400,7 +403,8 @@ class DurableRunHost:
         if partial:text += ' 当前结果仅覆盖部分数据。'
         answer = {'version':2,'kind':'query','task_status':'waiting' if partial else 'completed','coverage':'partial' if partial else 'complete',
                   'text':text,'evidence':list(self.evidence.evidence.values())}
-        check_completion(answer, self.pending_metadata)
+        try:check_completion(answer, self.pending_metadata)
+        except AnswerError as exc:raise RunStateError(str(exc)) from None
         self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=self.event_writer,metadata=self.pending_metadata,close_source=not partial)
         return ToolResult(answer,stop=True)
 
@@ -477,7 +481,8 @@ class DurableRunHost:
                 answer['text'] = '分页查询参数冲突：续页只能携带游标和视图，不能重复筛选条件；已取得的结果保留。'
                 answer['failure']['retryable'] = False
             elif code == 'QUERY_CAPACITY_EXCEEDED':
-                answer['text'] = '查询结果超过处理容量，请缩小查询范围；未返回不完整统计。'
+                from personal_agent_core.errors import ERROR_MESSAGES, ErrorCode
+                answer['text'] = ERROR_MESSAGES[ErrorCode.QUERY_CAPACITY_EXCEEDED] + '。'
                 answer['failure']['retryable'] = False
             elif code == 'INVALID_ARGUMENT':
                 answer['text'] = '查询参数不符合工具合同；已取得的结果保留。'

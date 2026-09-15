@@ -100,3 +100,78 @@ def test_multi_read_batch_keeps_all_results_before_finish(engine,token_ring,keyr
         assert len(spy.calls)==2,r
         assert len(calls)==2
         assert len(r['result_envelope']['evidence'])==2
+
+
+@pytest.mark.parametrize('change', ['ordinary', 'trip', 'stale_source', 'missing'])
+def test_amend_replaces_trip_requirement_with_current_source(engine,token_ring,keyring,change):
+    from uuid import uuid4
+    original_source=[]
+    def initial(c,m):
+        original_source.extend(m['source_refs'])
+        m['query_requirement']={'domain':'finance','result_kind':'trip_total','trip_tag':'东京01','date_range':None,'source_refs':m['source_refs']}
+        return [fc('finance_query_expenses','first',arguments={'view':'total','trip_tag':'东京01'},task=m)]
+    def amend(c,m):
+        target=c['candidates'][0]['task_ref']
+        if change in {'trip','stale_source'}:
+            m['query_requirement']={'domain':'finance','result_kind':'trip_total','trip_tag':'东京02','date_range':None,
+                                    'source_refs':original_source if change=='stale_source' else m['source_refs']}
+        return [fc('agent_task_control','amend',task_ref=target,action='amend',source_refs=m['source_refs'],replacement=m)]
+    def query(c,m):
+        m.update(c['bound_task'])
+        if change=='ordinary':
+            assert 'query_requirement' not in m
+            args={'view':'total','categories':['餐饮']}
+        else:
+            assert m['query_requirement']['trip_tag']=='东京02'
+            args={'view':'total','trip_tag':'东京02'}
+        return [fc('finance_query_expenses','second',arguments=args,task=m,response_mode='card')]
+    _,_,deps=client_for(engine,token_ring,keyring,[initial,amend,query],tools=TOOLS,dispatcher=QueryDispatcher())
+    with TestClient(build_app(replace(deps,trip_query_enabled=True))) as client:
+        headers={**_auth(token_ring),'X-Client-Wire-Version':'5'}
+        first=client.post('/v1/chat/messages',headers=headers,json={'conversation_id':'c1','text':'东京01总共花了多少钱'}).json()
+        text='改成按场次统计旅行支出' if change=='missing' else '改成东京02的总额' if change!='ordinary' else '改成餐饮总额'
+        result=client.post('/v1/chat/messages',headers={**headers,'Idempotency-Key':str(uuid4())},json={'conversation_id':'c1','text':text}).json()
+        assert 'result_envelope' in result,result
+        if change in {'missing','stale_source'}:
+            assert result['state']=='failed_safe',result
+            assert result['result_envelope']['failure']['code'] in {'trip_requirement_missing','trip_requirement_current_source_required'},result
+        else:
+            assert result['result_envelope']['kind']=='query',result
+            filters=result['result_envelope']['evidence'][-1]['query_result']['filters_applied']
+            assert filters.get('trip_tag')==('东京02' if change=='trip' else None)
+
+
+def test_fast_summary_family_mismatch_is_persisted_failed_safe(engine,token_ring,keyring):
+    def query(c,m):
+        m['query_requirement']={'domain':'finance','result_kind':'trip_total','trip_tag':'东京01','date_range':None,'source_refs':m['source_refs']}
+        m['constraints']=[{'key':'is_family_expense','value':True,'source_refs':m['source_refs']}]
+        return [fc('finance_query_expenses','q',arguments={'view':'total','trip_tag':'东京01','is_family_expense':'false'},task=m)]
+    _,_,deps=client_for(engine,token_ring,keyring,[query],tools=TOOLS,dispatcher=QueryDispatcher())
+    with TestClient(build_app(replace(deps,trip_query_enabled=True))) as client:
+        headers={**_auth(token_ring),'X-Client-Wire-Version':'5'}
+        r=client.post('/v1/chat/messages',headers=headers,json={'conversation_id':'c1','text':'东京01家庭支出总额'}).json()
+        assert r['state']=='failed_safe',r
+        assert r['result_envelope']['failure']['code']=='evidence_scope_mismatch',r
+        assert client.get('/v1/operations/'+r['operation_id'],headers=headers).json()['result_envelope']['failure']['code']=='evidence_scope_mismatch'
+
+
+def test_cached_result_without_current_batch_cannot_auto_finish():
+    from types import SimpleNamespace
+    from personal_agent.runtime.host import DurableRunHost
+    req={'result_kind':'trip_total','trip_tag':'东京01','date_range':None}
+    card={'tool':'finance.query_expenses','query_result':{'view':'total','filters_applied':{'trip_tag':'东京01','date_range':None},'coverage':{'scan_complete':True}}}
+    host=SimpleNamespace(pending_metadata={'query_requirement':req},accepted_batch_ids=frozenset({'previous'}))
+    result=DurableRunHost._read_result(host,SimpleNamespace(call_id='new',args={}),card)
+    assert not result.stop
+
+
+def test_explicit_wrong_view_card_preserves_trip_failure_code(engine,token_ring,keyring):
+    def query(c,m):
+        m['query_requirement']={'domain':'finance','result_kind':'trip_breakdown','trip_tag':None,'date_range':DATES,'source_refs':m['source_refs']}
+        return [fc('finance_query_expenses','q',arguments={'view':'by_category','date_range':DATES},task=m,response_mode='card')]
+    _,_,deps=client_for(engine,token_ring,keyring,[query],tools=TOOLS,dispatcher=QueryDispatcher())
+    with TestClient(build_app(replace(deps,trip_query_enabled=True))) as client:
+        r=client.post('/v1/chat/messages',headers={**_auth(token_ring),'X-Client-Wire-Version':'5'},json={'conversation_id':'c1','text':TEXT}).json()
+        assert r['state']=='failed_safe',r
+        assert r['result_envelope']['failure']['code']=='trip_summary_required',r
+        assert r['result_envelope']['evidence'],r

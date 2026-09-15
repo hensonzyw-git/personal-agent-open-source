@@ -203,7 +203,7 @@ def compatible_answer(answer, client_wire_version):
     result['evidence'] = [e for e in result.get('evidence', []) if e not in cards]
     text = result.get('text', '') + '\n' + '\n'.join(texts)
     if len(text) > 8000:
-        result.update(kind='limitation', coverage='partial', task_status='partial', text='请升级 App 查看完整旅行场次汇总。')
+        result.update(kind='limitation', coverage='partial', task_status='partial', text='\n'.join(t.split('\n', 1)[0] for t in texts)[:7000] + '\n请升级 App 查看完整旅行场次汇总。')
     else:
         result['text'] = text
     return result

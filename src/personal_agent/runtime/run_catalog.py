@@ -1,4 +1,5 @@
 """Model-facing wrappers around one governed business catalog."""
+from copy import deepcopy
 from personal_agent.runtime.run_tools import RunToolSpec
 from personal_agent_core.tool_ir import QUERY_EXPENSES
 
@@ -10,17 +11,19 @@ def obj(properties, required=None):
 STR={'type':'string','maxLength':8000}
 REFS={'type':'array','items':{'type':'string'},'minItems':1,'maxItems':32}
 CONSTRAINT=obj({'key':STR,'value':{},'source_refs':REFS})
-FILTERS=obj({k:v for k,v in QUERY_EXPENSES.model_input_schema['properties'].items() if k not in {'view','cursor'}}, [])
+FILTERS=obj({k:deepcopy(v) for k,v in QUERY_EXPENSES.model_input_schema['properties'].items() if k not in {'view','cursor'}}, [])
 # A category_total metric also names the selected by_category bucket.
-FILTERS['properties']['category'] = QUERY_EXPENSES.model_input_schema['properties']['categories']['items']
+FILTERS['properties']['category'] = deepcopy(QUERY_EXPENSES.model_input_schema['properties']['categories']['items'])
 TASK_VALIDATION=obj({'task_ref':{'type':'string'},'goal':STR,'source_refs':REFS,
     'constraints':{'type':'array','items':CONSTRAINT,'maxItems':32},
     'comparisons':{'type':'array','maxItems':8,'items':obj({'comparison_ref':STR,'metric_kind':{'enum':['total','count','category_total']},'current':FILTERS,'baseline':FILTERS,'source_refs':REFS}, ['metric_kind','current','baseline','source_refs'])}},
     ['goal','source_refs','constraints'])
+# Persisted metadata must remain readable with the feature disabled; Host owns
+# capability admission. No schema object is borrowed mutably from the tool IR.
 TASK_VALIDATION['properties']['query_requirement'] = obj({
     'domain': {'const':'finance'}, 'result_kind': {'enum':['trip_breakdown','trip_total']},
-    'trip_tag': QUERY_EXPENSES.model_input_schema['properties']['trip_tag'],
-    'date_range': QUERY_EXPENSES.model_input_schema['properties']['date_range'], 'source_refs':REFS})
+    'trip_tag': deepcopy(QUERY_EXPENSES.model_input_schema['properties']['trip_tag']),
+    'date_range': deepcopy(QUERY_EXPENSES.model_input_schema['properties']['date_range']), 'source_refs':REFS})
 # The shared metadata shape is described once in the core instruction. Host
 # validates TASK_VALIDATION before admitting the whole batch; provider-side
 # duplication of it on every tool wastes the conservative byte budget.

@@ -84,6 +84,8 @@ def uses_trip_query(arguments):
         try:
             raw = cursor.split('.')[0]
             return json.loads(base64.urlsafe_b64decode(raw + '=' * (-len(raw) % 4))).get('v') == 3
+        # binascii.Error is a ValueError subclass; malformed base64 is only
+        # an undecidable admission hint, and source validation still rejects it.
         except (ValueError, TypeError, AttributeError, UnicodeError):
             pass
     return False

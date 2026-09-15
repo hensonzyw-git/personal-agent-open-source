@@ -298,7 +298,7 @@ def summarise_query_projection(projection: FinanceQueryProjection) -> str:
     Never model prose: it is derived solely from the validated projection, so
     the compatibility ``answer`` and the structured card can never disagree.
     """
-    if projection.coverage is not None:
+    if projection.coverage is not None and (projection.view == 'by_trip' or projection.filters_applied.get('trip_tag') is not None):
         c = projection.coverage
         years = '、'.join(str(y) for y in c['source_years'])
         scope = '净个人支出' if c['scope_coverage'] == 'complete' else f'已接入 {years} 账本内的净个人支出小计（覆盖有限）'

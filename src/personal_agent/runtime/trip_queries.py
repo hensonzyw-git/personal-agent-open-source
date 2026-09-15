@@ -4,7 +4,7 @@ import re
 from personal_agent.runtime.answers import AnswerError, canonical
 from personal_agent.runtime.run_store import RunStateError
 
-TRIP_PROMPT = '''旅行场次：按目的地/场次统计用finance.query_expenses view=by_trip；单场次总额用total+精确trip_tag，明细用records+trip_tag。场次编号及内部空格不合并，无日期且场次明确不追问、不默认今年。任务必须带query_requirement={domain:finance,result_kind:trip_breakdown或trip_total,trip_tag:标签或null,date_range:范围或null,source_refs:用户来源}。constraints保留相同筛选。每次调用/finish保留要求；不能用分类或明细结束聚合。简单汇总省略response_mode或用card，由Host直接返回；有后续分析时显式analyze；coverage有限时只称小计。'''
+TRIP_PROMPT = '''旅行场次：按目的地/场次统计用finance.query_expenses view=by_trip；单场次总额用total+精确trip_tag，明细用records+trip_tag。场次编号及内部空格不合并，无日期且场次明确不追问、不默认今年。任务必须带query_requirement={domain:finance,result_kind:trip_breakdown或trip_total,trip_tag:标签或null,date_range:范围或null,source_refs:用户来源}。constraints保留相同筛选。每次调用/finish保留要求；amend的replacement完整替换旧要求，新的query_requirement必须引用当前用户来源，改为非旅行查询时移除旧要求；不能用分类或明细结束聚合。简单汇总省略response_mode或用card，由Host直接返回；有后续分析时显式analyze；coverage有限时只称小计。'''
 
 
 def explicit_breakdown(text):
@@ -53,3 +53,17 @@ def check_completion(answer, metadata):
         validate_evidence_scope(card, metadata)
     if answer.get('coverage') == 'complete' and any(c['query_result']['coverage']['scope_coverage'] != 'complete' for c in cards):
         raise AnswerError('trip_coverage_incomplete')
+
+
+def amend_requirement(metadata, *, text, current_source, enabled):
+    """An explicit amendment replaces, rather than inherits, the old contract."""
+    result = freeze_requirement(metadata, None, text) if enabled else copy.deepcopy(metadata)
+    req = result.get('query_requirement')
+    if req:
+        if not enabled:
+            raise RunStateError('client_upgrade_required')
+        if req['source_refs'] != [current_source]:
+            raise RunStateError('trip_requirement_current_source_required')
+        if req['result_kind'] == 'trip_total' and not req.get('trip_tag'):
+            raise RunStateError('trip_tag_required')
+    return result

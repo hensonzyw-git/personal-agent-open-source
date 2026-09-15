@@ -108,3 +108,59 @@ def test_signed_cursor_with_non_object_filters_is_rejected():
                       for part in (raw, hmac.new(secret, raw, hashlib.sha256).digest()))
     with pytest.raises(AppError):
         _decode_cursor(cursor, secret=secret, now=datetime.now(timezone.utc))
+
+
+@pytest.mark.parametrize('tag', [None, '东京02'])
+def test_v2_cursor_rejects_trip_tag_key_even_when_null(tag):
+    import base64, hashlib, hmac, json
+    from test_query_expenses import CURSOR_SECRET, NOW
+    from personal_data_mcp.finance.query_expenses import _decode_cursor
+    payload={'v':2,'view':'records','filters':{'trip_tag':tag},'offset':0,
+             'exp':int(NOW.timestamp())+600,'config_checksum':'ab'*32,'snapshot_checksum':'cd'*32}
+    raw=json.dumps(payload).encode()
+    cursor='.'.join(base64.urlsafe_b64encode(x).decode().rstrip('=') for x in
+                    (raw,hmac.new(CURSOR_SECRET,raw,hashlib.sha256).digest()))
+    with pytest.raises(AppError):_decode_cursor(cursor,secret=CURSOR_SECRET,now=NOW)
+
+
+@pytest.mark.parametrize('cursor', ['a!!!.sig', 'a.sig', 'W10.sig', 'bnVsbA.sig', '////.sig'])
+def test_cursor_admission_hint_never_crashes_on_malformed_payload(cursor):
+    from personal_agent_core.trip_query import uses_trip_query
+    assert uses_trip_query({'view':'records','cursor':cursor}) is False
+
+
+def test_actual_writer_suffix_is_recognised_without_duplicate_prefix():
+    from types import SimpleNamespace
+    from personal_data_mcp.finance.money_resolution import with_currency_suffix
+    from personal_data_mcp.finance.trip_query_tags import query_tag
+    name=with_currency_suffix('机票 #东京01',SimpleNamespace(currency_suffix='（10,000 JPY）'))
+    assert name=='机票 #东京01（10,000 JPY）'
+    assert query_tag(name)=='东京01'
+
+
+def test_trip_metadata_schema_does_not_alias_tool_ir():
+    from personal_agent.runtime.run_catalog import TASK_VALIDATION
+    from personal_agent_core.tool_ir import QUERY_EXPENSES
+    import copy
+    old=copy.deepcopy(QUERY_EXPENSES.model_input_schema)
+    schema=TASK_VALIDATION['properties']['query_requirement']['properties']['trip_tag']
+    original=schema.get('description')
+    try:
+        schema['description']='synthetic mutation'
+        assert QUERY_EXPENSES.model_input_schema==old
+    finally:
+        if original is None:schema.pop('description',None)
+        else:schema['description']=original
+
+
+def test_old_client_large_trip_summary_keeps_total_and_scope():
+    import json
+    from pathlib import Path
+    from personal_agent.api.runtime_v2 import compatible_answer
+    q=json.loads((Path(__file__).parents[1]/'fixtures/trip_query.synthetic.json').read_text())
+    answer={'version':2,'kind':'query','task_status':'completed','coverage':'complete','text':'x'*8000,
+            'evidence':[{'tool':'finance.query_expenses','query_result':q}]}
+    result=compatible_answer(answer,4)
+    assert '285.00' in result['text'] and '升级' in result['text']
+    assert len(result['text'])<=8000 and result['evidence']==[]
+    assert answer['evidence']

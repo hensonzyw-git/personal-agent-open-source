@@ -298,7 +298,7 @@ def _decode_cursor(
             or payload.get("v") not in (CURSOR_VERSION, 3)
             or (payload.get("v") == 3 and payload.get("parser_version") != PARSER_VERSION)
             or not isinstance(payload.get("filters"), dict)
-            or (payload.get("v") == 2 and payload["filters"].get("trip_tag") is not None)
+            or (payload.get("v") == 2 and "trip_tag" in payload["filters"])
             or payload.get("view") != "records"
             or not isinstance(payload.get("filters"), dict)
             or type(payload.get("offset")) is not int
@@ -562,7 +562,7 @@ async def query_expenses(
         raise _invalid("query arguments must be an object")
     view = arguments.get("view")
     if view not in {"total", "by_category", "records", "by_trip"}:
-        raise _invalid("view must be total, by_category or records")
+        raise _invalid("view must be total, by_category, records or by_trip")
 
     started_at = to_utc(now())
     cursor = arguments.get("cursor")
