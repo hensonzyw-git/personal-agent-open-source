@@ -1,12 +1,100 @@
 """Offline CLI refusal tests; no mini command or sandbox process is executed."""
 import importlib.util
+from itertools import count
 from pathlib import Path
+from types import SimpleNamespace
 import json
+import time
 import pytest
 
 spec=importlib.util.spec_from_file_location('dal_mini_preflight',Path(__file__).parents[2]/'scripts/dal_mini_preflight.py')
 preflight=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preflight)
+
+
+CANARY_KEYS = (
+    'replacement_work', 'replacement_git', 'replacement_temp', 'replacement_parent',
+    'supervisor_parent', 'signing', 'environment', 'descriptor', 'own_workspace',
+)
+
+
+@pytest.fixture
+def isolation_stub(tmp_path, monkeypatch):
+    config = dict(boot_id='boot', supervisor_epoch=1, read_roots=[], sandbox_pin={},
+                  python_pin={'executable':'synthetic-python', 'executable_sha256':'synthetic'})
+    s = preflight.Supervisor(tmp_path/'supervisor', boot_id='boot', epoch=1)
+    results = {kind:dict.fromkeys(CANARY_KEYS, True) for kind in ('direct', 'detached')}
+    calls = []
+    def process(reservation_id, *, sandbox_pin, argv, executable_sha256):
+        calls.append(reservation_id)
+        assert argv[:3] == ['synthetic-python', '-c', preflight.CANARY_PROGRAM]
+        body = json.loads(argv[3])
+        assert set(body['protected']) == set(CANARY_KEYS)-{'environment', 'descriptor', 'own_workspace'}
+        assert body['own'] == s.validate(reservation_id)['workspace']
+        if results['detached'] is not None:
+            Path(body['descendant_result']).write_text(json.dumps(results['detached']))
+        return 0, json.dumps(results['direct'])
+    monkeypatch.setattr(s, 'synthetic_process', process)
+    # Advance past the fixed deadline without a real wait when evidence is absent.
+    ticks = count(start=0, step=11)
+    monkeypatch.setattr(preflight, 'time', SimpleNamespace(
+        monotonic=lambda:next(ticks),
+        sleep=lambda _:pytest.fail('unexpected real wait'),
+    ))
+    return config, s, results, calls
+
+
+def test_isolation_clock_is_local_and_supports_extra_calls(isolation_stub):
+    config, s, results, calls = isolation_stub
+    assert preflight.time is not time
+    assert preflight.time.monotonic() == 0
+    before = time.monotonic()
+    time.sleep(0)
+    assert time.monotonic() >= before
+    assert [preflight.time.monotonic() for _ in range(4)] == [11, 22, 33, 44]
+    results['detached'] = None
+    with pytest.raises(preflight.SupervisorRefusal, match='^DETACHED_DESCENDANT_UNOBSERVED$'):
+        preflight.isolation(config, s)
+    assert len(calls) == 1
+    assert preflight.time.monotonic() >= 77
+
+
+def test_isolation_accepts_complete_direct_and_detached_results(isolation_stub):
+    config, s, results, calls = isolation_stub
+    assert preflight.isolation(config, s) == {
+        'direct_canaries':True, 'detached_descendant_canaries':True,
+        'restart':True, 'directory_substitution':True,
+    }
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('kind', ['direct', 'detached'])
+@pytest.mark.parametrize('key', CANARY_KEYS)
+@pytest.mark.parametrize('change', ['false', 'missing', 'truthy'])
+def test_isolation_requires_every_canary_to_be_true(isolation_stub, kind, key, change):
+    config, s, results, calls = isolation_stub
+    if change == 'missing': del results[kind][key]
+    else: results[kind][key] = 1 if change == 'truthy' else False
+    with pytest.raises(preflight.SupervisorRefusal, match='^ISOLATION_CANARY_FAILED$'):
+        preflight.isolation(config, s)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('kind', ['direct', 'detached'])
+def test_isolation_rejects_extra_canary_results(isolation_stub, kind):
+    config, s, results, calls = isolation_stub
+    results[kind]['unexpected'] = True
+    with pytest.raises(preflight.SupervisorRefusal, match='^ISOLATION_CANARY_FAILED$'):
+        preflight.isolation(config, s)
+    assert len(calls) == 1
+
+
+def test_isolation_requires_detached_evidence(isolation_stub):
+    config, s, results, calls = isolation_stub
+    results['detached'] = None
+    with pytest.raises(preflight.SupervisorRefusal, match='^DETACHED_DESCENDANT_UNOBSERVED$'):
+        preflight.isolation(config, s)
+    assert len(calls) == 1
 
 
 def test_config_errors_redacted(tmp_path,capsys):

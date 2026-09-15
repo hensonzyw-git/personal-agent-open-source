@@ -179,6 +179,9 @@ class Supervisor:
         writes=[body['workspace'],body['temp'],body['git']]
         return '\n'.join(['(version 1)','(deny default)','(allow process*)','(allow sysctl-read)',
             '(allow file-read-metadata)',
+            # Exact object exceptions for the root directory and null device.
+            '(allow file-read* (literal "/"))',
+            '(allow file-read* file-write* (literal "/dev/null"))',
             *['(allow file-read* (subpath '+literal(p)+'))' for p in reads],
             *['(allow file-write* (subpath '+literal(p)+'))' for p in writes]])
 

@@ -1,5 +1,6 @@
 """Synthetic filesystem control-flow checks, never macOS acceptance."""
 import os
+import json
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,61 @@ def supervisor(tmp_path, **kw):
 def reserve(s, attempt='attempt'):
     return s.reserve(attempt_id=attempt, workspace_id=attempt, generation=1,
                      authority={'job_id': 'job', 'lease_id': 'lease'}, read_roots=())
+
+
+APPROVED_LITERAL_RULES = (
+    '(allow file-read* (literal "/"))',
+    '(allow file-read* file-write* (literal "/dev/null"))',
+)
+
+
+@pytest.mark.parametrize('rule', APPROVED_LITERAL_RULES)
+def test_profile_has_exact_approved_literal_exception(tmp_path, rule):
+    s = supervisor(tmp_path)
+    r = reserve(s)
+    assert s.sandbox_profile(r['reservation_id']).splitlines().count(rule) == 1
+
+
+def test_profile_preserves_directory_and_protected_boundaries(tmp_path):
+    s = supervisor(tmp_path)
+    runtime = tmp_path/'runtime'; runtime.mkdir()
+    r = s.reserve(attempt_id='old', workspace_id='old', generation=1,
+                  authority={}, read_roots=(runtime,))
+    replacement = reserve(s, 'replacement')
+    profile = s.sandbox_profile(r['reservation_id'])
+    # Removing only the approved exceptions must leave the entire old policy.
+    ordinary = [line for line in profile.splitlines() if line not in APPROVED_LITERAL_RULES]
+    writable = [r['workspace'], r['temp'], r['git']]
+    assert ordinary == [
+        '(version 1)', '(deny default)', '(allow process*)', '(allow sysctl-read)',
+        '(allow file-read-metadata)',
+        *['(allow file-read* (subpath '+json.dumps(p)+'))' for p in [str(runtime), *writable]],
+        *['(allow file-write* (subpath '+json.dumps(p)+'))' for p in writable],
+    ]
+    assert r['read_roots'] == [str(runtime)]
+    assert s.validate(r['reservation_id'])['read_roots'] == [str(runtime)]
+    assert '(subpath "/")' not in profile
+    assert '(subpath "/dev")' not in profile
+    assert '(allow file-write* (literal "/"))' not in profile
+    for path in [*(replacement[k] for k in ('workspace', 'git', 'temp', 'parent')),
+                 str(s.root), str(s.root/'synthetic-signing-canary')]:
+        assert json.dumps(path) not in profile
+
+
+def test_root_read_root_is_refused(tmp_path):
+    s = supervisor(tmp_path)
+    with pytest.raises(SupervisorRefusal, match='ROOT_OVERLAP'):
+        s.reserve(attempt_id='root', workspace_id='root', generation=1,
+                  authority={}, read_roots=('/',))
+
+
+def test_machine_acceptance_guard_never_spawns(monkeypatch):
+    from personal_agent_dal.worker.supervisor import require_machine_acceptance
+    calls = []
+    monkeypatch.setattr('subprocess.Popen', lambda *a, **kw: calls.append(1))
+    with pytest.raises(SupervisorRefusal, match='MINI_ACCEPTANCE_REQUIRED'):
+        require_machine_acceptance()
+    assert calls == []
 
 
 def test_missing_machine_proof_never_executes(tmp_path):
@@ -131,12 +187,22 @@ def test_synthetic_spawn_has_durable_inventory_before_process(tmp_path,monkeypat
     binary=tmp_path/'runtime';binary.mkdir();executable=binary/'python';executable.write_bytes(b'synthetic');executable.chmod(0o700)
     s=supervisor(tmp_path)
     r=s.reserve(attempt_id='probe',workspace_id='probe',generation=1,authority={},read_roots=(binary,))
+    expected_policy = s.sandbox_profile(r['reservation_id'])
+    monkeypatch.setenv('DAL_SYNTHETIC_PARENT_CANARY', 'synthetic-only')
     calls=[]
     def popen(*args,**kwargs):
+        policy = args[0][2]
+        assert args[0] == [str(executable), '-p', expected_policy, str(executable)]
+        for rule in APPROVED_LITERAL_RULES:
+            assert policy.splitlines().count(rule) == 1
+        policy_digest = hashlib.sha256(policy.encode()).hexdigest()
+        assert r['sandbox_policy_sha256'] == policy_digest
         with sqlite3.connect(s.root/'reservations.sqlite3') as independent:
-            row=independent.execute('SELECT pid FROM launch_inventory').fetchone()
-            assert row==(None,)
+            row=independent.execute('SELECT pid,body FROM launch_inventory').fetchone()
+            assert row[0] is None
+            assert json.loads(row[1])['policy_sha256'] == policy_digest
         assert kwargs['close_fds'] is True and 'DAL_SYNTHETIC_PARENT_CANARY' not in kwargs['env']
+        assert kwargs['env'] == {'HOME':r['temp'], 'TMPDIR':r['temp'], 'PATH':'/usr/bin:/bin'}
         calls.append(1)
         process=Mock(pid=4242)
         process.communicate.return_value=('synthetic',None);process.returncode=0
