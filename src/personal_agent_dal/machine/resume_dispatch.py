@@ -232,7 +232,7 @@ def acknowledge_manifest(engine, *, job_id, worker_id, job_lease_epoch, assertio
     from personal_agent_dal.machine.isolation_evidence import record_launch_manifest
     def work(s):
         context=_context(s,job_id=job_id,worker_id=worker_id,job_lease_epoch=job_lease_epoch)
-        if context is None:raise ValueError('REPLACEMENT_EPISODE_REQUIRED')
+        if context is None:raise ValueError('PRELAUNCH_NOT_APPLICABLE')
         sha=record_launch_manifest(engine,assertion=assertion,worker_id=worker_id,transaction_session=s)
         s.flush()
         row=s.get(SupervisorLaunchManifest,context['attempt_id'])
@@ -247,7 +247,7 @@ def acknowledge_manifest(engine, *, job_id, worker_id, job_lease_epoch, assertio
 def dispatch_prelaunch(engine, *, job_id, worker_id, job_lease_epoch, manifest_sha256):
     from personal_agent_dal.machine.action_lifecycle import claim_dispatch
     context=prelaunch_context(engine,job_id=job_id,worker_id=worker_id,job_lease_epoch=job_lease_epoch)
-    if not context:raise ValueError('REPLACEMENT_EPISODE_REQUIRED')
+    if context is None:raise ValueError('PRELAUNCH_NOT_APPLICABLE')
     result=claim_dispatch(engine,attempt_id=context['attempt_id'],expected_version=context['attempt_version'],
         owner_id=worker_id,job_id=job_id,lease_id=context['lease_id'],manifest_sha256=manifest_sha256)
     return {'code':result.code}

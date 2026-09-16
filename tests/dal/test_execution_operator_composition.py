@@ -191,9 +191,10 @@ def test_console_business_commands_use_real_api(world,tmp_path,monkeypatch,capsy
     source=tmp_path/'task.json';registered=tmp_path/'registered.json'
     source.write_text(json.dumps(dict(config(world)['approved_inputs'][0],task_description='CLI synthetic')))
     assert main(common+['register','--input-file',str(source),'--output-file',str(registered)])==0
-    reg=json.loads(registered.read_text());inp=tmp_path/'input.json';inp.write_text(json.dumps(reg['execution_input']))
+    reg=json.loads(capsys.readouterr().out)
+    assert json.loads(registered.read_text()) == reg['execution_input']
     prepared_file=tmp_path/'prepared.json'
-    assert main(common+['prepare','--input-file',str(inp),'--feature-id',reg['feature_id'],
+    assert main(common+['prepare','--input-file',str(registered),'--feature-id',reg['feature_id'],
         '--request-id','cli-prepare','--action-key','cli-action','--role','planner',
         '--profile-revision-id','B-1','--feature-version',str(reg['feature_version']),
         '--gate-version','0','--output-file',str(prepared_file)])==0
@@ -247,3 +248,96 @@ def test_service_entrypoint_wires_explicit_profile_file(world,tmp_path,monkeypat
     assert post(c,'/operator/tasks/register',body).status_code==200
     with session_factory(world)() as s:
         assert s.scalar(select(func.count()).select_from(WorkerJob))==0
+
+
+def test_same_pending_registration_race_uses_real_sqlite(world):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, local
+    from sqlalchemy import event
+    from personal_agent_dal.storage.models import Feature
+    c = client(world, config(world))
+    body = dict(config(world)['approved_inputs'][0], task_description='Concurrent pending synthetic')
+    barrier, seen = Barrier(2), local()
+    # Both independent transactions have read absence before either writes.
+    def synchronize(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith('SELECT') and 'feature_intake_requests' in statement.lower() and not getattr(seen, 'arrived', False):
+            seen.arrived = True
+            barrier.wait(timeout=10)
+    event.listen(world, 'after_cursor_execute', synchronize)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(post, c, '/operator/tasks/register', body) for _ in range(2)]
+            responses = [f.result(timeout=20) for f in futures]
+    finally:
+        event.remove(world, 'after_cursor_execute', synchronize)
+    assert [r.status_code for r in responses] == [200, 200], [r.text for r in responses]
+    rows = [r.json() for r in responses]
+    assert rows[0]['feature_id'] == rows[1]['feature_id']
+    assert sorted(r['duplicate'] for r in rows) == [False, True]
+    assert rows[0]['execution_input'] == rows[1]['execution_input']
+    with session_factory(world)() as s:
+        assert s.scalar(select(func.count()).select_from(Feature).where(Feature.feature_id == rows[0]['feature_id'])) == 1
+        assert s.scalar(select(func.count()).select_from(FeatureIntakeRequest)) == 1
+        assert s.scalar(select(func.count()).select_from(WorkerJob)) == 0
+    cfg = config(world)
+    cfg['approved_inputs'].append(dict(cfg['approved_inputs'][0], toolchain_ref='different'))
+    conflict = post(client(world, cfg), '/operator/tasks/register', dict(body, toolchain_ref='different'))
+    assert conflict.status_code == 409 and 'toolchain_conflict' in conflict.text
+
+
+@pytest.mark.parametrize('kind', ['fifo', 'directory', 'symlink', 'huge', 'utf8', 'private', 'invalid'])
+def test_public_key_file_refuses_unsafe_inputs_without_blocking(tmp_path, kind):
+    import os
+    import subprocess
+    import sys
+    path = tmp_path/'public'
+    if kind == 'fifo': os.mkfifo(path)
+    elif kind == 'directory': path.mkdir()
+    elif kind == 'symlink':
+        target = tmp_path/'target'; target.write_text('synthetic'); path.symlink_to(target)
+    elif kind == 'huge':
+        with path.open('wb') as stream: stream.truncate(1024*1024*1024)
+    else:
+        path.write_bytes({'utf8': b'\xff', 'private': b'-----BEGIN PRIVATE KEY-----', 'invalid': b'synthetic'}[kind])
+    # A subprocess timeout makes a blocking FIFO regression fail boundedly.
+    database = tmp_path/'db'; database.touch()
+    result = subprocess.run([sys.executable, '-m', 'personal_agent_dal.service.deployment_cli',
+        '--database', str(database), 'register-supervisor', '--kid', 'synthetic',
+        '--worker-id', 'w', '--machine-id', 'm', '--boot-id', 'b',
+        '--supervisor-epoch', '1', '--public-key-file', str(path)],
+        capture_output=True, timeout=5)
+    assert result.returncode == 1
+    assert b'Supervisor public registration refused' in result.stderr
+    assert database.stat().st_size == 0  # refused before database composition
+
+
+@pytest.mark.parametrize('mode', [0o020000, 0o060000])
+def test_public_key_rejects_device_descriptor_before_read(tmp_path, monkeypatch, mode):
+    import os
+    from personal_agent_dal.service.deployment_cli import _read_public_key
+    path = tmp_path/'synthetic-device'; path.write_bytes(b'synthetic')
+    monkeypatch.setattr(os, 'fstat', lambda fd: SimpleNamespace(st_mode=mode, st_size=0))
+    monkeypatch.setattr(os, 'read', lambda *a, **kw: pytest.fail('device descriptor was read'))
+    with pytest.raises(ValueError, match='PUBLIC_KEY_REQUIRED'):
+        _read_public_key(path)
+
+
+def test_public_key_bounds_read_even_if_file_grows_after_fstat(tmp_path, monkeypatch):
+    import os
+    from personal_agent_dal.service.deployment_cli import _read_public_key
+    path = tmp_path/'growing'; path.write_bytes(b'x')
+    actual_fstat = os.fstat
+    def grow(fd):
+        before = actual_fstat(fd)
+        path.write_bytes(b'x' * 8192)
+        return before
+    monkeypatch.setattr(os, 'fstat', grow)
+    actual_read = os.read
+    reads = []
+    def read(fd, size):
+        reads.append(size)
+        return actual_read(fd, size)
+    monkeypatch.setattr(os, 'read', read)
+    with pytest.raises(ValueError, match='PUBLIC_KEY_REQUIRED'):
+        _read_public_key(path)
+    assert reads == [4097]

@@ -159,3 +159,21 @@ def test_cached_job_cannot_hide_committed_reclaim(composed, world):
             _context(session, job_id=lease.job_id, worker_id='w',
                      job_lease_epoch=original_epoch, enabled=False)
         assert cached.lease_epoch == original_epoch + 1
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+@pytest.mark.parametrize('endpoint', ['manifest', 'dispatch'])
+def test_legacy_non_provider_cannot_enter_provider_prelaunch(composed, world, monkeypatch, enabled, endpoint):
+    transport, *_ = composed
+    with session_factory(world)() as s, s.begin():
+        s.get(WorkerJob, 'j').execution_mode = 'legacy_non_provider'
+    def forbidden(*args, **kwargs):
+        pytest.fail('non-provider job reached signing or dispatch')
+    monkeypatch.setattr('personal_agent_dal.machine.isolation_evidence.record_launch_manifest', forbidden)
+    monkeypatch.setattr('personal_agent_dal.machine.action_lifecycle.claim_dispatch', forbidden)
+    monkeypatch.setattr('subprocess.Popen', forbidden)
+    client = client_for(world, transport, enabled)
+    before = snapshot(world)
+    response = request(client, transport, 'j', 3, endpoint)
+    assert (response.status_code, response.json()['code']) == (409, 'PRELAUNCH_NOT_APPLICABLE')
+    assert snapshot(world) == before

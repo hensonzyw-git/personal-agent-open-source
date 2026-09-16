@@ -93,6 +93,8 @@ def mount_routes(app, engine, service, config, execution_config=None):
                 raise HTTPException(409, str(exc)) from exc
             binding = session.scalar(select(ExecutionJobBinding).where(ExecutionJobBinding.job_id == job_id))
             if not binding and job and job.execution_mode == 'legacy_non_provider':
+                # Intentional configuration-independent legacy path: context=None.
+                # Manifest/dispatch still refuse PRELAUNCH_NOT_APPLICABLE.
                 return
             if binding and binding.origin == 'initial':
                 snapshot = session.get(ExecutionSnapshot, binding.snapshot_sha256)

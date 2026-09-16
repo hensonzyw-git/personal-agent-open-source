@@ -41,7 +41,7 @@ def admission(runtime,tmp_path,monkeypatch):
     for name in c['snapshot']['roles']:
         plan=build_plan(dict(c,execution_role=name),r,pins,adapters)
         result=dict(exit_code=0,stdout_sha256='a'*64,stderr_sha256='b'*64,cli_version=plan.version,
-            observations=['report-produced','scratch-write','source-edit','git-add','git-commit'] if name=='coder' else ['report-produced','scratch-write','business-write-denied'])
+            observations=['report-produced','scratch-write','source-edit','git-add','git-commit','outside-write-denied'] if name=='coder' else ['report-produced','scratch-write','business-write-denied','outside-write-denied'])
         command=list(plan.argv)
         roles[name]=dict(configuration=c['snapshot']['roles'][name],plan=plan_contract(plan,r),smoke=dict(
             command=command,command_sha256=_digest(command),result=result,result_sha256=_digest(result),
@@ -222,3 +222,127 @@ def test_v21_explicit_reference_without_enable_boolean(tmp_path):
     with pytest.raises(ValueError):load_worker_config(path)
     del body['production_enabled'];del body['admission_ref'];write(path,body)
     with pytest.raises(ValueError):load_worker_config(path)
+
+
+@pytest.mark.parametrize('role', ['planner', 'coder', 'reviewer'])
+def test_outside_write_observation_required(admission, role):
+    c, r, b, e = admission
+    smoke = e['roles'][role]['smoke']
+    smoke['result']['observations'].remove('outside-write-denied')
+    smoke['result_sha256'] = _digest(smoke['result'])
+    write(Path(b['path']), e)
+    with pytest.raises(SupervisorRefusal, match='RUNTIME_ADMISSION_INVALID'):
+        validate_admission(b, context=c, reservation=r)
+
+
+@pytest.mark.parametrize('offset,valid', [(-1, True), (0, False), (1, False)])
+def test_expiry_boundary(admission, monkeypatch, offset, valid):
+    c, r, b, e = admission
+    monkeypatch.setattr('personal_agent_dal.worker.runtime_admission.time.time',
+                        lambda: e['expires_at'] + offset)
+    if valid:
+        assert validate_admission(b, context=c, reservation=r) == _digest(e)
+    else:
+        with pytest.raises(SupervisorRefusal, match='RUNTIME_ADMISSION_INVALID'):
+            validate_admission(b, context=c, reservation=r)
+
+
+@pytest.mark.parametrize('digest', [None, '', 'a'*63, 'A'*64, 'z'*64, 123, 'missing'])
+def test_revalidation_requires_bound_digest_before_dispatch_and_popen(admission, runtime, monkeypatch, digest):
+    from types import SimpleNamespace
+    from personal_agent_dal.worker.runtime_admission import revalidate_plan
+    from personal_agent_dal.worker.runtime_process import run_process
+    from personal_agent_dal.worker.runtime_inventory import RuntimeInventory
+    from personal_agent_dal.worker.trusted_runtime import prepare_runtime, execute_runtime
+    c, r, b, e = admission
+    t, l, _, s, k = runtime
+    k.update(fixture=None, pins=b['pins'], adapter_config=b['adapters'], admission=b)
+    prepare_runtime(t, l, c, **k)
+    inv = RuntimeInventory(s)
+    plan = replace(build_plan(c, r, b['pins'], b['adapters']), admission=b,
+                   admission_sha256=digest, production_enabled=True)
+    if digest == 'missing':
+        raw = asdict(plan); del raw['admission_sha256']
+        plan = SimpleNamespace(**raw)
+    def forbidden(*args, **kwargs):
+        pytest.fail('invalid admission reached an effect boundary')
+    monkeypatch.setattr('subprocess.Popen', forbidden)
+    monkeypatch.setattr(t, 'dispatch_prelaunch', forbidden)
+    with pytest.raises(SupervisorRefusal, match='RUNTIME_ADMISSION_INVALID'):
+        revalidate_plan(plan, inv, c['attempt_id'])
+    with pytest.raises(SupervisorRefusal, match='RUNTIME_ADMISSION_INVALID'):
+        run_process(inv, c['attempt_id'], plan, heartbeat=forbidden, deadline=9999999999)
+    # Stored plan mutation also refuses before dispatch, at the signed-plan gate.
+    row = inv.get(c['attempt_id']); obs = row['observation']
+    if digest == 'missing': del obs['plan']['admission_sha256']
+    else: obs['plan']['admission_sha256'] = digest
+    with s._db() as db:
+        db.execute('UPDATE runtime_inventory SET observation=? WHERE effective_attempt=?',
+                   (json.dumps(obs), c['attempt_id']))
+    with pytest.raises(SupervisorRefusal, match='LAUNCH_PLAN_DIGEST_MISMATCH'):
+        execute_runtime(t, l, supervisor=s, attempt=c['attempt_id'])
+    assert inv.get(c['attempt_id'])['state'] == 'prepared'
+
+
+def test_replacement_valid_evidence_refused_after_binding(admission, runtime, monkeypatch):
+    from personal_agent_dal.worker.trusted_runtime import prepare_runtime, execute_runtime
+    from personal_agent_dal.worker.runtime_inventory import RuntimeInventory
+    c, r, b, e = admission
+    t, l, _, s, k = runtime
+    k.update(fixture=None, pins=b['pins'], adapter_config=b['adapters'], admission=b)
+    prepare_runtime(t, l, c, **k)
+    e['expires_at'] += 1
+    write(Path(b['path']), e)
+    assert validate_admission(b, context=c, reservation=r) == _digest(e)
+    def forbidden(*args, **kwargs): pytest.fail('replaced evidence reached dispatch/Popen')
+    monkeypatch.setattr(t, 'acknowledge_prelaunch', forbidden)
+    monkeypatch.setattr(t, 'dispatch_prelaunch', forbidden)
+    monkeypatch.setattr('subprocess.Popen', forbidden)
+    with pytest.raises(SupervisorRefusal, match='RUNTIME_ADMISSION_INVALID'):
+        execute_runtime(t, l, supervisor=s, attempt=c['attempt_id'])
+    assert RuntimeInventory(s).get(c['attempt_id'])['state'] == 'prepared'
+
+
+@pytest.mark.parametrize('mutation', ['future_issue', 'reversed_probe', 'probe_after_issue', 'long_probe'])
+def test_attestation_time_ordering_stays_closed(admission, mutation):
+    c, r, b, e = admission
+    smoke = e['roles']['coder']['smoke']
+    if mutation == 'future_issue': e['issued_at'] = e['expires_at'] - 1
+    elif mutation == 'reversed_probe': smoke['started_at'] = smoke['ended_at'] + 1
+    elif mutation == 'probe_after_issue': smoke['ended_at'] = e['issued_at'] + 1
+    else: smoke['started_at'] = smoke['ended_at'] - 121
+    write(Path(b['path']), e)
+    with pytest.raises(SupervisorRefusal, match='RUNTIME_ADMISSION_INVALID'):
+        validate_admission(b, context=c, reservation=r)
+
+
+def test_owner_window_has_no_invented_probe_age_or_ttl_cap(admission):
+    c, r, b, e = admission
+    for record in e['roles'].values():
+        record['smoke']['started_at'] -= 86400 * 30
+        record['smoke']['ended_at'] -= 86400 * 30
+    e['issued_at'] -= 86400 * 30
+    e['expires_at'] += 86400 * 30
+    write(Path(b['path']), e)
+    assert validate_admission(b, context=c, reservation=r) == _digest(e)
+
+
+def test_heartbeat_revalidates_bound_admission(admission, runtime, monkeypatch):
+    from personal_agent_dal.worker.trusted_runtime import prepare_runtime, execute_runtime
+    c, r, b, e = admission
+    t, l, _, s, k = runtime
+    k.update(fixture=None, pins=b['pins'], adapter_config=b['adapters'], admission=b)
+    prepare_runtime(t, l, c, **k)
+    observed = []
+    def process_boundary(inventory, attempt, plan, *, heartbeat, **kwargs):
+        assert heartbeat() is True  # real signed ack, dispatch and heartbeat composition
+        e['expires_at'] += 1
+        write(Path(b['path']), e)
+        with pytest.raises(SupervisorRefusal, match='RUNTIME_ADMISSION_INVALID'):
+            heartbeat()
+        observed.append('bound-evidence-rechecked')
+        raise OSError('offline heartbeat boundary reached')
+    monkeypatch.setattr('personal_agent_dal.worker.trusted_runtime.run_process', process_boundary)
+    with pytest.raises(OSError, match='offline heartbeat boundary reached'):
+        execute_runtime(t, l, supervisor=s, attempt=c['attempt_id'])
+    assert observed == ['bound-evidence-rechecked']

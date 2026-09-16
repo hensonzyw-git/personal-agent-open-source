@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from pydantic import TypeAdapter
 from personal_agent_dal.machine.workflow_selection import Id, digest
-from personal_agent_dal.machine.execution_start import PrepareExecutionRequest, StartExecutionRequest
+from personal_agent_dal.machine.execution_start import ExecutionInput, PrepareExecutionRequest, StartExecutionRequest
 from personal_agent_dal.service.execution_routes import RegisterRequest
 
 COMMANDS = ('register', 'prepare', 'start', 'report')
@@ -12,9 +12,9 @@ COMMANDS = ('register', 'prepare', 'start', 'report')
 def add_commands(sub):
     register = sub.add_parser('register', help='register a pending task; creates no Job')
     register.add_argument('--input-file', type=Path, required=True, help='closed task/repository/base/toolchain JSON')
-    register.add_argument('--output-file', type=Path)
+    register.add_argument('--output-file', type=Path, help='write validated execution_input JSON for prepare; full metadata remains on stdout')
     prepare = sub.add_parser('prepare', help='prepare one report_only role; creates no Job')
-    prepare.add_argument('--input-file', type=Path, required=True, help='execution_input JSON returned by register')
+    prepare.add_argument('--input-file', type=Path, required=True, help='execution_input JSON from register --output-file')
     prepare.add_argument('--feature-id', required=True)
     prepare.add_argument('--request-id', required=True)
     prepare.add_argument('--action-key', required=True)
@@ -95,7 +95,13 @@ def run(args, token):
         print(json.dumps(body, ensure_ascii=False, indent=2))
     output = getattr(args, 'output_file', None)
     if output:
+        output_body = body
+        if args.command == 'register':
+            try:
+                output_body = ExecutionInput.model_validate(body['execution_input']).model_dump(by_alias=True)
+            except (ValueError, KeyError, TypeError):
+                raise SystemExit('Invalid registration execution input') from None
         # Never overwrite an existing operator evidence file.
         with output.open('x', encoding='utf-8') as stream:
-            json.dump(body, stream, ensure_ascii=False, indent=2)
+            json.dump(output_body, stream, ensure_ascii=False, indent=2)
     return 0

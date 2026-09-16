@@ -10,6 +10,7 @@ from dataclasses import asdict, replace
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import time
@@ -110,9 +111,8 @@ def validate_admission(binding, *, context, reservation, plan=None, expected_dig
             if _digest(result) != smoke['result_sha256']: raise ValueError()
             if set(result) != {'exit_code','stdout_sha256','stderr_sha256','observations','cli_version'}: raise ValueError()
             if type(result['exit_code']) is not int or result['exit_code'] != 0 or result['cli_version'] != current.version: raise ValueError()
-            import re
             if any(not isinstance(result[k],str) or not re.fullmatch('[0-9a-f]{64}',result[k]) for k in ('stdout_sha256','stderr_sha256')): raise ValueError()
-            required = ['report-produced','scratch-write','business-write-denied'] if name != 'coder' else ['report-produced','scratch-write','source-edit','git-add','git-commit']
+            required = ['report-produced','scratch-write','business-write-denied','outside-write-denied'] if name != 'coder' else ['report-produced','scratch-write','source-edit','git-add','git-commit','outside-write-denied']
             if result['observations'] != required: raise ValueError()
             if any(type(smoke[k]) is not int for k in ('started_at','ended_at')) or not evidence['issued_at'] >= smoke['ended_at'] >= smoke['started_at'] or smoke['ended_at']-smoke['started_at'] > 120: raise ValueError()
             if name == context['execution_role']: selected = current
@@ -126,6 +126,10 @@ def validate_admission(binding, *, context, reservation, plan=None, expected_dig
 
 def revalidate_plan(plan, inventory, attempt):
     if not plan.admission: raise SupervisorRefusal('MINI_ACCEPTANCE_REQUIRED')
+    # Preparation may issue a digest; execution must already bind that evidence.
+    digest = getattr(plan, 'admission_sha256', None)
+    if not isinstance(digest, str) or re.fullmatch('[0-9a-f]{64}', digest) is None:
+        raise SupervisorRefusal('RUNTIME_ADMISSION_INVALID')
     row = inventory.get(attempt)
     reservation = inventory.supervisor.validate(row['reservation_id'])
     identity = (plan.admission or {}).get('identity', {})
