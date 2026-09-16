@@ -1,7 +1,7 @@
 """Closed wire contracts shared by the authority and offline Worker adapters."""
 from typing import Annotated, Literal
 from pydantic import Field, StrictBool, StrictInt, model_validator
-from personal_agent_dal.machine.workflow_selection import Closed, Id, Digest, Version, Role, digest
+from personal_agent_dal.machine.workflow_selection import Closed, Id, Digest, Version, Role, digest, ProfileSnapshot
 from personal_agent_dal.machine.execution_start import ExecutionInput, Artifact, CONTRACT, BUDGET
 
 Text = Annotated[str, Field(strict=True, max_length=131072)]
@@ -164,18 +164,8 @@ class ExecutionStatus(Closed):
     classification: Literal['prepared','running','report_complete','consumed','execution_effects_unknown','result_available_not_accepted']
 
 
-class SnapshotRoles(Closed):
-    planner: Role
-    coder: Role
-    reviewer: Role
-
-class Snapshot(Closed):
-    revision_id: Id
-    input_sha256: Digest
-    profile: Literal['A','B']
-    revision: Version
-    roles: SnapshotRoles
-    fallback: None
+# The shared reader preserves absent versions in historical snapshots.
+Snapshot = ProfileSnapshot
 
 
 def validate_execution_context(value):

@@ -2,14 +2,19 @@
 import json
 from typing import Annotated, Literal
 from pydantic import Field, StrictInt, model_validator
-from personal_agent_dal.machine.workflow_selection import Closed, Id, Digest, Role
+from personal_agent_dal.machine.workflow_selection import Closed, Id, Digest, Role, VersionedRoleContract, validate_profile_roles
 
 
-class Profile(Closed):
+class Profile(VersionedRoleContract):
     revision_id: Id
     profile: Literal['A', 'B']
     revision: Annotated[StrictInt, Field(ge=1)]
     roles: dict[Literal['planner', 'coder', 'reviewer'], Role]
+
+    @model_validator(mode='after')
+    def exact_roles(self):
+        validate_profile_roles(self.profile, self.roles, self.contract_version)
+        return self
 
 
 class ApprovedInput(Closed):
@@ -20,7 +25,7 @@ class ApprovedInput(Closed):
 
 
 class ExecutionConfig(Closed):
-    schema_version: Literal['dal.execution-profiles/1.0']
+    schema_version: Literal['dal.execution-profiles/1.0', 'dal.execution-profiles/1.1']
     profiles: list[Profile]
     approved_inputs: list[ApprovedInput]
 
@@ -30,6 +35,9 @@ class ExecutionConfig(Closed):
             raise ValueError('DUPLICATE_PROFILE')
         if len({p.profile for p in self.profiles}) != len(self.profiles):
             raise ValueError('DUPLICATE_PROFILE')
+        if self.schema_version == 'dal.execution-profiles/1.0' and any(
+                p.contract_version is not None for p in self.profiles):
+            raise ValueError('PROFILE_CONFIG_VERSION_MISMATCH')
         return self
 
     def check_input(self, body):

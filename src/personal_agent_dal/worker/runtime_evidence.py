@@ -125,7 +125,7 @@ def bounded_git_patch(plan, reservation, git_pin):
     executable=verify_executable(git_pin)
     argv=[str(executable),'--no-pager','-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false',
           '-C',reservation['workspace'],'diff','--no-ext-diff','--no-textconv','HEAD','--']
-    env={k:v for k,v in plan.environment.items() if k not in ('CODEX_HOME','CLAUDE_CONFIG_DIR')}
+    env=git_environment(reservation)
     child=subprocess.Popen(argv,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
     stream=selectors.DefaultSelector();stream.register(child.stdout,selectors.EVENT_READ)
     raw=bytearray();end=time.monotonic()+3
@@ -158,3 +158,15 @@ def bounded_git_patch(plan, reservation, git_pin):
             except (OSError, subprocess.TimeoutExpired):
                 if child.poll() is None:
                     raise SupervisorRefusal('GIT_EVIDENCE_STOP_UNPROVEN') from None
+
+
+def git_environment(reservation):
+    """No runtime, credential-helper, proxy or caller environment inheritance."""
+    return {'PATH':'/usr/bin:/bin', 'HOME':reservation.get('temp', '/dev/null'),
+        'TMPDIR':reservation.get('temp', '/tmp'), 'GIT_CONFIG_NOSYSTEM':'1',
+        'GIT_CONFIG_GLOBAL':'/dev/null', 'GIT_TERMINAL_PROMPT':'0',
+        'GIT_CONFIG_COUNT':'4',
+        'GIT_CONFIG_KEY_0':'core.hooksPath', 'GIT_CONFIG_VALUE_0':'/dev/null',
+        'GIT_CONFIG_KEY_1':'core.fsmonitor', 'GIT_CONFIG_VALUE_1':'false',
+        'GIT_CONFIG_KEY_2':'protocol.allow', 'GIT_CONFIG_VALUE_2':'never',
+        'GIT_CONFIG_KEY_3':'credential.helper', 'GIT_CONFIG_VALUE_3':''}

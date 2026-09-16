@@ -10,7 +10,7 @@ from personal_agent_core.ids import new_id
 from personal_agent_core.manifest import canonical_json
 from personal_agent_core.timeutil import utc_now
 from personal_agent_dal.machine.action_lifecycle import _transaction
-from personal_agent_dal.machine.workflow_selection import Closed, Id, Digest, Version, digest
+from personal_agent_dal.machine.workflow_selection import Closed, Id, Digest, Version, digest, profile_snapshot
 from personal_agent_dal.storage.models import Feature
 from personal_agent_dal.storage.machine_models import (
     WorkflowAction, ProviderAttempt, ExecutionGate, WorkflowProfileRevision,
@@ -144,7 +144,7 @@ def prepare_execution(engine, *, feature_id, actor, body, kill_switch=lambda: Fa
         encoded, input_sha = _input(s, feature_id, body.execution_input)
         p = s.get(WorkflowProfileRevision, body.profile_revision_id)
         if not p or digest(json.loads(p.body)) != p.sha256: raise ValueError('PROFILE_UNAVAILABLE')
-        snapshot = dict(revision_id=p.revision_id, input_sha256=input_sha, **json.loads(p.body))
+        snapshot = profile_snapshot(json.loads(p.body), revision_id=p.revision_id, input_sha256=input_sha)
         snapshot_sha = digest(snapshot)
         if not s.get(ExecutionSnapshot, snapshot_sha):
             s.add(ExecutionSnapshot(sha256=snapshot_sha, revision_id=p.revision_id, body=canonical_json(snapshot)))

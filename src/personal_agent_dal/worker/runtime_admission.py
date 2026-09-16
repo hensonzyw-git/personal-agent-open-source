@@ -19,6 +19,7 @@ from personal_agent_dal.worker.supervisor import SupervisorRefusal, _digest, _ab
 
 POLICY = 'trusted-single-user/1.0'
 SCHEMA = 'dal.runtime-admission/1.0'
+ROUTE_SCHEMA = 'dal.runtime-admission/2.0'
 
 
 def code_identity():
@@ -30,7 +31,7 @@ def code_identity():
 def private_json(path):
     path = _absolute(path)
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
             st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077 or st.st_nlink != 1 or st.st_size > 1024*1024:
@@ -51,6 +52,8 @@ def plan_contract(plan, reservation):
     body = asdict(plan)
     for name in ('admission', 'admission_sha256', 'production_enabled'):
         body.pop(name, None)
+    if body.get('route_reference') is None:
+        body.pop('route_reference', None)
     substitutions = sorted(((reservation[k], '${'+k+'}') for k in ('workspace','temp','git')), key=lambda x: -len(x[0]))
     def normalize(value):
         if isinstance(value, str):
@@ -75,7 +78,12 @@ def validate_admission(binding, *, context, reservation, plan=None, expected_dig
         if set(binding) != {'path','identity','pins','adapters','config_refs'}: raise ValueError()
         evidence = private_json(binding['path'])
         if set(evidence) != {'schema','code_sha256','policy','identity','roles','config_refs','issued_at','expires_at','revoked_at','scope','provenance'}: raise ValueError()
-        if evidence['schema'] != SCHEMA or evidence['policy'] != POLICY or evidence['code_sha256'] != code_identity(): raise ValueError()
+        from personal_agent_dal.worker.reviewer_route import SCHEMA as ADAPTER_SCHEMA
+        route_contract = binding['adapters'].get('schema') == ADAPTER_SCHEMA
+        if evidence['schema'] != (ROUTE_SCHEMA if route_contract else SCHEMA) or evidence['policy'] != POLICY or evidence['code_sha256'] != code_identity(): raise ValueError()
+        if route_contract:
+            ref = binding['adapters']['roles']['reviewer']['config_ref']
+            if binding['config_refs'].get(ref['path']) != ref['sha256']: raise ValueError()
         if evidence['identity'] != binding['identity'] or evidence['identity']['boot_id'] != os_boot_id(): raise ValueError()
         if evidence['identity']['worker_id'] != context['worker_id']: raise ValueError()
         now = int(time.time())
@@ -113,6 +121,11 @@ def validate_admission(binding, *, context, reservation, plan=None, expected_dig
             if type(result['exit_code']) is not int or result['exit_code'] != 0 or result['cli_version'] != current.version: raise ValueError()
             if any(not isinstance(result[k],str) or not re.fullmatch('[0-9a-f]{64}',result[k]) for k in ('stdout_sha256','stderr_sha256')): raise ValueError()
             required = ['report-produced','scratch-write','business-write-denied','outside-write-denied'] if name != 'coder' else ['report-produced','scratch-write','source-edit','git-add','git-commit','outside-write-denied']
+            if route_contract and name == 'reviewer':
+                # Owner attests the live mapping from the native probe; the
+                # public file digest alone cannot establish a running gateway.
+                required += ['helper-auth-native','personal-auth-isolated',
+                    'gateway-route-attested','fallback-disabled-attested']
             if result['observations'] != required: raise ValueError()
             if any(type(smoke[k]) is not int for k in ('started_at','ended_at')) or not evidence['issued_at'] >= smoke['ended_at'] >= smoke['started_at'] or smoke['ended_at']-smoke['started_at'] > 120: raise ValueError()
             if name == context['execution_role']: selected = current

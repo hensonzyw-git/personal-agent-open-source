@@ -87,6 +87,10 @@ def worker_prelaunch(transport,config,lease,context):
         pins=body['runtime_pins'],adapters=adapters,
         config_refs={str(p):_digest(private_json(p)) for p in
             (config.config_ref,config.supervisor_config_path,config.adapter_config_ref)})
+    from personal_agent_dal.worker.reviewer_route import SCHEMA as ROUTE_ADAPTER_SCHEMA
+    if adapters['schema'] == ROUTE_ADAPTER_SCHEMA:
+        ref = adapters['roles']['reviewer']['config_ref']
+        admission['config_refs'][ref['path']] = _digest(private_json(ref['path']))
     declared = {'workspace':str(root/'work'),'temp':str(root/'tmp'),
         'git':str(root/'git'),'read_roots':body['read_roots']}
     require_machine_acceptance(admission,context=context,reservation=declared,plan=plan)

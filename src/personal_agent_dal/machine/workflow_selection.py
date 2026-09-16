@@ -2,7 +2,7 @@
 import hashlib
 import json
 from typing import Annotated, Literal
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_serializer, model_validator
 from sqlalchemy import select
 from personal_agent_core.ids import new_id
 from personal_agent_core.manifest import canonical_json
@@ -43,30 +43,99 @@ def digest(body):
     return hashlib.sha256(canonical_json(body).encode()).hexdigest()
 
 
-def register_profile(engine, *, revision_id, profile, revision, roles):
-    """Trusted startup configuration only; callers cannot register via selection."""
-    SelectionRequest(request_id=revision_id, profile_revision_id=revision_id,
-                     expected_feature_version=revision, expected_gate_version=1)
+ROLE_CONTRACT_V2 = 'dal.role-contract/2.0'
+
+
+class VersionedRoleContract(Closed):
+    # Absence means the historical contract, never an implicit upgrade.
+    contract_version: Literal['dal.role-contract/2.0'] | None = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def explicit_version(cls, value):
+        if isinstance(value, dict) and 'contract_version' in value and value['contract_version'] is None:
+            raise ValueError('ROLE_CONTRACT_VERSION_INVALID')
+        return value
+
+    @model_serializer(mode='wrap')
+    def preserve_legacy_shape(self, handler):
+        body = handler(self)
+        if self.contract_version is None:
+            body.pop('contract_version', None)
+        return body
+
+
+def validate_profile_roles(profile, roles, contract_version=None):
+    """One exact role policy for registration, configuration and Worker reads.
+
+    Billing is an explicitly supplied classification, not evidence of gateway
+    billing or authentication. This function grants no runtime readiness.
+    """
+    if contract_version not in (None, ROLE_CONTRACT_V2):
+        raise ValueError('ROLE_CONTRACT_VERSION_INVALID')
     if profile not in ('A', 'B') or set(roles) != {'planner', 'coder', 'reviewer'}:
         raise ValueError('PROFILE_INVALID')
-    try:
-        normalized = {k: Role.model_validate(v).model_dump() for k,v in roles.items()}
-    except ValueError:
-        raise ValueError('PROFILE_INVALID') from None
-    if any(normalized[k]['permission'] != 'read_only' for k in ('planner','reviewer')):
+    normalized = {name: Role.model_validate(role).model_dump() for name, role in roles.items()}
+    if any(role['permission'] != ('workspace_write' if name == 'coder' else 'read_only')
+           for name, role in normalized.items()):
         raise ValueError('PROFILE_PERMISSION_INVALID')
-    if normalized['coder']['permission'] != 'workspace_write':
-        raise ValueError('PROFILE_PERMISSION_INVALID')
-    if profile == 'B':
-        for role,model,reasoning in [('planner','gpt-6-astra','medium'), ('coder','gpt-5.6-sol','high'), ('reviewer','gpt-6-astra','medium')]:
-            r = normalized[role]
-            if (r['runtime'], r['provider'], r['model'], r['reasoning'], r['billing']) != ('codex_cli','openai',model,reasoning,'subscription'):
+    if contract_version == ROLE_CONTRACT_V2:
+        if profile != 'B':
+            raise ValueError('PROFILE_VERSION_INVALID')
+        expected = {
+            'planner': ('codex_cli', 'openai', 'gpt-6-astra', 'high'),
+            'coder': ('codex_cli', 'openai', 'gpt-6-astra', 'low'),
+            'reviewer': ('claude_code', 'changhe', 'changhe/ch-g/kimi-k3', 'high'),
+        }
+        for name, role in normalized.items():
+            if tuple(role[k] for k in ('runtime', 'provider', 'model', 'reasoning')) != expected[name]:
+                raise ValueError('PROFILE_B_INVALID')
+            if name != 'reviewer' and role['billing'] != 'subscription':
+                raise ValueError('PROFILE_B_INVALID')
+    elif profile == 'B':
+        for name, model, reasoning in [('planner', 'gpt-6-astra', 'medium'),
+                ('coder', 'gpt-5.6-sol', 'high'), ('reviewer', 'gpt-6-astra', 'medium')]:
+            role = normalized[name]
+            if tuple(role[k] for k in ('runtime', 'provider', 'model', 'reasoning', 'billing')) != (
+                    'codex_cli', 'openai', model, reasoning, 'subscription'):
                 raise ValueError('PROFILE_B_INVALID')
     elif normalized['coder']['runtime'] != 'claude_code':
         raise ValueError('PROFILE_A_INVALID')
     if normalized['coder']['model'] == normalized['reviewer']['model']:
         raise ValueError('SELF_REVIEW_FORBIDDEN')
-    body = dict(profile=profile, revision=revision, roles=normalized, fallback=None)
+    return normalized
+
+
+class ProfileBody(VersionedRoleContract):
+    profile: Literal['A', 'B']
+    revision: Version
+    roles: dict[Literal['planner', 'coder', 'reviewer'], Role]
+    fallback: None
+
+    @model_validator(mode='after')
+    def exact_roles(self):
+        validate_profile_roles(self.profile, self.roles, self.contract_version)
+        return self
+
+
+class ProfileSnapshot(ProfileBody):
+    revision_id: Id
+    input_sha256: Digest
+
+
+def profile_snapshot(profile, *, revision_id, input_sha256):
+    """Validate without reserializing historical role bodies or adding defaults."""
+    body = dict(revision_id=revision_id, input_sha256=input_sha256, **profile)
+    ProfileSnapshot.model_validate(body)
+    return body
+
+
+def register_profile(engine, *, revision_id, profile, revision, roles, **version):
+    """Trusted startup configuration only; callers cannot register via selection."""
+    SelectionRequest(request_id=revision_id, profile_revision_id=revision_id,
+                     expected_feature_version=revision, expected_gate_version=1)
+    body = ProfileBody.model_validate(dict(profile=profile, revision=revision,
+        roles=roles, fallback=None, **version)).model_dump()
     encoded, sha = canonical_json(body), digest(body)
     def work(s):
         old = s.get(WorkflowProfileRevision, revision_id)
@@ -95,7 +164,8 @@ def select_workflow(engine, *, feature_id, actor, body):
         actions = list(s.scalars(select(WorkflowAction).where(WorkflowAction.feature_id==feature_id,
             WorkflowAction.active_attempt_id.is_not(None))))
         if len(actions)!=1: raise ValueError('ACTION_AMBIGUOUS')
-        snapshot = dict(revision_id=p.revision_id, input_sha256=actions[0].input_binding_sha256, **json.loads(p.body))
+        snapshot = profile_snapshot(json.loads(p.body), revision_id=p.revision_id,
+            input_sha256=actions[0].input_binding_sha256)
         snapshot_sha = digest(snapshot)
         if not s.get(ExecutionSnapshot, snapshot_sha):
             s.add(ExecutionSnapshot(sha256=snapshot_sha, revision_id=p.revision_id, body=canonical_json(snapshot)))

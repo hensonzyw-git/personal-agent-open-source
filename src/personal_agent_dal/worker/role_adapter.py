@@ -1,6 +1,10 @@
 """Pinned role launch plans and bounded CLI event decoding. No provider calls."""
 from dataclasses import dataclass, field
 import json
+import shlex
+import os
+import stat
+from copy import deepcopy
 from pathlib import Path
 from personal_agent_dal.worker.supervisor import SupervisorRefusal, verify_executable
 from personal_agent_dal.worker.runtime_mapping import resolve_snapshot
@@ -23,6 +27,7 @@ class LaunchPlan:
     read_roots: tuple[str, ...] = ()
     write_roots: tuple[str, ...] = ()
     task_directories: dict[str, str] = field(default_factory=dict)
+    route_reference: dict | None = None
     admission: dict | None = None
     admission_sha256: str | None = None
 
@@ -31,7 +36,18 @@ def build_plan(context, reservation, pins, adapter_config=None):
     pin=resolve_snapshot(context['snapshot'],context['snapshot_sha256'],pins)[context['execution_role']]
     executable=verify_executable({'executable':pin.executable,'executable_sha256':pin.executable_sha256,'version':pin.version})
     role=pin.configuration
-    route = validate_auth_route(role, adapter_config, context['execution_role']) if adapter_config is not None else {'mode':'none','home':None,'environment':{}}
+    if adapter_config is not None:
+        validate_adapter_config(adapter_config)
+    from personal_agent_dal.worker.reviewer_route import MODE, validate_route
+    configured = adapter_config['roles'][context['execution_role']] if adapter_config else None
+    if configured and configured['mode'] == MODE:
+        if context['snapshot'].get('contract_version') != 'dal.role-contract/2.0':
+            raise SupervisorRefusal('REVIEWER_CONTRACT_REQUIRED')
+        route = validate_route(role, configured, context['execution_role'], reservation, pin.version)
+    else:
+        if context['snapshot'].get('contract_version') == 'dal.role-contract/2.0' and role.provider == 'changhe':
+            raise SupervisorRefusal('REVIEWER_ROUTE_REQUIRED')
+        route = validate_auth_route(role, adapter_config, context['execution_role']) if adapter_config is not None else {'mode':'none','home':None,'environment':{}}
     scratch=Path(reservation['temp'])
     # Read-only roles execute tools in a scratch workspace; source is a read root.
     cwd=reservation['workspace'] if role.permission=='workspace_write' else str(scratch)
@@ -68,9 +84,14 @@ def build_plan(context, reservation, pins, adapter_config=None):
                 'filesystem':{'allowWrite':list(writes),'denyWrite':protected}},
             'permissions':{'additionalDirectories':list(reads)+list(writes),
                 'deny':[rule for path in protected for rule in ('Edit('+path+'/**)','Write('+path+'/**)','Edit('+path+')','Write('+path+')')]}}))
+        if route['mode'] == MODE:
+            settings = json.loads(argv[-1])
+            settings['apiKeyHelper'] = shlex.quote(route['reference']['helper']['path'])
+            argv = (*argv[:-1], json.dumps(settings), '--bare', '--setting-sources', '')
     else: raise SupervisorRefusal('ROLE_RUNTIME_UNSUPPORTED')
     return LaunchPlan(argv,cwd,env,role.runtime,pin.executable_sha256,pin.version,
         auth_route=route['mode'],auth_home=route['home'],read_roots=reads,write_roots=writes,
+        route_reference=deepcopy(route.get('reference')),
         task_directories={name:str(scratch/name) for name in ('scratch','reports','test-copy','cache')})
 
 
@@ -136,16 +157,45 @@ def parse_events(raw, runtime, *, max_steps=64):
 
 def load_adapter_config(path):
     """Public metadata only. Login stores are references, never opened here."""
-    body = json.loads(Path(path).read_text())
-    if not isinstance(body, dict) or set(body) != {'schema','roles'} or body['schema'] != 'dal.role-adapters/1.0':
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > 1024*1024:
+            raise ValueError()
+        with os.fdopen(fd, 'rb', closefd=False) as stream:
+            raw = stream.read(1024*1024+1)
+        after = os.fstat(fd)
+        if (len(raw) > 1024*1024 or len(raw) != before.st_size or
+                (before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
+                (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+            raise ValueError()
+        body = json.loads(raw)
+    except (OSError, ValueError):
+        raise SupervisorRefusal('ADAPTER_CONFIG_INVALID') from None
+    finally:
+        if fd is not None: os.close(fd)
+    validate_adapter_config(body)
+    return body
+
+
+def validate_adapter_config(body):
+    from personal_agent_dal.worker.reviewer_route import MODE, SCHEMA, validate_shape
+    if not isinstance(body, dict) or set(body) != {'schema','roles'} or body['schema'] not in ('dal.role-adapters/1.0', SCHEMA):
         raise SupervisorRefusal('ADAPTER_CONFIG_INVALID')
     if not isinstance(body['roles'], dict) or set(body['roles']) != {'planner','coder','reviewer'}:
         raise SupervisorRefusal('ADAPTER_ROLE_SET_INVALID')
-    for route in body['roles'].values():
-        if not isinstance(route, dict) or set(route) != {'mode','home','environment'}:
-            raise SupervisorRefusal('AUTH_ROUTE_INVALID')
-        if not isinstance(route['environment'], dict): raise SupervisorRefusal('AUTH_ENV_INVALID')
-    return body
+    for name, route in body['roles'].items():
+        if isinstance(route, dict) and route.get('mode') == MODE:
+            if body['schema'] != SCHEMA or name != 'reviewer':
+                raise SupervisorRefusal('AUTH_ROUTE_INVALID')
+            validate_shape(route)
+        else:
+            if not isinstance(route, dict) or set(route) != {'mode','home','environment'}:
+                raise SupervisorRefusal('AUTH_ROUTE_INVALID')
+            if not isinstance(route['environment'], dict): raise SupervisorRefusal('AUTH_ENV_INVALID')
+    if body['schema'] == SCHEMA and body['roles']['reviewer'].get('mode') != MODE:
+        raise SupervisorRefusal('AUTH_ROUTE_INVALID')
 
 
 def validate_auth_route(role, config, name):
