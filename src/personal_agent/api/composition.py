@@ -13,7 +13,7 @@ The refusals here are the ones that keep a credential from leaving this host:
   A URL pointing anywhere else would send those off the machine, so it is
   refused at composition, before a socket exists;
 - **the model endpoint is pinned inside the gateway**, and the gateway is built
-  at boot, so a tampered `GLM_OPENAI_BASE_URL` fails at startup rather than on
+  at boot, so a tampered `MODEL_API_BASE` fails at startup rather than on
   Henson's first message;
 - **an empty tool catalog is a refusal**, because it is what a URL pointing at
   the wrong server looks like.
@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
@@ -52,6 +53,7 @@ from personal_agent.api.control_client import (
 from personal_agent.api.finance_dispatcher import (
     DispatcherContext,
     McpFinanceDispatcher,
+    tool_call_fingerprint,
 )
 from personal_agent.api.orchestrator import (
     CommitFailedSafe,
@@ -62,10 +64,18 @@ from personal_agent.api.orchestrator import (
 )
 from personal_agent.api.intent import WriteIntent
 from personal_agent.api.recovery import FinanceExecutionStatus, recover_pending
+from personal_agent.api.operation_store import (
+    new_traceparent,
+    sweep_timed_out_device_actions,
+)
 from personal_agent.auth.enrollment import decode_device_scopes
 from personal_agent.context.builder import ContextBuilder, ContextEnvelope
 from personal_agent.context.compactor import Compactor
-from personal_agent.context.config import ContextConfig, default_context_config
+from personal_agent.context.config import (
+    ContextConfig,
+    default_context_config,
+    operator_override_from_env,
+)
 from personal_agent.context.continuation import (
     ClarificationContext,
     FinanceRetryContext,
@@ -77,6 +87,7 @@ from personal_agent.keys import (
     load_identifier_key,
     load_service_signing_ring,
 )
+from personal_agent.media.config import MediaConfig
 from personal_agent.mcp_client.core import (
     McpClientCore,
     McpTimeoutError,
@@ -84,16 +95,35 @@ from personal_agent.mcp_client.core import (
     StreamableHttpTransport,
 )
 from personal_agent.mcp_client.registry import ConnectorRegistry, TrustLevel
-from personal_agent.policy.bridge import DeviceAuthorization, GovernedToolBridge
+from personal_agent.policy.bridge import (
+    BridgeCallContext,
+    DeviceAuthorization,
+    GovernedToolBridge,
+)
 from personal_agent.runtime.glm_gateway import (
     declared_context_limit,
     glm_gateway_from_env,
+)
+from personal_agent.runtime.model_providers import (
+    provider_from_env,
+    resolved_model_id,
+)
+from personal_agent.runtime.modality import (
+    ImageCapability,
+    image_capability,
+    master_switch,
+)
+from personal_agent.diagnostics.recording_dispatcher import RecordingDispatcher
+from personal_agent.diagnostics.transcript import (
+    TranscriptRecorder,
+    recorder_from_env,
 )
 from personal_agent.context.compact_state import CheckpointCompactStateProvider
 from personal_agent.context.session_manager import SessionManager
 from personal_agent.runtime.compactor_provider import GlmCompactorProvider
 from personal_agent.runtime.model_gateway import ModelGatewayError
 from personal_agent.runtime.interpreter import ModelInterpreter
+from personal_agent.runtime.model_input import InputPart
 from personal_agent.runtime.prompt import build_system_prompt
 from personal_agent.runtime.session_classifier import GlmBoundaryClassifier
 from personal_agent.runtime.structured import (
@@ -109,7 +139,7 @@ from personal_agent.storage.engine import (
 )
 from personal_agent.storage.models import Device
 from personal_agent_core.errors import AppError, ErrorCode
-from personal_agent_core.host_context import ISSUER
+from personal_agent_core.host_context import HostContext, ISSUER
 from personal_agent_core.manifest import load_manifest
 from personal_agent_core.mcp_protocol import FINANCE_PROTOCOL_VERSIONS
 from personal_agent_core.timeutil import (
@@ -132,6 +162,11 @@ FINANCE_CONNECTOR_ID: Final[str] = "personal-data"
 
 LEDGER_TIMEZONE: Final[str] = "Asia/Shanghai"
 RECOVERY_INTERVAL_SECONDS: Final[float] = 60.0
+
+#: The device-side data channel: the sync route executes this connector tool
+#: through the governed bridge with the authenticated device as the Host
+#: Context caller (`model_callable=False`, so the model never offers it).
+_CALENDAR_INGEST_TOOL: Final[str] = "calendar.ingest_events"
 
 
 class CompositionError(RuntimeError):
@@ -168,6 +203,17 @@ class AgentServiceConfig:
     ledger_url: str | None = None
     dal_resume_config: Path | None = None
 
+    #: `#18`. §4.3's versioned ceilings and the storage root. `None` means the
+    #: media surface is not composed -- §5.4's "缺配置不启用图片" -- and the
+    #: five routes then refuse rather than running half-configured. The store
+    #: is built from it here, because it needs the data keyring and this is the
+    #: one place that has both.
+    media: MediaConfig | None = None
+    v2_device_ids: frozenset[str] = frozenset()
+    v2_execution_enabled: bool = True
+    trip_query_enabled: bool = False
+    search_config: Any = None
+
 
 @dataclass
 class ComposedAgentService:
@@ -177,6 +223,35 @@ class ComposedAgentService:
     bridge: GovernedToolBridge
     catalog_aliases: tuple[str, ...]
     quarantined: tuple[str, ...] = field(default=())
+
+
+def image_capability_from(
+    config: AgentServiceConfig,
+) -> Callable[[], ImageCapability]:
+    """§8's switch, bound to this deployment's provider, model and media surface.
+
+    Built here rather than inside the app layer so there is exactly one place
+    that knows which model is in use. The provider and the model id come from
+    the same resolvers the gateway uses (`provider_from_env`,
+    `resolved_model_id`), so the model the evidence is checked against is the
+    model that will be sent -- a capability computed from a second reading of
+    `MODEL_ID` would be evidence about a model nobody calls.
+
+    The closure re-reads the master switch on every call. The rest cannot move
+    without a restart: the provider, the model id and the composed media
+    surface are all fixed by the time this runs.
+    """
+
+    def capability() -> ImageCapability:
+        provider = provider_from_env()
+        return image_capability(
+            master=master_switch(),
+            provider=provider.name,
+            model_id=resolved_model_id(provider),
+            media_ready=config.media is not None,
+        )
+
+    return capability
 
 
 # --- device state ------------------------------------------------------------
@@ -249,6 +324,8 @@ class DeviceBoundDispatcher:
         trace_id: str,
         enabled_tools: frozenset[str],
         manifest_version: str,
+        client_wire_version: int,
+        trip_query_enabled: bool = False,
         run: Callable[[Any], Any] = asyncio.run,
     ) -> None:
         self._device_id = device_id
@@ -261,6 +338,8 @@ class DeviceBoundDispatcher:
         self._trace_id = trace_id
         self._enabled_tools = enabled_tools
         self._manifest_version = manifest_version
+        self._client_wire_version = client_wire_version
+        self._trip_query_enabled = trip_query_enabled
         self._run = run
 
     def _dispatcher(self) -> McpFinanceDispatcher | None:
@@ -282,16 +361,32 @@ class DeviceBoundDispatcher:
                 user_id=self._user_id,
                 agent_id=self._agent_id,
                 conversation_trace_id=self._trace_id,
+                client_wire_version=self._client_wire_version,
                 timezone=LEDGER_TIMEZONE,
             ),
             run=self._run,
         )
 
-    def resolve(self, *, tool: str, model_args: dict[str, Any]) -> ResolveOutcome:
+    def resolve(
+        self,
+        *,
+        tool: str,
+        model_args: dict[str, Any],
+        idempotency_key: str | None = None,
+        skip_local_dedup: bool = False,
+    ) -> ResolveOutcome:
+        from personal_agent_core.trip_query import uses_trip_query
+        if tool == 'finance.query_expenses' and uses_trip_query(model_args) and (not self._trip_query_enabled or self._client_wire_version < 5):
+            return ResolveFailedSafe(reason='CLIENT_UPGRADE_REQUIRED' if self._client_wire_version < 5 else 'RUNTIME_UNAVAILABLE')
         dispatcher = self._dispatcher()
         if dispatcher is None:
             return ResolveFailedSafe(reason="policy_denied")
-        return dispatcher.resolve(tool=tool, model_args=model_args)
+        return dispatcher.resolve(
+            tool=tool,
+            model_args=model_args,
+            idempotency_key=idempotency_key,
+            skip_local_dedup=skip_local_dedup,
+        )
 
     def commit(
         self,
@@ -433,6 +528,7 @@ def recover_at_startup(
     *,
     now: Callable[[], datetime] = utc_now,
     run: Callable[[Any], Any] = asyncio.run,
+    keyring=None,
 ) -> list[tuple[str, Any]]:
     """Run one projection of Finance truth onto every recoverable operation.
 
@@ -454,6 +550,9 @@ def recover_at_startup(
     would wedge the Agent whenever Finance is down, and guessing would be worse
     than both.
     """
+    if keyring is not None:
+        from personal_agent.runtime.run_repository import RunRepository
+        RunRepository(sessions,keyring).sweep(now_ms=round(now().timestamp()*1000))
     read = _finance_status_reader(control, run)
     with sessions() as session:
         try:
@@ -466,13 +565,49 @@ def recover_at_startup(
                 "recoverable operations are left untouched for the next scan",
                 type(exc).__name__,
             )
-            return []
+            # The control plane being down says nothing about a device report
+            # that never arrived, so the device sweep still runs: its timeout
+            # judgement needs no external read at all.
+            return _sweep_timed_out_device_actions_logged(sessions, now)
         except Exception:
             session.rollback()
             raise
-    for operation_id, plan in results:
-        logger.info("operation recovery: %s -> %s", operation_id, plan.action)
+    results.extend(_sweep_timed_out_device_actions_logged(sessions, now))
+    for operation_id, outcome in results:
+        # A Finance projection logs its plan; a device sweep logs the state it
+        # parked the operation at. Both are "why this row moved".
+        outcome_description = (
+            outcome if isinstance(outcome, str) else outcome.action
+        )
+        logger.info(
+            "operation recovery: %s -> %s", operation_id, outcome_description
+        )
     return results
+
+
+def _sweep_timed_out_device_actions_logged(
+    sessions: Callable[[], Any], now: Callable[[], datetime]
+) -> list[tuple[str, Any]]:
+    """Run the device-report timeout sweep in its own session.
+
+    Separate from the Finance projection's session so a Finance-side failure
+    can never hold a transaction open across the sweep, and the sweep's CAS
+    moves survive independently. Only device-executed tools are touched (the
+    filter is derived from the IR); every Finance operation at
+    `source_in_progress` stays the reconciler's alone.
+    """
+    try:
+        with sessions() as session:
+            settled = sweep_timed_out_device_actions(session, now=now())
+            session.commit()
+    except Exception:
+        logger.exception("device-action timeout sweep failed; retrying next scan")
+        return []
+    for operation_id, target in settled:
+        logger.info(
+            "device action report timed out: %s -> %s", operation_id, target
+        )
+    return settled
 
 
 async def _recover_periodically(
@@ -482,6 +617,7 @@ async def _recover_periodically(
     now: Callable[[], datetime],
     interval_seconds: float,
     stop: asyncio.Event,
+    keyring=None,
 ) -> None:
     """Re-run the recovery projection for the lifetime of the service."""
     while True:
@@ -493,7 +629,7 @@ async def _recover_periodically(
         try:
             # The scan is synchronous SQLite work and its control reads drive
             # their own event loop, so it must not block the API event loop.
-            await asyncio.to_thread(recover_at_startup, sessions, control, now=now)
+            await asyncio.to_thread(recover_at_startup, sessions, control, now=now, keyring=keyring)
         except Exception:
             # A single broken scan must not permanently remove recovery from a
             # long-running service. The next minute retries from durable state.
@@ -519,7 +655,11 @@ async def agent_service(
     *,
     write_switch: WriteSwitch,
     now: Callable[[], datetime] = utc_now,
-    build_gateway: Callable[[], Any] = glm_gateway_from_env,
+    #: `None` builds the production GLM gateway bound to this composition's
+    #: transcript recorder. Tests inject their own zero-argument builder, whose
+    #: gateway records nothing -- the fake is the thing under test, not the
+    #: provider boundary the transcript exists to explain.
+    build_gateway: Callable[[], Any] | None = None,
     build_structured_client: Callable[..., Any] = structured_client_from_env,
     context_config: ContextConfig | None = None,
     recovery_interval_seconds: float = RECOVERY_INTERVAL_SECONDS,
@@ -538,10 +678,14 @@ async def agent_service(
 
     manifest = load_manifest()
     manifest_version = manifest["allowed_tools_version"]
-    enabled = frozenset(
-        tool["name"] for tool in manifest["tools"] if tool["enabled"]
-    )
-    allowlist = _allowlist(config, enabled)
+    # "The service may execute it" and "the model may be offered it" are two
+    # different permissions. The receipt-card category update is enabled for a
+    # deterministic device action and explicitly absent from model context.
+    # Using the model subset for bridge/device policy would make that route
+    # fail in production even though fake-authorizer API tests stayed green.
+    enabled_tools = frozenset(manifest["enabled_tools"])
+    model_callable_tools = frozenset(manifest["model_callable_tools"])
+    allowlist = _allowlist(config, enabled_tools)
 
     # Keys and the model gateway come first: a service that cannot sign, cannot
     # seal or cannot reach the model must fail before it opens a connection.
@@ -554,12 +698,30 @@ async def agent_service(
     # conversation id from an unknown one.
     cursor_key = load_cursor_key()
     identifier_key = load_identifier_key()
-    context_config = context_config or default_context_config()
+    # An injected `context_config` is authoritative (tests, callers that have
+    # already applied overrides). The composed default applies the operator's
+    # environment overrides on top of the code baseline; an invalid value
+    # raises here so a bad tuning fails at startup, never mid-turn.
+    context_config = context_config or default_context_config(
+        operator_override_from_env()
+    )
     # The budget is checked against what the adapter says it can accept, so a
     # ceiling larger than the model's window fails at startup, not mid-turn.
     context_config.require_within_model_limit(declared_context_limit())
+    # The transcript sink, before the gateway that writes to it. A malformed
+    # transcript configuration is a deployment error and fails here; once
+    # running, recording never fails a turn.
     try:
-        gateway = build_gateway()
+        recorder = recorder_from_env(service="api")
+    except (OSError, ValueError) as exc:
+        raise CompositionError(f"the transcript sink could not be built: {exc}") from exc
+    if isinstance(recorder, TranscriptRecorder):
+        # Names the directory, never a record. An operator has to be able to see
+        # that full-fidelity capture is on without reading the files.
+        logger.info("turn transcript enabled dir=%s", recorder.directory)
+    build = build_gateway or (lambda: glm_gateway_from_env(recorder=recorder))
+    try:
+        gateway = build()
         # `CAP-001`. The auxiliary structured model path: the same pinned
         # endpoint as Chat, one declared function per call. Built here beside
         # the gateway so a deployment that cannot reach the model fails at
@@ -567,15 +729,20 @@ async def agent_service(
         # Two clients, not one. The deadline guard keeps a single in-flight
         # call per client, so sharing one would let a background compaction
         # disable classification for every message that arrived while it ran.
-        # They also run on different models and deadlines: classification is in
-        # the request path, compaction is not.
+        # They also run on different models and worker deadlines.  Classification
+        # starts after the response has been anchored; compaction starts only
+        # after its boundary assignment has settled.
         compactor_client = build_structured_client(
-            input_budget_tokens=context_config.hard_limit_tokens
+            input_budget_tokens=context_config.hard_limit_tokens,
+            recorder=recorder,
+            purpose="compactor",
         )
         classifier_client = build_structured_client(
             input_budget_tokens=context_config.hard_limit_tokens,
             timeout=CLASSIFIER_TIMEOUT_SECONDS,
             model_env=CLASSIFIER_MODEL_ENV,
+            recorder=recorder,
+            purpose="session_classifier",
         )
     except (ModelGatewayError, StructuredCallError) as exc:
         # A missing model credential or a tampered endpoint is a deployment
@@ -586,6 +753,20 @@ async def agent_service(
     )
     # The one assembly point for model context.
     context_builder = ContextBuilder(context_config, compactor=compactor)
+    from personal_agent.runtime.input_budget import input_budget_from_env
+    from personal_agent.context.budget import ContextBudgeter
+    from dataclasses import replace
+    v2_input_budget = input_budget_from_env()
+    v2_context_builder = context_builder
+    if v2_input_budget:
+        v2_context_config = replace(context_config, name='adk-200k-v1',
+            hard_limit_tokens=v2_input_budget.limit,
+            soft_limit_tokens=min(160000, v2_input_budget.limit-1),
+            product_ceiling_tokens=v2_input_budget.limit+v2_input_budget.output_limit+4096,
+            reserved_output_tokens=v2_input_budget.output_limit)
+        v2_context_config.require_within_model_limit(declared_context_limit())
+        v2_context_builder = ContextBuilder(v2_context_config, compactor=compactor,
+            budgeter=ContextBudgeter(v2_context_config, estimator=v2_input_budget))
 
     with _engine_for(config.database) as engine:
         sessions = session_factory(engine)
@@ -615,7 +796,7 @@ async def agent_service(
         try:
             # In a worker thread, because the scan is synchronous SQLite work
             # and its control reads drive their own event loop.
-            await asyncio.to_thread(recover_at_startup, sessions, control, now=now)
+            await asyncio.to_thread(recover_at_startup, sessions, control, now=now, keyring=keyring)
             recovery_task = asyncio.create_task(
                 _recover_periodically(
                     sessions,
@@ -623,6 +804,7 @@ async def agent_service(
                     now=now,
                     interval_seconds=recovery_interval_seconds,
                     stop=recovery_stop,
+                    keyring=keyring,
                 ),
                 name="operation-recovery",
             )
@@ -632,7 +814,7 @@ async def agent_service(
                     return device_authorization(
                         session,
                         auth.device_id,
-                        enabled_tools=enabled,
+                        enabled_tools=enabled_tools,
                         manifest_version=manifest_version,
                     )
 
@@ -649,6 +831,7 @@ async def agent_service(
                 user_text: str,
                 clarification_context: ClarificationContext | None,
                 finance_retry_context: FinanceRetryContext | None,
+                input_parts: tuple[InputPart, ...] = (),
             ) -> ContextEnvelope:
                 """Assemble this turn's context (`CAP-001` design §9).
 
@@ -657,10 +840,41 @@ async def agent_service(
                 between anchoring and the model turn therefore sees an envelope
                 with no declarations rather than the catalog it had a moment
                 earlier -- and the write would still be refused downstream.
+
+                `input_parts` are already-authorized bytes (§6) handed down
+                from the caller that read them under the media lock. They
+                travel through this seam rather than being read here for the
+                same reason the tool set is: this function owns assembly, not
+                authorization, and a media read performed inside it would run
+                outside the lock discipline `media_read` exists to keep.
                 """
                 device = device_for(auth)
-                tools = [] if device is None else bridge.visible_tools(device)
-                return context_builder.build(
+                tools = (
+                    []
+                    if device is None
+                    else [
+                        tool
+                        for tool in bridge.visible_tools(device)
+                        if tool.alias in model_callable_tools
+                    ]
+                )
+                if not (config.trip_query_enabled and auth.client_wire_version >= 5):
+                    from dataclasses import replace
+                    import copy
+                    legacy_tools = []
+                    for visible in tools:
+                        if visible.alias == 'finance.query_expenses':
+                            schema = copy.deepcopy(visible.input_schema)
+                            schema['properties'].pop('trip_tag', None)
+                            schema['properties']['view']['enum'] = ['total', 'by_category', 'records']
+                            visible = replace(visible, input_schema=schema)
+                        legacy_tools.append(visible)
+                    tools = legacy_tools
+                from personal_agent.api.runtime_v2 import row as runtime_row
+                from personal_agent.storage.models import ConversationEvent
+                event = session.get(ConversationEvent, current_event_id)
+                is_v2 = event is not None and runtime_row(session, event.operation_id) is not None
+                return (v2_context_builder if is_v2 else context_builder).build(
                     session,
                     keyring,
                     identifier_key,
@@ -668,12 +882,14 @@ async def agent_service(
                     session_id=session_id,
                     current_event_id=current_event_id,
                     system_instruction=build_system_prompt(
-                        today=format_ledger_date(ledger_date(now()))
+                        today=format_ledger_date(ledger_date(now())), runtime_v2=is_v2
                     ),
                     user_text=user_text,
                     effective_tools=tools,
+                    essential_tools=tuple(t.alias for t in tools) if is_v2 else (),
                     clarification_context=clarification_context,
                     finance_retry_context=finance_retry_context,
+                    input_parts=input_parts,
                 )
 
             def compact_session(session, session_id: str) -> None:
@@ -701,7 +917,7 @@ async def agent_service(
                 return authorize
 
             def build_dispatcher(auth: AuthContext, trace_id: str) -> Dispatcher:
-                return DeviceBoundDispatcher(
+                dispatcher = DeviceBoundDispatcher(
                     device_id=auth.device_id,
                     sessions=sessions,
                     bridge=bridge,
@@ -710,15 +926,33 @@ async def agent_service(
                     user_id=config.user_id,
                     agent_id=config.agent_id,
                     trace_id=trace_id,
-                    enabled_tools=enabled,
+                    enabled_tools=enabled_tools,
                     manifest_version=manifest_version,
+                    client_wire_version=auth.client_wire_version,
+                    trip_query_enabled=config.trip_query_enabled,
                 )
+                # Always wrapped, on every composition. A recorder that is
+                # disabled records nothing; a conditional wrap would be one more
+                # path that only production exercises.
+                return RecordingDispatcher(dispatcher, recorder)
+
+            def search_allowed(auth: AuthContext, tool: str) -> bool:
+                device = device_for(auth)
+                search = config.search_config
+                return bool(search and search.enabled and config.v2_execution_enabled
+                    and auth.client_wire_version >= 4 and auth.device_id in config.v2_device_ids
+                    and device is not None and device.status == "active"
+                    and device.allowed_tools_version == manifest_version
+                    and "public_web.read" in device.scopes
+                    and tool in {"search.web", "search.read_page"}
+                    and tool in allowlist and tool in device.allowed_tools
+                    and (tool != "search.read_page" or search.extract_enabled))
 
             def capabilities(auth: AuthContext) -> list[dict[str, Any]]:
                 device = device_for(auth)
                 if device is None:
                     return []
-                return [
+                result = [
                     {
                         "alias": tool.alias,
                         "description": tool.description,
@@ -726,12 +960,78 @@ async def agent_service(
                         "required_scopes": list(tool.required_scopes),
                     }
                     for tool in bridge.visible_tools(device)
+                    if tool.alias in model_callable_tools
                 ]
+
+                from personal_agent_core.tool_ir import SEARCH_WEB,SEARCH_READ_PAGE
+                for tool in (SEARCH_WEB,SEARCH_READ_PAGE):
+                    if search_allowed(auth, tool.name):
+                        result.append({'alias':tool.name,'description':tool.summary,'risk_level':tool.risk_level,'required_scopes':list(tool.required_scopes)})
+                return result
+
+            def sync_ingest(auth: AuthContext, body: dict[str, Any]) -> dict[str, Any]:
+                """Mirror one calendar snapshot batch into the MCP database.
+
+                The device-side data channel (`calendar.ingest_events`): the
+                route has already authenticated the caller and checked the
+                read scope, but the *execution* still crosses the same
+                governed bridge as every other tool call, under a Host Context
+                naming this caller as the device. The bridge's `execute`
+                authorises again -- the stale-manifest and scope gates are
+                proven there -- and the MCP side stamps each mirror row with
+                the signed device identity.
+
+                Runs synchronously on a worker thread: it must not hold any
+                API-side transaction across the MCP call (`CLAUDE.md` §5.2).
+                """
+                device = device_for(auth)
+                if device is None:
+                    raise _no_such_device(auth.device_id)
+                host = HostContext(
+                    agent_id=config.agent_id,
+                    device_id=device.device_id,
+                    user_id=config.user_id,
+                    scopes=tuple(sorted(device.scopes)),
+                    tool=_CALENDAR_INGEST_TOOL,
+                    request_id=str(uuid.uuid4()),
+                    trace_id=new_traceparent(),
+                    idempotency_key=f"calendar-sync-{uuid.uuid4()}",
+                    request_fingerprint=tool_call_fingerprint(
+                        _CALENDAR_INGEST_TOOL, body
+                    ),
+                    allowed_tools_version=device.allowed_tools_version,
+                    timezone="Asia/Shanghai",
+                    # The barrier's protocol version is the header the device
+                    # already sends on every request, read once at the edge and
+                    # signed here. It is never a payload field: the ingest gate
+                    # decides from `client_wire_version` whether this call's own
+                    # arguments may be written, so a device able to state it in
+                    # the payload would be grading its own paper.
+                    client_wire_version=auth.client_wire_version,
+                )
+                execution = asyncio.run(
+                    bridge.execute(
+                        _CALENDAR_INGEST_TOOL,
+                        body,
+                        device,
+                        call_context=BridgeCallContext(
+                            host=host, signing_keys=service_ring
+                        ),
+                    )
+                )
+                return execution.trusted_result
 
             yield ComposedAgentService(
                 deps=AgentApiDeps(
                     session_factory=sessions,
                     dal_resume=dal_resume,
+
+                    v2_input_budget=v2_input_budget,
+                    v2_device_ids=config.v2_device_ids,
+                    v2_execution_enabled=config.v2_execution_enabled,
+                    trip_query_enabled=config.trip_query_enabled,
+                    v2_search_adapter=_search_adapter(config.search_config),
+                    v2_search_allowed=search_allowed,
                     token_ring=token_ring,
                     keyring=keyring,
                     identifier_key=identifier_key,
@@ -753,6 +1053,12 @@ async def agent_service(
                     build_dispatcher=build_dispatcher,
                     build_authorizer=build_authorizer,
                     capabilities=capabilities,
+                    sync_ingest=sync_ingest,
+                    # The same data keyring seals an issued device action onto
+                    # its operation (review R6); the explicit field keeps the
+                    # seal a visible seam instead of an implicit right of every
+                    # `keyring` call site.
+                    action_keyring=keyring,
                     now=now,
                     read_record=record_reader(control),
                     # A device is enrolled against the manifest this service is
@@ -761,6 +1067,22 @@ async def agent_service(
                     enrollment_manifest_version=manifest_version,
                     sync_wait_seconds=config.sync_wait_seconds,
                     ledger_url=ledger_url,
+                    recorder=recorder,
+                    # `#18`. Both or neither, which is why they are read off
+                    # one `config.media`: a store with no limits has no bound
+                    # to enforce, and limits with no store cannot store.
+                    media_store=(
+                        config.media.store(keyring)
+                        if config.media is not None
+                        else None
+                    ),
+                    media_limits=(
+                        config.media.limits() if config.media is not None else None
+                    ),
+                    # `#13`. §8's switch. Recomputing per call rather than
+                    # freezing a verdict is what makes "服务端再次校验" a
+                    # property of the code instead of a promise about a value.
+                    image_capability=image_capability_from(config),
                 ),
                 bridge=bridge,
                 catalog_aliases=aliases,
@@ -801,3 +1123,9 @@ def _no_such_device(device_id: str) -> AppError:
         ErrorCode.TOOL_NOT_ALLOWLISTED,
         internal_detail=f"no device row for {device_id}",
     )
+
+
+def _search_adapter(config):
+    from personal_agent.search.adapter import SearchAdapter,SearchConfig
+    import os
+    return SearchAdapter(config or SearchConfig(),key=os.environ.get('ANYSEARCH_API_KEY'))

@@ -36,10 +36,23 @@ struct Call: Sendable {
     /// Scalar JSON fields are split by type so the recorded call stays Sendable.
     let body: [String: String]
     let booleans: [String: Bool]
+    /// The full request JSON as encoded, for the cross-language contract
+    /// tests that must assert a *field's presence* the scalars do not carry
+    /// (e.g. `snapshot_as_of`, whose absence the real route rejects).
+    /// Re-parsed on access from the retained bytes so the recorded call
+    /// stays Sendable.
+    let rawBody: Data
 
     var idempotencyKey: String? { headers["Idempotency-Key"] }
     func string(_ field: String) -> String? { body[field] }
     func bool(_ field: String) -> Bool? { booleans[field] }
+
+    /// The parsed JSON object, or an empty dict when the body was not JSON.
+    /// Access is confined to tests; a corrupt body reads as empty rather
+    /// than trapping, because the assertion that follows is the point.
+    var rawJSONBody: [String: Any] {
+        (try? JSONSerialization.jsonObject(with: rawBody)) as? [String: Any] ?? [:]
+    }
 }
 
 struct Reply: Sendable {
@@ -174,7 +187,8 @@ final class ChatStub: URLProtocol {
             path: request.url?.path ?? "",
             query: query,
             headers: request.allHTTPHeaderFields ?? [:],
-            decodedBody: Self.decodeBody(request)
+            decodedBody: Self.decodeBody(request),
+            rawBody: Self.readBody(request) ?? Data()
         )
         guard let port = request.url?.port,
               let service = ServiceRegistry.shared.service(port: port)
@@ -184,16 +198,45 @@ final class ChatStub: URLProtocol {
             )
             return
         }
-        let reply = service.handle(call)
-        let response = HTTPURLResponse(
-            url: request.url!,
-            statusCode: reply.status,
-            httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "application/json"]
-        )!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: reply.body)
-        client?.urlProtocolDidFinishLoading(self)
+        // Handle each request off the protocol queue. Synchronous handling
+        // here serialises independent requests behind whatever handler runs
+        // long — the held POST of the trail suite blocked every by-key poll
+        // until it answered, so "polls beside the open POST" could never be
+        // observed, and the suite only passed where machine speed let two
+        // polls sneak in first. A real server answers independent connections
+        // concurrently; the stub must too. Sequential flows are unaffected:
+        // one request in flight at a time cannot tell the difference.
+        //
+        // URLProtocol subclasses are called on a single protocol queue and are
+        // not Sendable; the box scopes that promise to exactly this hop. The
+        // URLProtocol client callbacks themselves are documented thread-safe.
+        let loader = SendableLoader(self)
+        let requestURL = request.url!
+        DispatchQueue.global().async {
+            let reply = service.handle(call)
+            let response = HTTPURLResponse(
+                url: requestURL,
+                statusCode: reply.status,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            loader.client?.urlProtocol(
+                loader.base, didReceive: response, cacheStoragePolicy: .notAllowed
+            )
+            loader.client?.urlProtocol(loader.base, didLoad: reply.body)
+            loader.client?.urlProtocolDidFinishLoading(loader.base)
+        }
+    }
+
+    /// Escapes a URLProtocol subclass through a `@Sendable` dispatch without
+    /// pretending the subclass itself is `Sendable`.
+    private final class SendableLoader: @unchecked Sendable {
+        let base: ChatStub
+        let client: (any URLProtocolClient)?
+        init(_ base: ChatStub) {
+            self.base = base
+            self.client = base.client
+        }
     }
 
     override func stopLoading() {}
@@ -201,9 +244,7 @@ final class ChatStub: URLProtocol {
     /// `URLProtocol` usually hands the body over as a stream rather than as
     /// `httpBody`, and reading only the latter would silently assert against an
     /// empty request. Both are checked.
-    private static func decodeBody(
-        _ request: URLRequest
-    ) -> (strings: [String: String], booleans: [String: Bool]) {
+    private static func readBody(_ request: URLRequest) -> Data? {
         var data = request.httpBody
         if data == nil, let stream = request.httpBodyStream {
             stream.open()
@@ -218,7 +259,13 @@ final class ChatStub: URLProtocol {
             }
             data = collected
         }
-        guard let data, !data.isEmpty,
+        return data
+    }
+
+    private static func decodeBody(
+        _ request: URLRequest
+    ) -> (strings: [String: String], booleans: [String: Bool]) {
+        guard let data = readBody(request), !data.isEmpty,
               let object = try? JSONSerialization.jsonObject(with: data)
                 as? [String: Any]
         else { return ([:], [:]) }
@@ -235,7 +282,8 @@ private extension Call {
         path: String,
         query: [String: String],
         headers: [String: String],
-        decodedBody: (strings: [String: String], booleans: [String: Bool])
+        decodedBody: (strings: [String: String], booleans: [String: Bool]),
+        rawBody: Data
     ) {
         self.init(
             method: method,
@@ -243,7 +291,8 @@ private extension Call {
             query: query,
             headers: headers,
             body: decodedBody.strings,
-            booleans: decodedBody.booleans
+            booleans: decodedBody.booleans,
+            rawBody: rawBody
         )
     }
 }
@@ -287,6 +336,9 @@ func chatReceipt(
     cancelRequested: Bool = false,
     clientDetached: Bool = false,
     tool: Any = NSNull(),
+    // Present and null by default, which is the server's own shape: it always
+    // emits the key, and emits null exactly when no tool was recorded.
+    domain: Any = NSNull(),
     recordID: Any = NSNull(),
     failureReason: Any = NSNull(),
     duplicateCheckID: Any = NSNull(),
@@ -298,6 +350,7 @@ func chatReceipt(
         "cancel_requested": cancelRequested,
         "client_detached": clientDetached,
         "tool": tool,
+        "domain": domain,
         "record_id": recordID,
         "failure_reason": failureReason,
         "duplicate_check_id": duplicateCheckID,
@@ -350,26 +403,127 @@ func makeChatSession(
         baseURL: service.baseURL,
         session: URLSession(configuration: configuration)
     )
-    return DeviceSession(client: client, store: store, now: {
+    return DeviceSession(client: client, store: store, identityFactory: .softwareForTests, now: {
         Date(timeIntervalSince1970: 1_000)
     })
 }
 
 /// An enrolled session plus a bound Timeline, which is the state every chat test
 /// starts from. Sleeping is a no-op so the poll schedule costs no wall time.
+/// Pass a real `Task.sleep`-backed closure when a test depends on cancellation
+/// landing *during* a wait, which a no-op sleep cannot observe.
 func makeChat(
     service: Service,
     store: CredentialStore = InMemoryCredentialStore(),
+    deviceActionExecutor: DeviceActionExecuting? = nil,
     bind: Bool = true,
-    pollDelays: [Duration] = Array(repeating: .zero, count: 4)
+    pollDelays: [Duration] = Array(repeating: .zero, count: 4),
+    sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in }
 ) async throws -> (ChatTimeline, DeviceSession, CredentialStore) {
     let session = try makeChatSession(service: service, store: store)
     _ = try await session.enroll(code: "code", displayName: "iPhone")
     let chat = ChatTimeline(
-        backend: session, store: store, pollDelays: pollDelays, sleep: { _ in }
+        backend: session, store: store, deviceActionExecutor: deviceActionExecutor,
+        pollDelays: pollDelays, sleep: sleep
     )
     if bind { await chat.bind(conversationID: chatTimelineID) }
     return (chat, session, store)
+}
+
+// --- `G1`: the business fields, and what must never reach the card ---------------
+
+@Suite("The G1 receipt record")
+struct ReceiptRecordTests {
+    private func receipt(record: Any?) throws -> OperationReceipt {
+        var body = chatReceipt(
+            "succeeded", tool: "finance.log_expense", recordID: "rec-1"
+        )
+        if let record { body["record"] = record }
+        return try JSONDecoder().decode(
+            OperationReceipt.self, from: chatJSON(body)
+        )
+    }
+
+    private func aRecord(_ overrides: [String: Any] = [:]) -> [String: Any] {
+        var record: [String: Any] = [
+            "name": "午饭",
+            "amount_cny": "38.50",
+            "occurred_on": "2026-08-15",
+            "is_family_expense": false,
+            "category": "餐饮",
+        ]
+        for (key, value) in overrides { record[key] = value }
+        return record
+    }
+
+    @Test("a receipt with no record is still a proven write")
+    func noRecordIsStillRecorded() throws {
+        // The `idempotent_replay` shape, and every receipt written before `G1`.
+        // The card falls back to its status row; the write is still proven.
+        let parsed = try receipt(record: nil)
+        #expect(parsed.record == nil)
+        #expect(parsed.outcome.provesWrite)
+    }
+
+    @Test("a malformed record costs the card its fields, never the receipt")
+    func malformedRecordFailsClosedOnFieldsOnly() throws {
+        // The asymmetry that matters: a bad *presentation* payload must not turn
+        // a committed ledger write into a failure the user is invited to retry.
+        for broken in [
+            aRecord(["amount_cny": 38.5]),          // money as a float
+            aRecord(["is_family_expense": "true"]), // the flag as a string
+            aRecord(["name": ""]),                  // an empty required field
+            aRecord(["category": ""]),              // empty is not the same as null
+        ] {
+            let parsed = try receipt(record: broken)
+            #expect(parsed.record == nil)
+            #expect(parsed.outcome.provesWrite, "the write is proven by record_id")
+        }
+    }
+
+    @Test("a missing family flag is refused, never defaulted to personal")
+    func missingFamilyFlagIsRefused() throws {
+        var record = aRecord()
+        record.removeValue(forKey: "is_family_expense")
+        // Defaulting to `false` would silently redraw a family expense as a
+        // personal one -- the single field where a wrong default states a wrong
+        // accounting fact rather than an incomplete one.
+        #expect(try receipt(record: record).record == nil)
+    }
+
+    @Test("money is never parsed, so it is never re-rendered")
+    func moneyStaysTheLedgersOwnText() throws {
+        let record = try #require(
+            try receipt(record: aRecord(["amount_cny": "0.10"])).record
+        )
+        // Not 0.1, and not 0.10000000000000001.
+        #expect(record.amount == "0.10")
+    }
+
+    @Test("a record on a receipt that proves nothing never reaches the card")
+    func recordWithoutEvidenceIsNotShown() throws {
+        // A `succeeded` for a governed write with no `record_id` is already
+        // `.indeterminate`. Business fields alongside it must not create a
+        // second route by which the card claims a write.
+        var body = chatReceipt("succeeded", tool: "finance.log_expense")
+        body["record"] = aRecord()
+        let parsed = try JSONDecoder().decode(
+            OperationReceipt.self, from: chatJSON(body)
+        )
+        #expect(!parsed.outcome.provesWrite)
+        if case .recorded = parsed.outcome {
+            Issue.record("fields promoted an unproven write to a receipt")
+        }
+    }
+
+    @Test("a category outside the ledger's options is never sent")
+    func unknownCategoryIsRefusedBeforeTheNetwork() {
+        #expect(ExpenseCategory.isKnown("餐饮"))
+        // The connector creates no select option, so this would be a refused
+        // write; refusing locally keeps a governed write from being spent on it.
+        #expect(!ExpenseCategory.isKnown("咖啡"))
+        #expect(!ExpenseCategory.isKnown(""))
+    }
 }
 
 // --- the chatReceipt projection: no success from prose ---------------------------
@@ -387,7 +541,7 @@ struct OperationReceiptTests {
                 "succeeded", tool: "finance.log_expense", recordID: "rec-42"
             )
         )
-        #expect(parsed.outcome == .recorded(recordID: "rec-42", tool: "finance.log_expense"))
+        #expect(parsed.outcome == .recorded(recordID: "rec-42", tool: "finance.log_expense", record: nil))
         #expect(parsed.outcome.provesWrite)
     }
 
@@ -606,7 +760,9 @@ struct OperationReceiptTests {
         )
         #expect(
             parsed.outcome
-                == .needsManualReview(reason: "SOURCE_COMMIT_UNKNOWN", recordID: "rec-7")
+                == .needsManualReview(
+                    reason: "SOURCE_COMMIT_UNKNOWN", recordID: "rec-7", domain: nil
+                )
         )
         #expect(!parsed.outcome.releasesPendingSlot)
         #expect(!parsed.outcome.provesWrite)
@@ -667,7 +823,7 @@ struct TimelineEventTests {
         #expect(
             parsed.kind
                 == .operationResult(
-                    outcome: .recorded(recordID: "rec-42", tool: nil),
+                    outcome: .recorded(recordID: "rec-42", tool: nil, record: nil),
                     state: .succeeded,
                     toolEvidence: .unknown
                 )
@@ -842,10 +998,278 @@ struct TimelineEventTests {
         #expect(parsed.kind == .unrecognised(eventType: "duplicate_decision"))
     }
 
+    @Test("a category correction marker carries the verified current row")
+    func categoryCorrectionMarker() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-category",
+                type: "expense_category_corrected",
+                content: [
+                    "record_id": "rec-42",
+                    "record": [
+                        "name": "午饭",
+                        "amount_cny": "38.50",
+                        "occurred_on": "2026-08-15",
+                        "is_family_expense": false,
+                        "category": "购物",
+                        "category_updated_at": "2026-08-15T02:31:00Z",
+                    ],
+                ]
+            )
+        )
+        guard case .expenseCategoryCorrected(let recordID, let record) = parsed.kind else {
+            Issue.record("expected a category correction, got \(parsed.kind)")
+            return
+        }
+        #expect(recordID == "rec-42")
+        #expect(record.category == "购物")
+        #expect(record.categoryUpdatedAt == "2026-08-15T02:31:00Z")
+    }
+
+    @Test("a category marker without a verified edit timestamp is unreadable")
+    func categoryCorrectionNeedsTimestamp() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-category-bad",
+                type: "expense_category_corrected",
+                content: [
+                    "record_id": "rec-42",
+                    "record": [
+                        "name": "午饭",
+                        "amount_cny": "38.50",
+                        "occurred_on": "2026-08-15",
+                        "is_family_expense": false,
+                        "category": "购物",
+                    ],
+                ]
+            )
+        )
+        #expect(
+            parsed.kind
+                == .unrecognised(eventType: "expense_category_corrected")
+        )
+    }
+
     @Test("an unknown chatEvent type stays visible instead of vanishing")
     func unknownEventType() throws {
         let parsed = try decode(chatEvent("ev-6", type: "teleport", content: [:]))
         #expect(parsed.kind == .unrecognised(eventType: "teleport"))
+    }
+
+    @Test("a daily review event carries its frozen snapshot")
+    func dailyReviewEvent() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-review",
+                type: "daily_review",
+                content: [
+                    "review_id": "rev-1",
+                    "review_date": "2026-07-25",
+                    "item_count": 1,
+                    "items": [
+                        [
+                            "record_id": "recA",
+                            "tool": "finance.log_expense",
+                            "committed_at": "2026-07-25T06:00:00+00:00",
+                            "table_kind": "expense",
+                            "values": ["name": "咖啡", "amount": "18.00"],
+                        ]
+                    ],
+                ]
+            )
+        )
+        guard case .dailyReview(let snapshot) = parsed.kind else {
+            Issue.record("expected a daily review card, got \(parsed.kind)")
+            return
+        }
+        #expect(snapshot.reviewID == "rev-1")
+        #expect(snapshot.reviewDate == "2026-07-25")
+        #expect(snapshot.itemCount == 1)
+        #expect(snapshot.items.count == 1)
+        #expect(snapshot.items[0].recordID == "recA")
+        #expect(snapshot.items[0].values?["amount"] == .string("18.00"))
+    }
+
+    @Test("a daily review event without a review id is unreadable, not blank")
+    func dailyReviewNeedsIdentity() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-review-bad",
+                type: "daily_review",
+                content: ["review_date": "2026-07-25", "item_count": 0, "items": []]
+            )
+        )
+        #expect(parsed.kind == .unrecognised(eventType: "daily_review"))
+    }
+
+    @Test("a risk report event carries its frozen snapshot")
+    func riskReportEvent() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-risk",
+                type: "risk_report",
+                content: [
+                    "as_of": "2026-08-22",
+                    "state": "NORMAL",
+                    "mbs": 35.0,
+                    "css": 40.0,
+                    "afrs": 60.0,
+                    "action": "持仓观察",
+                ]
+            )
+        )
+        guard case .riskReport(let snapshot) = parsed.kind else {
+            Issue.record("expected a risk report card, got \(parsed.kind)")
+            return
+        }
+        #expect(snapshot.asOf == "2026-08-22")
+        #expect(snapshot.state == "NORMAL")
+        #expect(snapshot.mbs == 35.0)
+        #expect(snapshot.css == 40.0)
+        #expect(snapshot.afrs == 60.0)
+        #expect(snapshot.action == "持仓观察")
+    }
+
+    @Test("a risk report event tolerates absent scores and action")
+    func riskReportAbsentScores() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-risk-null",
+                type: "risk_report",
+                content: ["as_of": "2026-08-22", "state": "DELEVERAGING"]
+            )
+        )
+        guard case .riskReport(let snapshot) = parsed.kind else {
+            Issue.record("expected a risk report card, got \(parsed.kind)")
+            return
+        }
+        #expect(snapshot.mbs == nil)
+        #expect(snapshot.css == nil)
+        #expect(snapshot.afrs == nil)
+        #expect(snapshot.action == nil)
+    }
+
+    @Test("a risk report event without as_of is unreadable, not blank")
+    func riskReportNeedsAsOf() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-risk-bad",
+                type: "risk_report",
+                content: ["state": "NORMAL", "mbs": 35.0]
+            )
+        )
+        #expect(parsed.kind == .unrecognised(eventType: "risk_report"))
+    }
+
+    @Test("a risk report event carries its indicator breakdown")
+    func riskReportComponents() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-risk-comp",
+                type: "risk_report",
+                content: [
+                    "as_of": "2026-08-22",
+                    "state": "NORMAL",
+                    "rates_credit": 65.0,
+                    "components": [
+                        "mbs": [
+                            ["label": "VIX", "value": "16.0", "band": "green"],
+                            ["label": "广度（>200日均线）", "value": "68.4%", "band": "green"],
+                        ],
+                        "css": [
+                            ["label": "AI 篮子", "value": "警戒", "band": "orange"],
+                        ],
+                        "rates_credit": [
+                            ["label": "10Y 美债收益率", "value": "4.80%", "band": "orange"],
+                        ],
+                    ],
+                ]
+            )
+        )
+        guard case .riskReport(let snapshot) = parsed.kind else {
+            Issue.record("expected a risk report card, got \(parsed.kind)")
+            return
+        }
+        let components = try #require(snapshot.components)
+        #expect(components.mbs.count == 2)
+        #expect(components.mbs[0].label == "VIX")
+        #expect(components.mbs[0].value == "16.0")
+        #expect(components.mbs[0].band == "green")
+        #expect(components.mbs[1].value == "68.4%")
+        #expect(components.css.count == 1)
+        #expect(components.css[0].label == "AI 篮子")
+        #expect(components.css[0].value == "警戒")
+        #expect(components.css[0].band == "orange")
+        #expect(snapshot.ratesCredit == 65.0)
+        #expect(components.ratesCredit?.count == 1)
+        #expect(components.ratesCredit?[0].label == "10Y 美债收益率")
+    }
+
+    @Test("a malformed components degrades to a score-only card, not unrecognised")
+    func riskReportMalformedComponents() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-risk-bad-comp",
+                type: "risk_report",
+                content: [
+                    "as_of": "2026-08-22",
+                    "state": "NORMAL",
+                    "mbs": 35.0,
+                    "components": [
+                        "mbs": [["label": "VIX", "value": "16.0", "band": 123]],
+                    ],
+                ]
+            )
+        )
+        guard case .riskReport(let snapshot) = parsed.kind else {
+            Issue.record("expected a risk report card, got \(parsed.kind)")
+            return
+        }
+        #expect(snapshot.asOf == "2026-08-22")
+        #expect(snapshot.mbs == 35.0)
+        #expect(snapshot.components == nil)  // malformed -> score-only, not a crash
+    }
+
+    @Test("a risk report event carries its data-quality flag")
+    func riskReportQualityStatus() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-risk-quality",
+                type: "risk_report",
+                content: [
+                    "as_of": "2026-08-22",
+                    "state": "NORMAL",
+                    "quality_status": "data_quality_warning",
+                ]
+            )
+        )
+        guard case .riskReport(let snapshot) = parsed.kind else {
+            Issue.record("expected a risk report card, got \(parsed.kind)")
+            return
+        }
+        #expect(snapshot.qualityStatus == "data_quality_warning")
+    }
+
+    @Test("a risk report event carries freshness and anomaly flags")
+    func riskReportFreshnessAndAnomaly() throws {
+        let parsed = try decode(
+            chatEvent(
+                "ev-risk-stale",
+                type: "risk_report",
+                content: [
+                    "as_of": "2026-08-22",
+                    "state": "NORMAL",
+                    "stale_days": 10,
+                    "anomalous": true,
+                ]
+            )
+        )
+        guard case .riskReport(let snapshot) = parsed.kind else {
+            Issue.record("expected a risk report card, got \(parsed.kind)")
+            return
+        }
+        #expect(snapshot.staleDays == 10)
+        #expect(snapshot.anomalous == true)
     }
 
     @Test("a non-string where text belongs is unreadable, not blank")
@@ -886,7 +1310,7 @@ struct ChatSendTests {
 
         let final = try await chat.send(text: "咖啡 18 个人支出")
 
-        #expect(final.outcome == .recorded(recordID: "rec-42", tool: "finance.log_expense"))
+        #expect(final.outcome == .recorded(recordID: "rec-42", tool: "finance.log_expense", record: nil))
         #expect(service.chatPosts.count == 1)
         #expect(service.chatPosts.first?.idempotencyKey?.isEmpty == false)
         #expect(service.chatPosts.first?.string("conversation_id") == chatTimelineID)
@@ -944,7 +1368,7 @@ struct ChatSendTests {
         }
 
         let resumed = try await chat.resume()
-        #expect(resumed?.outcome == .recorded(recordID: "rec-42", tool: "finance.log_expense"))
+        #expect(resumed?.outcome == .recorded(recordID: "rec-42", tool: "finance.log_expense", record: nil))
 
         let keys = Set(service.chatPosts.compactMap(\.idempotencyKey))
         #expect(service.chatPosts.count == 2)
@@ -1096,6 +1520,7 @@ struct ChatSendTests {
                     chatReceipt(
                         "needs_manual_review",
                         tool: "finance.log_expense",
+                        domain: "finance",
                         recordID: "rec-42",
                         failureReason: "RECEIPT_MISMATCH"
                     )
@@ -1109,7 +1534,7 @@ struct ChatSendTests {
         #expect(
             review.outcome
                 == .needsManualReview(
-                    reason: "RECEIPT_MISMATCH", recordID: "rec-42"
+                    reason: "RECEIPT_MISMATCH", recordID: "rec-42", domain: "finance"
                 )
         )
         #expect(try store.read(CredentialKey.pendingChatSend) != nil)
@@ -1155,7 +1580,7 @@ struct ChatSendTests {
         #expect(try store.read(CredentialKey.pendingChatSend) == nil)
 
         let answered = try await chat.send(text: "个人", clarificationOf: "op-1")
-        #expect(answered.outcome == .recorded(recordID: "rec-43", tool: "finance.log_expense"))
+        #expect(answered.outcome == .recorded(recordID: "rec-43", tool: "finance.log_expense", record: nil))
         #expect(service.chatPosts.count == 2)
         #expect(service.chatPosts[1].string("clarification_of") == "op-1")
         #expect(
@@ -1457,12 +1882,33 @@ private struct ReceiptVectors {
         let expectedSettled: Bool
         let expectedReleasesPending: Bool
         let expectedCancellation: String
+        /// The domain the *server* wrote into this receipt, read straight off the
+        /// vector's own body. It is a fact the server derived from the tool's IR
+        /// contract, and the client must decode that exact value: the 人工核对
+        /// card's wording is chosen by it.
+        let domain: String?
+        /// What the phone reported, when the case declares it (v8). Present only
+        /// on the calendar-write cases, and `nil` on the one that predates the
+        /// server emitting the field -- which is itself the case that matters:
+        /// history must render without it, as `unstated`.
+        let deviceEvidence: String?
+        /// The action id an override of this receipt must name, or `null` when
+        /// 「仍要创建」 may not be answered at all (v9). The server states it once,
+        /// from `may_override`; the client asserts its own decision against it.
+        let expectedOverrideActionID: String?
     }
 
     let contract: String
     let operationStates: [String]
     let recordEvidenceTools: [String]
     let queryEvidenceTools: [String]
+    let calendarQueryEvidenceTools: [String]
+    let deviceExecutedTools: [String]
+    /// The one device tool whose duplicates the user may override (v9). The
+    /// server's `CALENDAR_DEVICE_TOOL` and the client's `calendarDeviceTool` are
+    /// two names for it, and this holds them equal.
+    let overrideTool: String
+    let expenseCategories: [String]
     let cases: [Case]
 
     static func load() -> ReceiptVectors? {
@@ -1500,7 +1946,11 @@ private struct ReceiptVectors {
                 expectedProvesWrite: provesWrite,
                 expectedSettled: settled,
                 expectedReleasesPending: releasesPending,
-                expectedCancellation: cancellation
+                expectedCancellation: cancellation,
+                domain: (chatReceipt as? [String: Any])?["domain"] as? String,
+                deviceEvidence: entry["expected_device_evidence"] as? String,
+                expectedOverrideActionID: entry["expected_override_action_id"]
+                    as? String
             )
         }
         return ReceiptVectors(
@@ -1508,6 +1958,11 @@ private struct ReceiptVectors {
             operationStates: root["operation_states"] as? [String] ?? [],
             recordEvidenceTools: root["record_evidence_tools"] as? [String] ?? [],
             queryEvidenceTools: root["query_evidence_tools"] as? [String] ?? [],
+            calendarQueryEvidenceTools: root["calendar_query_evidence_tools"]
+                as? [String] ?? [],
+            deviceExecutedTools: root["device_executed_tools"] as? [String] ?? [],
+            overrideTool: root["override_tool"] as? String ?? "",
+            expenseCategories: root["expense_categories"] as? [String] ?? [],
             cases: cases
         )
     }
@@ -1520,8 +1975,14 @@ private func label(_ outcome: OperationOutcome) -> String {
     case .needsClarification: return "needs_clarification"
     case .needsDuplicateDecision: return "needs_duplicate_decision"
     case .recorded: return "recorded"
+    case .calendarEventWritten: return "calendar_event_written"
     case .answered: return "answered"
-    case .answeredWithQuery: return "answered_with_query"
+    case .answeredV2: return "answered_v2"
+    case .answeredWithQuery, .answeredWithCalendarQuery:
+        // One wire name for "a succeeded governed read with a structured card":
+        // which card is the client's own business, and the server states only
+        // that the read produced a projectable result.
+        return "answered_with_query"
     case .failedSafe: return "failed_safe"
     case .needsManualReview: return "needs_manual_review"
     case .cancelledBeforeSubmit: return "cancelled_before_submit"
@@ -1545,7 +2006,7 @@ struct ReceiptContractTests {
     @Test("the vector file is the one this build was written against")
     func contractVersion() throws {
         let vectors = try #require(vectors)
-        #expect(vectors.contract == "chat_receipt_projection_v4")
+        #expect(vectors.contract == "chat_receipt_projection_v9")
         #expect(!vectors.cases.isEmpty)
     }
 
@@ -1570,6 +2031,88 @@ struct ReceiptContractTests {
         #expect(Set(vectors.recordEvidenceTools) == OperationReceipt.recordEvidenceTools)
     }
 
+    @Test("the 分类 picker offers exactly the ledger's own options")
+    func expenseCategoriesMatch() throws {
+        // The connector never creates a select option, so an option this client
+        // invented would be a refused write rather than a new category. The
+        // vector is what holds the picker and the ledger equal.
+        let vectors = try #require(vectors)
+        #expect(vectors.expenseCategories == ExpenseCategory.all)
+    }
+
+    @Test("every business field the server sends decodes onto the card")
+    func recordFieldsDecode() throws {
+        let vectors = try #require(vectors)
+        let entry = try #require(
+            vectors.cases.first { $0.name == "expense_recorded_with_fields" }
+        )
+        let receipt = try JSONDecoder().decode(
+            OperationReceipt.self, from: entry.chatReceipt
+        )
+        let record = try #require(receipt.record)
+        #expect(record.name == "午饭")
+        #expect(record.amount == "38.50")
+        #expect(record.occurredOn == "2026-08-15")
+        #expect(record.isFamilyExpense == false)
+        #expect(record.category == "餐饮")
+        #expect(record.personalSpend == "38.50")
+        // And it reaches the card through the outcome, not only the receipt.
+        #expect(
+            receipt.outcome
+                == .recorded(
+                    recordID: "recXXXXXXXXXXXX",
+                    tool: "finance.log_expense",
+                    record: record
+                )
+        )
+    }
+
+    @Test("a family expense keeps 原始金额 and 个人支出 apart")
+    func familyRecordKeepsBothAmounts() throws {
+        let vectors = try #require(vectors)
+        let entry = try #require(
+            vectors.cases.first { $0.name == "family_expense_recorded_with_fields" }
+        )
+        let record = try #require(
+            try JSONDecoder()
+                .decode(OperationReceipt.self, from: entry.chatReceipt).record
+        )
+        #expect(record.isFamilyExpense)
+        #expect(record.amount == "2000.00")
+        // The Base formula's answer, never re-derived on this side.
+        #expect(record.personalSpend == "1000.00")
+    }
+
+    @Test("an edited category is marked and drops the stale formula value")
+    func editedRecordIsMarked() throws {
+        let vectors = try #require(vectors)
+        let entry = try #require(
+            vectors.cases.first { $0.name == "expense_category_edited" }
+        )
+        let record = try #require(
+            try JSONDecoder()
+                .decode(OperationReceipt.self, from: entry.chatReceipt).record
+        )
+        #expect(record.categoryUpdatedAt != nil)
+        // 个人支出 may depend on 分类; a carried-over value would put a number on
+        // the card the ledger may no longer agree with.
+        #expect(record.personalSpend == nil)
+    }
+
+    @Test("a refund carries no category and keeps its negative amount")
+    func refundRecordHasNoCategory() throws {
+        let vectors = try #require(vectors)
+        let entry = try #require(
+            vectors.cases.first { $0.name == "refund_recorded_without_category" }
+        )
+        let record = try #require(
+            try JSONDecoder()
+                .decode(OperationReceipt.self, from: entry.chatReceipt).record
+        )
+        #expect(record.category == nil)
+        #expect(record.amount == "-880.00")
+    }
+
     @Test("the query-evidence tool set matches the server's")
     func queryEvidenceToolsMatch() throws {
         // The server's set is IR-derived; the client's is hard-coded. The vector
@@ -1577,6 +2120,179 @@ struct ReceiptContractTests {
         // here before it reaches a user.
         let vectors = try #require(vectors)
         #expect(Set(vectors.queryEvidenceTools) == OperationReceipt.queryEvidenceTools)
+    }
+
+    @Test("the calendar query-evidence tool set matches the server's")
+    func calendarQueryEvidenceToolsMatch() throws {
+        let vectors = try #require(vectors)
+        #expect(
+            Set(vectors.calendarQueryEvidenceTools)
+                == OperationReceipt.calendarQueryEvidenceTools
+        )
+        // Two sets, and never one tool in both: a result decoded as the wrong
+        // domain's card is the failure this separation exists to prevent.
+        #expect(
+            OperationReceipt.queryEvidenceTools
+                .isDisjoint(with: OperationReceipt.calendarQueryEvidenceTools)
+        )
+    }
+
+    @Test("the device-executed tool set matches the server's")
+    func deviceExecutedToolsMatch() throws {
+        // The server's set is IR-derived; the client's is hard-coded, and it is
+        // what decides whether a success draws the calendar card or the ledger
+        // receipt. The vector holds them equal, so a second device tool cannot
+        // ship a receipt this build renders as a ledger row.
+        let vectors = try #require(vectors)
+        #expect(Set(vectors.deviceExecutedTools) == OperationReceipt.deviceExecutedTools)
+        // A device tool is still an R2 write whose receipt must carry evidence;
+        // the sets overlap by design and neither is a subset of the other's
+        // complement. What they must not do is disagree about `record_id`.
+        #expect(
+            OperationReceipt.deviceExecutedTools
+                .isSubset(of: OperationReceipt.recordEvidenceTools)
+        )
+    }
+
+    @Test("a calendar receipt reports what the phone decided, or says it does not know")
+    func calendarEvidenceIsDecodedAsDeclared() throws {
+        // The three-way distinction the 2026-09-10 review found missing: a
+        // `created` and a `duplicate` are both successes, and a receipt that
+        // predates the field is neither. Reading the third as one of the first
+        // two is how a card ends up offering a button it must not.
+        let vectors = try #require(vectors)
+        var seen = Set<String>()
+        for vectorCase in vectors.cases {
+            guard vectorCase.expectedOutcome == "calendar_event_written" else {
+                continue
+            }
+            let receipt = try JSONDecoder().decode(
+                OperationReceipt.self, from: vectorCase.chatReceipt
+            )
+            let declared = try #require(vectorCase.deviceEvidence)
+            seen.insert(declared)
+            guard
+                case .calendarEventWritten(let eventID, _, let evidence, _) =
+                    receipt.outcome
+            else {
+                Issue.record("\(vectorCase.name): not the calendar card")
+                continue
+            }
+            // The event id is the evidence the write happened, and it is the
+            // same field the ledger receipt would have shown.
+            #expect(eventID == receipt.recordID)
+            #expect(evidence.terminalLabel == CalendarDeviceResult(wire: declared).terminalLabel)
+        }
+        // All three must be covered by the file, or the distinction is asserted
+        // only where it is easy.
+        #expect(seen == ["created", "duplicate", "unstated"])
+    }
+
+    @Test("a calendar receipt never names the ledger")
+    func calendarReceiptCopyNeverSaysLedger() {
+        // The defect, stated as the assertion that would have caught it. The
+        // 2026-09-10 review found a created calendar event rendering
+        // 「账本已存在此记录」 beside a 打开飞书账本 link.
+        for evidence in [CalendarDeviceResult.created, .duplicate, .unstated] {
+            #expect(!evidence.terminalLabel.contains("账本"))
+            #expect(!evidence.terminalLabel.isEmpty)
+        }
+        #expect(
+            Set([CalendarDeviceResult.created, .duplicate, .unstated].map(\.terminalLabel))
+                .count == 3,
+            "two outcomes share a label, so the card would not distinguish them"
+        )
+    }
+
+    @Test("the calendar domain the card forks on is the server's own value")
+    func calendarDomainMatchesTheServer() throws {
+        // `ManualReviewCopy.forDomain` compares against a literal in this
+        // package, and the server derives its domain string from the tool's IR
+        // contract. The vector is the only place the two meet: without this the
+        // client could spell it "cal" and every test would still pass while no
+        // calendar card was ever drawn -- the fork would fail open, silently, to
+        // the ledger copy.
+        let vectors = try #require(vectors)
+        let review = try #require(
+            vectors.cases.first { $0.name == "calendar_manual_review_keeps_record" }
+        )
+        #expect(review.domain == OperationReceipt.calendarDomain)
+        // Every calendar tool must share one domain string, or the fork would
+        // cover the write and miss the read. The query case is the other
+        // calendar tool the vector carries.
+        let query = try #require(
+            vectors.cases.first { $0.name == "calendar_query_list_card" }
+        )
+        #expect(query.domain == review.domain)
+        // The ledger's own case, for the other direction: it must not be the
+        // value this build forks on.
+        let ledger = try #require(
+            vectors.cases.first { $0.name == "manual_review_keeps_record" }
+        )
+        #expect(ledger.domain != OperationReceipt.calendarDomain)
+        #expect(ManualReviewCopy.forDomain(ledger.domain) == .ledger)
+    }
+
+    @Test("the list card renders the rows the server's own summary renders")
+    func calendarCardMatchesTheServersSummary() throws {
+        // The two sides render from the same fields by hand-kept rules (design
+        // §13 step 6), so the vector's `answer` -- which the *server* produced
+        // from those fields -- is the only thing here that can catch a drift.
+        // The summary shows three lines and a total; the card shows all of the
+        // page. Those three must be character-identical.
+        let vectors = try #require(vectors)
+        let entry = try #require(
+            vectors.cases.first { $0.name == "calendar_query_list_card" }
+        )
+        let receipt = try JSONDecoder().decode(
+            OperationReceipt.self, from: entry.chatReceipt
+        )
+        guard case .answeredWithCalendarQuery(let result, let tool) = receipt.outcome
+        else {
+            Issue.record("expected the calendar list card, got \(receipt.outcome)")
+            return
+        }
+        #expect(tool == "calendar.query_events")
+        #expect(result.recordCount == 4)
+        #expect(result.nextCursor == nil)
+        #expect(!result.mirrorStale)
+        #expect(result.sourceSystem == "apple_calendar_mirror")
+        let answer = try #require(receipt.answer)
+        #expect(answer.hasSuffix("数据截至 \(result.dataAsOf)"))
+        for row in result.events.prefix(3) {
+            #expect(
+                answer.contains(row.line),
+                "the server summarised “\(row.line)” differently: \(answer)"
+            )
+        }
+        // The fourth row is past the summary's three lines and is on the card
+        // anyway -- that is what the card is for. Its calendar has no name the
+        // device knows, and the row shows none rather than the raw identifier.
+        #expect(result.events.count == 4)
+        #expect(result.events[3].calendarTitle == nil)
+        #expect(result.events[3].displayTitle == "体检")
+        // `created_by_agent` reaches the row, which is what draws 已创建.
+        #expect(result.events[0].createdByAgent)
+        #expect(!result.events[1].createdByAgent)
+        #expect(result.events[1].calendarTitle == "出游计划")
+    }
+
+    @Test("a calendar query page with a cursor says there is more")
+    func calendarPageWithACursor() throws {
+        // `next_cursor` is what drives 「看更多」, and the case that carries one
+        // is the only place the server's own page contract is exercised.
+        let page = """
+        {"status":"ok","events":[],"record_count":9,"next_cursor":"cur-2",\
+        "data_as_of":"2026-10-06T07:30:00+08:00","mirror_stale":false,\
+        "source_system":"apple_calendar_mirror"}
+        """
+        let result = try JSONDecoder().decode(
+            CalendarQueryResult.self, from: Data(page.utf8)
+        )
+        #expect(result.nextCursor == "cur-2")
+        // A page carries at most what the total says exists, which is what the
+        // 「另有 N 条未列出」 line counts against.
+        #expect(result.recordCount == 9)
     }
 
     @Test("every server chatReceipt projects to the outcome both sides agreed on")
@@ -1607,6 +2323,354 @@ struct ReceiptContractTests {
                 label(parsed.cancellation) == entry.expectedCancellation,
                 "\(entry.name): cancellation disagreed with the server contract"
             )
+            // The domain the server derived from the tool's IR contract is a
+            // fact about the operation, and this client's 人工核对 card is chosen
+            // by it. A receipt that decoded a different value would send the
+            // person to the wrong place to check a write.
+            #expect(
+                parsed.domain == entry.domain,
+                "\(entry.name): the decoded domain disagreed with the server's"
+            )
+            // Whether 「仍要创建」 belongs on this receipt, and to which action.
+            // The server answers the same question in `may_override`, and the
+            // Python pin holds `may_override` against this same field -- so a
+            // rule changed on one side fails on both, instead of shipping a
+            // button that writes a second copy of an event the user has.
+            let decision = parsed.outcome.overrideDecision
+            #expect(
+                decision.actionID == entry.expectedOverrideActionID,
+                "\(entry.name): override decision disagreed with the contract"
+            )
         }
+    }
+
+    @Test("the override tool is the one the server names")
+    func theOverrideToolAgrees() throws {
+        let vectors = try #require(vectors)
+        // Named on both sides rather than derived from `deviceExecutedTools`:
+        // an override is not a property of being device-executed, it is the
+        // meaning a calendar duplicate has, and a second device tool must
+        // decide its own override semantics rather than inherit these.
+        #expect(vectors.overrideTool == OperationReceipt.calendarDeviceTool)
+        #expect(vectors.overrideTool == "calendar.create_event")
+    }
+}
+
+// --- the operation progress trail ---------------------------------------------
+//
+// While the chat POST can still be holding the connection (the server waits up
+// to 30 seconds), the client polls `GET /v1/operations/by-key/{key}` with the
+// idempotency key it already holds. An unanchored key is a 400
+// `OPERATION_NOT_ANCHORED`, which means "keep waiting", never a failure. The
+// trail is a structured stage, never model prose.
+
+@Suite("The operation progress trail")
+struct OperationProgressTests {
+    /// A receipt for a stage the trail should surface. `tool` is the fact the
+    /// dispatching transition records server-side.
+    private func runningReceipt(
+        _ state: String, tool: Any = NSNull(), operation: String = "op-1"
+    ) -> [String: Any] {
+        var body = chatReceipt(state, operation: operation)
+        body["tool"] = tool
+        return body
+    }
+
+    private func byKeyBody(
+        _ state: String, tool: Any = NSNull(), operation: String = "op-1"
+    ) -> [String: Any] {
+        var body = chatReceipt(state, operation: operation)
+        body["tool"] = tool
+        return body
+    }
+
+    @Test("a settled send never polls by key")
+    func settledSendSkipsByKeyPolling() async throws {
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                return .ok(chatReceipt("succeeded", tool: "finance.log_expense", recordID: "rec-1"))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        // A real cancellable sleep, not the no-op default: the property under
+        // test is that cancellation lands *during* the first wait, which a
+        // no-op sleep cannot model. The first window (1s) is far longer than
+        // the cold-start POST path takes, so the cancel always arrives before
+        // poll one, and it costs nothing — the sleep never completes.
+        let (chat, _, _) = try await makeChat(
+            service: service,
+            pollDelays: [.seconds(1), .zero, .zero, .zero],
+            sleep: { try await Task.sleep(for: $0) }
+        )
+
+        let final = try await chat.send(text: "咖啡 18")
+
+        #expect(final.outcome.isSettled)
+        // No by-key request ever left: the POST settled inside the first wait,
+        // so the trail was cancelled before its first poll.
+        let byKeyCalls = service.log.filter {
+            $0.method == "GET" && $0.path.contains("/v1/operations/by-key/")
+        }
+        #expect(byKeyCalls.isEmpty)
+    }
+
+    @Test("a running send surfaces the stages the settle polls prove")
+    func runningSendSurfacesSettleStages() async throws {
+        let service = Service()
+        service.answer { call, seen in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                return seen == 0
+                    ? .accepted(chatReceipt("accepted"))
+                    : .error(500, "INTERNAL_ERROR")
+            case ("GET", "/v1/operations/op-1"):
+                return .accepted(chatReceipt("source_in_progress"))
+            default:
+                return .error(404, "NOT_FOUND")
+            }
+        }
+        let (chat, _, store) = try await makeChat(service: service)
+        let trail = OperationTrail()
+        await chat.setProgressSink { stage in trail.record(stage) }
+
+        // The POST replies with an accepted receipt; settle() then polls op-1,
+        // which stays running until the schedule runs out.
+        let final = try await chat.send(text: "咖啡 18")
+        #expect(final.outcome == .running)
+
+        let seen = trail.stages
+        #expect(seen.contains(.accepted))
+        #expect(seen.contains(.sourceInProgress))
+        #expect(try store.read(CredentialKey.pendingChatSend) != nil)
+    }
+
+    @Test("an unanchored key during the POST window keeps the trail at accepted")
+    func unanchoredKeyKeepsWaiting() async throws {
+        let service = Service()
+        let keyBox = KeyBox()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                if let key = call.idempotencyKey { keyBox.set(key) }
+                // Hold the POST open: never settle within the poll schedule.
+                return .accepted(chatReceipt("accepted"))
+            case ("GET", "/v1/operations/op-1"):
+                return .accepted(chatReceipt("interpreting"))
+            default:
+                // by-key before anchor: the server's OPERATION_NOT_ANCHORED.
+                return .error(400, "OPERATION_NOT_ANCHORED")
+            }
+        }
+        let (chat, _, _) = try await makeChat(service: service)
+        let trail = OperationTrail()
+        await chat.setProgressSink { stage in trail.record(stage) }
+
+        let final = try await chat.send(text: "咖啡 18")
+        #expect(final.outcome == .running)
+
+        // The trail never claimed a stage beyond what the server proved: the
+        // unanchored by-key answers were swallowed, and only the settle polls'
+        // states were reported.
+        let seen = trail.stages
+        #expect(seen.contains(.accepted))
+        #expect(seen.contains(.interpreting))
+        #expect(!seen.contains { stage in
+            if case .dispatching = stage { return true }
+            return false
+        })
+    }
+
+    @Test("a transport failure on the by-key poll does not kill the settle loop")
+    func byKeyTransportFailureIsSurvivable() async throws {
+        let service = Service()
+        service.answer { call, seen in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                return .accepted(chatReceipt("accepted"))
+            case ("GET", "/v1/operations/op-1"):
+                return seen == 3
+                    ? .ok(chatReceipt("succeeded", tool: "finance.log_expense", recordID: "rec-1"))
+                    : .accepted(chatReceipt("dispatching", tool: "finance.log_expense"))
+            default:
+                return .init(status: 599, body: Data())
+            }
+        }
+        let (chat, _, store) = try await makeChat(service: service)
+
+        let final = try await chat.send(text: "咖啡 18")
+
+        #expect(final.outcome == .recorded(recordID: "rec-1", tool: "finance.log_expense", record: nil))
+        #expect(try store.read(CredentialKey.pendingChatSend) == nil)
+    }
+}
+
+/// Collects the stages a test's sink received.
+final class OperationTrail: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _stages: [OperationStage] = []
+
+    func record(_ stage: OperationStage) {
+        lock.withLock { _stages.append(stage) }
+    }
+
+    var stages: [OperationStage] {
+        lock.withLock { _stages }
+    }
+}
+
+/// Holds the idempotency key across the actor boundary.
+final class KeyBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _key: String?
+    func set(_ key: String) { lock.withLock { _key = key } }
+    var key: String? { lock.withLock { _key } }
+}
+
+/// Blocks the calling thread until `predicate` holds or five seconds pass,
+/// then returns either way.
+///
+/// The POST handlers of this suite hold the connection until the evidence
+/// their assertions need has landed, instead of sleeping a fixed interval: a
+/// fixed sleep races machine speed, and the CI runner lost that race — one
+/// by-key poll inside a 30 ms window where a laptop found two. A starved gate
+/// answers anyway so the assertions below fail loudly instead of hanging.
+func waitForGate(
+    _ name: String,
+    until predicate: @escaping @Sendable () -> Bool
+) {
+    let deadline = Date().addingTimeInterval(5)
+    while !predicate() && Date() < deadline {
+        Thread.sleep(forTimeInterval: 0.001)
+    }
+    if !predicate() {
+        print("trail gate starved after 5s: \(name)")
+    }
+}
+
+@Suite("The concurrent trail beside the POST")
+struct TrailConcurrencyTests {
+    @Test("by-key polls run while the POST is open and stop after it answers")
+    func trailPollsBesideThePost() async throws {
+        let service = Service()
+        let keyBox = KeyBox()
+        // A held POST: it answers only once the trail has demonstrably polled
+        // by-key at least twice beside the open connection — and never reaches
+        // a settle poll. A fixed sleep raced the CI runner's speed (one slow
+        // round trip ate the whole window); the gate makes "polled beside the
+        // POST" a precondition of the answer instead.
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                if let key = call.idempotencyKey { keyBox.set(key) }
+                waitForGate("two by-key polls beside the open POST") {
+                    guard let key = keyBox.key else { return false }
+                    return service.calls("GET", "/v1/operations/by-key/\(key)").count >= 2
+                }
+                return .ok(
+                    chatReceipt("succeeded", tool: "finance.log_expense", recordID: "rec-1")
+                )
+            default:
+                return .error(400, "OPERATION_NOT_ANCHORED")
+            }
+        }
+        let (chat, _, store) = try await makeChat(
+            service: service,
+            // Real pacing, not a zero-delay burst: with `.zero` delays and the
+            // no-op test sleep the trail spends all eight attempts in the few
+            // microseconds before the POST handler starts holding the
+            // connection, and a gate waiting for polls *inside* the hold
+            // starves. 25 ms spacing spreads the polls over the hold; the
+            // second one reliably lands while the gate is closed.
+            pollDelays: Array(repeating: .milliseconds(25), count: 8),
+            sleep: { try await Task.sleep(for: $0) }
+        )
+        let trail = OperationTrail()
+        await chat.setProgressSink { stage in trail.record(stage) }
+
+        let final = try await chat.send(text: "咖啡 18")
+        #expect(final.outcome.isSettled)
+
+        let key = try #require(keyBox.key)
+        let byKeyPolls = service.calls("GET", "/v1/operations/by-key/\(key)")
+        #expect(byKeyPolls.count >= 2, "the trail polled beside the open POST")
+        #expect(try store.read(CredentialKey.pendingChatSend) == nil)
+    }
+
+    @Test("a dispatching observation beside the POST carries the server's tool name")
+    func trailCarriesToolBesideThePost() async throws {
+        let service = Service()
+        let keyBox = KeyBox()
+        let trail = OperationTrail()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                if let key = call.idempotencyKey { keyBox.set(key) }
+                // Hold until the sink has actually recorded the dispatching
+                // stage — the very evidence the assertion below needs — so
+                // the observation is not a race against runner speed.
+                waitForGate("the sink observed the dispatching stage") {
+                    trail.stages.contains { stage in
+                        if case .dispatching = stage { return true }
+                        return false
+                    }
+                }
+                return .ok(
+                    chatReceipt("succeeded", tool: "finance.log_expense", recordID: "rec-1")
+                )
+            default:
+                // The server anchored and dispatched while the POST held.
+                return .ok(
+                    chatReceipt("dispatching", tool: "finance.log_expense")
+                )
+            }
+        }
+        let (chat, _, _) = try await makeChat(
+            service: service,
+            // Same real pacing as above: the dispatching poll must arrive
+            // while the POST holds, not in the pre-hold burst.
+            pollDelays: Array(repeating: .milliseconds(25), count: 8),
+            sleep: { try await Task.sleep(for: $0) }
+        )
+        await chat.setProgressSink { stage in trail.record(stage) }
+
+        _ = try await chat.send(text: "咖啡 18")
+
+        let seen = trail.stages
+        #expect(seen.contains { stage in
+            if case .dispatching(let tool) = stage, tool == "finance.log_expense" {
+                return true
+            }
+            return false
+        })
+    }
+
+    @Test("the settle loop keeps its throw-through semantics")
+    func settleStillThrowsThroughTransportErrors() async throws {
+        let service = Service()
+        service.answer { call, _ in
+            switch (call.method, call.path) {
+            case ("POST", "/v1/chat/messages"):
+                return .accepted(chatReceipt("accepted"))
+            case ("GET", "/v1/operations/op-1"):
+                // Every settle poll fails at the transport level.
+                return .init(status: 599, body: Data())
+            default:
+                return .error(400, "OPERATION_NOT_ANCHORED")
+            }
+        }
+        let (chat, _, store) = try await makeChat(
+            service: service,
+            pollDelays: [.zero, .zero, .zero, .zero]
+        )
+
+        // The by-key trail swallows its failures; the settle loop does not.
+        // A send that ends with every poll failed leaves the slot standing.
+        await #expect(throws: (any Error).self) {
+            _ = try await chat.send(text: "咖啡 18")
+        }
+        #expect(try store.read(CredentialKey.pendingChatSend) != nil)
     }
 }

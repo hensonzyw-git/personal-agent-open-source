@@ -1,6 +1,6 @@
 {
-  "contract": "chat_receipt_projection_v4",
-  "note": "DEV-030. Generated from the server's own _operation_projection; the iOS client reads this file rather than a copy. Both sides must agree case by case, because the client's only reason to say 已写入 is a record_id in one of these bodies, and an indeterminate/manual-review result must not release the durable idempotency slot. v3 adds query_result: a succeeded finance.query_expenses receipt carries the whitelisted projection plus a deterministic answer fallback, and the client renders it as a structured card rather than prose. v4 pins query_evidence_tools: the server derives it from the IR (governed read whose output contract is the expense query projection), and the client holds its hard-coded `tool == \"finance.query_expenses\"` check against it, so a rename or a second governed query fails both suites before it reaches a user.",
+  "contract": "chat_receipt_projection_v9",
+  "note": "DEV-030. Generated from the server's own _operation_projection; the iOS client reads this file rather than a copy. Both sides must agree case by case, because the client's only reason to say 已写入 is a record_id in one of these bodies, and an indeterminate/manual-review result must not release the durable idempotency slot. v3 adds query_result: a succeeded finance.query_expenses receipt carries the whitelisted projection plus a deterministic answer fallback, and the client renders it as a structured card rather than prose. v4 pins query_evidence_tools: the server derives it from the IR (governed read whose output contract is the expense query projection), and the client holds its hard-coded `tool == \"finance.query_expenses\"` check against it, so a rename or a second governed query fails both suites before it reaches a user. v5 adds `record` (G1): a governed write's receipt now carries the written ledger row -- 名称/原始金额/日期/是否家庭支出/分类, plus 个人支出 when the Base formula had been evaluated at read-back. It is strictly subordinate to record_id and is emitted only alongside one, so a card can never show an amount for a write the same body did not state as recorded; an idempotent_replay and an envelope that will not open both resolve to an absent record, and the client falls back to the status row rather than inventing fields. expense_categories pins the single-select option set a client may offer when editing 分类, so the picker cannot drift from the ledger's own options -- the connector never creates one. v6 adds calendar.create_event to record_evidence_tools: the device-executed calendar write is R2, so its succeeded receipt carries record_id = the device-reported event_id and renders as 已写入 through the same recorded path as a Finance write; the event carries no `record` fields, and the client must fall back to the status row when event_id is absent. operation_states is unchanged. v7 adds `domain` (design §10, gap 4): every receipt states which domain its tool belongs to -- read from the tool's IR contract, never a list beside it -- so the client can pick the 人工核对 card by domain instead of guessing from a tool name, and a null domain means no tool was recorded. v7 also pins the calendar list card (design §9.2): a succeeded calendar.query_events receipt carries `query_result` whose rows name their calendar (`calendar_title`, null when the device has no name for that identifier), give an all-day event's dates as its authority (start_date/end_date, the end being exclusive) with `date_anchor_unknown` when the device could not confirm the anchor, and flag a field the mirror dropped for length. The deterministic `answer` is the same projection in words. `calendar_query_evidence_tools` pins that read the way `query_evidence_tools` pins the ledger's (v4): the server derives it from the IR -- a governed, enabled read whose output contract is the mirror's -- and the client holds its own set against it, because the client's set is what decides which of the two projections `query_result` is even decoded as. The calendar query case's agreed outcome is now `answered_with_query`, not `answered`: step 6 (2026-09-10) built the list card that renders those same rows, so the case moves from the server's text summary to the structured card that summarises it. The client catching up, not a change of meaning. The version deliberately stays v7 -- v7 is the version this feature's contract was frozen at, no server-side shape changed in step 6, and the only new fact is a client-side pin. A client of the previous revision that reads this file fails `casesAgree` loudly on this one case, which is the intended signal that it predates the card. v8 adds `device_result` and `device_action_id`. The first is what the phone decided about a write it executed: `created` means it made the event, `duplicate` means it found one already there. Both settle as `succeeded` with the same event id, so only this field separates them -- and it decides which card the client draws and whether 「仍要创建」 may be offered, which is why folding them into one outcome was the defect (2026-09-10 review: a calendar success rendered 「账本已存在此记录」 beside a 打开飞书账本 link). The succeeded calendar case that predates the field carries none, and the client must still draw it -- as evidence `unstated`, claiming neither. `device_action_id` is the action id a 「仍要创建」 override names; it is the operation's own idempotency key, emitted only for a tool whose IR contract says the device executes it, so a connector write's internal key never reaches a card. `device_executed_tools` holds the server's IR-derived set and the client's hard-coded one equal, the way `query_evidence_tools` does. v9 pins `override_tool` and each case's `expected_override_action_id`. The server decides whether 「仍要创建」 may be answered in `calendar_issue.may_override`, and the client decides whether to draw the button in `OperationOutcome.overrideDecision`; both are the *same* predicate -- tool equals `override_tool`, state is `succeeded`, `device_result` is `duplicate` -- and a rule stated twice is a rule that drifts. So the vector carries the answer per case, the client asserts its own decision against it, and the Python pin asserts `may_override` against the same field. The criterion is deliberately narrow: `created` settles with the same state and the same event id, so an override offered there would write a second copy of an event the user already has. Only the duplicate case names an action id, and it is the action the override must be addressed to -- not `record_id`, which is the EventKit identifier the phone reported.",
   "operation_states": [
     "accepted",
     "interpreting",
@@ -15,14 +15,23 @@
     "cancelled_pre_submit"
   ],
   "record_evidence_tools": [
+    "calendar.create_event",
     "finance.log_expense",
     "finance.log_expense_batch",
     "finance.log_income",
+    "finance.update_expense_category",
     "finance.update_family_fund"
   ],
   "query_evidence_tools": [
     "finance.query_expenses"
   ],
+  "calendar_query_evidence_tools": [
+    "calendar.query_events"
+  ],
+  "device_executed_tools": [
+    "calendar.create_event"
+  ],
+  "override_tool": "calendar.create_event",
   "cases": [
     {
       "name": "expense_recorded",
@@ -32,15 +41,162 @@
         "cancel_requested": false,
         "client_detached": false,
         "tool": "finance.log_expense",
+        "domain": "finance",
         "record_id": "recXXXXXXXXXXXX",
         "failure_reason": null,
-        "duplicate_check_id": null
+        "duplicate_check_id": null,
+        "device_result": null,
+        "device_action_id": null
       },
       "expected_outcome": "recorded",
       "expected_proves_write": true,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
+    },
+    {
+      "name": "calendar_event_recorded",
+      "receipt": {
+        "operation_id": "op_calendar_event_recorded",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "calendar.create_event",
+        "domain": "calendar",
+        "record_id": "EK-XXXXXXXX-XXXX",
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "device_result": null,
+        "device_action_id": "act-calendar_event_recorded"
+      },
+      "expected_outcome": "calendar_event_written",
+      "expected_proves_write": true,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none",
+      "expected_device_evidence": "unstated",
+      "expected_override_action_id": null
+    },
+    {
+      "name": "expense_recorded_with_fields",
+      "receipt": {
+        "operation_id": "op_expense_recorded_with_fields",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "finance.log_expense",
+        "domain": "finance",
+        "record_id": "recXXXXXXXXXXXX",
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "record": {
+          "name": "午饭",
+          "amount_cny": "38.50",
+          "occurred_on": "2026-08-15",
+          "is_family_expense": false,
+          "category": "餐饮",
+          "personal_spend_cny": "38.50"
+        },
+        "device_result": null,
+        "device_action_id": null
+      },
+      "expected_outcome": "recorded",
+      "expected_proves_write": true,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
+    },
+    {
+      "name": "family_expense_recorded_with_fields",
+      "receipt": {
+        "operation_id": "op_family_expense_recorded_with_fields",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "finance.log_expense",
+        "domain": "finance",
+        "record_id": "recXXXXXXXXXXXX",
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "record": {
+          "name": "东京机票 #东京",
+          "amount_cny": "2000.00",
+          "occurred_on": "2026-08-10",
+          "is_family_expense": true,
+          "category": "旅行",
+          "personal_spend_cny": "1000.00"
+        },
+        "device_result": null,
+        "device_action_id": null
+      },
+      "expected_outcome": "recorded",
+      "expected_proves_write": true,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
+    },
+    {
+      "name": "expense_category_edited",
+      "receipt": {
+        "operation_id": "op_expense_category_edited",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "finance.log_expense",
+        "domain": "finance",
+        "record_id": "recXXXXXXXXXXXX",
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "record": {
+          "name": "买菜",
+          "amount_cny": "126.00",
+          "occurred_on": "2026-08-14",
+          "is_family_expense": true,
+          "category": "日常生活",
+          "category_updated_at": "2026-08-15T02:31:00Z"
+        },
+        "device_result": null,
+        "device_action_id": null
+      },
+      "expected_outcome": "recorded",
+      "expected_proves_write": true,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
+    },
+    {
+      "name": "refund_recorded_without_category",
+      "receipt": {
+        "operation_id": "op_refund_recorded_without_category",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "finance.log_expense",
+        "domain": "finance",
+        "record_id": "recXXXXXXXXXXXX",
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "record": {
+          "name": "退款 演唱会门票",
+          "amount_cny": "-880.00",
+          "occurred_on": "2026-08-13",
+          "is_family_expense": false,
+          "category": null,
+          "personal_spend_cny": "-880.00"
+        },
+        "device_result": null,
+        "device_action_id": null
+      },
+      "expected_outcome": "recorded",
+      "expected_proves_write": true,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "succeeded_without_evidence",
@@ -50,15 +206,19 @@
         "cancel_requested": false,
         "client_detached": false,
         "tool": "finance.log_expense",
+        "domain": "finance",
         "record_id": null,
         "failure_reason": null,
-        "duplicate_check_id": null
+        "duplicate_check_id": null,
+        "device_result": null,
+        "device_action_id": null
       },
       "expected_outcome": "indeterminate",
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": false,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "query_total",
@@ -68,41 +228,50 @@
         "cancel_requested": false,
         "client_detached": false,
         "tool": "finance.query_expenses",
+        "domain": "finance",
         "record_id": null,
         "failure_reason": null,
         "duplicate_check_id": null,
-        "answer": "共 3 条记录，个人支出合计 ¥1200.00",
         "query_result": {
           "status": "ok",
           "view": "total",
           "metric": "personal_spend_total_cny",
           "record_count": 3,
           "filters_applied": {
-            "date_range": {"start": "2026-01-01", "end": "2026-12-31"},
-            "categories": ["网球"],
-            "name_contains": [],
+            "categories": [
+              "网球"
+            ],
+            "date_range": {
+              "end": "2026-12-31",
+              "start": "2026-01-01"
+            },
             "is_family_expense": "all",
+            "name_contains": [],
             "personal_amount_cny": null
           },
           "source_system": "feishu_bitable",
           "evidence": {
-            "kind": "aggregate_query",
-            "query_id": "qry_total",
+            "completed_at": "2026-08-12T00:00:01Z",
             "config_checksum": "cfg",
-            "schema_snapshot_checksum": "schema",
-            "scanned_pages": 1,
+            "kind": "aggregate_query",
             "matched_count": 3,
-            "started_at": "2026-08-12T00:00:00Z",
-            "completed_at": "2026-08-12T00:00:01Z"
+            "query_id": "qry_total",
+            "scanned_pages": 1,
+            "schema_snapshot_checksum": "schema",
+            "started_at": "2026-08-12T00:00:00Z"
           },
           "personal_spend_total_cny": "1200.00"
-        }
+        },
+        "answer": "共 3 条记录，个人支出合计 ¥1200.00",
+        "device_result": null,
+        "device_action_id": null
       },
       "expected_outcome": "answered_with_query",
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "query_by_category",
@@ -112,32 +281,37 @@
         "cancel_requested": false,
         "client_detached": false,
         "tool": "finance.query_expenses",
+        "domain": "finance",
         "record_id": null,
         "failure_reason": null,
         "duplicate_check_id": null,
-        "answer": "共 3 条记录，2 个分类",
         "query_result": {
           "status": "ok",
           "view": "by_category",
           "metric": "personal_spend_total_cny",
           "record_count": 3,
           "filters_applied": {
-            "date_range": {"start": "2026-01-01", "end": "2026-12-31"},
             "categories": [],
-            "name_contains": ["旅行"],
+            "date_range": {
+              "end": "2026-12-31",
+              "start": "2026-01-01"
+            },
             "is_family_expense": "all",
+            "name_contains": [
+              "旅行"
+            ],
             "personal_amount_cny": null
           },
           "source_system": "feishu_bitable",
           "evidence": {
-            "kind": "aggregate_query",
-            "query_id": "qry_by_category",
+            "completed_at": "2026-08-12T00:00:02Z",
             "config_checksum": "cfg",
-            "schema_snapshot_checksum": "schema",
-            "scanned_pages": 2,
+            "kind": "aggregate_query",
             "matched_count": 3,
-            "started_at": "2026-08-12T00:00:00Z",
-            "completed_at": "2026-08-12T00:00:02Z"
+            "query_id": "qry_by_category",
+            "scanned_pages": 2,
+            "schema_snapshot_checksum": "schema",
+            "started_at": "2026-08-12T00:00:00Z"
           },
           "personal_spend_total_cny": "1500.00",
           "by_category": [
@@ -154,13 +328,17 @@
               "share_of_total": "33.33"
             }
           ]
-        }
+        },
+        "answer": "共 3 条记录，2 个分类",
+        "device_result": null,
+        "device_action_id": null
       },
       "expected_outcome": "answered_with_query",
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "query_records",
@@ -170,32 +348,37 @@
         "cancel_requested": false,
         "client_detached": false,
         "tool": "finance.query_expenses",
+        "domain": "finance",
         "record_id": null,
         "failure_reason": null,
         "duplicate_check_id": null,
-        "answer": "共 5 条记录，还有更多",
         "query_result": {
           "status": "ok",
           "view": "records",
           "metric": "personal_spend_total_cny",
           "record_count": 5,
           "filters_applied": {
-            "date_range": {"start": "2026-01-01", "end": "2026-12-31"},
-            "categories": ["运动"],
-            "name_contains": [],
+            "categories": [
+              "运动"
+            ],
+            "date_range": {
+              "end": "2026-12-31",
+              "start": "2026-01-01"
+            },
             "is_family_expense": "all",
+            "name_contains": [],
             "personal_amount_cny": null
           },
           "source_system": "feishu_bitable",
           "evidence": {
-            "kind": "aggregate_query",
-            "query_id": "qry_records",
+            "completed_at": "2026-08-12T00:00:03Z",
             "config_checksum": "cfg",
-            "schema_snapshot_checksum": "schema",
-            "scanned_pages": 3,
+            "kind": "aggregate_query",
             "matched_count": 5,
-            "started_at": "2026-08-12T00:00:00Z",
-            "completed_at": "2026-08-12T00:00:03Z"
+            "query_id": "qry_records",
+            "scanned_pages": 3,
+            "schema_snapshot_checksum": "schema",
+            "started_at": "2026-08-12T00:00:00Z"
           },
           "records": [
             {
@@ -208,13 +391,17 @@
             }
           ],
           "next_cursor": "cursor-v1"
-        }
+        },
+        "answer": "共 5 条记录，还有更多",
+        "device_result": null,
+        "device_action_id": null
       },
       "expected_outcome": "answered_with_query",
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "no_tool_answer",
@@ -224,16 +411,20 @@
         "cancel_requested": false,
         "client_detached": false,
         "tool": null,
+        "domain": null,
         "record_id": null,
         "failure_reason": null,
         "duplicate_check_id": null,
-        "answer": "好的"
+        "answer": "好的",
+        "device_result": null,
+        "device_action_id": null
       },
       "expected_outcome": "answered",
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "parked_clarification",
@@ -243,16 +434,20 @@
         "cancel_requested": false,
         "client_detached": false,
         "tool": null,
+        "domain": null,
         "record_id": null,
         "failure_reason": null,
         "duplicate_check_id": null,
-        "clarification": "这笔是个人还是家庭支出？"
+        "clarification": "这笔是个人还是家庭支出？",
+        "device_result": null,
+        "device_action_id": null
       },
       "expected_outcome": "needs_clarification",
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "parked_duplicate",
@@ -262,16 +457,20 @@
         "cancel_requested": false,
         "client_detached": false,
         "tool": null,
+        "domain": null,
         "record_id": null,
         "failure_reason": null,
         "duplicate_check_id": "dupXXXXXXXX",
-        "duplicate_existing": "午饭 ¥20 餐饮"
+        "duplicate_existing": "午饭 ¥20 餐饮",
+        "device_result": null,
+        "device_action_id": null
       },
       "expected_outcome": "needs_duplicate_decision",
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "failed_safe",
@@ -281,15 +480,19 @@
         "cancel_requested": false,
         "client_detached": false,
         "tool": null,
+        "domain": null,
         "record_id": null,
         "failure_reason": "TOOL_NOT_ALLOWLISTED",
-        "duplicate_check_id": null
+        "duplicate_check_id": null,
+        "device_result": null,
+        "device_action_id": null
       },
       "expected_outcome": "failed_safe",
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "manual_review_keeps_record",
@@ -299,15 +502,19 @@
         "cancel_requested": false,
         "client_detached": false,
         "tool": "finance.log_expense",
+        "domain": "finance",
         "record_id": "recXXXXXXXXXXXX",
         "failure_reason": "SOURCE_COMMIT_UNKNOWN",
-        "duplicate_check_id": null
+        "duplicate_check_id": null,
+        "device_result": null,
+        "device_action_id": null
       },
       "expected_outcome": "needs_manual_review",
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": false,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
     },
     {
       "name": "cancelled_pre_submit",
@@ -317,15 +524,19 @@
         "cancel_requested": true,
         "client_detached": false,
         "tool": null,
+        "domain": null,
         "record_id": null,
         "failure_reason": null,
-        "duplicate_check_id": null
+        "duplicate_check_id": null,
+        "device_result": null,
+        "device_action_id": null
       },
       "expected_outcome": "cancelled_before_submit",
       "expected_proves_write": false,
       "expected_settled": true,
       "expected_releases_pending": true,
-      "expected_cancellation": "cancelled_before_submit"
+      "expected_cancellation": "cancelled_before_submit",
+      "expected_override_action_id": null
     },
     {
       "name": "cancel_after_submit_is_not_a_rollback",
@@ -335,15 +546,19 @@
         "cancel_requested": true,
         "client_detached": true,
         "tool": null,
+        "domain": null,
         "record_id": null,
         "failure_reason": null,
-        "duplicate_check_id": null
+        "duplicate_check_id": null,
+        "device_result": null,
+        "device_action_id": null
       },
       "expected_outcome": "running",
       "expected_proves_write": false,
       "expected_settled": false,
       "expected_releases_pending": false,
-      "expected_cancellation": "requested_outcome_still_authoritative"
+      "expected_cancellation": "requested_outcome_still_authoritative",
+      "expected_override_action_id": null
     },
     {
       "name": "still_interpreting",
@@ -353,15 +568,206 @@
         "cancel_requested": false,
         "client_detached": false,
         "tool": null,
+        "domain": null,
         "record_id": null,
         "failure_reason": null,
-        "duplicate_check_id": null
+        "duplicate_check_id": null,
+        "device_result": null,
+        "device_action_id": null
       },
       "expected_outcome": "running",
       "expected_proves_write": false,
       "expected_settled": false,
       "expected_releases_pending": false,
-      "expected_cancellation": "none"
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
+    },
+    {
+      "name": "calendar_query_list_card",
+      "receipt": {
+        "operation_id": "op_calendar_query",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "calendar.query_events",
+        "domain": "calendar",
+        "record_id": null,
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "query_result": {
+          "status": "ok",
+          "events": [
+            {
+              "all_day": false,
+              "calendar_identifier": "uuid-yan-chu",
+              "calendar_title": "演出&活动",
+              "created_by_agent": true,
+              "date_anchor_unknown": false,
+              "end": "2026-10-02T21:00:00+09:00",
+              "end_date": null,
+              "event_identifier": "evt-tokyo",
+              "location": "涩谷",
+              "location_over_limit": false,
+              "notes": null,
+              "notes_over_limit": false,
+              "start": "2026-10-02T19:00:00+09:00",
+              "start_date": null,
+              "timezone": "Asia/Tokyo",
+              "title": "打喷嚏",
+              "title_over_limit": false
+            },
+            {
+              "all_day": true,
+              "calendar_identifier": "uuid-chu-you",
+              "calendar_title": "出游计划",
+              "created_by_agent": false,
+              "date_anchor_unknown": false,
+              "end": "2026-10-04T00:00:00+09:00",
+              "end_date": "2026-10-04",
+              "event_identifier": "evt-trip",
+              "location": null,
+              "location_over_limit": false,
+              "notes": null,
+              "notes_over_limit": false,
+              "start": "2026-10-01T00:00:00+09:00",
+              "start_date": "2026-10-01",
+              "timezone": null,
+              "title": "东京出差",
+              "title_over_limit": false
+            },
+            {
+              "all_day": true,
+              "calendar_identifier": "uuid-flight",
+              "calendar_title": "飞行计划",
+              "created_by_agent": false,
+              "date_anchor_unknown": true,
+              "end": "2026-10-09T00:00:00+09:00",
+              "end_date": "2026-10-09",
+              "event_identifier": "evt-flight",
+              "location": null,
+              "location_over_limit": false,
+              "notes": null,
+              "notes_over_limit": false,
+              "start": "2026-10-08T00:00:00+09:00",
+              "start_date": "2026-10-08",
+              "timezone": null,
+              "title": "上海-东京",
+              "title_over_limit": false
+            },
+            {
+              "all_day": true,
+              "calendar_identifier": "uuid-gone",
+              "calendar_title": null,
+              "created_by_agent": false,
+              "date_anchor_unknown": false,
+              "end": "2026-10-06T00:00:00+09:00",
+              "end_date": "2026-10-06",
+              "event_identifier": "evt-unnamed-calendar",
+              "location": null,
+              "location_over_limit": false,
+              "notes": null,
+              "notes_over_limit": false,
+              "start": "2026-10-05T00:00:00+09:00",
+              "start_date": "2026-10-05",
+              "timezone": null,
+              "title": "体检",
+              "title_over_limit": false
+            }
+          ],
+          "record_count": 4,
+          "next_cursor": null,
+          "data_as_of": "2026-10-06T07:30:00+08:00",
+          "mirror_stale": false,
+          "source_system": "apple_calendar_mirror"
+        },
+        "answer": "打喷嚏（10-02 19:00 日本时间 开始）；东京出差（10-01 至 10-03 全天）；上海-东京（10-08 全天，日期归属未确认）；另有 1 条未列出，数据截至 2026-10-06T07:30:00+08:00",
+        "device_result": null,
+        "device_action_id": null
+      },
+      "expected_outcome": "answered_with_query",
+      "expected_proves_write": false,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
+    },
+    {
+      "name": "calendar_manual_review_keeps_record",
+      "receipt": {
+        "operation_id": "op_calendar_manual_review",
+        "state": "needs_manual_review",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "calendar.create_event",
+        "domain": "calendar",
+        "record_id": "evt-reported-1",
+        "failure_reason": "DEVICE_REPORT_TIMEOUT",
+        "duplicate_check_id": null,
+        "device_result": null,
+        "device_action_id": "act-calendar_manual_review_keeps_record"
+      },
+      "expected_outcome": "needs_manual_review",
+      "expected_proves_write": false,
+      "expected_settled": true,
+      "expected_releases_pending": false,
+      "expected_cancellation": "none",
+      "expected_override_action_id": null
+    },
+    {
+      "name": "calendar_event_created",
+      "receipt": {
+        "operation_id": "op_calendar_event_created",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "calendar.create_event",
+        "domain": "calendar",
+        "record_id": "EK-XXXXXXXX-XXXX",
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "device_result": "created",
+        "device_action_id": "act-calendar_event_created"
+      },
+      "expected_outcome": "calendar_event_written",
+      "expected_proves_write": true,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none",
+      "expected_device_evidence": "created",
+      "expected_override_action_id": null
+    },
+    {
+      "name": "calendar_event_duplicate",
+      "receipt": {
+        "operation_id": "op_calendar_event_duplicate",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "client_detached": false,
+        "tool": "calendar.create_event",
+        "domain": "calendar",
+        "record_id": "EK-XXXXXXXX-XXXX",
+        "failure_reason": null,
+        "duplicate_check_id": null,
+        "device_result": "duplicate",
+        "device_action_id": "act-calendar_event_duplicate"
+      },
+      "expected_outcome": "calendar_event_written",
+      "expected_proves_write": true,
+      "expected_settled": true,
+      "expected_releases_pending": true,
+      "expected_cancellation": "none",
+      "expected_device_evidence": "duplicate",
+      "expected_override_action_id": "act-calendar_event_duplicate"
     }
+  ],
+  "expense_categories": [
+    "出行",
+    "餐饮",
+    "游戏",
+    "日常生活",
+    "玩乐",
+    "购物",
+    "旅行",
+    "房租"
   ]
 }

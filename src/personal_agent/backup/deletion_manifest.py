@@ -24,22 +24,33 @@ Two halves:
   future type the replay code has not been taught must not be skipped, or a
   deletion would quietly come back.
 
-The vocabulary is deliberately small and explicit. Phase 1 has no business
-path that *writes* to the manifest yet; this module delivers the restore half
-and the contract, and the first writer (conversation deletion) will add its
-type here. An ``object_type`` is only legal if it appears in
-:data:`REPLAY_HANDLERS`; anything else is a refusal.
+The vocabulary is deliberately small and explicit. An ``object_type`` is only
+legal if it appears in :data:`REPLAY_HANDLERS`; anything else is a refusal.
+
+The write side is now real, and the two halves are deliberately in different
+modules. Marking an image deleted lives in
+:mod:`personal_agent.media.deletion`, because it is a state transition that has
+to be correct on its own; that module calls
+:func:`personal_agent.storage.deletion.write_manifest_entry` inside the same
+transaction. This module owns the *replay* half -- what a restore does with
+those entries -- and its handlers only mark, never physically remove.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from personal_agent.media.deletion import (
+    origin_media_ids_for_conversation,
+    origin_media_ids_for_event,
+    replay_media_deletion,
+)
+from personal_agent.storage.deletion import MANIFEST_COLUMN, MANIFEST_TABLE
 from personal_agent_core.crypto import DecryptionError, KeyRing
 from personal_agent.storage.models import (
     Conversation,
@@ -50,12 +61,11 @@ from personal_agent.storage.models import (
 )
 
 
-#: The table and column the sealed object id is bound to. The AAD must match
-#: what sealed it, or decryption fails closed -- this is the binding that makes
-#: a manifest entry copied into another table, or replayed against a different
-#: row, refuse rather than open.
-MANIFEST_TABLE = "deletion_manifest"
-MANIFEST_COLUMN = "encrypted_object_id"
+#: Re-exported so the AAD a value was sealed under and the AAD it is opened
+#: under have exactly one definition between them. They live in
+#: :mod:`personal_agent.storage.deletion`, which the media state machine also
+#: imports; two copies could drift, and the failure that causes lands on the one
+#: code path -- restore -- that has to work after everything else has broken.
 
 
 def export_manifest(session: Session) -> list[dict[str, Any]]:
@@ -83,7 +93,7 @@ def export_manifest(session: Session) -> list[dict[str, Any]]:
 
 
 def _delete_conversation(session: Session, object_id: str) -> int:
-    """Delete one conversation and its events/sessions.
+    """Delete one conversation, its events/sessions, and the images it originated.
 
     Child rows are deleted explicitly rather than relying on the foreign-key
     ``ON DELETE CASCADE``: that cascade only fires when ``PRAGMA foreign_keys``
@@ -93,10 +103,27 @@ def _delete_conversation(session: Session, object_id: str) -> int:
     the pragma, and a replay must not depend on a connection setting that is
     easy to forget on a fresh box.
 
+    The media fan-out runs **before** the events are deleted. The bindings that
+    say which images this conversation owned carry ``ON DELETE CASCADE`` against
+    ``conversation_events``, so deleting the events first would take them with
+    it and leave nothing to ask. On the connections this service opens the
+    cascade does fire -- ``db.upgrade`` restores ``PRAGMA foreign_keys`` and it
+    stays on for every connection the engine hands out afterwards -- so that
+    order is load-bearing here, not merely defensive. On a connection where the
+    pragma is off, as a bare ``sqlite3`` shell has it, the bindings survive and
+    the fan-out still asks the right question. The order is correct either way,
+    which is why it is stated as a rule rather than as a consequence of the
+    current pragma.
+
     Returns the number of conversation rows removed, so a replay can tell a
     successful delete from an id that was already absent (a re-replay, or a
     deletion the snapshot had already absorbed).
     """
+    now = _now()
+    for media_id in origin_media_ids_for_conversation(
+        session, conversation_id=object_id
+    ):
+        replay_media_deletion(session, media_id=media_id, now=now)
     session.execute(
         delete(ConversationEvent).where(ConversationEvent.conversation_id == object_id)
     )
@@ -113,10 +140,44 @@ def _delete_conversation(session: Session, object_id: str) -> int:
 
 
 def _delete_conversation_event(session: Session, object_id: str) -> int:
+    # Same order, same reason as the conversation handler: the deleting message
+    # is the only thing that knows which images it originated.
+    now = _now()
+    for media_id in origin_media_ids_for_event(session, event_id=object_id):
+        replay_media_deletion(session, media_id=media_id, now=now)
     result = session.execute(
         delete(ConversationEvent).where(ConversationEvent.event_id == object_id)
     )
     return result.rowcount or 0
+
+
+def _delete_media_object(session: Session, object_id: str) -> int:
+    """Mark one image deleted after a restore.
+
+    Marks only. Physically removing the bytes is the reaper's job, and §6 puts
+    it after this commit on purpose -- replay runs before reads open, and a
+    replay that also tried to unlink files would have to hold the media lock for
+    as long as the whole restore takes.
+
+    Returns 1 when this call decided the deletion and 0 when the object was
+    already deleting or gone, which is the same "already absent" a re-replay
+    produces. The manifest entry that brought us here is not re-written: it is
+    already the record of this deletion.
+    """
+    decided = replay_media_deletion(session, media_id=object_id, now=_now())
+    return 1 if decided else 0
+
+
+def _now() -> datetime:
+    """The replay's clock.
+
+    Read here rather than threaded through the handler signature, which §6
+    fixes as ``Callable[[Session, str], int]``. A replay is a restore-time
+    operation with no user waiting on it, so the wall clock is the right source;
+    what matters is that all of a replay's rows carry one timestamp close to the
+    restore, not that a caller could inject one.
+    """
+    return datetime.now(tz=timezone.utc)
 
 
 #: The closed vocabulary of deletions a restore can replay. A type not here is
@@ -125,6 +186,7 @@ def _delete_conversation_event(session: Session, object_id: str) -> int:
 REPLAY_HANDLERS: dict[str, Callable[[Session, str], int]] = {
     "conversation": _delete_conversation,
     "conversation_event": _delete_conversation_event,
+    "media_object": _delete_media_object,
 }
 
 

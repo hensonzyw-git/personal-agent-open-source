@@ -30,6 +30,7 @@ from personal_agent.context.continuation import (
     FinanceRetryContext,
 )
 from personal_agent.policy.bridge import VisibleTool
+from personal_agent.runtime.model_input import InputPart
 from personal_agent.storage.engine import (
     create_all,
     create_database_engine,
@@ -57,6 +58,7 @@ def envelope_for(
     materialize_clarification_sources: bool = True,
     max_session_event_scan: int = 400,
     config=None,
+    input_parts: tuple[InputPart, ...] = (),
 ) -> ContextEnvelope:
     """One envelope built by the production builder over a fresh database."""
     with _database(tmp_path) as (session, keyring):
@@ -129,6 +131,54 @@ def envelope_for(
                 completed_exchanges=clarification.completed_exchanges,
                 source_operation_ids=tuple(source_ids),
             )
+        resolved_retry = finance_retry
+        if finance_retry is not None and materialize_clarification_sources:
+            # The Builder verifies that a retry's source operation belongs to
+            # this Session, so the fixture materializes it the same way the
+            # API does: one failed operation with its user message and a
+            # terminal failed_safe result, referenced by sealed source id.
+            opened = open_operation(
+                session,
+                device_id=ENVELOPE_DEVICE,
+                client_request_id="envelope-retry-source",
+                request_fingerprint="retry-source-fingerprint",
+                now=ENVELOPE_NOW + timedelta(seconds=30),
+            )
+            retry_source = opened.operation
+            events.append_event(
+                session,
+                keyring,
+                conversation_id=ENVELOPE_TIMELINE,
+                session_id=ENVELOPE_SESSION,
+                turn_id="trn-retry-source",
+                event_type=events.USER_MESSAGE,
+                content={"text": finance_retry.original_user_text},
+                operation_id=retry_source.operation_id,
+                now=ENVELOPE_NOW + timedelta(seconds=30),
+            )
+            events.append_event(
+                session,
+                keyring,
+                conversation_id=ENVELOPE_TIMELINE,
+                session_id=ENVELOPE_SESSION,
+                turn_id="trn-retry-source",
+                event_type=events.OPERATION_RESULT,
+                content={
+                    "state": "failed_safe",
+                    "failure_reason": finance_retry.source_failure_reason,
+                },
+                operation_id=retry_source.operation_id,
+                now=ENVELOPE_NOW + timedelta(seconds=31),
+            )
+            retry_source.state = "failed_safe"
+            retry_source.state_version = 2
+            retry_source.failure_reason = finance_retry.source_failure_reason
+            resolved_retry = FinanceRetryContext(
+                original_user_text=finance_retry.original_user_text,
+                completed_exchanges=finance_retry.completed_exchanges,
+                source_operation_id=retry_source.operation_id,
+                source_failure_reason=finance_retry.source_failure_reason,
+            )
         current = events.append_event(
             session,
             keyring,
@@ -158,7 +208,8 @@ def envelope_for(
             user_text=user_text,
             effective_tools=list(tools),
             clarification_context=resolved_clarification,
-            finance_retry_context=finance_retry,
+            finance_retry_context=resolved_retry,
+            input_parts=input_parts,
         )
 
 

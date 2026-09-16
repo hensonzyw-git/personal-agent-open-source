@@ -43,6 +43,12 @@ TOOL_TABLE_KINDS: Final[dict[str, str]] = {
     "finance.log_expense": "expense",
     "finance.log_income": "income",
     "finance.update_family_fund": "family_fund",
+    #: The one tool that changes an existing row rather than adding one. It
+    #: still records an external receipt, and against the same table, because
+    #: `transition` requires verified external proof before any execution may
+    #: succeed -- an update is no more allowed to claim success on its own word
+    #: than a create is.
+    "finance.update_expense_category": "expense",
 }
 
 

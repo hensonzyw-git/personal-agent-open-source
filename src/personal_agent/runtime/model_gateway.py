@@ -77,6 +77,26 @@ class ProposedToolCall:
 
 
 @dataclass(frozen=True)
+class ProposedToolCalls:
+    """The model proposed several tool calls in one response, in order.
+
+    One message can ask for several things at once ("下周一10点牙医，下午3点理发"),
+    and the natural shape for the answer is one call per thing. This carries
+    them exactly as the model produced them, in the order it produced them,
+    because that order is a position in the frozen list the orchestrator is
+    about to write down -- not a transport detail to be sorted away.
+
+    It is *not* a licence to run several effects. Only the orchestrator decides
+    what a list may become, and today the only list it accepts is one where
+    every call is executed by the device, frozen together before any of them is
+    issued (design 4.1/4.2). Everything else keeps the refusal it always had.
+    """
+
+    calls: tuple[ProposedToolCall, ...]
+    suppressed_untrusted_text: bool = False
+
+
+@dataclass(frozen=True)
 class ProposedClarification:
     """A structured, side-effect-free question that parks the operation.
 
@@ -106,7 +126,11 @@ class ProposedFailure:
 
 
 ModelProposal = (
-    ProposedAnswer | ProposedToolCall | ProposedClarification | ProposedFailure
+    ProposedAnswer
+    | ProposedToolCall
+    | ProposedToolCalls
+    | ProposedClarification
+    | ProposedFailure
 )
 
 
@@ -121,12 +145,15 @@ class ModelGateway(Protocol):
     `CONTEXT_RESERVED_TOOL_TOKENS`, which is reserved outside the hard limit.
 
     The implementation must return exactly one proposal and must not execute a
-    tool. A response containing multiple tool calls is malformed and fails
-    closed; it is never truncated to the first call. A provider may attach prose
-    to one otherwise valid tool call only through the explicit
-    ``suppressed_untrusted_text`` disposition; that prose is not a direct answer
-    or control result and never reaches policy, dispatch, the user-visible
-    result, or evidence.
+    tool. One message may ask several things, so a response of several ordinary
+    tool calls is carried whole as `ProposedToolCalls` -- in order, never
+    truncated to the first call, and never a licence to run anything: what a
+    list may become is decided downstream. A control call beside tool calls is
+    two answers to what this turn should do and stays malformed (design 4.2).
+    A provider may attach prose to one otherwise valid tool call only through
+    the explicit ``suppressed_untrusted_text`` disposition; that prose is not a
+    direct answer or control result and never reaches policy, dispatch, the
+    user-visible result, or evidence.
     """
 
     def propose(

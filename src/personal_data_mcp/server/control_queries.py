@@ -16,7 +16,7 @@ reads it and resolves the write day in `Asia/Shanghai`.
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -31,7 +31,11 @@ from personal_data_mcp.finance.duplicate_check import (
     candidate_summary_for_check,
     pending_check_for,
 )
-from personal_data_mcp.storage.models import ExternalReceipt, ToolExecution
+from personal_data_mcp.storage.models import (
+    CalendarDirectory,
+    ExternalReceipt,
+    ToolExecution,
+)
 
 
 def get_execution_status(
@@ -174,3 +178,87 @@ def successful_writes_on(session: Session, day: date) -> list[dict[str, Any]]:
         }
         for execution, receipt in rows
     ]
+
+
+#: The stable outcome names of a calendar directory lookup. They are stated on
+#: the wire rather than collapsed into one "no result", because they mean
+#: different things to the user and only one of them is a dead end: an empty
+#: directory is "your phone has not reported its calendars yet", a title miss is
+#: "there is no such calendar", and a read-only match is "that one cannot be
+#: written to".
+CALENDAR_RESOLVED: Final[str] = "resolved"
+CALENDAR_NOT_FOUND: Final[str] = "not_found"
+CALENDAR_AMBIGUOUS: Final[str] = "ambiguous"
+CALENDAR_READ_ONLY: Final[str] = "read_only"
+CALENDAR_DIRECTORY_EMPTY: Final[str] = "directory_empty"
+
+
+def resolve_calendar_target(
+    session: Session, *, device_id: str, title: str
+) -> dict[str, Any]:
+    """Resolve one calendar *name* to one EventKit identifier (design 2.1).
+
+    Routing is an exact-title lookup and nothing cleverer: the directory is what
+    the phone last reported, and a fuzzy match would silently write to a
+    calendar the user did not name. Writability is part of the match predicate
+    rather than a post-filter, so a subscribed or read-only calendar that
+    happens to share the name can never be selected -- it is reported as
+    read-only instead, which is the reason design 2.4 keeps subscribed
+    calendars in the directory at all.
+
+    The identifier is an EventKit UUID and leaves only on the resolved path,
+    where the caller seals it into a device action. Candidates carry titles and
+    source names, which is all a "which one did you mean?" question needs.
+
+    A retired row is not a candidate at all: the directory is the device's
+    *whole* statement about its calendars, so a calendar absent from it is one
+    the phone no longer has, and sealing its identifier would issue a write the
+    phone cannot execute. Retired rows stay in the table (events mirrored from
+    them are still named by them) and are filtered here, at the one place where
+    a calendar is chosen.
+    """
+    rows = (
+        session.execute(
+            select(CalendarDirectory)
+            .where(CalendarDirectory.device_id == device_id)
+            .where(CalendarDirectory.retired_at.is_(None))
+            .order_by(CalendarDirectory.calendar_identifier)
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return {"status": CALENDAR_DIRECTORY_EMPTY}
+
+    named = [row for row in rows if row.title == title]
+    if not named:
+        return {"status": CALENDAR_NOT_FOUND}
+
+    writable = [
+        row
+        for row in named
+        if row.allows_content_modifications and not row.is_subscribed
+    ]
+    if len(writable) == 1:
+        return {
+            "status": CALENDAR_RESOLVED,
+            "calendar_identifier": writable[0].calendar_identifier,
+            "title": writable[0].title,
+        }
+    if len(writable) > 1:
+        # The same name on two accounts. Picking either one writes to a
+        # calendar the user did not choose, so both are offered back instead.
+        return {
+            "status": CALENDAR_AMBIGUOUS,
+            "candidates": [
+                {"title": row.title, "source_title": row.source_title}
+                for row in writable
+            ],
+        }
+    return {
+        "status": CALENDAR_READ_ONLY,
+        "candidates": [
+            {"title": row.title, "source_title": row.source_title}
+            for row in named
+        ],
+    }

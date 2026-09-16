@@ -32,8 +32,8 @@ import Foundation
 /// belongs here, and it is a single named mint rather than a `.lowercased()` at
 /// each call site: adapting at the call site leaves the next write path to
 /// rediscover this by being refused in production.
-enum IdempotencyKey {
-    static func mint() -> String {
+public enum IdempotencyKey {
+    public static func mint() -> String {
         UUID().uuidString.lowercased()
     }
 
@@ -114,6 +114,129 @@ public enum OperationState: Sendable, Equatable {
 
 // --- the Finance query result ------------------------------------------------
 
+/// The ledger's 分类 single-select options, as the picker may offer them.
+///
+/// Hard-coded here and held against the server by
+/// `chat_receipt_vectors.json`'s `expense_categories`, exactly as the query and
+/// record evidence tool sets are. The connector never *creates* a select option
+/// (design 9.2), so an option this client invented would not appear in the
+/// ledger -- it would be a refused write. Reading them from the server at
+/// runtime instead would mean a picker that is empty until some other request
+/// succeeds, and this list changes about once a year.
+public enum ExpenseCategory {
+    public static let all: [String] = [
+        "出行", "餐饮", "游戏", "日常生活", "玩乐", "购物", "旅行", "房租",
+    ]
+
+    /// Whether a value is one this build may send. Used to refuse before the
+    /// network rather than to let the server refuse -- the round trip would be
+    /// a governed write attempt for a value that was never valid.
+    public static func isKnown(_ value: String) -> Bool {
+        all.contains(value)
+    }
+}
+
+/// The written ledger row a governed write's receipt carries (`G1`).
+///
+/// Until `chat_receipt_projection_v5` the receipt carried a `record_id` and no
+/// business fields at all, which is why `ChatView.receiptFields` returned an
+/// empty array and every write rendered as the lightest status row. This is the
+/// object that fills it.
+///
+/// Two rules the decoder enforces rather than trusts:
+///
+/// - **money stays a string.** `amount` and `personalSpend` are the decimal text
+///   the ledger stated. Decoding them as `Double` would make ¥0.10 render as
+///   ¥0.10000000000000001 on a receipt whose entire job is to be checkable.
+/// - **the family flag has no default.** A missing `is_family_expense` refuses
+///   the whole record instead of defaulting to `false`, because that default
+///   would quietly turn a family expense into a personal one on screen -- the
+///   one field where a wrong default is a wrong accounting fact.
+///
+/// `category` is optional because the write contract allows it: a refund or AA
+/// reimbursement may carry none. `personalSpend` is optional because 个人支出 is
+/// a Base formula, so it exists only when the ledger had evaluated it.
+public struct FinanceExpenseRecord: Sendable, Equatable {
+    public let name: String
+    /// 原始金额, as the ledger's own decimal string. Negative for a refund.
+    public let amount: String
+    /// The ledger day, `yyyy-MM-dd`.
+    public let occurredOn: String
+    public let isFamilyExpense: Bool
+    public let category: String?
+    /// 个人支出: the Base formula's answer, never computed on this side.
+    public let personalSpend: String?
+    /// Set once a category correction has been verified against the ledger.
+    ///
+    /// This is what keeps the card honest under Henson's 2026-08-15 decision
+    /// that the card follows the ledger's *current* value: past this point the
+    /// card is no longer literally the write receipt, and this timestamp says
+    /// so on the card instead of hiding it.
+    public let categoryUpdatedAt: String?
+
+    public init(
+        name: String,
+        amount: String,
+        occurredOn: String,
+        isFamilyExpense: Bool,
+        category: String?,
+        personalSpend: String?,
+        categoryUpdatedAt: String?
+    ) {
+        self.name = name
+        self.amount = amount
+        self.occurredOn = occurredOn
+        self.isFamilyExpense = isFamilyExpense
+        self.category = category
+        self.personalSpend = personalSpend
+        self.categoryUpdatedAt = categoryUpdatedAt
+    }
+}
+
+extension FinanceExpenseRecord: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case amount = "amount_cny"
+        case occurredOn = "occurred_on"
+        case isFamilyExpense = "is_family_expense"
+        case category
+        case personalSpend = "personal_spend_cny"
+        case categoryUpdatedAt = "category_updated_at"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        amount = try container.decode(String.self, forKey: .amount)
+        occurredOn = try container.decode(String.self, forKey: .occurredOn)
+        // No `decodeIfPresent ?? false` here, deliberately. See the type's note.
+        isFamilyExpense = try container.decode(Bool.self, forKey: .isFamilyExpense)
+        category = try container.decodeIfPresent(String.self, forKey: .category)
+        personalSpend = try container.decodeIfPresent(
+            String.self, forKey: .personalSpend
+        )
+        categoryUpdatedAt = try container.decodeIfPresent(
+            String.self, forKey: .categoryUpdatedAt
+        )
+        if name.isEmpty || amount.isEmpty || occurredOn.isEmpty {
+            throw DecodingError.dataCorruptedError(
+                forKey: .name,
+                in: container,
+                debugDescription: "a receipt record needs a name, amount and date"
+            )
+        }
+        if let category, category.isEmpty {
+            // Null means "this row legitimately has no category"; empty string
+            // is a server that lost one. They must not collapse.
+            throw DecodingError.dataCorruptedError(
+                forKey: .category,
+                in: container,
+                debugDescription: "category is null or a non-empty string"
+            )
+        }
+    }
+}
+
 /// The structured `finance.query_expenses` projection, decoded strictly.
 ///
 /// The server projects exactly the whitelisted fields of its query contract
@@ -125,6 +248,7 @@ public struct FinanceQueryResult: Sendable, Equatable {
     public enum View: String, Sendable, Equatable {
         case total
         case byCategory = "by_category"
+        case byTrip = "by_trip"
         case records
     }
 
@@ -153,6 +277,8 @@ public struct FinanceQueryResult: Sendable, Equatable {
     public let sourceSystem: String
     /// `personal_spend_total_cny`; present for `total` and `by_category`.
     public let amount: String?
+    public let byTrip: [TripBucket]
+    public let coverage: TripCoverage?
     public let byCategory: [CategoryBucket]
     public let records: [RecordRow]
     /// Present only when a `records` page has a next page to continue into.
@@ -166,6 +292,8 @@ extension FinanceQueryResult: Decodable {
         case filtersApplied = "filters_applied"
         case sourceSystem = "source_system"
         case amount = "personal_spend_total_cny"
+        case byTrip = "by_trip"
+        case coverage
         case byCategory = "by_category"
         case records
         case nextCursor = "next_cursor"
@@ -197,6 +325,10 @@ extension FinanceQueryResult: Decodable {
         self.records =
             try container.decodeIfPresent([RecordRow].self, forKey: .records) ?? []
         self.nextCursor = try container.decodeIfPresent(String.self, forKey: .nextCursor)
+        self.byTrip = try container.decodeIfPresent([TripBucket].self, forKey: .byTrip) ?? []
+        self.coverage = try container.decodeIfPresent(TripCoverage.self, forKey: .coverage)
+        try validateTrip()
+        try validateTripObject([String: JSONValue](from: decoder))
     }
 }
 
@@ -242,6 +374,59 @@ extension FinanceQueryResult.RecordRow: Decodable {
 
 /// What the app is allowed to tell the user about one operation.
 ///
+/// What the phone decided about a device-executed write (design §3.3).
+///
+/// `created` and `duplicate` are **both successes and are not interchangeable**:
+/// the first says the phone made the event, the second says it found one already
+/// there. The server settles both as `succeeded` with the same EventKit id, and
+/// only `device_result` separates them — which is why folding them into one
+/// "written" outcome is not a simplification. 「仍要创建」 is offered for exactly
+/// one of the two, so a receipt that merged them would put the button on the
+/// wrong card.
+public enum CalendarDeviceResult: Sendable, Equatable {
+    /// The phone wrote the event.
+    case created
+    /// The phone found an event it judged to be the same one and wrote nothing.
+    case duplicate
+    /// No readable device result: a Timeline event frozen before the server
+    /// projected the field, or a value a later server added. The write is still
+    /// proven by the event id — *which* of the two it was is not, and the card
+    /// says so rather than guessing one. **No override may be offered from
+    /// here**: re-issuing a write is only safe when the server has confirmed
+    /// this is a duplicate, and `.unstated` is precisely the absence of that
+    /// confirmation.
+    case unstated
+
+    /// Read the server's `device_result`. An unknown string is `.unstated`
+    /// rather than a failure: the field is an addition to a receipt whose write
+    /// is proven elsewhere, so a value this build cannot name costs the card its
+    /// distinction and never the receipt.
+    init(wire: String?) {
+        switch wire {
+        case "created": self = .created
+        case "duplicate": self = .duplicate
+        default: self = .unstated
+        }
+    }
+
+    /// The terminal-state label the calendar receipt earns (§1o 组件二).
+    ///
+    /// Here rather than in the view so it can be held by a test: the defect this
+    /// replaced was not a wrong colour or a mislaid row, it was the *ledger's*
+    /// label on a calendar write — and only a string-level assertion can tell
+    /// those apart. `.unstated` claims neither of the two, which is the whole
+    /// reason it exists: 「已创建」 is false for a duplicate, 「日历里已有」 is
+    /// false for a create, and a history that recorded neither must not be
+    /// dressed as if it had.
+    public var terminalLabel: String {
+        switch self {
+        case .created: return "已创建日程"
+        case .duplicate: return "日历里已有此日程"
+        case .unstated: return "已写入日历"
+        }
+    }
+}
+
 /// Every case is reachable only from structured fields. There is no case built
 /// from prose, and `recorded` is the only case that claims a ledger row exists.
 public enum OperationOutcome: Sendable, Equatable {
@@ -253,17 +438,71 @@ public enum OperationOutcome: Sendable, Equatable {
     /// Parked on a possible duplicate. The decision surface is `DEV-031`.
     case needsDuplicateDecision(checkID: String, existing: String?)
     /// A ledger row exists, and this is its external evidence.
-    case recorded(recordID: String, tool: String?)
+    ///
+    /// `record` is the row's business fields when the server projected them
+    /// (`G1`), and `nil` when it could not -- an `idempotent_replay`, an older
+    /// receipt, or a payload that failed projection. The card degrades to its
+    /// status row in that case; the write is still proven by `recordID`, which
+    /// is why the fields are allowed to be absent at all.
+    case recorded(recordID: String, tool: String?, record: FinanceExpenseRecord?)
+    /// An event exists in the user's **own calendar**, and this is its EventKit
+    /// identifier.
+    ///
+    /// A separate case from `recorded` for the reason the two query cards are
+    /// separate cases: the ledger receipt's wording is not merely inaccurate for
+    /// a calendar write, it names a different fact. The 2026-09-10 review found
+    /// a successfully created calendar event rendering 「账本已存在此记录」 beside
+    /// a 打开飞书账本 link — a card telling the user to go and check a ledger
+    /// that was never involved.
+    ///
+    /// `evidence` carries what the phone reported, because the card's wording
+    /// and its 「仍要创建」 button are both chosen by it: `.created` claims the
+    /// phone made the event, `.duplicate` claims it found one, and `.unstated`
+    /// claims neither.
+    /// `actionID` is the action 「仍要创建」 must be addressed to — the server's
+    /// `device_action_id`, which equals this operation's own idempotency key
+    /// (`orchestrator.py`: 「`action_id` is the operation's own idempotency
+    /// key」). It is **not** `eventID`: the EventKit identifier the phone
+    /// reported and the key the server will accept an override under are two
+    /// different facts that happen to travel in the same receipt, and an
+    /// override sent to the former would be refused by the pinned-UUID check
+    /// rather than misapplied. `nil` when the projection carried none -- a
+    /// Timeline event frozen before the field existed, or a tool the server
+    /// does not execute on the device. Never guessed from the operation id: see
+    /// `overrideDecision`.
+    case calendarEventWritten(
+        eventID: String,
+        tool: String?,
+        evidence: CalendarDeviceResult,
+        actionID: String?
+    )
     /// A no-side-effect answer.
     case answered(String)
+    case answeredV2(ResultEnvelope)
     /// A structured Finance query result, read-only, rendered as a card rather
     /// than as prose. `tool` is the recorded query tool, shown on the card.
     case answeredWithQuery(result: FinanceQueryResult, tool: String?)
+    /// A structured calendar mirror query result, read-only, rendered as the
+    /// list card (design §9.2). A separate case from `answeredWithQuery`
+    /// because the two cards read different fields and render by different
+    /// rules -- folding them into one case would mean one card type that has
+    /// to know which domain it is holding, which is the shape that renders a
+    /// calendar row through ledger presentation.
+    case answeredWithCalendarQuery(result: CalendarQueryResult, tool: String?)
     /// Nothing was written.
     case failedSafe(reason: String?)
     /// Something may have been written and could not be verified. Never shown as
     /// success and never shown as a clean failure.
-    case needsManualReview(reason: String?, recordID: String?)
+    ///
+    /// `domain` is the operation's own IR domain, carried here rather than
+    /// threaded into the card beside the outcome: the card's wording and its two
+    /// conclusion paths are chosen by it, so a rendering that forgot to pass it
+    /// would silently ask the person to check the *ledger* for a calendar write
+    /// -- and the conclusion they then tap is recorded as a human fact the
+    /// server refuses to contradict. `recordID` travels the same way for the
+    /// same reason. `nil` means the operation recorded no domain (see
+    /// `OperationReceipt.calendarDomain`).
+    case needsManualReview(reason: String?, recordID: String?, domain: String?)
     /// Cancelled before any external submit could have happened.
     case cancelledBeforeSubmit
     /// The server reported success but gave this client nothing it can present as
@@ -287,16 +526,86 @@ public enum OperationOutcome: Sendable, Equatable {
         switch self {
         case .running, .needsManualReview, .indeterminate:
             return false
-        case .needsClarification, .needsDuplicateDecision, .recorded, .answered,
-             .answeredWithQuery, .failedSafe, .cancelledBeforeSubmit:
+        case .needsClarification, .needsDuplicateDecision, .recorded,
+             .calendarEventWritten, .answered, .answeredV2, .answeredWithQuery,
+             .answeredWithCalendarQuery, .failedSafe, .cancelledBeforeSubmit:
             return true
         }
     }
 
-    /// True only where an external ledger row is proven to exist.
+    /// True only where an external object is proven to exist -- a ledger row, or
+    /// an event in the user's calendar. Both are proof the outside world
+    /// changed; neither is inferable from a state alone.
     public var provesWrite: Bool {
-        if case .recorded = self { return true }
-        return false
+        switch self {
+        case .recorded, .calendarEventWritten: return true
+        default: return false
+        }
+    }
+
+    /// What 「仍要创建」 may be answered here, and to which action.
+    ///
+    /// The whole rule, in one place, on purpose. The server decides the same
+    /// question in `calendar_issue.may_override` and the two are held equal by
+    /// a pin in `tests/unit/test_chat_receipt_vectors.py`; a client that
+    /// re-decided it per view would be a second source of truth for a question
+    /// whose wrong answer writes a second copy of an event the user already has.
+    ///
+    /// Read from the *outcome*, not the receipt, because the outcome is what a
+    /// Timeline event decodes to as well: history and the live reply must not be
+    /// able to disagree about whether the button is there, any more than they
+    /// may disagree about whether something was written.
+    public var overrideDecision: OverrideDecision {
+        guard case .calendarEventWritten(_, let tool, let evidence, let actionID) = self,
+              tool == OperationReceipt.calendarDeviceTool,
+              evidence == .duplicate,
+              let actionID, !actionID.isEmpty
+        else { return .notOffered }
+        return .offered(actionID: actionID)
+    }
+
+    /// True when the frozen fields do not decide `overrideDecision` and only
+    /// the server's current projection can.
+    ///
+    /// This is the history case: `device_result` and `device_action_id` are
+    /// frozen into a Timeline event when it is appended, so an event written by
+    /// the build before they existed carries neither — while the *operation row*
+    /// behind it has had both since migration 0010. A card that read only its
+    /// own event would show no button for a duplicate it cannot rule out.
+    ///
+    /// `.created` is **not** undecided: the phone said it wrote the event, and
+    /// no later projection can turn that into a duplicate. Nor is a decided
+    /// `.duplicate` with its action id -- there is nothing left to ask.
+    /// `.unstated` is undecided rather than "no", because the two readings it
+    /// covers (never projected / projected as nothing readable) are exactly the
+    /// ones a lookup separates.
+    public var overrideIsUndecided: Bool {
+        guard case .calendarEventWritten(_, let tool, let evidence, let actionID) = self,
+              tool == OperationReceipt.calendarDeviceTool
+        else { return false }
+        switch evidence {
+        case .created: return false
+        case .duplicate: return overrideDecision == .notOffered
+        case .unstated: return true
+        }
+    }
+}
+
+/// The answer to "may this device write be overridden, and where must the answer
+/// be sent" -- one value rather than a `Bool` beside an optional id, so a button
+/// cannot be drawn without the identifier its action needs.
+public enum OverrideDecision: Sendable, Equatable {
+    /// No button. Also the answer to every question this client could not get a
+    /// server confirmation for: an override offered on a guess writes an event.
+    case notOffered
+    /// The button, addressed to this action.
+    case offered(actionID: String)
+
+    /// The action id, when there is one. Reading it from the decision rather
+    /// than beside it is what makes `.notOffered` mean "no call is possible".
+    public var actionID: String? {
+        guard case .offered(let actionID) = self else { return nil }
+        return actionID
     }
 }
 
@@ -320,6 +629,11 @@ public struct OperationReceipt: Sendable, Equatable {
     public let cancelRequested: Bool
     public let clientDetached: Bool
     public let tool: String?
+    /// The IR domain of the recorded tool (design §10, gap 4) -- `"calendar"`,
+    /// `"finance"` -- or `nil` when no tool was recorded. Never guessed from the
+    /// tool's name: the server derives this from the tool's own contract, and a
+    /// list kept beside it here would be the second source of truth that drifts.
+    public let domain: String?
     public let recordID: String?
     public let failureReason: String?
     public let duplicateCheckID: String?
@@ -327,9 +641,38 @@ public struct OperationReceipt: Sendable, Equatable {
     public let clarification: String?
     public let duplicateExisting: String?
     public let answer: String?
+    public let resultEnvelope: ResultEnvelope?
     /// The structured `finance.query_expenses` projection, when the tool was a
     /// query and the result decoded. `nil` for every other tool.
     public let queryResult: FinanceQueryResult?
+    /// The structured `calendar.query_events` projection, on the same terms as
+    /// `queryResult` and never both: `query_result` is one field carrying one
+    /// of the two projections, and the recorded tool is what says which.
+    public let calendarQuery: CalendarQueryResult?
+    /// The written ledger row, when this was a governed write the server could
+    /// project (`G1`). `nil` for every other tool and for a replay.
+    public let record: FinanceExpenseRecord?
+    /// What the phone reported about a device-executed write. `.unstated` when
+    /// the receipt carries no readable `device_result` — every Finance receipt,
+    /// and every calendar one frozen before the server projected the field.
+    public let deviceResult: CalendarDeviceResult
+    /// The action this operation's own idempotency key names, when the server
+    /// projects one — what an override must be addressed to. `nil` for every
+    /// operation that is not executed on the device, and for a projection that
+    /// predates the field. Never derived here from `operationID`: the two are
+    /// equal for a device action *by the server's construction*, and a client
+    /// that re-derived that equality would be asserting a server invariant it
+    /// cannot check (`app.py` gates the field on the tool's executor).
+    public let deviceActionID: String?
+    /// The device actions this reply hands over, in plan order — empty when
+    /// there are none. One message may carry several arrangements (design
+    /// §4.2), so this is **always** a list, even for a single action; a client
+    /// that switched on length would read the single-action reply through code
+    /// no multi-action reply ever exercises.
+    ///
+    /// Nothing about them is persisted: a Timeline replay never re-executes a
+    /// device write.
+    public let deviceActions: [DeviceActionEnvelope]
 
     public init(
         operationID: String,
@@ -337,26 +680,40 @@ public struct OperationReceipt: Sendable, Equatable {
         cancelRequested: Bool,
         clientDetached: Bool,
         tool: String?,
+        domain: String? = nil,
         recordID: String?,
         failureReason: String?,
         duplicateCheckID: String?,
         clarification: String?,
         duplicateExisting: String?,
         answer: String?,
-        queryResult: FinanceQueryResult? = nil
+        resultEnvelope: ResultEnvelope? = nil,
+        queryResult: FinanceQueryResult? = nil,
+        calendarQuery: CalendarQueryResult? = nil,
+        record: FinanceExpenseRecord? = nil,
+        deviceResult: CalendarDeviceResult = .unstated,
+        deviceActionID: String? = nil,
+        deviceActions: [DeviceActionEnvelope] = []
     ) {
         self.operationID = operationID
         self.state = state
         self.cancelRequested = cancelRequested
         self.clientDetached = clientDetached
         self.tool = tool
+        self.domain = domain
         self.recordID = recordID
         self.failureReason = failureReason
         self.duplicateCheckID = duplicateCheckID
         self.clarification = clarification
         self.duplicateExisting = duplicateExisting
         self.answer = answer
+        self.resultEnvelope = resultEnvelope
         self.queryResult = queryResult
+        self.calendarQuery = calendarQuery
+        self.record = record
+        self.deviceResult = deviceResult
+        self.deviceActionID = deviceActionID
+        self.deviceActions = deviceActions
     }
 
     /// The tools whose success is a ledger row. Kept here so `succeeded` for one
@@ -375,6 +732,33 @@ public struct OperationReceipt: Sendable, Equatable {
         "finance.log_expense_batch",
         "finance.log_income",
         "finance.update_family_fund",
+        // `G1`. A category correction is an R2 write like the rest, so a
+        // `succeeded` for it without a `record_id` is refused here too. It
+        // matters more than for a create, not less: the row it claims to have
+        // changed already existed, so "succeeded" with no evidence would read as
+        // a correction that landed on a row nobody can point at.
+        "finance.update_expense_category",
+        // The device-executed calendar write is R2 like the server writes: its
+        // succeeded receipt carries `record_id` = the device-reported event_id,
+        // so the write is proven by the same field. What it does **not** share
+        // is the card: `project` routes it to `.calendarEventWritten` on
+        // `deviceExecutedTools` before this set is consulted, because the ledger
+        // receipt's wording and its 打开飞书账本 link describe a different fact.
+        // It stays listed here because the fact this set states -- "a succeeded
+        // write must carry its external evidence" -- is true of it too, and the
+        // server's `_RECORD_ID_RESULT_TOOLS` is where that is decided.
+        "calendar.create_event",
+    ]
+
+    /// The tools whose effect happens in the calling device rather than behind
+    /// the governed MCP bridge.
+    ///
+    /// Mirrors the server's IR-derived `DEVICE_EXECUTED_TOOL_NAMES`; the client
+    /// uses it only to pick which success card to draw. `chat_receipt_vectors.json`
+    /// (`device_executed_tools`) holds the two sides equal, so a second device
+    /// tool cannot ship a receipt this build renders as a ledger row.
+    public static let deviceExecutedTools: Set<String> = [
+        "calendar.create_event",
     ]
 
     /// The governed read tools whose success is a structured query card, never a
@@ -387,17 +771,53 @@ public struct OperationReceipt: Sendable, Equatable {
         "finance.query_expenses",
     ]
 
+    /// The calendar mirror's governed read, on the same terms as
+    /// `queryEvidenceTools` and held equal to the server by the vector's
+    /// `calendar_query_evidence_tools`. Two sets rather than one because the
+    /// two projections are different types: this is what tells the decoder
+    /// which of them `query_result` is even attempted as.
+    public static let calendarQueryEvidenceTools: Set<String> = [
+        "calendar.query_events",
+    ]
+
+    /// The IR domain the calendar tools declare (design §10, gap 4).
+    ///
+    /// The 人工核对 card picks its wording by the operation's own domain, and
+    /// this is the one value that selects the calendar card. Everything else --
+    /// including an absent domain -- draws the ledger card, which is what every
+    /// such card drew before the field existed: `domain` is written into a
+    /// Timeline event when the event is appended, so only operations recorded
+    /// before step 5 carry none, and every one of those is a ledger write. A
+    /// live receipt always carries it. This is the *display* fallback for that
+    /// history and never a claim that an unknown domain is a ledger write, which
+    /// is why nothing else in this client branches on it.
+    public static let calendarDomain = "calendar"
+
+    /// The device-executed tool whose duplicates the user may answer 「仍要创建」
+    /// to. Mirrors the server's `CALENDAR_DEVICE_TOOL` (`calendar_issue.py`),
+    /// which is a written-out registry there rather than "every device tool" for
+    /// the reason stated at its definition: an override is not a property of
+    /// being device-executed, it is the meaning a *calendar* duplicate has. The
+    /// two names are held equal by `chat_receipt_vectors.json` (`override_tool`).
+    public static let calendarDeviceTool = "calendar.create_event"
+
     public var outcome: OperationOutcome {
         Self.project(
             state: state,
             toolEvidence: .known(tool),
+            domain: domain,
             recordID: recordID,
             failureReason: failureReason,
             duplicateCheckID: duplicateCheckID,
             clarification: clarification,
             duplicateExisting: duplicateExisting,
             answer: answer,
-            queryResult: queryResult
+            resultEnvelope: resultEnvelope,
+            queryResult: queryResult,
+            calendarQuery: calendarQuery,
+            record: record,
+            deviceResult: deviceResult,
+            deviceActionID: deviceActionID
         )
     }
 
@@ -420,21 +840,30 @@ public struct OperationReceipt: Sendable, Equatable {
     static func project(
         state: OperationState,
         toolEvidence: ToolEvidence,
+        domain: String? = nil,
         recordID: String?,
         failureReason: String?,
         duplicateCheckID: String?,
         clarification: String?,
         duplicateExisting: String?,
         answer: String?,
-        queryResult: FinanceQueryResult? = nil
+        resultEnvelope: ResultEnvelope? = nil,
+        queryResult: FinanceQueryResult? = nil,
+        calendarQuery: CalendarQueryResult? = nil,
+        record: FinanceExpenseRecord? = nil,
+        deviceResult: CalendarDeviceResult = .unstated,
+        deviceActionID: String? = nil
     ) -> OperationOutcome {
         let tool: String?
         if case .known(let value) = toolEvidence { tool = value } else { tool = nil }
+        if state == .succeeded, let envelope = resultEnvelope, envelope.kind != "action" {
+            return .answeredV2(envelope)
+        }
         switch state {
         case .accepted, .interpreting, .dispatching, .sourceInProgress, .verifying:
             return .running
         case .waitingForClarification:
-            return .needsClarification(question: clarification)
+            return .needsClarification(question: resultEnvelope?.text ?? clarification)
         case .waitingForDuplicateDecision:
             guard let duplicateCheckID, !duplicateCheckID.isEmpty else {
                 // Without the check id there is nothing the user could decide,
@@ -445,8 +874,28 @@ public struct OperationReceipt: Sendable, Equatable {
                 checkID: duplicateCheckID, existing: duplicateExisting
             )
         case .succeeded:
+            // A device-executed write draws its own card, and is checked before
+            // `recordID` sends it down the ledger path. The two share the
+            // evidence field and nothing else: `record_id` here is the EventKit
+            // identifier the phone reported, and the ledger receipt would render
+            // it beside 「账本已存在此记录」 and a 打开飞书账本 link.
+            if let tool, Self.deviceExecutedTools.contains(tool) {
+                guard let recordID, !recordID.isEmpty else {
+                    // The same rule `recordEvidenceTools` states below, applied
+                    // to the device's own write: a succeeded device write must
+                    // carry the identifier it reported. Without one there is no
+                    // proof an event exists, and a state alone is not proof.
+                    return .indeterminate(state: state.wire)
+                }
+                return .calendarEventWritten(
+                    eventID: recordID,
+                    tool: tool,
+                    evidence: deviceResult,
+                    actionID: deviceActionID
+                )
+            }
             if let recordID, !recordID.isEmpty {
-                return .recorded(recordID: recordID, tool: tool)
+                return .recorded(recordID: recordID, tool: tool, record: record)
             }
             if let tool, Self.recordEvidenceTools.contains(tool) {
                 // A governed write that succeeded must carry its external
@@ -459,6 +908,20 @@ public struct OperationReceipt: Sendable, Equatable {
                 }
                 // A query that succeeded without a projectable result is not a
                 // success this client can present.
+                return .indeterminate(state: state.wire)
+            }
+            if let tool, Self.calendarQueryEvidenceTools.contains(tool) {
+                if let calendarQuery {
+                    return .answeredWithCalendarQuery(
+                        result: calendarQuery, tool: tool
+                    )
+                }
+                // A governed calendar read that came back with a result this
+                // build cannot draw -- the wrong domain's projection, or one
+                // whose rows break the all-day/timed invariants -- is not an
+                // answer. It is also deliberately *not* `.answered(answer)`:
+                // the server's deterministic summary would read as a clean
+                // reply for a body this client refused to trust.
                 return .indeterminate(state: state.wire)
             }
             // Without tool evidence an `answer` cannot be trusted as a clean
@@ -475,7 +938,9 @@ public struct OperationReceipt: Sendable, Equatable {
         case .failedSafe:
             return .failedSafe(reason: failureReason)
         case .needsManualReview:
-            return .needsManualReview(reason: failureReason, recordID: recordID)
+            return .needsManualReview(
+                reason: failureReason, recordID: recordID, domain: domain
+            )
         case .cancelledPreSubmit:
             return .cancelledBeforeSubmit
         case .unrecognised(let raw):
@@ -491,13 +956,20 @@ extension OperationReceipt: Decodable {
         case cancelRequested = "cancel_requested"
         case clientDetached = "client_detached"
         case tool
+        case domain
         case recordID = "record_id"
         case failureReason = "failure_reason"
         case duplicateCheckID = "duplicate_check_id"
         case clarification
         case duplicateExisting = "duplicate_existing"
         case answer
+        case resultEnvelope = "result_envelope"
         case queryResult = "query_result"
+        case record
+        case deviceResult = "device_result"
+        case deviceActionID = "device_action_id"
+        case deviceActions = "device_actions"
+        case deviceAction = "device_action"
     }
 
     public init(from decoder: Decoder) throws {
@@ -509,7 +981,9 @@ extension OperationReceipt: Decodable {
         state = OperationState(wire: try container.decode(String.self, forKey: .state))
         cancelRequested = try container.decode(Bool.self, forKey: .cancelRequested)
         clientDetached = try container.decode(Bool.self, forKey: .clientDetached)
-        tool = try container.decodeIfPresent(String.self, forKey: .tool)
+        let recordedTool = try container.decodeIfPresent(String.self, forKey: .tool)
+        tool = recordedTool
+        domain = try container.decodeIfPresent(String.self, forKey: .domain)
         recordID = try container.decodeIfPresent(String.self, forKey: .recordID)
         failureReason = try container.decodeIfPresent(
             String.self, forKey: .failureReason
@@ -524,12 +998,76 @@ extension OperationReceipt: Decodable {
             String.self, forKey: .duplicateExisting
         )
         answer = try container.decodeIfPresent(String.self, forKey: .answer)
+        do {
+            resultEnvelope = try container.decodeIfPresent(ResultEnvelope.self, forKey: .resultEnvelope)
+        } catch is DecodingError {
+            resultEnvelope = .unavailable
+        }
         // A malformed `query_result` is a query this build cannot render, not a
         // reason to lose the whole receipt: it decodes to `nil` and the screen
         // fails closed on the query card while everything else still works.
-        queryResult = try? container.decodeIfPresent(
-            FinanceQueryResult.self, forKey: .queryResult
+        //
+        // Which of the two projections it is, is the *recorded tool's* answer
+        // and never the body's shape -- the server forks on the same
+        // IR-derived pair, so neither side can be talked into rendering a
+        // Finance result as a calendar row by a field that happens to line up.
+        if let recordedTool, Self.calendarQueryEvidenceTools.contains(recordedTool) {
+            calendarQuery = try? container.decodeIfPresent(
+                CalendarQueryResult.self, forKey: .queryResult
+            )
+            queryResult = nil
+        } else {
+            queryResult = try? container.decodeIfPresent(
+                FinanceQueryResult.self, forKey: .queryResult
+            )
+            calendarQuery = nil
+        }
+        // Same fail-closed shape as `query_result`, and for a stronger reason: a
+        // malformed record is a card this build cannot draw, never a reason to
+        // lose the receipt that proves the write. It decodes to `nil` and the
+        // card falls back to the status row.
+        record = try? container.decodeIfPresent(
+            FinanceExpenseRecord.self, forKey: .record
         )
+        // `.unstated` for every absent or unreadable value, which is the honest
+        // reading of both: a Finance receipt never carries this field, and a
+        // calendar receipt frozen before 2026-09-10 carries no fact about it.
+        deviceResult = CalendarDeviceResult(
+            wire: try container.decodeIfPresent(String.self, forKey: .deviceResult)
+        )
+        // Read as written, never derived. An absent field stays `nil` and the
+        // card asks the server (see `overrideIsUndecided`); filling it in from
+        // `operation_id` would put the client in the business of asserting that
+        // an operation is device-executed, which is the server's answer to give
+        // (`_operation_projection` gates the field on the tool's executor).
+        deviceActionID = try container.decodeIfPresent(
+            String.self, forKey: .deviceActionID
+        )
+        // The device-action hand-off rides the same reply, and since design
+        // §2.5.4 it is the plural `device_actions`. Which branch runs is
+        // decided by **key presence**, not by whether decoding succeeded: a
+        // malformed list must not fall through to the historical singular
+        // field, because that is a downgrade path — a v2 action smuggled
+        // through, or an unreadable reply silently repaired into an older
+        // shape. A reply that carries the plural key is read as a list and
+        // nothing else, and an unreadable one yields no actions at all: the
+        // operations stay parked and the timeout sweep is the witness.
+        if container.contains(.deviceActions) {
+            deviceActions =
+                (try? container.decodeIfPresent(
+                    DeviceActionEnvelopes.self, forKey: .deviceActions
+                ))?.envelopes ?? []
+        } else if let legacy = try? container.decodeIfPresent(
+            DeviceActionEnvelope.self, forKey: .deviceAction
+        ) {
+            // Read-only compatibility with the field servers emitted before
+            // the plural shape existed. It is never merged with the list — a
+            // reply carrying both would otherwise hand over more actions than
+            // the list declared.
+            deviceActions = [legacy]
+        } else {
+            deviceActions = []
+        }
     }
 }
 
@@ -747,10 +1285,30 @@ public enum TimelineEntryKind: Sendable, Equatable {
     /// `DEV-031`. The permanent marker that closes an earlier duplicate prompt.
     /// It is presentation state and never model dialogue.
     case duplicateDecision(checkID: String, decision: String)
-    /// `DEV-040`. The permanent marker recording what a person found in the
-    /// ledger for an operation parked at `needs_manual_review`. Presentation
-    /// state, never dialogue — and never evidence that a write happened.
-    case manualReviewResolved(resolution: String)
+    /// `G1`. A verified current-value revision for one expense row. It is a
+    /// separate append-only Timeline fact; the original write receipt remains
+    /// sealed and is never rewritten.
+    case expenseCategoryCorrected(recordID: String, record: FinanceExpenseRecord)
+    /// `DEV-040`. The permanent marker recording what a person found for an
+    /// operation parked at `needs_manual_review`. Presentation state, never
+    /// dialogue — and never evidence that a write happened.
+    ///
+    /// `domain` is the operation's IR domain, frozen into the event when it was
+    /// appended (batch 2 of the calendar step). It rides in the case rather than
+    /// beside the rendering for the same reason `needsManualReview`'s does: the
+    /// words this entry is drawn in are chosen by it, and a rendering that
+    /// defaulted to the ledger would put 「账本」 on a calendar write's history
+    /// line for good — the marker is written once and never backfilled. `nil` is
+    /// a marker appended before the field existed; see
+    /// `ManualReviewCopy.forResolvedMarker`.
+    case manualReviewResolved(resolution: String, domain: String?)
+    /// `1j`. The daily review card, sealed by the nightly job with the ledger
+    /// values read once at build time. The `snapshot` is frozen; the card's
+    /// status is read live because ack/defer keep changing it after the seal.
+    case dailyReview(snapshot: ReviewCardSnapshot)
+    /// The systemic-risk daily card, sealed by the risk-monitor job with the
+    /// scores read once at build time. Presentation, never dialogue.
+    case riskReport(snapshot: RiskReportSnapshot)
     /// An event type this build does not know. Kept visible rather than dropped:
     /// a silently-missing entry is a history that lies about what happened.
     case unrecognised(eventType: String)
@@ -781,6 +1339,17 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
         self.content = content
     }
 
+    public var imageMediaIDs: [String] {
+        guard eventType == "user_message" else { return [] }
+        return (content["parts"]?.arrayValue ?? []).compactMap { part in
+            guard let fields = part.objectValue,
+                  fields["type"]?.stringValue == "image_ref",
+                  let id = fields["media_id"]?.stringValue,
+                  UUID(uuidString: id) != nil else { return nil }
+            return id
+        }
+    }
+
     public var kind: TimelineEntryKind {
         switch eventType {
         case "user_message":
@@ -808,29 +1377,73 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
             } else {
                 toolEvidence = .unknown
             }
-            // A structured Finance query projection, when the event carried one.
+            let tool: String?
+            if case .known(let value) = toolEvidence { tool = value } else { tool = nil }
+            // A structured query projection, when the event carried one.
             // Decoded from the nested object so history renders the same card as
-            // the live receipt.
+            // the live receipt -- and, as on the receipt, through the same
+            // tool-decides-which-projection fork. An event recorded before tool
+            // recording carries no tool and stays `.unknown`, which is not the
+            // same fact as "a calendar query" and never decodes as one.
             let queryResult: FinanceQueryResult?
-            if let object = content["query_result"]?.objectValue,
+            let calendarQuery: CalendarQueryResult?
+            if let tool, OperationReceipt.calendarQueryEvidenceTools.contains(tool) {
+                calendarQuery = decodeProjection(
+                    CalendarQueryResult.self, from: content["query_result"]
+                )
+                queryResult = nil
+            } else {
+                queryResult = decodeProjection(
+                    FinanceQueryResult.self, from: content["query_result"]
+                )
+                calendarQuery = nil
+            }
+            // `G1`'s business fields, read the same way and for the same
+            // reason: scrolling back must draw the same card the live receipt
+            // drew, not a demoted one.
+            let record: FinanceExpenseRecord?
+            if let object = content["record"]?.objectValue,
                let data = try? JSONEncoder().encode(object) {
-                queryResult = try? JSONDecoder().decode(
-                    FinanceQueryResult.self, from: data
+                record = try? JSONDecoder().decode(
+                    FinanceExpenseRecord.self, from: data
                 )
             } else {
-                queryResult = nil
+                record = nil
             }
             return .operationResult(
                 outcome: OperationReceipt.project(
                     state: state,
                     toolEvidence: toolEvidence,
+                    // The domain travels with the history (design §10), so a
+                    // 人工核对 card re-drawn here still asks about the calendar
+                    // rather than the ledger. Absent on events recorded before
+                    // step 5, which is the same nil the card already handles.
+                    domain: content["domain"]?.stringValue,
                     recordID: content["record_id"]?.stringValue,
                     failureReason: content["failure_reason"]?.stringValue,
                     duplicateCheckID: content["duplicate_check_id"]?.stringValue,
                     clarification: content["clarification"]?.stringValue,
                     duplicateExisting: content["duplicate_existing"]?.stringValue,
                     answer: content["answer"]?.stringValue,
-                    queryResult: queryResult
+                    resultEnvelope: decodeResultEnvelope(content["result_envelope"]),
+                    queryResult: queryResult,
+                    calendarQuery: calendarQuery,
+                    record: record,
+                    // Frozen with the event when it was appended, so a calendar
+                    // receipt scrolled back to still says whether it created the
+                    // event or found it. An event appended before the server
+                    // projected the field carries none, which reads as
+                    // `.unstated` -- the write is still proven by `record_id`,
+                    // and which of the two it was is exactly what that history
+                    // does not know.
+                    deviceResult: CalendarDeviceResult(
+                        wire: content["device_result"]?.stringValue
+                    ),
+                    // Same freeze, same consequence: an event appended before
+                    // the server projected the action id leaves 「仍要创建」
+                    // undecided rather than answered, and the card asks the
+                    // server's current projection (`overrideIsUndecided`).
+                    deviceActionID: content["device_action_id"]?.stringValue
                 ),
                 state: state,
                 toolEvidence: toolEvidence
@@ -845,6 +1458,22 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                 return .unrecognised(eventType: eventType)
             }
             return .duplicateDecision(checkID: checkID, decision: decision)
+        case "expense_category_corrected":
+            guard
+                let recordID = content["record_id"]?.stringValue,
+                !recordID.isEmpty,
+                let object = content["record"]?.objectValue,
+                let data = try? JSONEncoder().encode(object),
+                let record = try? JSONDecoder().decode(
+                    FinanceExpenseRecord.self, from: data
+                ),
+                record.categoryUpdatedAt != nil
+            else {
+                return .unrecognised(eventType: eventType)
+            }
+            return .expenseCategoryCorrected(
+                recordID: recordID, record: record
+            )
         case "manual_review_resolved":
             guard
                 let resolution = content["resolution"]?.stringValue,
@@ -855,7 +1484,38 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
                 // client could not read the entry.
                 return .unrecognised(eventType: eventType)
             }
-            return .manualReviewResolved(resolution: resolution)
+            // A domain that is absent, null or not a string is simply no
+            // domain — the shape every marker had before the field existed. It
+            // is not a reason to hide a conclusion that really was recorded.
+            return .manualReviewResolved(
+                resolution: resolution,
+                domain: content["domain"]?.stringValue
+            )
+        case "daily_review":
+            // The whole sealed content is the snapshot. Re-encoding the nested
+            // `JSONValue` object and decoding it back is the same path the query
+            // and receipt projections use, so history draws the same card the
+            // live build carried. A snapshot this build cannot read refuses the
+            // entry rather than rendering a partial, possibly-lying card.
+            guard
+                let data = try? JSONEncoder().encode(content),
+                let snapshot = try? JSONDecoder().decode(
+                    ReviewCardSnapshot.self, from: data
+                )
+            else {
+                return .unrecognised(eventType: eventType)
+            }
+            return .dailyReview(snapshot: snapshot)
+        case "risk_report":
+            guard
+                let data = try? JSONEncoder().encode(content),
+                let snapshot = try? JSONDecoder().decode(
+                    RiskReportSnapshot.self, from: data
+                )
+            else {
+                return .unrecognised(eventType: eventType)
+            }
+            return .riskReport(snapshot: snapshot)
         case "session_divider", "session_boundary_corrected":
             return .sessionDivider(
                 reason: content["reason"]?.stringValue,
@@ -917,4 +1577,25 @@ public struct TimelinePageResponse: Sendable, Equatable, Decodable {
 public enum TimelineDirection: String, Sendable {
     case older
     case newer
+}
+
+/// Decode a nested Timeline content object as a projection.
+///
+/// A Timeline `query_result` arrives as `JSONValue`, so it is re-encoded into
+/// the bytes the projection types already know how to read. A body that will
+/// not decode returns `nil` and the caller fails closed -- history never gets
+/// a second, more permissive reader than the live receipt.
+private func decodeResultEnvelope(_ value: JSONValue?) -> ResultEnvelope? {
+    guard let value else { return nil }
+    if case .null = value { return nil }
+    return decodeProjection(ResultEnvelope.self, from: value) ?? .unavailable
+}
+
+private func decodeProjection<T: Decodable>(
+    _ type: T.Type, from value: JSONValue?
+) -> T? {
+    guard let object = value?.objectValue,
+          let data = try? JSONEncoder().encode(object)
+    else { return nil }
+    return try? JSONDecoder().decode(T.self, from: data)
 }

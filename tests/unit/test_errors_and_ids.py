@@ -10,6 +10,7 @@ from personal_agent_core.errors import (
     ERROR_MESSAGES,
     RETRYABLE_CODES,
     AppError,
+    ClarificationQuestion,
     ErrorCode,
 )
 from personal_agent_core.ids import (
@@ -70,6 +71,25 @@ def test_envelope_rejects_unknown_fields() -> None:
             message="x",
             retryable=False,
             vendor_body=VENDOR_BODY,
+        )
+
+
+def test_clarification_question_is_closed_and_never_uses_internal_detail() -> None:
+    error = AppError(
+        ErrorCode.CLARIFICATION_REQUIRED,
+        internal_detail=VENDOR_BODY,
+        clarification_question=ClarificationQuestion.EXPENSE_CATEGORY,
+    )
+    serialised = json.dumps(
+        error.to_envelope().model_dump(mode="json"), ensure_ascii=False
+    )
+
+    assert ClarificationQuestion.EXPENSE_CATEGORY.value in serialised
+    assert "bascnSECRET" not in serialised
+    with pytest.raises(ValueError):
+        AppError(
+            ErrorCode.SOURCE_UNAVAILABLE,
+            clarification_question=ClarificationQuestion.EXPENSE_CATEGORY,
         )
 
 

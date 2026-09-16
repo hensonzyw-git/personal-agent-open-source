@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  The isolated acceptance build's Info.plist.
+
+	  It differs from `PersonalAgent-Info.plist` in exactly one way, and the
+	  difference is the point: **no calendar usage description of either key**.
+	  iOS 17+ full access is gated on `NSCalendarsFullAccessUsageDescription`,
+	  and the legacy key covers iOS <= 16; with neither present the system
+	  refuses an EventKit request outright rather than showing the person a
+	  prompt to read their real calendar.
+
+	  That is a fail-closed second line, not the first. The first is that
+	  `AcceptanceScene` composes no `EventKitCalendarStore` and no mirror
+	  engine, so there is no code path from this build to a real calendar at
+	  all. If that composition were ever changed by mistake, this file turns
+	  the mistake into an abort on the device instead of a permission prompt
+	  the person might tap through — which is the difference between a bug in
+	  an acceptance build and an acceptance build that has read the calendar
+	  it is supposed to be isolating itself from.
+
+	  The local-networking keys are kept even though this build makes no
+	  request: an entitlement-shaped difference between the two products is
+	  one more thing that could make the acceptance build behave unlike the
+	  thing under acceptance, and these two grant nothing on their own.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于连接你自己的 Personal Agent 后端服务（开发阶段在 Mac 上运行）。</string>
+</dict>
+</plist>

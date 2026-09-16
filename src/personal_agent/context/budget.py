@@ -46,6 +46,7 @@ class ComponentKind(StrEnum):
     MEMORY = "memory"
     CLARIFICATION_CONTEXT = "clarification_context"
     USER_INPUT = "user_input"
+    IMAGE_INPUT = "image_input"
     TOOL_DECLARATION = "tool_declaration"
 
 
@@ -55,12 +56,20 @@ class ComponentKind(StrEnum):
 #: clarification or duplicate decision be answered without its facts. A
 #: Checkpoint is optional to build but, when present, it is the only retained
 #: representation of history already removed from the raw window.
+#:
+#: `IMAGE_INPUT` is here for the reason that is easy to miss: an image is not a
+#: droppable attachment beside the message, it *is* part of the message. Drop it
+#: and the model is asked about a photo it cannot see, which is the silent
+#: answer-nothing failure §5.1 forbids -- and it is unrecoverable at this layer,
+#: because nothing downstream can tell that the question changed. §8 puts the
+#: image "计入 mandatory input" and this is what that means mechanically.
 MANDATORY_KINDS: Final[frozenset[ComponentKind]] = frozenset(
     {
         ComponentKind.SYSTEM_POLICY,
         ComponentKind.CHECKPOINT,
         ComponentKind.CLARIFICATION_CONTEXT,
         ComponentKind.USER_INPUT,
+        ComponentKind.IMAGE_INPUT,
         ComponentKind.PENDING_STATE,
     }
 )
@@ -133,6 +142,21 @@ class ContextComponent:
     essential: bool = False
     #: For trace only; never user text.
     label: str = ""
+    #: A cost the component's own rule already computed, in tokens. Image input
+    #: is the only such component: its cost is a function of the client's
+    #: declared pixels and the deployment's coefficient (§8's "尺寸/细节模式…保守
+    #: 上界"), and there is no text whose length could stand in for it -- the
+    #: estimator would price a photo at the byte count of whatever string
+    #: described it. `None` means "the cost is of `text`", which is every other
+    #: component in this module.
+    tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.tokens is not None and self.tokens < 0:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="a component may not cost a negative number of tokens",
+            )
 
     @property
     def mandatory(self) -> bool:
@@ -204,9 +228,22 @@ class ContextBudgeter:
 
     def total(self, components: Iterable[ContextComponent]) -> int:
         """The margined total. Every caller compares against this, not the raw sum."""
-        raw = sum(self._estimator.estimate(item.text) for item in components)
+        raw = sum(self.cost(item) for item in components)
         margin = Decimal(1) + self._config.estimate_safety_margin
         return int((Decimal(raw) * margin).to_integral_value(rounding="ROUND_CEILING"))
+
+    def cost(self, component: ContextComponent) -> int:
+        """One component's raw cost, before the margin.
+
+        Both directions are deliberate. A component carrying its own `tokens`
+        is *not* also estimated from its text: the two would be added, and an
+        image would then be charged twice -- once for the pixels and once for
+        the stand-in string. A component without one is estimated exactly as
+        before, so every pre-media input costs what it always cost.
+        """
+        if component.tokens is not None:
+            return component.tokens
+        return self._estimator.estimate(component.text)
 
     def fit(
         self, components: Iterable[ContextComponent]
@@ -283,6 +320,14 @@ class ContextBudgeter:
             (ComponentKind.SYSTEM_POLICY, "system policy"),
             (ComponentKind.USER_INPUT, "user input"),
         )
+        # §8: "纯图片与带图澄清不能被空文本校验…提前当空请求". A photo sent with no
+        # words is a full question, and refusing it here would answer with a
+        # budget error for a turn that is not over budget. The evidence is the
+        # counted image component itself rather than a flag a caller passes, so
+        # the relaxation cannot be reached by a turn that carries no image.
+        imaged = any(
+            item.kind is ComponentKind.IMAGE_INPUT for item in components
+        )
         for kind, label in required:
             matches = [item for item in components if item.kind is kind]
             if len(matches) != 1:
@@ -294,6 +339,8 @@ class ContextBudgeter:
                     ),
                 )
             if not isinstance(matches[0].text, str) or not matches[0].text.strip():
+                if kind is ComponentKind.USER_INPUT and imaged:
+                    continue
                 raise AppError(
                     ErrorCode.INTERNAL_ERROR,
                     internal_detail=f"a model turn needs a non-empty {label}",

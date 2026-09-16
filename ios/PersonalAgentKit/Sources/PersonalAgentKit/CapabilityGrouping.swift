@@ -70,6 +70,7 @@ extension Capabilities {
     public static func displayName(forDomain domain: String) -> String {
         switch domain {
         case "finance": return "财务"
+        case "calendar": return "日历"
         default: return domain
         }
     }

@@ -47,7 +47,10 @@ from personal_agent.api.orchestrator import (
     run_operation,
 )
 from personal_agent.api.recovery import _RECOVERY_PATHS
-from personal_agent.context.continuation import ClarificationContext
+from personal_agent.context.continuation import (
+    ClarificationContext,
+    ClarificationExchange,
+)
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.storage.engine import (
     create_all,
@@ -121,7 +124,7 @@ class FakeDispatcher:
         self.commit_calls: list[dict] = []
         self.resolve_calls: list[dict] = []
 
-    def resolve(self, *, tool, model_args):
+    def resolve(self, *, tool, model_args, idempotency_key=None):
         self.resolve_calls.append({"tool": tool, "model_args": model_args})
         return self._resolve
 
@@ -248,6 +251,24 @@ def test_a_bookkeeping_direct_answer_fails_safe(session, keyring) -> None:
     assert op.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
 
 
+def test_a_calendar_create_direct_answer_fails_safe(session, keyring) -> None:
+    """Calendar prose has no EventKit receipt and therefore cannot be success."""
+    op = _fresh_operation(session)
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(DirectAnswer("已经创建日程")),
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        text="明天上午 10 点，在日常安排创建一个名为“Personal Agent 验收”的 30 分钟日程",
+    )
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "CALENDAR_TOOL_REQUIRED"
+    session.refresh(op)
+    assert op.state == "failed_safe"
+    assert op.failure_reason == "CALENDAR_TOOL_REQUIRED"
+
+
 def test_natural_bookkeeping_shorthand_cannot_succeed_as_prose(
     session, keyring
 ) -> None:
@@ -314,6 +335,71 @@ def test_a_finance_query_cannot_be_routed_to_a_finance_write(
     assert result.state == "failed_safe"
     assert result.failure_reason == "FINANCE_TOOL_REQUIRED"
     assert dispatcher.resolve_calls == []
+
+
+def test_an_explicit_income_write_cannot_be_routed_to_an_expense(
+    session, keyring
+) -> None:
+    op = _fresh_operation(session)
+    dispatcher = FakeDispatcher(resolve=None)
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            ToolCall(
+                "finance.log_expense",
+                {"name": "公积金", "input_amount": "4000"},
+            )
+        ),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="记收入 公积金 4000",
+    )
+
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
+    assert dispatcher.resolve_calls == []
+
+
+def test_an_explicit_family_expense_cannot_be_routed_to_income(
+    session, keyring
+) -> None:
+    op = _fresh_operation(session)
+    dispatcher = FakeDispatcher(resolve=None)
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            ToolCall(
+                "finance.log_income",
+                {"income_description": "晚饭", "input_amount": "283.99"},
+            )
+        ),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="昨天晚饭很久以前 283.99 家庭支出",
+    )
+
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
+    assert dispatcher.resolve_calls == []
+
+
+def test_an_incomplete_explicit_income_write_cannot_succeed_as_prose(
+    session, keyring
+) -> None:
+    op = _fresh_operation(session)
+    result = _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(DirectAnswer("请告诉我收入的金额。")),
+        dispatcher=FakeDispatcher(resolve=None),
+        keyring=keyring,
+        text="记收入",
+    )
+
+    assert result.state == "failed_safe"
+    assert result.failure_reason == "BOOKKEEPING_TOOL_REQUIRED"
 
 
 def test_a_finance_write_cannot_be_routed_to_a_finance_read(
@@ -581,6 +667,72 @@ def test_omitted_finance_date_uses_durable_message_receipt_day(
     ]
 
 
+def test_a_clarified_bare_request_write_receives_the_host_receipt_day(
+    session, keyring, tmp_path
+) -> None:
+    """「记账」→「午饭 20 块」→「个人」 failed live on 2026-08-30.
+
+    The continuation envelope derived its Finance state from "记账" alone,
+    which no intent predicate matches, so `finance_date_default_eligible` was
+    False and the Host sent no `occurred_on`. The model call was valid; the
+    MCP boundary refused it with INVALID_ARGUMENT before any execution row.
+    The continuation source is the original text plus every answered
+    exchange, so the resumed write turn must receive the receipt-bound date.
+    """
+    envelope = envelope_for(
+        tmp_path,
+        user_text="个人",
+        clarification=ClarificationContext(
+            original_user_text="记账",
+            question="午饭 20 元是个人支出还是家庭支出？",
+            completed_exchanges=(
+                ClarificationExchange(
+                    question="请提供要记的账目内容：事项、金额，以及是个人支出还是家庭支出？",
+                    answer="午饭 20块",
+                ),
+            ),
+        ),
+    )
+    op = _fresh_operation(session)
+    dispatcher = FakeDispatcher(resolve=ResolveFailedSafe(reason="test_stop"))
+
+    _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            ToolCall(
+                "finance.log_expense",
+                {
+                    "name": "午饭",
+                    "input_amount": "20",
+                    "input_currency": "CNY",
+                    "is_family_expense": False,
+                    "entry_kind": "expense",
+                    "category": "餐饮",
+                },
+            )
+        ),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        build_context=lambda: envelope,
+    )
+
+    assert dispatcher.resolve_calls == [
+        {
+            "tool": "finance.log_expense",
+            "model_args": {
+                "name": "午饭",
+                "input_amount": "20",
+                "input_currency": "CNY",
+                "is_family_expense": False,
+                "entry_kind": "expense",
+                "category": "餐饮",
+                "occurred_on": "2026-07-24",
+            },
+        }
+    ]
+
+
 def test_date_clarification_retries_once_then_uses_receipt_day(session, keyring) -> None:
     class DateClarifyingInterpreter:
         def __init__(self) -> None:
@@ -680,6 +832,41 @@ def test_date_question_retries_when_model_mislabels_it_as_other(session, keyring
         True,
     ]
     assert dispatcher.resolve_calls[0]["model_args"]["occurred_on"] == "2026-07-24"
+
+
+def test_income_with_an_omitted_date_receives_the_host_receipt_day(session, keyring) -> None:
+    op = _fresh_operation(session)
+    dispatcher = FakeDispatcher(resolve=ResolveFailedSafe(reason="test_stop"))
+
+    _run(
+        session,
+        op,
+        interpreter=FakeInterpreter(
+            ToolCall(
+                "finance.log_income",
+                {
+                    "income_description": "公积金",
+                    "input_amount": "4000",
+                    "input_currency": "CNY",
+                },
+            )
+        ),
+        dispatcher=dispatcher,
+        keyring=keyring,
+        text="记收入 公积金 4000",
+    )
+
+    assert dispatcher.resolve_calls == [
+        {
+            "tool": "finance.log_income",
+            "model_args": {
+                "income_description": "公积金",
+                "input_amount": "4000",
+                "input_currency": "CNY",
+                "occurred_on": "2026-07-24",
+            },
+        }
+    ]
 
 
 def test_date_question_does_not_override_an_explicit_user_date(session, keyring) -> None:
@@ -922,7 +1109,7 @@ def test_external_calls_never_hold_a_read_transaction(session, keyring) -> None:
             return self.result
 
     class TxnCheckingDispatcher(FakeDispatcher):
-        def resolve(self, *, tool, model_args):
+        def resolve(self, *, tool, model_args, idempotency_key):
             check("resolve")
             return self._resolve
 
@@ -983,7 +1170,7 @@ def test_competing_commit_during_the_model_turn_does_not_break_the_state_walk(
     intent = WriteIntent("finance.log_expense", {"name": "午饭", "amount": "45"})
 
     class CommittingDispatcher(FakeDispatcher):
-        def resolve(self, *, tool, model_args):
+        def resolve(self, *, tool, model_args, idempotency_key):
             # The external resolve call is "in flight" now: commit a competing
             # write from a fully independent connection against the same file
             # database while the orchestrator's snapshot is (or is not) open.
@@ -1039,6 +1226,10 @@ def test_source_in_progress_is_durable_before_the_external_commit(
 
     class CrashingDispatcher(FakeDispatcher):
         def commit(self, **kwargs):
+            # Even the refresh snapshot must end before any external dispatch.
+            assert not session.in_transaction()
+            with session_factory(session.get_bind())() as observer:
+                assert observer.get(Operation, op.operation_id).state == "source_in_progress"
             raise RuntimeError("process died after Finance accepted the call")
 
     with pytest.raises(RuntimeError):

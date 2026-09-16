@@ -164,6 +164,30 @@ def test_a_trip_tag_forces_the_travel_category() -> None:
     assert resolved.entry.category == "旅行"
 
 
+def test_a_taxi_in_a_trip_context_resolves_to_travel_with_the_destination() -> None:
+    """fictional trip-context case: `示例城打车 27.3 家庭支出` reached the ledger as
+    category 出行 with no tag, because the model reasoned that the trip_tag
+    rule "is specifically for travel items". The server contract is that a
+    destination extracted from trip-context transport resolves exactly like
+    any other destination: the ledger's existing root is reused, the stored
+    name carries the tag, and the category becomes 旅行.
+    """
+    rows = [row("机票 #示例城"), row("海鸥食物 #示例城", record_id="rec2")]
+    # The MCP write path passes the model's `trip_tag` argument as
+    # `destination=`: only the ledger decides which trip it names.
+    resolved = resolve(
+        name="打车",
+        input_amount="27.3",
+        destination="示例城",
+        category=None,
+        ledger_rows=rows,
+    )
+    assert isinstance(resolved, ResolvedExpense)
+    assert resolved.entry.name == "打车 #示例城"
+    assert resolved.entry.category == "旅行"
+    assert resolved.trip_resolution is TripResolution.REUSED_EXISTING
+
+
 def test_a_stated_category_that_contradicts_a_trip_tag_asks() -> None:
     resolved = resolve(trip_tag="东京", category="餐饮")
     assert isinstance(resolved, Clarification)

@@ -80,7 +80,7 @@ struct DuplicateDecisionTests {
 
         let receipt = try await chat.decide(checkID: "chk-1", decision: .writeAnyway)
 
-        #expect(receipt.outcome == .recorded(recordID: "rec-9", tool: "finance.log_expense"))
+        #expect(receipt.outcome == .recorded(recordID: "rec-9", tool: "finance.log_expense", record: nil))
         let posts = service.calls("POST", decisionPath)
         #expect(posts.count == 1)
         #expect(posts.first?.string("decision") == "write_anyway")

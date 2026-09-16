@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,9 +18,13 @@ from personal_agent.context.continuation import (
     MAX_CLARIFICATION_QUESTION_CHARS,
     ClarificationContext,
     ClarificationExchange,
+    FinanceRetryContext,
 )
 from personal_agent.context.config import CAP001_PROVISIONAL_VALUES, ContextConfig
+from personal_agent.diagnostics import transcript
+from personal_agent.diagnostics.transcript import TranscriptRecorder
 from personal_agent.policy.bridge import VisibleTool
+from personal_agent.runtime.model_input import ImageInputPart, TextInputPart
 from personal_agent.runtime.glm_gateway import (
     GlmGateway,
     generate_with_adk,
@@ -31,6 +38,7 @@ from personal_agent.runtime.model_gateway import (
     ProposedClarification,
     ProposedFailure,
     ProposedToolCall,
+    ProposedToolCalls,
 )
 from personal_agent_core.errors import AppError, ErrorCode, ModelFailureReason
 
@@ -43,12 +51,29 @@ _EXPENSE = VisibleTool(
     risk_level="R2",
     required_scopes=("finance.write",),
 )
+_INCOME = VisibleTool(
+    alias="finance.log_income",
+    description="记一笔收入",
+    input_schema={
+        "type": "object",
+        "properties": {"income_description": {"type": "string"}},
+    },
+    risk_level="R2",
+    required_scopes=("finance.write",),
+)
 _QUERY = VisibleTool(
     alias="finance.query_expenses",
     description="查询支出",
     input_schema={"type": "object", "properties": {"view": {"type": "string"}}},
     risk_level="R1",
     required_scopes=("finance.read",),
+)
+_CALENDAR_CREATE = VisibleTool(
+    alias="calendar.create_event",
+    description="在 iPhone 日历中创建日程",
+    input_schema={"type": "object", "properties": {"title": {"type": "string"}}},
+    risk_level="R2",
+    required_scopes=("calendar.event.write",),
 )
 
 
@@ -71,6 +96,15 @@ def _call(name, args):
     )
 
 
+def _thinking_call(name, args):
+    """One ADK Part carrying reasoning text AND a tool call (the GLM 5.3 shape)."""
+    return SimpleNamespace(
+        text="hidden reasoning",
+        thought=True,
+        function_call=SimpleNamespace(name=name, args=args),
+    )
+
+
 def _call_with_unsupported_content(name, args):
     return types.Part(
         function_call=types.FunctionCall(name=name, args=args),
@@ -81,7 +115,7 @@ def _call_with_unsupported_content(name, args):
     )
 
 
-def _gateway(response=None, *, raises=None):
+def _gateway(response=None, *, raises=None, recorder=None):
     def generate(**kwargs):
         generate.kwargs = kwargs
         if raises is not None:
@@ -91,10 +125,11 @@ def _gateway(response=None, *, raises=None):
     generate.kwargs = None
     return (
         GlmGateway(
-            model="openai/glm-5.2",
+            model="openai/glm-5.3-flash",
             api_key="k",
             api_base=_PINNED,
             generate=generate,
+            recorder=recorder,
         ),
         generate,
     )
@@ -126,6 +161,22 @@ def test_a_tool_call_response_becomes_one_proposed_tool_call(envelope) -> None:
         "finance.log_expense",
         {"name": "午饭", "input_amount": "45"},
     )
+
+
+def test_explicit_calendar_create_limits_provider_tools_to_eventkit_action(tmp_path) -> None:
+    calendar_envelope = envelope_for(
+        tmp_path,
+        system="SYS",
+        user_text="明天上午 10 点，在日常安排创建一个名为“Personal Agent 验收”的 30 分钟日程",
+        tools=[_EXPENSE, _CALENDAR_CREATE],
+    )
+    gateway, generate = _gateway(_response(_call("calendar.create_event", {"title": "验收"})))
+    _propose(gateway, calendar_envelope)
+    assert generate.kwargs["allowed_function_names"] == [
+        "calendar.create_event",
+        "agent.ask_clarification",
+        "agent.fail_safely",
+    ]
 
 
 def test_one_valid_tool_call_plus_prose_is_explicitly_suppressed(envelope) -> None:
@@ -188,7 +239,7 @@ def test_the_request_is_bounded_and_declares_business_and_internal_tools(envelop
     gateway, generate = _gateway(_response(_text("ok")))
     _propose(gateway, envelope)
     kwargs = generate.kwargs
-    assert kwargs["model"] == "openai/glm-5.2"
+    assert kwargs["model"] == "openai/glm-5.3-flash"
     assert kwargs["api_base"] == _PINNED
     assert kwargs["timeout"] == 25.0
     assert kwargs["allowed_function_names"] == [
@@ -354,6 +405,294 @@ def test_a_finance_query_requires_only_the_query_or_safe_internal_calls(tmp_path
     ]
 
 
+def test_an_explicit_income_write_requires_only_income_or_safe_internal_calls(
+    tmp_path,
+) -> None:
+    built = envelope_for(
+        tmp_path,
+        user_text="记收入 公积金 4000",
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.log_income", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    assert built.finance_required_tool == "finance.log_income"
+    assert generate.kwargs["allowed_function_names"] == [
+        "finance.log_income",
+        "agent.ask_clarification",
+        "agent.fail_safely",
+    ]
+
+
+def test_a_clarified_explicit_expense_resumes_with_only_its_tool_or_safe_calls(
+    tmp_path,
+) -> None:
+    original = "昨天晚饭很久以前 283.99 家庭支出"
+    question = "这笔是昨天发生，还是很久以前发生？"
+    built = envelope_for(
+        tmp_path,
+        user_text="昨天",
+        clarification=ClarificationContext(original, question),
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.log_expense", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    assert built.finance_required_tool == "finance.log_expense"
+    assert generate.kwargs["allowed_function_names"] == [
+        "finance.log_expense",
+        "agent.ask_clarification",
+        "agent.fail_safely",
+    ]
+    context_message = generate.kwargs["messages"][0]["content"]
+    assert original in context_message
+    assert question in context_message
+    assert generate.kwargs["messages"][-1] == {"role": "user", "content": "昨天"}
+
+
+def test_a_clarified_bare_request_keeps_its_finance_state(tmp_path) -> None:
+    """「记账」→「午饭 20 块」→「个人」 failed live on 2026-08-30.
+
+    The continuation's Finance state was derived from the original text alone.
+    A bare "记账" matches no intent predicate, so the resumed turn lost
+    `finance_intent_required` and the Host never injected `occurred_on`; the
+    MCP boundary refused the write with INVALID_ARGUMENT after a fully valid
+    model call. The request a clarification resumes is the original text plus
+    every answered exchange, so the resumed turn must keep the Finance state.
+    """
+    built = envelope_for(
+        tmp_path,
+        user_text="个人",
+        clarification=ClarificationContext(
+            original_user_text="记账",
+            question="午饭 20 元是个人支出还是家庭支出？",
+            completed_exchanges=(
+                ClarificationExchange(
+                    question="请提供要记的账目内容：事项、金额，以及是个人支出还是家庭支出？",
+                    answer="午饭 20块",
+                ),
+            ),
+        ),
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(
+        _response(
+            _call(
+                "finance.log_expense",
+                {
+                    "name": "午饭",
+                    "input_amount": "20",
+                    "input_currency": "CNY",
+                    "is_family_expense": False,
+                    "entry_kind": "expense",
+                    "category": "餐饮",
+                },
+            )
+        )
+    )
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    # No single chain element names the exact tool, so the full write set
+    # stays essential and the date default stays eligible for both.
+    assert built.finance_required_tool is None
+    assert built.finance_date_default_eligible is True
+    assert generate.kwargs["allowed_function_names"] == [
+        "finance.log_expense",
+        "finance.log_income",
+        "agent.ask_clarification",
+        "agent.fail_batch_unavailable",
+        "agent.fail_safely",
+    ]
+
+
+def test_a_covering_answer_carries_the_whole_request(tmp_path) -> None:
+    """Review finding MAJOR-1 (2026-08-30): the covering answer had no tools.
+
+    An open question may be answered with one message that carries the whole
+    request: 「记一笔」 asked 「请提供要记的账目内容」, and the user replies
+    「记午饭 20 块 家庭支出」 in one turn. The answers only reach
+    `completed_exchanges` on the *next* seal, so a source without the current
+    message left this turn with `tool_aliases=()` — the model had no Finance
+    tool and the prose guard then refused its only possible output. The
+    current message joins the source so the turn can complete.
+    """
+    built = envelope_for(
+        tmp_path,
+        user_text="记午饭 20 块 家庭支出",
+        clarification=ClarificationContext(
+            original_user_text="记一笔",
+            question="请提供要记的账目内容：事项、金额，以及是个人支出还是家庭支出？",
+        ),
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.log_expense", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    # 「家庭支出」 is the frozen wording, so the source binds the expense tool.
+    assert built.finance_required_tool == "finance.log_expense"
+    assert built.finance_date_default_eligible is True
+    assert generate.kwargs["allowed_function_names"] == [
+        "finance.log_expense",
+        "agent.ask_clarification",
+        "agent.fail_safely",
+    ]
+
+
+def test_a_covering_answer_with_a_date_still_refuses_the_default(tmp_path) -> None:
+    """The date protection must see a date carried in the covering answer.
+
+    「记一笔」 answered by 「记昨天午饭 45 个人支出」 in one turn: the
+    explicit date reaches the source only through the current message, and an
+    omitted date must still fail rather than become the receipt day.
+    """
+    built = envelope_for(
+        tmp_path,
+        user_text="记昨天午饭 45 个人支出",
+        clarification=ClarificationContext(
+            original_user_text="记一笔",
+            question="请提供要记的账目内容：事项、金额，以及是个人支出还是家庭支出？",
+        ),
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.log_expense", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    assert built.finance_required_tool == "finance.log_expense"
+    assert built.finance_date_default_eligible is False
+
+
+def test_a_finance_retry_chain_keeps_its_state_and_date_protection(tmp_path) -> None:
+    """The FinanceRetryContext branch of the joined source had no test.
+
+    A retry whose chain contains an answered clarification resumes the same
+    request: the joined source must keep the Finance intent, and an explicit
+    date anywhere in the chain must still refuse the receipt-day default.
+    """
+    built = envelope_for(
+        tmp_path,
+        user_text="重新记",
+        finance_retry=FinanceRetryContext(
+            original_user_text="昨天午饭 45",
+            completed_exchanges=(
+                ClarificationExchange("个人还是家庭支出？", "家庭支出"),
+            ),
+            source_operation_id="op_retry_source",
+            source_failure_reason="BOOKKEEPING_TOOL_REQUIRED",
+        ),
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.log_expense", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    assert built.finance_required_tool == "finance.log_expense"
+    assert built.finance_date_default_eligible is False
+    assert generate.kwargs["allowed_function_names"] == [
+        "finance.log_expense",
+        "agent.ask_clarification",
+        "agent.fail_safely",
+    ]
+
+
+def test_a_clarified_bare_income_request_requires_the_income_tool(tmp_path) -> None:
+    """The joined chain must also route, not only flag the intent.
+
+    「记收入」 alone names no income wording; the answered clarification
+    「公积金 4000」 does. Dropping the answer would leave the required tool
+    unset and let the model reach the expense tool.
+    """
+    built = envelope_for(
+        tmp_path,
+        user_text="个人",
+        clarification=ClarificationContext(
+            original_user_text="记收入",
+            question="这笔收入是什么？",
+            completed_exchanges=(
+                ClarificationExchange("这笔收入是什么？", "公积金入账 4000"),
+            ),
+        ),
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.log_income", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    assert built.finance_required_tool == "finance.log_income"
+    assert generate.kwargs["allowed_function_names"] == [
+        "finance.log_income",
+        "agent.ask_clarification",
+        "agent.fail_safely",
+    ]
+
+
+def test_a_clarified_explicit_date_still_refuses_the_receipt_day_default(
+    tmp_path,
+) -> None:
+    """Joining answers must not overwrite the explicit-date protection.
+
+    "昨天午饭 45" answered by "家庭支出" keeps the explicit date in the
+    source, so an omitted date still must NOT be silently defaulted to the
+    receipt day; the model has to supply it.
+    """
+    built = envelope_for(
+        tmp_path,
+        user_text="家庭支出",
+        clarification=ClarificationContext(
+            original_user_text="昨天午饭 45",
+            question="个人还是家庭支出？",
+            completed_exchanges=(
+                ClarificationExchange("个人还是家庭支出？", "家庭支出"),
+            ),
+        ),
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(_response(_call("finance.log_expense", {})))
+
+    _propose(gateway, built)
+
+    assert built.finance_intent_required is True
+    assert built.finance_required_tool == "finance.log_expense"
+    assert built.finance_date_default_eligible is False
+
+
+def test_a_date_merchant_ambiguity_allows_only_clarification_or_safe_failure(
+    tmp_path,
+) -> None:
+    built = envelope_for(
+        tmp_path,
+        user_text="昨天晚饭很久以前 283.99 家庭支出",
+        tools=[_EXPENSE, _INCOME, _QUERY],
+    )
+    gateway, generate = _gateway(
+        _response(
+            _call(
+                "agent.ask_clarification",
+                {"question": "很久以前是商户名还是付款时间？", "reason": "date"},
+            )
+        )
+    )
+
+    _propose(gateway, built)
+
+    assert built.finance_clarification_required is True
+    assert generate.kwargs["allowed_function_names"] == [
+        "agent.ask_clarification",
+        "agent.fail_safely",
+    ]
+
+
 def test_every_envelope_data_component_reaches_the_provider_in_fixed_order() -> None:
     kinds = (
         ComponentKind.CAPABILITY_SUMMARY,
@@ -368,6 +707,11 @@ def test_every_envelope_data_component_reaches_the_provider_in_fixed_order() -> 
         ComponentKind.SYSTEM_POLICY,
         ComponentKind.USER_INPUT,
         ComponentKind.TOOL_DECLARATION,
+        # Counted, never rendered. An image component is how the budgeter sees
+        # a photo's cost; the photo itself travels as an `ImageInputPart`, and
+        # if its `text` ever reached the message it would be a stand-in string
+        # for the picture, sent to a model that also receives the picture.
+        ComponentKind.IMAGE_INPUT,
     }
     components = (
         ContextComponent(ComponentKind.SYSTEM_POLICY, "DO-NOT-SEND-AS-DATA"),
@@ -377,8 +721,13 @@ def test_every_envelope_data_component_reaches_the_provider_in_fixed_order() -> 
             ComponentKind.TOOL_DECLARATION,
             "DO-NOT-SEND-AS-MESSAGE",
         ),
+        ContextComponent(
+            ComponentKind.IMAGE_INPUT, "DO-NOT-SEND-AS-TEXT", tokens=512
+        ),
     )
-    envelope = SimpleNamespace(components=components, user_text="CURRENT")
+    envelope = SimpleNamespace(
+        components=components, user_text="CURRENT", input_parts=()
+    )
 
     messages = _messages(envelope)
 
@@ -392,6 +741,129 @@ def test_every_envelope_data_component_reaches_the_provider_in_fixed_order() -> 
     assert "DO-NOT-SEND-AS-DATA" not in leading
     assert "DO-NOT-DUPLICATE" not in leading
     assert "DO-NOT-SEND-AS-MESSAGE" not in leading
+    assert "DO-NOT-SEND-AS-TEXT" not in leading
+
+
+# -- §8: the parts reach the adapter, and only their hashes reach the record --
+
+
+_PHOTO = b"\xff\xd8\xff\xe0" + b"synthetic-photo" * 8
+_MESSAGE = "这张账单记一下"
+
+
+def _transcript(tmp_path: Path) -> TranscriptRecorder:
+    """The production recorder, writing to a throwaway directory.
+
+    The real one rather than a capturing stand-in: what §8 requires is what
+    reaches the *file*, and an in-memory copy of the payload would pass just as
+    well if the writer rendered a mapping as a repr string.
+    """
+    return TranscriptRecorder(tmp_path / "transcript", service="api")
+
+
+def _model_request(recorder: TranscriptRecorder) -> dict:
+    (path,) = sorted(recorder.directory.glob("*.jsonl"))
+    records = [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    bodies = [
+        record["payload"]
+        for record in records
+        if record["kind"] == transcript.MODEL_REQUEST
+    ]
+    assert len(bodies) == 1
+    return bodies[0]
+
+
+def _photo(tokens: int = 400) -> ImageInputPart:
+    return ImageInputPart(
+        mime_type="image/jpeg",
+        data=_PHOTO,
+        content_sha256=hashlib.sha256(_PHOTO).hexdigest(),
+        token_upper_bound=tokens,
+    )
+
+
+def _image_envelope(tmp_path, *, tokens: int = 400):
+    return envelope_for(
+        tmp_path,
+        system="SYS",
+        user_text=_MESSAGE,
+        tools=[_EXPENSE],
+        input_parts=(TextInputPart(_MESSAGE), _photo(tokens)),
+    )
+
+
+def test_the_envelopes_parts_are_handed_to_the_adapter(tmp_path) -> None:
+    """§8's chain would end here if the gateway dropped them.
+
+    The envelope is the only holder of the authorized bytes, so a `propose` that
+    called the adapter without them would leave the photo anchored, accepted and
+    never seen -- the silent failure §5.1 forbids outright.
+    """
+    gateway, generate = _gateway(_response(_text("ok")))
+    built = _image_envelope(tmp_path)
+
+    _propose(gateway, built)
+
+    assert generate.kwargs["input_parts"] == built.input_parts
+    assert generate.kwargs["input_parts"][1].data == _PHOTO
+
+
+def test_a_text_turn_hands_the_adapter_no_parts(tmp_path) -> None:
+    """The pre-media request, unchanged: no parts and the plain message list."""
+    gateway, generate = _gateway(_response(_text("ok")))
+    built = envelope_for(
+        tmp_path, system="SYS", user_text="午饭 45 个人", tools=[_EXPENSE]
+    )
+
+    _propose(gateway, built)
+
+    assert generate.kwargs["input_parts"] == ()
+    assert generate.kwargs["messages"][-1] == {"role": "user", "content": "午饭 45 个人"}
+
+
+def test_the_recorded_request_carries_the_image_as_a_hash_and_a_size(
+    tmp_path,
+) -> None:
+    """§8: "记录 hash/计数/目标/attempt，不把 raw base64、凭据、完整载荷写普通日志"."""
+    recorder = _transcript(tmp_path)
+    gateway, _ = _gateway(_response(_text("ok")), recorder=recorder)
+    built = _image_envelope(tmp_path)
+
+    _propose(gateway, built)
+
+    request = _model_request(recorder)
+    assert request["input_parts"] == [
+        {"type": "text", "chars": len(_MESSAGE)},
+        {
+            "type": "image",
+            "mime_type": "image/jpeg",
+            "bytes": len(_PHOTO),
+            "content_sha256": hashlib.sha256(_PHOTO).hexdigest(),
+        },
+    ]
+    written = json.dumps(request)
+    assert _PHOTO not in written.encode()
+    assert base64.b64encode(_PHOTO).decode() not in written
+
+
+def test_the_recorded_request_carries_the_count_the_budget_charged(tmp_path) -> None:
+    """The count and the cost are the two facts an operator can check afterwards."""
+    recorder = _transcript(tmp_path)
+    gateway, _ = _gateway(_response(_text("ok")), recorder=recorder)
+    built = _image_envelope(tmp_path, tokens=400)
+
+    _propose(gateway, built)
+
+    request = _model_request(recorder)
+    # A number, not a rendered mapping: §8 asks for the cost to be *recorded*,
+    # and a repr string is a record no tool can read.
+    assert request["context"]["component_tokens"]["image_input"] == 400
+    # The count comes from the parts themselves rather than a second field that
+    # could disagree with them.
+    assert sum(1 for part in request["input_parts"] if part["type"] == "image") == 1
+    assert request["context"]["dropped_counts"] == {}
 
 
 def test_only_the_budgeted_unresolved_turn_is_sent_for_clarification(
@@ -630,9 +1102,14 @@ def test_date_default_retry_excludes_clarification_from_the_forced_set(envelope)
         _response(),
         _response(_text("   ")),
         _response(_call("finance.log_expense", [])),
+        # Several calls are no longer malformed by themselves (design 4.2);
+        # several calls with a *control* call among them still are.
         _response(
             _call("finance.log_expense", {}),
-            _call("finance.log_income", {}),
+            _call(
+                "agent.ask_clarification",
+                {"question": "个人还是家庭？", "reason": "other"},
+            ),
         ),
         _response(_text("ok"), error_code="MAX_TOKENS"),
     ],
@@ -718,15 +1195,120 @@ def test_an_already_parsed_dict_passes_through_unchanged(envelope) -> None:
     assert proposal.arguments is args
 
 
-def test_thought_content_is_not_silently_dropped_beside_a_tool_call(envelope) -> None:
+def test_thought_content_is_skipped_beside_a_tool_call(envelope) -> None:
+    """GLM 5.3-class models always reason: the thought part is private process,
+    not untrusted prose, so it is skipped and the single call is accepted."""
     gateway, _ = _gateway(
         _response(
             _text("hidden reasoning", thought=True),
             _call("finance.log_expense", {"name": "午饭"}),
         )
     )
-    with pytest.raises(ModelGatewayError, match="thought content"):
+    proposal = _propose(gateway, envelope)
+    assert proposal == ProposedToolCall("finance.log_expense", {"name": "午饭"})
+
+
+def test_thought_with_real_prose_and_a_call_still_suppresses_the_prose(
+    envelope,
+) -> None:
+    gateway, _ = _gateway(
+        _response(
+            _text("hidden reasoning", thought=True),
+            _text("这段文字不是工具参数，也不是给用户的结果。"),
+            _call("finance.log_expense", {"name": "午饭"}),
+        )
+    )
+    proposal = _propose(gateway, envelope)
+    assert proposal == ProposedToolCall(
+        "finance.log_expense",
+        {"name": "午饭"},
+        suppressed_untrusted_text=True,
+    )
+
+
+def test_a_thought_only_response_fails_closed_as_blank(envelope) -> None:
+    gateway, _ = _gateway(_response(_text("hidden reasoning", thought=True)))
+    with pytest.raises(ModelGatewayError, match="blank"):
         _propose(gateway, envelope)
+
+
+def test_thought_beside_a_plain_answer_is_skipped(envelope) -> None:
+    gateway, _ = _gateway(
+        _response(_text("hidden reasoning", thought=True), _text("你好"))
+    )
+    assert _propose(gateway, envelope) == ProposedAnswer("你好")
+
+
+def test_a_thought_part_that_also_carries_a_call_is_validated(envelope) -> None:
+    """A single Part can carry reasoning text and a call: the call is counted
+    and the reasoning text is not treated as untrusted prose."""
+    gateway, _ = _gateway(
+        _response(_thinking_call("finance.log_expense", {"name": "午饭"}))
+    )
+    proposal = _propose(gateway, envelope)
+    assert proposal == ProposedToolCall("finance.log_expense", {"name": "午饭"})
+
+
+def test_a_thought_part_with_an_unsupported_payload_still_fails_closed(
+    envelope,
+) -> None:
+    gateway, _ = _gateway(
+        _response(
+            types.Part(
+                text="hidden reasoning",
+                thought=True,
+                inline_data=types.Blob(
+                    mime_type="application/octet-stream",
+                    data=b"unsupported",
+                ),
+            )
+        )
+    )
+    with pytest.raises(ModelGatewayError, match="unsupported content"):
+        _propose(gateway, envelope)
+
+
+def test_a_thought_part_that_carries_a_call_is_a_call_like_any_other(
+    envelope,
+) -> None:
+    """The reasoning part is validated and counted, never skipped: a call it
+    carries takes its place in the list, in the order the provider emitted it."""
+    gateway, _ = _gateway(
+        _response(
+            _thinking_call("finance.log_expense", {"name": "午饭"}),
+            _call("finance.log_expense", {"name": "咖啡"}),
+        )
+    )
+
+    proposal = _propose(gateway, envelope)
+
+    assert isinstance(proposal, ProposedToolCalls)
+    assert [call.tool for call in proposal.calls] == [
+        "finance.log_expense",
+        "finance.log_expense",
+    ]
+    assert [call.arguments["name"] for call in proposal.calls] == ["午饭", "咖啡"]
+
+
+def test_several_ordinary_calls_are_handed_on_whole_and_in_order(envelope) -> None:
+    """Design 4.2: one message may ask for several things, so several calls are
+    one answer, not a malformed one. The order is carried because it becomes a
+    position in the frozen list -- and prose beside them stays suppressed, never
+    merged into an argument."""
+    gateway, _ = _gateway(
+        _response(
+            _call("calendar.create_event", {"title": "牙医"}),
+            _text("这段话不得进入任何参数"),
+            _call("calendar.create_event", {"title": "理发"}),
+        )
+    )
+
+    proposal = _propose(gateway, envelope)
+
+    assert isinstance(proposal, ProposedToolCalls)
+    assert [call.arguments["title"] for call in proposal.calls] == ["牙医", "理发"]
+    assert proposal.suppressed_untrusted_text is True
+    assert "这段话" not in repr(proposal)
 
 
 def test_transport_failure_is_a_gateway_error(envelope) -> None:
@@ -803,10 +1385,28 @@ def test_malformed_model_response_is_separate_from_provider_failures(
             "tool_arguments",
         ),
         (
+            # Several ordinary calls are one message asking for several things,
+            # and they are handed on whole (design 4.2). A *control* call beside
+            # them is different in kind -- "ask the user" or "fail" beside "do
+            # this" is two answers to what this turn should do -- and no reading
+            # of that is safe, so it keeps the refusal it always had.
             _response(
                 _call("finance.log_expense", {}),
-                _text("不要丢掉我"),
-                _call("finance.log_income", {}),
+                _call(
+                    "agent.ask_clarification",
+                    {"question": "个人还是家庭？", "reason": "other"},
+                ),
+            ),
+            ModelFailureReason.RESPONSE_AMBIGUOUS,
+            "multiple_tool_calls",
+        ),
+        (
+            _response(
+                _call("finance.log_expense", {}),
+                _call(
+                    "agent.fail_safely",
+                    {"reason": ErrorCode.UNSUPPORTED_OPERATION.value},
+                ),
             ),
             ModelFailureReason.RESPONSE_AMBIGUOUS,
             "multiple_tool_calls",
@@ -844,7 +1444,7 @@ def test_from_env_requires_a_key_and_rejects_a_credential_exfiltration_host(
         glm_gateway_from_env()
 
     monkeypatch.setenv("ZAI_API_KEY", "secret")
-    monkeypatch.setenv("GLM_OPENAI_BASE_URL", "https://attacker.invalid/v1")
+    monkeypatch.setenv("MODEL_API_BASE", "https://attacker.invalid/v1")
     with pytest.raises(ModelGatewayError):
         glm_gateway_from_env()
 
@@ -852,7 +1452,7 @@ def test_from_env_requires_a_key_and_rejects_a_credential_exfiltration_host(
 def test_model_timeout_cannot_exceed_the_design_budget(envelope) -> None:
     with pytest.raises(ModelGatewayError):
         GlmGateway(
-            model="openai/glm-5.2",
+            model="openai/glm-5.3-flash",
             api_key="k",
             api_base=_PINNED,
             generate=lambda **kwargs: None,
@@ -892,7 +1492,7 @@ def test_production_generator_uses_the_adk_model_contract(monkeypatch) -> None:
         FakeLiteLlm,
     )
     actual = generate_with_adk(
-        model="openai/glm-5.2",
+        model="openai/glm-5.3-flash",
         api_key="secret",
         api_base=_PINNED,
         system="SYS",
@@ -933,13 +1533,56 @@ def test_production_generator_uses_the_adk_model_contract(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
+    ("model", "expected_extra_body"),
+    [
+        ("openai/glm-5.3-flash", {"reasoning_effort": "low"}),
+        ("openai/glm-5.3", {"reasoning_effort": "low"}),
+        ("openai/glm-5.2", {"thinking": {"type": "disabled"}}),
+        ("openai/glm-4.7-flashx", {"thinking": {"type": "disabled"}}),
+        ("openai/glm-6.0", {"thinking": {"type": "disabled"}}),
+        ("openai/glm-fast-placeholder", {"thinking": {"type": "disabled"}}),
+    ],
+)
+def test_the_adk_request_carries_model_conditional_thinking_params(
+    monkeypatch, model, expected_extra_body
+) -> None:
+    """GLM 5.3-class models refuse `thinking: disabled`; older models must not
+    receive `reasoning_effort`, which would *enable* thinking for them."""
+    captured = {}
+
+    class FakeLiteLlm:
+        def __init__(self, **kwargs):
+            captured["init"] = kwargs
+
+        async def generate_content_async(self, request, stream=False):
+            yield _response(_text("ok"))
+
+    monkeypatch.setattr(
+        "google.adk.models.lite_llm.LiteLlm",
+        FakeLiteLlm,
+    )
+    generate_with_adk(
+        model=model,
+        api_key="secret",
+        api_base=_PINNED,
+        system="SYS",
+        messages=[{"role": "user", "content": "hi"}],
+        declarations=[],
+        temperature=0.1,
+        max_tokens=512,
+        timeout=25.0,
+    )
+    assert captured["init"]["extra_body"] == expected_extra_body
+
+
+@pytest.mark.parametrize(
     "allowed", [[], ["unknown"], ["meta.capabilities", "meta.capabilities"]]
 )
 def test_production_generator_rejects_an_invalid_required_subset(allowed) -> None:
     """The trusted provider mode cannot name an undeclared or duplicate tool."""
     with pytest.raises(ModelGatewayError, match="non-empty declared subset"):
         generate_with_adk(
-            model="openai/glm-5.2",
+            model="openai/glm-5.3-flash",
             api_key="secret",
             api_base=_PINNED,
             system="SYS",
@@ -959,3 +1602,247 @@ def test_production_generator_rejects_an_invalid_required_subset(allowed) -> Non
             timeout=25.0,
             allowed_function_names=allowed,
         )
+
+
+# --- Provider registry (feat/deepseek-provider) ---
+
+
+def test_registry_resolves_the_deepseek_provider() -> None:
+    from personal_agent.runtime.model_providers import (
+        canonical_api_base,
+        provider_from_env,
+    )
+
+    provider = provider_from_env({"MODEL_PROVIDER": "deepseek"})
+    assert provider.name == "deepseek"
+    assert provider.host == "api.deepseek.com"
+    assert provider.credential_env == "DEEPSEEK_API_KEY"
+    assert canonical_api_base(provider) == "https://api.deepseek.com/"
+
+
+def test_registry_unset_provider_keeps_zhipu() -> None:
+    from personal_agent.runtime.model_providers import provider_from_env
+
+    assert provider_from_env({}).name == "zhipu"
+
+
+@pytest.mark.parametrize("value", ["unknown", "openai", "Zhipu-Enterprise"])
+def test_registry_fails_closed_on_an_unknown_provider(value) -> None:
+    from personal_agent.runtime.model_providers import provider_from_env
+
+    with pytest.raises(ModelGatewayError):
+        provider_from_env({"MODEL_PROVIDER": value})
+
+
+def test_registry_strips_and_lowercases_a_known_name() -> None:
+    from personal_agent.runtime.model_providers import provider_from_env
+
+    assert provider_from_env({"MODEL_PROVIDER": " DeepSeek "}).name == "deepseek"
+
+
+def test_deepseek_gateway_from_env_uses_its_own_credential_and_pin(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("MODEL_ID", "DeepSeek-V4-Flash-Vision-Exp")
+    monkeypatch.delenv("MODEL_API_BASE", raising=False)
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    gateway = glm_gateway_from_env()
+    assert gateway._model == "openai/DeepSeek-V4-Flash-Vision-Exp"
+    assert gateway._api_base == "https://api.deepseek.com/"
+    assert gateway._api_key == "sk-test"
+
+
+def test_deepseek_gateway_requires_its_own_credential(monkeypatch) -> None:
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    with pytest.raises(ModelGatewayError, match="DEEPSEEK_API_KEY"):
+        glm_gateway_from_env()
+
+
+def test_a_deepseek_credential_is_never_sent_to_zhipu(monkeypatch) -> None:
+    """Cross-provider base-URL wiring must fail closed before any call."""
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv(
+        "MODEL_API_BASE", "https://open.bigmodel.cn/api/paas/v4/"
+    )
+    with pytest.raises(ModelGatewayError):
+        glm_gateway_from_env()
+
+
+def test_deepseek_pin_rejects_host_and_path_variants(monkeypatch) -> None:
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    for hostile in (
+        "https://api.deepseek.com.evil.example/",
+        "https://api.deepseek.com:8443/",
+        "http://api.deepseek.com/",
+        "https://api.deepseek.com/v1",
+    ):
+        monkeypatch.setenv("MODEL_API_BASE", hostile)
+        with pytest.raises(ModelGatewayError):
+            glm_gateway_from_env()
+
+
+def test_thinking_params_are_empty_for_deepseek() -> None:
+    """A provider not verified for Zhipu's thinking extension receives none."""
+    from personal_agent.runtime.glm_gateway import _thinking_request_params
+
+    assert (
+        _thinking_request_params(
+            "openai/DeepSeek-V4-Flash-Vision-Exp", "deepseek"
+        )
+        == {}
+    )
+    # The verified provider keeps today's behaviour.
+    assert _thinking_request_params("openai/glm-5.3-flash", "zhipu") == {
+        "reasoning_effort": "low"
+    }
+
+
+def test_generate_with_adk_sends_no_thinking_param_on_deepseek_base(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    class FakeLiteLlm:
+        def __init__(self, **kwargs):
+            captured["init"] = kwargs
+
+        async def generate_content_async(self, request, stream=False):
+            yield _response(_text("ok"))
+
+    monkeypatch.setattr(
+        "google.adk.models.lite_llm.LiteLlm",
+        FakeLiteLlm,
+    )
+    generate_with_adk(
+        model="openai/DeepSeek-V4-Flash-Vision-Exp",
+        api_key="secret",
+        api_base="https://api.deepseek.com/",
+        system="SYS",
+        messages=[{"role": "user", "content": "hi"}],
+        declarations=[],
+        temperature=0.1,
+        max_tokens=512,
+        timeout=25.0,
+    )
+    assert captured["init"]["extra_body"] == {}
+
+
+# --- Tool-name sanitization for providers that reject dotted names ---
+
+
+def test_mapper_is_identity_for_zhipu() -> None:
+    from personal_agent.runtime.model_providers import ToolNameMapper
+
+    mapper = ToolNameMapper(None).build(["finance.log_expense", "agent.ask_clarification"])
+    assert mapper.to_provider("finance.log_expense") == "finance.log_expense"
+    assert mapper.to_business("finance.log_expense") == "finance.log_expense"
+    assert mapper.has_mapping() is False
+
+
+def test_mapper_sanitizes_dots_for_deepseek_and_maps_back() -> None:
+    from personal_agent.runtime.model_providers import ToolNameMapper
+
+    mapper = ToolNameMapper(r"[^A-Za-z0-9_-]").build(
+        ["finance.log_expense", "agent.ask_clarification"]
+    )
+    assert mapper.to_provider("finance.log_expense") == "finance_log_expense"
+    assert mapper.to_business("finance_log_expense") == "finance.log_expense"
+    assert mapper.to_provider("agent.ask_clarification") == "agent_ask_clarification"
+    assert mapper.to_business("agent_ask_clarification") == "agent.ask_clarification"
+
+
+def test_mapper_fails_closed_on_a_sanitize_collision() -> None:
+    from personal_agent.runtime.model_providers import ToolNameMapper
+
+    with pytest.raises(ModelGatewayError, match="both sanitize"):
+        ToolNameMapper(r"[^A-Za-z0-9_-]").build(["a.b", "a_b"])
+
+
+def test_mapper_unmapped_response_name_passes_through() -> None:
+    from personal_agent.runtime.model_providers import ToolNameMapper
+
+    mapper = ToolNameMapper(r"[^A-Za-z0-9_-]").build(["finance.log_expense"])
+    assert mapper.to_business("never_declared") == "never_declared"
+
+
+def test_chat_gateway_round_trips_dotted_names_through_deepseek(
+    envelope, monkeypatch
+) -> None:
+    """Declarations go out sanitized; the proposal comes back a business alias."""
+    from personal_agent.runtime.model_providers import PROVIDERS
+
+    monkeypatch.setattr(GlmGateway, "__init__", GlmGateway.__init__)
+    gateway, generate = _gateway(
+        _response(_call("finance_log_expense", {"name": "午饭"}))
+    )
+    # Point the gateway at the DeepSeek endpoint so the mapper sanitizes.
+    gateway._api_base = "https://api.deepseek.com/"
+    gateway._model = "openai/deepseek-flash"
+    mapper_chars = PROVIDERS["deepseek"].illegal_tool_name_chars
+    assert mapper_chars is not None
+
+    proposal = gateway.propose(envelope=envelope)
+
+    sent = generate.kwargs
+    sent_names = [d["function"]["name"] for d in sent["declarations"]]
+    assert sent_names == [d["function"]["name"] for d in sent["declarations"]]
+    assert "finance_log_expense" in sent_names
+    assert "finance.log_expense" not in sent_names
+    if sent["allowed_function_names"] is not None:
+        assert all(
+            "." not in name for name in sent["allowed_function_names"]
+        )
+    assert isinstance(proposal, ProposedToolCall)
+    assert proposal.tool == "finance.log_expense"
+
+
+def test_chat_gateway_keeps_verbatim_names_for_zhipu(envelope) -> None:
+    gateway, generate = _gateway(
+        _response(_call("finance.log_expense", {"name": "午饭"}))
+    )
+    gateway.propose(envelope=envelope)
+    sent_names = [d["function"]["name"] for d in generate.kwargs["declarations"]]
+    assert "finance.log_expense" in sent_names
+
+
+def test_structured_client_maps_expected_name_on_deepseek(monkeypatch) -> None:
+    """The forced-choice subset and the expected name both use the sanitized
+    form; the recorded request equals the sent request."""
+    from personal_agent.runtime.structured import (
+        StructuredModelClient,
+        StructuredRequest,
+    )
+
+    captured = {}
+
+    def fake_generate(**kwargs):
+        captured.update(kwargs)
+        return _response(_call("context_checkpoint", {"decisions": []}))
+
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.delenv("MODEL_API_BASE", raising=False)
+    client = StructuredModelClient(
+        model="openai/deepseek-flash",
+        api_key="sk-test",
+        input_budget_tokens=32_768,
+        api_base="https://api.deepseek.com/",
+        generate=fake_generate,
+    )
+    request = StructuredRequest(
+        system="SYS",
+        user_content="内容",
+        function_name="context.checkpoint",
+        parameters_schema={"type": "object", "properties": {}},
+        temperature=0.1,
+        max_tokens=256,
+    )
+    client.call(request)
+    sent_names = [d["function"]["name"] for d in captured["declarations"]]
+    assert sent_names == ["context_checkpoint"]
+    assert captured["allowed_function_names"] == ["context_checkpoint"]

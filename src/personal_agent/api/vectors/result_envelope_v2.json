@@ -1,0 +1,158 @@
+{
+  "synthetic": true,
+  "cases": [
+    {
+      "name": "comparison",
+      "request": {
+        "kind": "analysis",
+        "coverage": "complete",
+        "evidence_refs": [
+          "q-current",
+          "q-baseline"
+        ],
+        "analysis_nodes": [
+          {
+            "kind": "comparison",
+            "current_metric_ref": "metric_5cfb9bac3afb3ca3ea212feba0a6cf2716dcaefdd947eff03b92089e1bd6af88",
+            "baseline_metric_ref": "metric_745829143133d27d3ecec164047fc82baad43146ae381d8c5fdec97d540d2d94",
+            "comparison_ref": "comparison"
+          }
+        ],
+        "commentary": "合成测试评论"
+      },
+      "response": {
+        "version": 2,
+        "kind": "analysis",
+        "task_status": "completed",
+        "coverage": "complete",
+        "evidence": [
+          {
+            "kind": "query_card",
+            "ref": "q-current"
+          },
+          {
+            "kind": "query_card",
+            "ref": "q-baseline"
+          }
+        ],
+        "analysis_nodes": [
+          {
+            "kind": "comparison",
+            "current_metric_ref": "metric_5cfb9bac3afb3ca3ea212feba0a6cf2716dcaefdd947eff03b92089e1bd6af88",
+            "baseline_metric_ref": "metric_745829143133d27d3ecec164047fc82baad43146ae381d8c5fdec97d540d2d94",
+            "comparison_ref": "comparison",
+            "text": "{\"categories\":[],\"date_range\":{\"end\":\"2026-09-30\",\"start\":\"2026-09-01\"},\"is_family_expense\":\"all\",\"name_contains\":[],\"personal_amount_cny\":null}：120 元；基准 {\"categories\":[],\"date_range\":{\"end\":\"2026-08-31\",\"start\":\"2026-08-01\"},\"is_family_expense\":\"all\",\"name_contains\":[],\"personal_amount_cny\":null}：100 元；增加 20 元",
+            "difference_decimal": "20",
+            "current": {
+              "metric_ref": "metric_5cfb9bac3afb3ca3ea212feba0a6cf2716dcaefdd947eff03b92089e1bd6af88",
+              "evidence_ref": "q-current",
+              "metric_kind": "total",
+              "value_decimal": "120",
+              "unit": "元",
+              "currency": "CNY",
+              "filters_json": "{\"categories\":[],\"date_range\":{\"end\":\"2026-09-30\",\"start\":\"2026-09-01\"},\"is_family_expense\":\"all\",\"name_contains\":[],\"personal_amount_cny\":null}",
+              "data_status": "complete"
+            },
+            "baseline": {
+              "metric_ref": "metric_745829143133d27d3ecec164047fc82baad43146ae381d8c5fdec97d540d2d94",
+              "evidence_ref": "q-baseline",
+              "metric_kind": "total",
+              "value_decimal": "100",
+              "unit": "元",
+              "currency": "CNY",
+              "filters_json": "{\"categories\":[],\"date_range\":{\"end\":\"2026-08-31\",\"start\":\"2026-08-01\"},\"is_family_expense\":\"all\",\"name_contains\":[],\"personal_amount_cny\":null}",
+              "data_status": "complete"
+            }
+          }
+        ],
+        "commentary": "合成测试评论",
+        "text": "{\"categories\":[],\"date_range\":{\"end\":\"2026-09-30\",\"start\":\"2026-09-01\"},\"is_family_expense\":\"all\",\"name_contains\":[],\"personal_amount_cny\":null}：120 元；基准 {\"categories\":[],\"date_range\":{\"end\":\"2026-08-31\",\"start\":\"2026-08-01\"},\"is_family_expense\":\"all\",\"name_contains\":[],\"personal_amount_cny\":null}：100 元；增加 20 元"
+      }
+    },
+    {
+      "name": "conversation",
+      "request": {
+        "kind": "conversation",
+        "text": "合成测试",
+        "coverage": "complete",
+        "evidence_refs": []
+      },
+      "response": {
+        "version": 2,
+        "kind": "conversation",
+        "task_status": "completed",
+        "coverage": "complete",
+        "evidence": [],
+        "text": "合成测试"
+      }
+    },
+    {
+      "name": "clarification",
+      "request": {
+        "kind": "clarification",
+        "text": "合成测试",
+        "coverage": "complete",
+        "evidence_refs": []
+      },
+      "response": {
+        "version": 2,
+        "kind": "clarification",
+        "task_status": "waiting",
+        "coverage": "complete",
+        "evidence": [],
+        "text": "合成测试"
+      }
+    },
+    {
+      "name": "limitation",
+      "request": {
+        "kind": "limitation",
+        "text": "合成测试",
+        "coverage": "complete",
+        "evidence_refs": []
+      },
+      "response": {
+        "version": 2,
+        "kind": "limitation",
+        "task_status": "completed",
+        "coverage": "complete",
+        "evidence": [],
+        "text": "合成测试"
+      }
+    }
+  ],
+  "history_cases": [
+    {
+      "name": "income_receipt",
+      "content": {
+        "state": "succeeded",
+        "tool": "finance.log_income",
+        "record_id": "synthetic-record",
+        "result_envelope": {
+          "version": 2,
+          "kind": "action",
+          "task_status": "completed",
+          "text": "合成回执",
+          "evidence": []
+        }
+      },
+      "outcome": "recorded"
+    },
+    {
+      "name": "duplicate_decision",
+      "content": {
+        "state": "waiting_for_duplicate_decision",
+        "tool": "finance.log_income",
+        "duplicate_check_id": "dup-history",
+        "result_envelope": {
+          "version": 2,
+          "kind": "action",
+          "task_status": "waiting",
+          "text": "合成回执",
+          "evidence": []
+        }
+      },
+      "outcome": "needsDuplicateDecision"
+    }
+  ]
+}

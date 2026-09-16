@@ -1,6 +1,8 @@
 import PersonalAgentKit
+import PhotosUI
 import SwiftUI
 import UIKit
+import AVFoundation
 
 /// `DEV-030`'s chat screen: one continuous Timeline, cursor-paged history, and a
 /// structured receipt under each message.
@@ -12,6 +14,12 @@ import UIKit
 /// model wrote.
 struct ChatView: View {
     @Bindable var model: ChatModel
+    @Environment(\.scenePhase) private var scenePhase
+    /// `1j`. The daily-review surface, now a card inside this Timeline. `nil`
+    /// only before the first refresh has opened it; the review card draws from
+    /// it for the live status and the ack/defer calls, while the frozen values
+    /// come from the sealed event itself.
+    var review: ReviewModel? = nil
     /// The check awaiting the user's 仍然记录 confirmation. `write_anyway`
     /// forces a write past the duplicate gate, so it is never one tap.
     @State private var confirmingWriteAnyway: String?
@@ -27,10 +35,26 @@ struct ChatView: View {
     /// §3c: the head of the identifier just copied, shown as a toast so a copy
     /// confirms itself without the identifiers ever going back on the card face.
     @State private var copiedPrefix: String?
+    #if !ADK_ACCEPTANCE
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var voiceInput = VoiceInput()
+    @State private var showingCamera = false
+    #endif
 
     struct ResolutionIntent: Equatable {
         let operationID: String
         let resolution: ManualResolution
+        /// The words of the card this tap came from. The dialog is the last thing
+        /// read before a human conclusion is recorded, so it has to name the same
+        /// destination the card named. Carrying the copy rather than a domain
+        /// makes that structural: there is no second lookup that could fork
+        /// differently from the card's.
+        let copy: ManualReviewCopy
+
+        /// What the dialog asks, in the tapped card's words.
+        var confirmPrompt: String {
+            copy.confirmPrompt(forWire: resolution.rawValue)
+        }
     }
 
     /// Scroll target for the in-flight bubble, which has no `event_id` to use.
@@ -43,6 +67,21 @@ struct ChatView: View {
             composer
         }
         .background(Color.screenBackground)
+        #if !ADK_ACCEPTANCE
+        .sheet(isPresented: $showingCamera) {
+            CameraInput { data in
+                showingCamera = false
+                if let data { model.preparePhoto(data) }
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Backgrounded audio is never kept as an implicit recording or
+            // transformed into a partial draft after the user returns.
+            if phase != .active, voiceInput.isActive {
+                voiceInput.interrupt()
+            }
+        }
+        #endif
         // No title of its own: §1a makes the Timeline the whole surface, so the
         // navigation bar belongs to the app rather than to this view. `RootView`
         // sets it, together with the status entry.
@@ -75,15 +114,19 @@ struct ChatView: View {
             Button("再想想", role: .cancel) { confirmingWriteAnyway = nil }
         }
         .confirmationDialog(
-            confirmingResolution.map(resolutionPrompt) ?? "",
+            confirmingResolution?.confirmPrompt ?? "",
             isPresented: Binding(
                 get: { confirmingResolution != nil },
                 set: { if !$0 { confirmingResolution = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("确认，我已在账本里核对过") {
-                if let intent = confirmingResolution {
+            // Every word here comes from the tapped card's copy, including the
+            // confirm button and the message: the dialog is one tap from a
+            // recorded human fact, and naming the wrong destination on the way
+            // in is the card's own defect one screen later.
+            if let intent = confirmingResolution {
+                Button(intent.copy.confirmButton) {
                     confirmingResolution = nil
                     Task {
                         await model.resolveManualReview(
@@ -95,7 +138,7 @@ struct ChatView: View {
             }
             Button("再想想", role: .cancel) { confirmingResolution = nil }
         } message: {
-            Text("这个结论记录后不能在应用里改判：服务端会拒绝相反的答复。它只写在这次操作旁边，不会改动账本。")
+            Text(confirmingResolution?.copy.confirmMessage ?? "")
         }
         .confirmationDialog(
             "开始新话题？",
@@ -149,15 +192,6 @@ struct ChatView: View {
         }
     }
 
-    private func resolutionPrompt(_ intent: ResolutionIntent) -> String {
-        switch intent.resolution {
-        case .confirmedWritten:
-            return "确认飞书账本里已经有这一笔？"
-        case .confirmedNotWritten:
-            return "确认飞书账本里没有这一笔？"
-        }
-    }
-
     private var timeline: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -184,7 +218,7 @@ struct ChatView: View {
                         EmptyTimelineView(tools: model.tools) { model.draft = $0 }
                     }
 
-                    ForEach(model.events) { event in
+                    ForEach(model.visibleEvents) { event in
                         entry(event).id(event.eventID)
                     }
 
@@ -228,13 +262,18 @@ struct ChatView: View {
     }
 
     /// The in-flight message: the same bubble it will become, dimmed, with 发送中
-    /// under it.
+    /// under it — and, once the server has proven it, the stage trail.
     ///
     /// Drawn from the bubble the Timeline uses rather than a separate style, so
     /// nothing moves or changes shape when the server's copy replaces it. What
     /// distinguishes the two is opacity and the label — §3.2 in miniature: 发送中 is
     /// a weaker claim than 已发送, and the screen must not let the first read as the
     /// second.
+    ///
+    /// The trail under 发送中 carries only what the server's own operation
+    /// projection stated: a stage name, and the registered tool name once one
+    /// was selected. There is no model reasoning on it, by construction — the
+    /// server never puts thought text in the operation row.
     private func sendingBubble(_ text: String) -> some View {
         VStack(alignment: .trailing, spacing: 3) {
             Text(text)
@@ -257,8 +296,64 @@ struct ChatView: View {
             }
             .font(.caption2)
             .foregroundStyle(.secondary)
+            if !model.liveStages.isEmpty {
+                stageTrail(model.liveStages)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    /// The execution pipeline under a sending bubble: 已接收 → 正在理解 → 已选择工具
+    /// → 正在写入 → 正在核对. Only the stages the server has actually reached are
+    /// drawn, each with its own spinner state — the current one spins, the ones
+    /// before it show checkmarks, and nothing is ever shown before the server
+    /// said so.
+    private func stageTrail(_ stages: [OperationStage]) -> some View {
+        // Collapse duplicates: the poll may observe the same stage many times.
+        // `stages` arrives in observation order, and the pipeline's own order is
+        // the state machine's, so the first observation of each distinct stage
+        // wins. Dispatching always carries the tool in production — both server
+        // transitions write a non-optional tool (orchestrator's model path and
+        // the override replay path) — so `dispatching(tool: nil)` never arrives
+        // and one dispatching entry is all there is.
+        var collapsed: [OperationStage] = []
+        for stage in stages where !collapsed.contains(where: { $0 == stage }) {
+            collapsed.append(stage)
+        }
+        let current = collapsed.last
+        let currentIndex = collapsed.count - 1
+        return HStack(spacing: 8) {
+            ForEach(Array(collapsed.enumerated()), id: \.offset) { index, stage in
+                HStack(spacing: 3) {
+                    if index == currentIndex {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "checkmark")
+                            .font(.caption2.weight(.semibold))
+                    }
+                    Text(stageLabel(stage, isCurrent: index == currentIndex))
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func stageLabel(_ stage: OperationStage, isCurrent: Bool) -> String {
+        switch stage {
+        case .accepted: return "已接收"
+        case .interpreting: return "正在理解"
+        case .dispatching(let tool):
+            // The registered tool name is the server's own fact; showing it is
+            // exactly the point of the trail. The generic label is a defensive
+            // fallback only — the server's dispatching transitions always
+            // carry a non-optional tool, so it should never render.
+            if let tool { return isCurrent ? "已选择 \(tool)" : tool }
+            return "已选择工具"
+        case .sourceInProgress: return "正在写入"
+        case .verifying: return "正在核对"
+        }
     }
 
     // --- one Timeline entry ---------------------------------------------------
@@ -268,6 +363,9 @@ struct ChatView: View {
         switch event.kind {
         case .userMessage(let text, let clarificationOf):
             VStack(alignment: .trailing, spacing: 2) {
+                ForEach(event.imageMediaIDs, id: \.self) { mediaID in
+                    TimelinePhoto(mediaID: mediaID, model: model)
+                }
                 Text(text)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14)
@@ -315,13 +413,37 @@ struct ChatView: View {
             .foregroundStyle(.secondary)
             .accessibilityHint("duplicate_check_id \(checkID)")
 
-        case .manualReviewResolved(let resolution):
+        case .expenseCategoryCorrected(_, let record):
             Label(
-                "已人工核对：\(manualResolutionText(resolution))",
+                "分类已修改为 \(record.category ?? "未分类")",
+                systemImage: "tag.circle"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        case .manualReviewResolved(let resolution, let domain):
+            let copy = ManualReviewCopy.forResolvedMarker(domain)
+            Label(
+                "已人工核对：\(manualResolutionText(resolution, copy: copy))",
                 systemImage: "person.crop.circle.badge.checkmark"
             )
             .font(.caption)
             .foregroundStyle(.secondary)
+
+        case .dailyReview(let snapshot):
+            if model.isSupersededDailyReview(event) {
+                // A newer snapshot reopened this card. The older one stays in the
+                // sealed archive, and the screen says so rather than drawing the
+                // same review twice with a different item count.
+                Label("复核卡已更新", systemImage: "checkmark.seal")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                reviewCard(snapshot: snapshot)
+            }
+
+        case .riskReport(let snapshot):
+            riskReportCard(snapshot: snapshot)
 
         case .unrecognised(let eventType):
             // Not dropped: a history that silently omits entries is a history that
@@ -335,6 +457,313 @@ struct ChatView: View {
     private func reasonSuffix(_ reason: String?) -> String {
         guard let reason, !reason.isEmpty else { return "" }
         return "·\(reason)"
+    }
+
+    // --- the daily review card (`1j`) -----------------------------------------
+
+    /// The review card, drawn from the frozen snapshot sealed in the Timeline.
+    ///
+    /// The values come straight from the event — never re-read from Feishu — and
+    /// the status comes from `review`, the one field that keeps changing after
+    /// the snapshot was sealed. ack/defer move the status; 打开飞书账本 is the way
+    /// to a correction, which the card itself never makes.
+    @ViewBuilder
+    private func reviewCard(snapshot: ReviewCardSnapshot) -> some View {
+        // The status is live; until the review list has loaded it is unknown,
+        // and an unknown status is not "pending". The card then shows no badge
+        // and no buttons rather than guessing 待复核 for a card that may already
+        // be 已复核.
+        let status = review?.summary(for: snapshot.reviewID)?.status
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("每日复核 · \(snapshot.reviewDate)")
+                    .font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                if let status {
+                    reviewStatusCapsule(status)
+                }
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.top, Metric.cardHeaderTop)
+            .padding(.bottom, Metric.cardHeaderBottom)
+
+            Text("\(snapshot.itemCount) 笔写入")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Metric.cardInset)
+                .padding(.vertical, Metric.fieldRowPadding)
+                .overlay(alignment: .top) { hairline }
+
+            VStack(spacing: 0) {
+                ForEach(snapshot.items) { item in
+                    reviewItemRow(item)
+                }
+            }
+            .padding(.horizontal, Metric.cardInset)
+
+            if let status {
+                reviewActionRow(snapshot: snapshot, status: status)
+                    .overlay(alignment: .top) { hairline }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(Color.cardBorder, lineWidth: Metric.hairline)
+        )
+    }
+
+    // --- the systemic-risk card ------------------------------------------------
+
+    /// The risk card, drawn from the frozen snapshot sealed in the Timeline. The
+    /// values come straight from the event — never re-pulled from FRED/Tencent —
+    /// so scrolling back always shows the score as it was sealed that day.
+    @ViewBuilder
+    private func riskReportCard(snapshot: RiskReportSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("系统性风险 · \(snapshot.asOf)")
+                    .font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                if snapshot.anomalous == true {
+                    riskBadge("异常", .danger)
+                }
+                if let stale = snapshot.staleDays, stale > 7 {
+                    riskBadge("数据过期", .pending)
+                }
+                if snapshot.qualityStatus == "data_quality_warning" {
+                    riskBadge("数据不完整", .pending)
+                }
+                Text(riskStateLabel(snapshot.state))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.top, Metric.cardHeaderTop)
+            .padding(.bottom, Metric.cardHeaderBottom)
+
+            Text(riskScoresLine(snapshot))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Metric.cardInset)
+                .padding(.vertical, Metric.fieldRowPadding)
+                .overlay(alignment: .top) { hairline }
+
+            if let components = snapshot.components {
+                riskComponentGroup("MBS 指标", components.mbs)
+                riskComponentGroup("CSS 指标", components.css)
+                if let ratesCredit = components.ratesCredit, !ratesCredit.isEmpty {
+                    riskComponentGroup("RCS 美债与金融条件", ratesCredit)
+                }
+            }
+
+            if let action = snapshot.action, !action.isEmpty {
+                Text(action)
+                    .font(.footnote)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Metric.cardInset)
+                    .padding(.vertical, Metric.fieldRowPadding)
+                    .overlay(alignment: .top) { hairline }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(Color.cardBorder, lineWidth: Metric.hairline)
+        )
+    }
+
+    private func riskStateLabel(_ state: String) -> String {
+        switch state {
+        case "NORMAL": return "正常"
+        case "RISK_ACCUMULATION": return "风险累积"
+        case "CREDIT_CONFIRMATION": return "信用确认"
+        case "DELEVERAGING": return "去杠杆"
+        default: return state
+        }
+    }
+
+    private func riskScoresLine(_ snapshot: RiskReportSnapshot) -> String {
+        func fmt(_ value: Double?) -> String {
+            guard let value else { return "-" }
+            return String(format: "%.1f", value)
+        }
+        return "MBS \(fmt(snapshot.mbs)) / CSS \(fmt(snapshot.css)) / AFRS \(fmt(snapshot.afrs)) / RCS \(fmt(snapshot.ratesCredit))"
+    }
+
+    /// A small status capsule for a quality signal (degraded / stale / anomalous)
+    /// so a card with suspicious data can never masquerade as a clean one.
+    private func riskBadge(_ text: String, _ color: Color) -> some View {
+        Text(text)
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.15))
+            .foregroundStyle(color)
+            .clipShape(Capsule())
+    }
+
+    /// The band's traffic-light colour for the status dot. Green/orange/red are
+    /// the standard risk convention; the dot is a status label, not a second
+    /// brand colour (DesignTokens §7).
+    private func riskBandColor(_ band: String) -> Color {
+        switch band {
+        case "green": return .green
+        case "yellow": return .yellow
+        case "orange": return .orange
+        case "red": return .red
+        default: return .secondary
+        }
+    }
+
+    /// One indicator group (MBS or CSS): a quiet header over its rows.
+    @ViewBuilder
+    private func riskComponentGroup(_ title: String, _ rows: [RiskComponent]) -> some View {
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Metric.cardInset)
+                    .padding(.top, Metric.fieldRowPadding)
+                    .padding(.bottom, 4)
+
+                ForEach(rows, id: \.label) { component in
+                    riskComponentRow(component)
+                }
+            }
+            .overlay(alignment: .top) { hairline }
+        }
+    }
+
+    /// A single indicator row: band dot + label on the left, the frozen value on
+    /// the right. The value is a string already formatted by the backend, never a
+    /// re-derived number.
+    private func riskComponentRow(_ component: RiskComponent) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Circle()
+                .fill(riskBandColor(component.band))
+                .frame(width: 8, height: 8)
+            Text(component.label)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(component.value)
+                .font(.footnote)
+        }
+        .padding(.horizontal, Metric.cardInset)
+        .padding(.vertical, 6)
+    }
+
+    private func reviewStatusCapsule(_ status: ReviewStatus) -> some View {
+        let (text, color): (String, Color) = switch status {
+        case .pending: ("待复核", .pending)
+        case .reviewed: ("已复核", .accentText)
+        case .deferred:
+            // 「稍后处理」是贪睡, shown as 已推迟 to tell it apart from 已复核 —
+            // the card is not done, it is paused until the next 0:00.
+            ("已推迟", .pending)
+        case .unrecognised(let raw): (raw, .secondary)
+        }
+        return Text(text)
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.15))
+            .foregroundStyle(color)
+            .clipShape(Capsule())
+    }
+
+    /// One record on the card, with the values frozen at build time.
+    @ViewBuilder
+    private func reviewItemRow(_ item: ReviewItem) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(item.tableKind ?? item.tool).font(.callout.weight(.medium))
+                Spacer()
+                Text(item.committedAt).font(.caption).foregroundStyle(.secondary)
+            }
+            if let unavailable = item.unavailable {
+                // The row stays, with its reason: a count that quietly loses a
+                // record is a review that lies about what was written.
+                Label(
+                    reviewUnavailableText(unavailable),
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.footnote)
+                .foregroundStyle(.pending)
+            }
+            if let values = item.values {
+                ForEach(values.keys.sorted(), id: \.self) { key in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(key).font(.caption).foregroundStyle(.secondary)
+                        Spacer(minLength: 12)
+                        Text(values[key]?.displayText ?? "—")
+                            .font(.callout)
+                            .tabularNumbers()
+                            .multilineTextAlignment(.trailing)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            if !item.unreadableFields.isEmpty {
+                Text("以下字段服务端未能解析：\(item.unreadableFields.joined(separator: "、"))")
+                    .font(.caption)
+                    .foregroundStyle(.pending)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("record_id").font(.caption).foregroundStyle(.secondary)
+                Text(item.recordID)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.vertical, 4)
+        .overlay(alignment: .top) { hairline }
+    }
+
+    @ViewBuilder
+    private func reviewActionRow(
+        snapshot: ReviewCardSnapshot, status: ReviewStatus
+    ) -> some View {
+        HStack(spacing: 12) {
+            if let review, status.allowsReviewActions {
+                Button("确认都正确") {
+                    Task { await review.ack(reviewID: snapshot.reviewID) }
+                }
+                .buttonStyle(.borderedProminent)
+                Button("稍后处理") {
+                    Task { await review.deferCard(reviewID: snapshot.reviewID) }
+                }
+                .buttonStyle(.bordered)
+            }
+            if let url = review?.ledgerURL {
+                Link("打开飞书账本", destination: url)
+                    .buttonStyle(.bordered)
+            } else if review != nil {
+                Text("服务端未提供账本链接")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .disabled(review?.busy ?? false)
+        .padding(Metric.cardInset)
+    }
+
+    private func reviewUnavailableText(_ reason: String) -> String {
+        switch reason {
+        case "unknown_tool": return "服务端不认识该写入工具，无法读取当前值"
+        case "source_unavailable": return "暂时无法从飞书读取当前值，请稍后重新打开"
+        case "no_receipt": return "服务端没有找到这条记录的回执"
+        default: return "无法读取当前值（\(reason)）"
+        }
     }
 
     // --- receipts -------------------------------------------------------------
@@ -359,10 +788,35 @@ struct ChatView: View {
         // §1i's non-recorded states are plain label-and-body cards and do not take
         // part in the tiers at all. A query result is its own card too: structured
         // data is never flattened into a prose answer (§1i).
-        if case .recorded(let recordID, let tool) = outcome {
-            recordedReceipt(recordID: recordID, tool: tool, operationID: operationID)
+        if case .recorded(let recordID, let tool, let record) = outcome {
+            recordedReceipt(
+                recordID: recordID,
+                tool: tool,
+                record: record,
+                operationID: operationID
+            )
+        } else if case .calendarEventWritten(let eventID, let tool, let evidence, _) = outcome {
+            // Its own branch, not a fallthrough to `recordedReceipt`. The two
+            // receipts share the evidence field and nothing else: the ledger
+            // row's wording, its fields and its 打开飞书账本 link all name a
+            // place this write never went. (2026-09-10 review.)
+            calendarWriteReceipt(
+                eventID: eventID,
+                tool: tool,
+                evidence: evidence,
+                operationID: operationID,
+                // The card's own fields decide this for every receipt this
+                // build produces; the map only has entries for cards drawn
+                // from history that had to ask (`ChatModel.overrideDecisions`).
+                // One lookup per undecided card per page load, never per redraw.
+                decision: model.overrideDecision(
+                    for: outcome, operationID: operationID
+                )
+            )
         } else if case .answeredWithQuery(let result, let tool) = outcome {
             queryReceiptCard(result: result, tool: tool, operationID: operationID)
+        } else if case .answeredWithCalendarQuery(let result, let tool) = outcome {
+            calendarQueryReceiptCard(result: result, tool: tool, operationID: operationID)
         } else {
             plainReceiptCard(
                 outcome: outcome,
@@ -385,20 +839,70 @@ struct ChatView: View {
         var id: String { label }
     }
 
-    /// The fields the server actually returned. `G1` is not done, so this is
-    /// empty today; the tier rules live against this array so that when the
-    /// projection starts carrying 名称/金额/分类/日期/归属 the receipt promotes
-    /// itself on the same code path.
-    private func receiptFields(for tool: String?) -> [ReceiptField] {
-        // G1: the projection carries no business fields yet.
-        []
+    /// The fields the server actually returned.
+    ///
+    /// `G1` landed in `chat_receipt_projection_v5`, and the tier rules were
+    /// already written against this array, so a receipt that carries the row
+    /// promotes itself to 档三 on the same code path that used to draw 档一.
+    /// A receipt without one -- an `idempotent_replay`, an older event, a
+    /// payload that failed projection -- returns `[]` and still gets the honest
+    /// status row.
+    ///
+    /// Order is 日期 → 名称 → 分类 → 金额 → 是否家庭支出 → 个人支出: what the
+    /// entry *is* before what it *cost*, which is the order Henson asked for and
+    /// the order the ledger's own columns read in.
+    private func receiptFields(for record: FinanceExpenseRecord?) -> [ReceiptField] {
+        guard let record else { return [] }
+        var fields: [ReceiptField] = [
+            ReceiptField(label: "日期", value: record.occurredOn),
+            ReceiptField(label: "名称", value: record.name),
+            // Null category is a real state for a refund or AA receipt, so it
+            // is shown as absent rather than omitted: a missing row would read
+            // as "the server did not say", and this row is about to become
+            // editable, so which one it is matters.
+            ReceiptField(label: "分类", value: record.category ?? "未分类"),
+            ReceiptField(label: "金额", value: yuan(record.amount)),
+            ReceiptField(
+                label: "是否家庭支出", value: record.isFamilyExpense ? "是" : "否"
+            ),
+        ]
+        // 个人支出 is a Base formula. Absent means the ledger had not evaluated
+        // it (or had just been asked to re-evaluate it after a category edit),
+        // and an absent row is honest where a stale number would not be.
+        if let personalSpend = record.personalSpend {
+            fields.append(
+                ReceiptField(label: "个人支出", value: yuan(personalSpend))
+            )
+        }
+        return fields
+    }
+
+    /// Render a ledger amount without ever parsing it.
+    ///
+    /// The server sends decimal *text* precisely so no float ever touches a
+    /// money value; turning it into a `Double` here to format it would undo
+    /// that at the last step, on the one screen whose job is to be checkable.
+    /// A negative amount keeps its sign ahead of the symbol -- `-¥880.00` --
+    /// because a refund reads as a refund, not as a smaller expense.
+    private func yuan(_ amount: String) -> String {
+        amount.hasPrefix("-") ? "-¥" + amount.dropFirst() : "¥" + amount
     }
 
     @ViewBuilder
     private func recordedReceipt(
-        recordID: String, tool: String?, operationID: String?
+        recordID: String,
+        tool: String?,
+        record: FinanceExpenseRecord?,
+        operationID: String?
     ) -> some View {
-        let fields = receiptFields(for: tool)
+        // `G1` shipped, so the current ledger row is what the card draws. The
+        // overlay is what makes Henson's 2026-08-15 decision true: after a
+        // category correction the *same* ledger row is described by a newer
+        // operation, and every card for that row -- including the original
+        // receipt, scrolled back to -- follows the ledger rather than freezing
+        // at what was first written.
+        let current = model.currentRecord(forRecordID: recordID) ?? record
+        let fields = receiptFields(for: current)
         switch fields.count {
         case 0, 1, 2:
             // §3a/§3b 档一/档二: a status row. No container, no border, no action
@@ -408,14 +912,80 @@ struct ChatView: View {
             // lightest form -- a card would imply a structured record to check,
             // and today there is none to check.
             recordedStatusRow(
-                recordID: recordID, tool: tool, operationID: operationID, fields: fields
+                recordID: recordID,
+                tool: tool,
+                record: current,
+                operationID: operationID,
+                fields: fields
             )
         default:
             // §3a/§3b 档三: the composed card, kept for when ≥3 fields exist.
             // Its 副标带 is already gone (§2.2): identifiers live behind the
             // long-press menu, so the band has nothing to carry.
-            recordedCard(recordID: recordID, tool: tool, operationID: operationID, fields: fields)
+            recordedCard(
+                recordID: recordID,
+                tool: tool,
+                record: current,
+                operationID: operationID,
+                fields: fields
+            )
         }
+    }
+
+    /// The calendar write's receipt: 状态行, 仍要创建, and nothing else.
+    ///
+    /// It shares the status-row shape with the ledger's because the shape is
+    /// right — a receipt with no business fields to draw must not pretend to
+    /// a structured record. What it does not share is the *content*: the badge
+    /// comes from the device result (已创建 / 日历里已有 / 已写入, see
+    /// `CalendarDeviceResult.terminalLabel`), and there is no 打开飞书账本
+    /// link, because this write never went near the ledger. The 2026-09-10
+    /// review found exactly those two strings on a created calendar event.
+    ///
+    /// 仍要创建 appears for exactly one badge: 日历里已有. It re-issues the write
+    /// the phone declined, which is only safe when the phone's report and the
+    /// server's row agree that an event was already there — so the button is
+    /// drawn from `decision`, which cannot carry one without the other (see
+    /// `OperationOutcome.overrideDecision`).
+    ///
+    /// The EventKit id stays reachable through the same long-press menu the
+    /// ledger receipt uses: it is the evidence the write happened, and 20
+    /// opaque characters on the row would cost more than it buys.
+    private func calendarWriteReceipt(
+        eventID: String,
+        tool: String?,
+        evidence: CalendarDeviceResult,
+        operationID: String?,
+        decision: OverrideDecision
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            terminalChip(
+                for: .calendarEventWritten(
+                    eventID: eventID, tool: tool, evidence: evidence, actionID: nil
+                ),
+                toolEvidence: .known(tool)
+            )
+
+            if let tool, !tool.isEmpty {
+                Text(tool == "calendar.create_event"
+                     ? "Apple 日历"
+                     : Capabilities.displayName(forAlias: tool, tools: model.tools))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let actionID = decision.actionID {
+                Button {
+                    Task { await model.overrideDeviceAction(actionID: actionID) }
+                } label: {
+                    Text("仍要创建").font(.footnote)
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.busy)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(evidenceMenu(recordID: eventID, operationID: operationID, explicit: false))
     }
 
     /// §3a/§3b 档一档二: 状态行. The lightest possible receipt.
@@ -427,6 +997,7 @@ struct ChatView: View {
     private func recordedStatusRow(
         recordID: String,
         tool: String?,
+        record: FinanceExpenseRecord?,
         operationID: String?,
         fields: [ReceiptField]
     ) -> some View {
@@ -435,7 +1006,7 @@ struct ChatView: View {
             // a leading chip rather than the header's 12pt capsule. Same colour
             // semantics, different chrome.
             terminalChip(
-                for: .recorded(recordID: recordID, tool: tool),
+                for: .recorded(recordID: recordID, tool: tool, record: record),
                 toolEvidence: .known(tool)
             )
 
@@ -479,6 +1050,7 @@ struct ChatView: View {
     private func recordedCard(
         recordID: String,
         tool: String?,
+        record: FinanceExpenseRecord?,
         operationID: String?,
         fields: [ReceiptField]
     ) -> some View {
@@ -487,7 +1059,7 @@ struct ChatView: View {
                 Text("记账回执").font(.callout.weight(.medium))
                 Spacer(minLength: 8)
                 terminalCapsule(
-                    for: .recorded(recordID: recordID, tool: tool),
+                    for: .recorded(recordID: recordID, tool: tool, record: record),
                     toolEvidence: .known(tool)
                 )
             }
@@ -504,7 +1076,18 @@ struct ChatView: View {
             VStack(spacing: 0) {
                 if let tool { fieldRow("工具", Capabilities.displayName(forAlias: tool, tools: model.tools)) }
                 ForEach(fields) { field in
-                    fieldRow(field.label, field.value)
+                    if field.label == "分类", let record {
+                        categoryRow(recordID: recordID, record: record)
+                    } else {
+                        fieldRow(field.label, field.value)
+                    }
+                }
+                if let editedAt = record?.categoryUpdatedAt {
+                    // The card follows the ledger's current value rather than
+                    // freezing at what was written (Henson, 2026-08-15), which
+                    // means it is no longer literally the write receipt. This
+                    // line is that difference stated rather than hidden.
+                    categoryEditNote(editedAt)
                 }
             }
             .padding(.horizontal, Metric.cardInset)
@@ -617,6 +1200,117 @@ struct ChatView: View {
     }
 
     /// A field row carries its own top rule, so rows stack without a trailing one.
+    /// 分类, as a picker over the ledger's own option set.
+    ///
+    /// The one editable row on the card. It is a `Menu` rather than a sheet
+    /// because the whole point is that correcting a mis-categorised expense
+    /// costs one tap and one choice -- re-describing the entry to the Agent was
+    /// always possible and was always the wrong repair.
+    ///
+    /// The options come from `ExpenseCategory.all`, which is pinned to the
+    /// ledger's single-select options by the cross-language vector file. The
+    /// connector never creates a select option, so an option this client
+    /// invented would be a refused write, not a new category.
+    ///
+    /// Nothing here is optimistic. The row shows the ledger's value until the
+    /// server has verified the change against the ledger; while the write is in
+    /// flight it shows the target with a progress indicator, and a failure
+    /// leaves the *old* value on screen with the reason beneath. Showing the new
+    /// category before it was proven would be the receipt card telling the same
+    /// kind of lie the whole projection exists to prevent.
+    @ViewBuilder
+    private func categoryRow(
+        recordID: String, record: FinanceExpenseRecord
+    ) -> some View {
+        let edit = model.categoryEdit(forRecordID: recordID)
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text("分类").font(.footnote).foregroundStyle(.secondary)
+            Spacer(minLength: 12)
+            if case .inFlight(let target) = edit {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text(target)
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Menu {
+                    ForEach(ExpenseCategory.all, id: \.self) { option in
+                        Button {
+                            Task {
+                                await model.changeCategory(
+                                    recordID: recordID,
+                                    from: record.category,
+                                    to: option
+                                )
+                            }
+                        } label: {
+                            if option == record.category {
+                                Label(option, systemImage: "checkmark")
+                            } else {
+                                Text(option)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(record.category ?? "未分类")
+                            .font(.footnote.monospaced())
+                            .lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.accentText)
+                }
+            }
+        }
+        .padding(.vertical, Metric.fieldRowPadding)
+        .overlay(alignment: .top) { hairline }
+
+        if case .failed(let message) = edit {
+            // Deliberately below the row, with the old value still shown above
+            // it: the ledger did not change, and the card must not imply it did.
+            Text(message)
+                .font(.caption)
+                // `pending`, not `danger`: nothing was written and nothing is
+                // broken. The ledger simply does not hold what this card
+                // assumed, and the next move is Henson's.
+                .foregroundStyle(.pending)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, Metric.fieldRowPadding)
+        }
+    }
+
+    private func categoryEditNote(_ editedAt: String) -> some View {
+        Text("分类已于 \(ChatView.editStamp(editedAt)) 修改")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, Metric.fieldRowPadding)
+            .overlay(alignment: .top) { hairline }
+    }
+
+    /// Render the server's RFC 3339 stamp in the ledger's own timezone.
+    ///
+    /// Falls back to the raw string rather than to "just now" or an empty label:
+    /// a timestamp this build cannot parse is still evidence that an edit
+    /// happened, and dropping it would erase the one thing this line exists for.
+    static func editStamp(_ value: String) -> String {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let moment = parser.date(from: value) ?? {
+            let plain = ISO8601DateFormatter()
+            plain.formatOptions = [.withInternetDateTime]
+            return plain.date(from: value)
+        }()
+        guard let moment else { return value }
+        let display = DateFormatter()
+        display.locale = Locale(identifier: "zh_Hans_CN")
+        display.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        display.dateFormat = "M月d日 HH:mm"
+        return display.string(from: moment)
+    }
+
     private func fieldRow(_ label: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(label).font(.footnote).foregroundStyle(.secondary)
@@ -662,6 +1356,8 @@ struct ChatView: View {
                     queryTotal(result)
                 case .byCategory:
                     queryByCategory(result)
+                case .byTrip:
+                    queryByTrip(result)
                 case .records:
                     queryRecords(result)
                 }
@@ -686,6 +1382,13 @@ struct ChatView: View {
     /// under, so the figure is not read as "everything" when it is not.
     @ViewBuilder
     private func queryScope(_ result: FinanceQueryResult) -> some View {
+        if let coverage = result.coverage {
+            Text("账本覆盖：\(coverage.sourceYears.map(String.init).joined(separator: "、"))；\(coverage.isLimited ? "仅为已接入账本小计" : "请求范围已覆盖")")
+                .font(.footnote).foregroundStyle(.secondary)
+            if !coverage.assignmentComplete {
+                Text("\(coverage.unassignedRecordCount) 笔未能归属场次").font(.footnote).foregroundStyle(.secondary)
+            }
+        }
         let dates = result.filtersApplied["date_range"]?.objectValue
         let start = dates?["start"]?.stringValue
         let end = dates?["end"]?.stringValue
@@ -723,7 +1426,7 @@ struct ChatView: View {
     private func queryTotal(_ result: FinanceQueryResult) -> some View {
         VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                Text("个人支出合计").font(.callout).foregroundStyle(.secondary)
+                Text(result.coverage?.isLimited == true ? "已接入账本小计" : "个人支出合计").font(.callout).foregroundStyle(.secondary)
                 Spacer(minLength: 12)
                 Text("¥\(result.amount ?? "—")")
                     .font(.title3.weight(.semibold))
@@ -734,6 +1437,22 @@ struct ChatView: View {
             fieldRow("记录数", "\(result.recordCount)")
             if !result.sourceSystem.isEmpty {
                 fieldRow("数据源", result.sourceSystem)
+            }
+        }
+    }
+
+    private func queryByTrip(_ result: FinanceQueryResult) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            queryTotal(result)
+            DisclosureGroup("旅行场次（\(result.byTrip.count) 组）") {
+                ForEach(Array(result.byTrip.enumerated()), id: \.offset) { _, bucket in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(bucket.tripTag ?? "未归属场次")
+                        Spacer()
+                        Text("¥\(bucket.amount) · \(bucket.recordCount) 笔").monospacedDigit()
+                    }
+                    .font(.callout).padding(.vertical, 4)
+                }
             }
         }
     }
@@ -805,6 +1524,128 @@ struct ChatView: View {
         }
     }
 
+    // --- the calendar list card (design §9.2) --------------------------------
+
+    /// A row per event: 标题 · 日期时间（或全天日期区间）· 日历名 · [已创建].
+    ///
+    /// Every string on this card comes from a row field of the projection, by
+    /// the same rules the server's own summary renders by (`§5.2`/`§5.3`): an
+    /// all-day event from its dates (end exclusive), a timed event in its own
+    /// zone with the zone named, and the truncation and uncertainty notes
+    /// spelled out. The rules live in `CalendarQueryResult.EventRow`; this view
+    /// only lays them out.
+    private func calendarQueryReceiptCard(
+        result: CalendarQueryResult, tool: String?, operationID: String?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("查询结果").font(.callout.weight(.medium))
+                Spacer(minLength: 8)
+                if let tool {
+                    Text(tool).font(.caption.monospaced()).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.top, Metric.cardHeaderTop)
+            .padding(.bottom, Metric.cardHeaderBottom)
+
+            VStack(spacing: 0) {
+                // The two warnings are different facts and can both be true
+                // (design §9.1): this one is about what *this device* has
+                // changed and not yet uploaded, and it never waits on the
+                // server's mirror state to say so.
+                if model.calendarUnsynced {
+                    calendarNote("本地日历有未同步的变更，结果可能不含最新日程")
+                }
+                if result.mirrorStale {
+                    calendarNote("日历镜像已陈旧或未覆盖该时间段，结果可能不全")
+                }
+                ForEach(Array(result.events.enumerated()), id: \.offset) { _, row in
+                    calendarEventRow(row)
+                }
+                if result.events.isEmpty {
+                    calendarNote(
+                        result.mirrorStale
+                            ? "日历镜像尚未同步，暂时无法给出安排"
+                            : "这个时间段没有日程"
+                    )
+                } else if result.nextCursor != nil {
+                    calendarNote("已显示部分日程，查询结果还有更多。")
+                    Button("继续查看上一条日程查询的更多结果") {
+                        model.draft = "继续查看上一条日程查询的更多结果"
+                    }
+                    .font(.footnote)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, Metric.fieldRowPadding)
+                    .overlay(alignment: .top) { hairline }
+                } else {
+                    fieldRow("日程数", "已全部显示（共 \(result.recordCount) 条）")
+                }
+                // The freshness line is the server's own words, stated only
+                // when the mirror is fresh enough to have a 截至 time worth
+                // showing. A stale mirror already said so above.
+                if !result.mirrorStale, !result.dataAsOf.isEmpty {
+                    fieldRow("数据截至", ChatView.editStamp(result.dataAsOf))
+                }
+            }
+            .padding(.horizontal, Metric.cardInset)
+            .padding(.bottom, Metric.cardInset)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.cardSurface)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(Color.cardBorder, lineWidth: Metric.hairline)
+        )
+        // The same long-press menu as the other receipt cards: a query has no
+        // `record_id` of its own, but its `operation_id` is what the evidence
+        // would be checked against.
+        .modifier(evidenceMenu(recordID: nil, operationID: operationID, explicit: false))
+    }
+
+    private func calendarEventRow(_ row: CalendarQueryResult.EventRow) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(row.displayTitle).font(.callout)
+                if row.createdByAgent {
+                    Text("已创建")
+                        .font(.caption2)
+                        .foregroundStyle(Color.accentText)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.surface, in: Capsule())
+                }
+            }
+            HStack(spacing: 8) {
+                Text(row.when).font(.caption).foregroundStyle(.secondary)
+                // A calendar with no name the device knows shows no name here.
+                // The EventKit identifier is not a substitute for one.
+                if let calendarTitle = row.calendarTitle {
+                    Text(calendarTitle).font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(row.annotations, id: \.self) { note in
+                    Text(note).font(.caption2).foregroundStyle(Color.pending)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, Metric.fieldRowPadding)
+        .overlay(alignment: .top) { hairline }
+    }
+
+    private func calendarNote(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption2)
+            Text(text).font(.caption)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(Color.pending)
+        .padding(.vertical, Metric.fieldRowPadding)
+        .overlay(alignment: .top) { hairline }
+    }
+
     @ViewBuilder
     private func plainReceiptCard(
         outcome: OperationOutcome,
@@ -826,14 +1667,63 @@ struct ChatView: View {
                     Text("服务端仍在处理（\(state.wire)）").font(.callout)
                 }
 
-            // Handled by `recordedReceipt` and `queryReceiptCard` above;
-            // listed only to keep the switch exhaustive, so a new outcome still
-            // fails to compile here.
-            case .recorded, .answeredWithQuery:
+            // Handled by `recordedReceipt`, `calendarWriteReceipt` and
+            // `queryReceiptCard` above; listed only to keep the switch
+            // exhaustive, so a new outcome still fails to compile here.
+            case .recorded, .calendarEventWritten, .answeredWithQuery,
+                 .answeredWithCalendarQuery:
                 EmptyView()
 
             case .answered(let text):
                 Text(text)
+
+            case .answeredV2(let envelope):
+                if let nodes = envelope.analysisNodes {
+                    ForEach(Array(nodes.enumerated()), id: \.offset) { _, node in
+                        if node.kind != "comparison" { Text(node.text) }
+                        ForEach(Array((node.sources ?? []).enumerated()), id: \.offset) { _, source in
+                            if let url = source.publicURL { Link(source.title, destination: url) }
+                        }
+                    }
+                } else { Text(envelope.text) }
+                if let commentary = envelope.commentary, !commentary.isEmpty {
+                    Text("模型分析").font(.caption).foregroundStyle(.secondary)
+                    Text(commentary)
+                }
+                if envelope.coverage == "partial" { Text("分析未完成，已取得的结果保留。").font(.caption) }
+                ForEach(Array(envelope.evidence.enumerated()), id: \.offset) { _, evidence in
+                    if let query = evidence.queryResult {
+                        queryReceiptCard(result: query, tool: "finance.query_expenses", operationID: operationID)
+                    }
+                    if let calendar = evidence.calendarQueryResult {
+                        calendarQueryReceiptCard(result: calendar, tool: evidence.tool, operationID: operationID)
+                    }
+                    if let raw = evidence.url, let url = URL(string: raw), ["http", "https"].contains(url.scheme), url.user == nil, url.password == nil {
+                        Link(evidence.title ?? "来源", destination: url)
+                    }
+                }
+
+                // After source cards so auto-scroll leaves the conclusion visible.
+                // Every value is server-rendered; no client-side arithmetic.
+                ForEach(Array((envelope.analysisNodes ?? []).filter { $0.kind == "comparison" }.enumerated()), id: \.offset) { _, node in
+                    if let current = node.current, let baseline = node.baseline,
+                       let difference = node.differenceDecimal, current.unit == baseline.unit {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("比较结果").font(.headline)
+                            HStack {
+                                Text("当前 \(current.valueDecimal) \(current.unit)")
+                                Spacer()
+                                Text("基准 \(baseline.valueDecimal) \(baseline.unit)")
+                            }.font(.subheadline)
+                            Text("差额 \(difference) \(current.unit)")
+                                .font(.title2.bold())
+                                .accessibilityIdentifier("comparison-difference")
+                            DisclosureGroup("比较口径") { Text(node.text).font(.caption) }
+                        }
+                        .padding(12)
+                        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                    } else { Text(node.text) }
+                }
 
             case .needsClarification(let question):
                 Label("需要澄清", systemImage: "questionmark.circle")
@@ -899,13 +1789,19 @@ struct ChatView: View {
                     .foregroundStyle(.danger)
                 if let reason { field("原因", reason) }
 
-            case .needsManualReview(let reason, let recordID):
+            case .needsManualReview(let reason, let recordID, let domain):
+                // Design §10, gap 4: the card is chosen by the operation's
+                // domain, never by guessing from the tool name. A calendar write
+                // cannot be checked in the ledger, and a person sent to the
+                // wrong place taps a conclusion that is then recorded as a
+                // human fact the server refuses to contradict.
+                let copy = ManualReviewCopy.forDomain(domain)
                 Label("需要人工核对：写入结果无法确认", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.pending)
                 if let reason { field("原因", reason) }
-                if let recordID { field("记录 ID", recordID) }
+                if let recordID { field(copy.recordLabel, recordID) }
                 if let operationID {
-                    manualReviewResolution(operationID: operationID)
+                    manualReviewResolution(operationID: operationID, copy: copy)
                 }
 
             case .cancelledBeforeSubmit:
@@ -970,9 +1866,10 @@ struct ChatView: View {
     /// to the menu (or have none). Kept here so the menu and the 详情单 see the
     /// same value the body already shows.
     private func recordID(from outcome: OperationOutcome) -> String? {
-        if case .needsManualReview(_, let recordID) = outcome { return recordID }
+        if case .needsManualReview(_, let recordID, _) = outcome { return recordID }
         return nil
     }
+
 
     /// §1o 组件二: the terminal-state label in the card's top corner.
     ///
@@ -1003,6 +1900,15 @@ struct ChatView: View {
             // this name states the verifiable fact instead, and can be promoted
             // back only if the comparison is ever actually implemented.
             return TerminalBadge(text: "账本已存在此记录", color: .accentText)
+        case .calendarEventWritten(_, _, let evidence, _):
+            // The calendar's own label, chosen by what the phone reported. It
+            // deliberately does **not** say 账本, which is what this card said
+            // before the 2026-09-10 review: a created calendar event was
+            // labelled 「账本已存在此记录」 beside a 打开飞书账本 link.
+            //
+            // The words live in the Kit so a test can hold them; a view is not
+            // where "does this card name the wrong system" can be asserted.
+            return TerminalBadge(text: evidence.terminalLabel, color: .accentText)
         case .answered:
             // 无工具调用 is only claimed when the server explicitly recorded
             // `tool == null` for a direct answer. A history event that predates
@@ -1016,7 +1922,7 @@ struct ChatView: View {
             case .unknown:
                 return TerminalBadge(text: "工具事实不可用", color: .secondary)
             }
-        case .answeredWithQuery:
+        case .answeredV2, .answeredWithQuery, .answeredWithCalendarQuery:
             // The query card carries its own header; a badge here would compete
             // with the structured rows it renders.
             return nil
@@ -1165,36 +2071,47 @@ struct ChatView: View {
     /// `DEV-040`. The human resolution path for a `needs_manual_review` card.
     ///
     /// It answers the question the state itself cannot: the system could not
-    /// establish whether the row reached the ledger, and only a person looking at
-    /// the ledger can. What it deliberately does **not** do is change the receipt
+    /// establish whether the write landed, and only a person looking at the
+    /// destination can. What it deliberately does **not** do is change the receipt
     /// above it — 需要人工核对 stays exactly as rendered, because that is still what
     /// the *system* proved. The resolution is shown beside it as what a person
     /// reported.
+    ///
+    /// `copy` is the domain's wording (design §10, gap 4). It is a parameter and
+    /// not a fresh derivation here so that the resolved line and the button the
+    /// person tapped are worded by the same value: the receipt and the unresolved
+    /// slot both pass the copy their own outcome carried.
     @ViewBuilder
-    private func manualReviewResolution(operationID: String) -> some View {
+    private func manualReviewResolution(
+        operationID: String, copy: ManualReviewCopy
+    ) -> some View {
         if let resolved = model.resolvedManualReviews[operationID] {
             Label(
-                "已人工核对：\(manualResolutionText(resolved))",
+                "已人工核对：\(manualResolutionText(resolved, copy: copy))",
                 systemImage: "checkmark.circle"
             )
             .foregroundStyle(.secondary)
-            Text("这是你核对账本后的结论，不是系统验证的结果。要改判需要重新人工核对，服务端会拒绝相反的答复。")
+            Text("这是你核对后的结论，不是系统验证的结果。要改判需要重新人工核对，服务端会拒绝相反的答复。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else {
-            Text("请先在飞书账本里核对这一笔（复核页有「打开飞书账本」），再选择结论。选择只记录你看到的事实，不会改动账本。")
+            Text(copy.instruction)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
-                Button("账本里有这笔") {
+                Button(copy.writtenButton) {
                     confirmingResolution = .init(
-                        operationID: operationID, resolution: .confirmedWritten
+                        operationID: operationID,
+                        resolution: .confirmedWritten,
+                        copy: copy
                     )
                 }
                 Spacer()
-                Button("账本里没有") {
+                Button(copy.notWrittenButton) {
                     confirmingResolution = .init(
-                        operationID: operationID, resolution: .confirmedNotWritten
+                        operationID: operationID,
+                        resolution: .confirmedNotWritten,
+                        copy: copy
                     )
                 }
             }
@@ -1203,13 +2120,18 @@ struct ChatView: View {
         }
     }
 
-    private func manualResolutionText(_ wire: String) -> String {
-        switch wire {
-        case ManualResolution.confirmedWritten.rawValue: return "账本里有这笔"
-        case ManualResolution.confirmedNotWritten.rawValue: return "账本里没有这笔"
-        // A conclusion this build cannot name is still one that was recorded.
-        default: return "服务端结论 \(wire)"
-        }
+    /// The conclusion in words. The wording is `ManualReviewCopy`'s rule, in the
+    /// Kit where it can be tested; this only supplies the copy.
+    ///
+    /// Every caller passes its copy explicitly, because the two markers fork
+    /// differently. A live card forks on its operation's domain and falls back to
+    /// the ledger words; a `manual_review_resolved` history marker forks on the
+    /// domain the server froze into the event, and a marker with no domain gets
+    /// the neutral words. Neither default is right for the other.
+    private func manualResolutionText(
+        _ wire: String, copy: ManualReviewCopy
+    ) -> String {
+        copy.conclusion(forWire: wire)
     }
 
     private func duplicateDecisionText(_ wire: String) -> String {
@@ -1236,8 +2158,11 @@ struct ChatView: View {
                 // costs nothing.
                 if let receipt = model.liveReceipt,
                    receipt.operationID == operationID,
-                   case .needsManualReview = receipt.outcome {
-                    manualReviewResolution(operationID: operationID)
+                   case .needsManualReview(_, _, let domain) = receipt.outcome {
+                    manualReviewResolution(
+                        operationID: operationID,
+                        copy: ManualReviewCopy.forDomain(domain)
+                    )
                 }
             } else {
                 Text("尚未拿到 operation_id：服务端可能已收到，也可能没有。")
@@ -1324,6 +2249,27 @@ struct ChatView: View {
                 // because the only actionable card was a screen away).
                 unresolvedCard(pending)
             }
+            if model.hasPendingPhotoSend && model.unresolved == nil {
+                HStack {
+                    Text("图片发送尚未完成").font(.caption)
+                    Button("继续") { Task { await model.resumeUnresolved() } }
+                    Button("放弃本地图片") { Task { await model.discardUnsentPhoto() } }
+                }
+                .disabled(model.busy)
+            }
+            if let photo = model.preparedPhoto,
+               let preview = UIImage(data: photo.data) {
+                HStack(spacing: 8) {
+                    Image(uiImage: preview)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 56, height: 56)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .accessibilityLabel("待发送照片")
+                    Button("移除照片", role: .destructive) { model.clearPreparedPhoto() }
+                        .font(.caption)
+                }
+            }
             HStack(spacing: 8) {
                 // §3i 阶段一: 输入框不禁用。可以打字、可以想 —— 防重复记账不再靠
                 // 锁住打字承担, 而是把发送挡住（见下）。灰掉输入框连起草下一句
@@ -1331,6 +2277,62 @@ struct ChatView: View {
                 TextField("记一笔，或问一句", text: $model.draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
+                #if !ADK_ACCEPTANCE
+                Button {
+                    Task {
+                        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+                            model.lastError = "当前设备没有可用相机。"
+                            return
+                        }
+                        guard await AVCaptureDevice.requestAccess(for: .video) else {
+                            model.lastError = "没有相机权限，请在系统设置中允许访问。"
+                            return
+                        }
+                        showingCamera = true
+                    }
+                } label: {
+                    Image(systemName: "camera").font(.title3)
+                }
+                .disabled(model.busy || writingInProgress || !model.imageCapability.enabled)
+                .accessibilityLabel("拍照")
+                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                    Image(systemName: "paperclip")
+                        .font(.title3)
+                }
+                .disabled(model.busy || writingInProgress || !model.imageCapability.enabled)
+                .accessibilityLabel("选择照片")
+                .onChange(of: selectedPhoto) { _, item in
+                    guard let item else { return }
+                    Task {
+                        defer { selectedPhoto = nil }
+                        do {
+                            guard let data = try await item.loadTransferable(type: Data.self) else {
+                                model.lastError = "无法读取这张照片，请重新选择。"
+                                return
+                            }
+                            model.preparePhoto(data)
+                        } catch {
+                            model.lastError = "无法读取这张照片，请重新选择。"
+                        }
+                    }
+                }
+                VoiceHoldButton(
+                    enabled: !model.busy && !writingInProgress && !voiceInput.isFinalizing,
+                    active: voiceInput.isActive,
+                    began: {
+                        Task { await voiceInput.start() }
+                    },
+                    released: {
+                        if voiceInput.isRecording {
+                            Task { model.appendVoiceDraft(await voiceInput.finish()) }
+                        } else if voiceInput.isPreparing {
+                            voiceInput.cancel()
+                        }
+                    },
+                    cancelled: { voiceInput.cancel() }
+                )
+                .frame(width: 36, height: 44)
+                #endif
                 if writingInProgress {
                     // §3i 阶段一: 写入进行中时, 发送按钮让位给一句说明。告诉用户
                     // 为什么按不下去, 而不是让他对着一个看似可点却不响应的按钮。
@@ -1352,7 +2354,7 @@ struct ChatView: View {
                     .disabled(
                         model.busy
                             || model.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-                                .isEmpty
+                                .isEmpty && model.preparedPhoto == nil
                     )
                 }
             }
@@ -1361,6 +2363,25 @@ struct ChatView: View {
                     .font(.caption)
                     .foregroundStyle(.pending)
             }
+            #if !ADK_ACCEPTANCE
+            if voiceInput.isRecording {
+                Text("正在本机转写；松开后可编辑再发送。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if voiceInput.isFinalizing {
+                Text("正在完成转写，请稍候…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if voiceInput.isPreparing {
+                Text("正在准备本机语音识别；松开可取消。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let message = voiceInput.errorMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.pending)
+            }
+            #endif
         }
         .padding(.horizontal)
         .padding(.vertical, 8)

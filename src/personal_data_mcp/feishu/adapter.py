@@ -24,6 +24,7 @@ test Base is the G2 step and needs the confirmed external inputs, not new code.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from typing import Any, Final
 
@@ -37,6 +38,7 @@ from personal_data_mcp.feishu.endpoints import (
     GET_RECORD,
     LIST_FIELDS,
     TENANT_TOKEN,
+    UPDATE_RECORD,
     Endpoint,
     EndpointNotAllowed,
     OperationClass,
@@ -45,6 +47,9 @@ from personal_data_mcp.feishu.endpoints import (
 from personal_data_mcp.feishu.rate_limit import TokenBucket
 from personal_data_mcp.feishu.redaction import redact_for_log
 from personal_data_mcp.feishu.token_cache import TenantTokenCache
+
+
+logger = logging.getLogger(__name__)
 
 
 #: Per-operation timeouts, seconds (design 6.3).
@@ -218,6 +223,44 @@ class FeishuAdapter:
         )
         return self._record_of(data, "create_record")
 
+    async def update_record(
+        self,
+        app_token: str,
+        table_id: str,
+        record_id: str,
+        *,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Change the named fields of one existing record.
+
+        Bitable's update is partial: fields absent from the body are untouched.
+        The caller therefore sends exactly the one field it means to change, and
+        every other value in the row -- 名称, 金额, 日期, 是否家庭支出 -- is not
+        merely preserved but *unaddressable* by the request. That is the point:
+        a correction to 分类 must not be able to rewrite the amount even if a
+        caller is wrong about what the row currently holds.
+
+        There is deliberately no `client_token`. Bitable offers idempotency for
+        creates, not updates, so a lost response cannot be resolved by replaying
+        this call and hoping. The update path handles that the only way that is
+        actually sound: it re-reads the record and compares. Sending a token
+        here would look like protection and provide none.
+
+        Like `create_record`, this never retries. A lost response is an unknown
+        outcome, and only the execution state machine may decide what an unknown
+        outcome means.
+        """
+        data = await self.request(
+            UPDATE_RECORD,
+            params={
+                "app_token": app_token,
+                "table_id": table_id,
+                "record_id": record_id,
+            },
+            json={"fields": fields},
+        )
+        return self._record_of(data, "update_record")
+
     async def get_record(
         self, app_token: str, table_id: str, record_id: str
     ) -> dict[str, Any]:
@@ -324,10 +367,21 @@ class FeishuAdapter:
         read paths are exercised (DEV-018+). Here every non-zero code is a
         conservative `SOURCE_UNAVAILABLE`, and no provider message text is ever
         carried outward.
+
+        The refusing code is also **logged**, which it was not before. Collapsing
+        every provider failure into one stable code is right for the caller and
+        for the model, but it left the one number that explains the failure
+        reachable from nowhere: `internal_detail` travels on the exception and
+        never reaches the journal. The 2026-08-16 acceptance run spent a whole
+        round on a rejected `update_record` whose code existed in this exact
+        string and could not be read. The endpoint name and the numeric code are
+        logged; provider message text still is not, so the outward contract is
+        unchanged and only the operator's view improves.
         """
         try:
             body = response.json()
         except ValueError as exc:
+            logger.warning("feishu %s returned non-JSON", endpoint.name)
             raise AppError(
                 ErrorCode.SOURCE_UNAVAILABLE,
                 internal_detail=f"{endpoint.name} returned non-JSON",
@@ -335,6 +389,9 @@ class FeishuAdapter:
 
         code = body.get("code")
         if code != 0:
+            logger.warning(
+                "feishu %s refused with code %s", endpoint.name, code
+            )
             raise AppError(
                 ErrorCode.SOURCE_UNAVAILABLE,
                 internal_detail=redact_for_log(

@@ -46,6 +46,9 @@ from personal_agent.api.composition import (
     recover_at_startup,
 )
 from personal_agent.api.control_client import ControlPlaneError
+from personal_agent.diagnostics.transcript import (
+    DIRECTORY_ENV as TRANSCRIPT_DIRECTORY_ENV,
+)
 from personal_agent.api.intent import WriteIntent
 from personal_agent.api.orchestrator import CommitFailedSafe, ResolveFailedSafe
 from personal_agent.api.operation_store import open_operation, transition_operation
@@ -180,7 +183,7 @@ def keys(tmp_path: Path, monkeypatch) -> AgentKeyFiles:
     # network call, so the production path is exercised with a placeholder
     # credential and every test that needs a proposal injects its own gateway.
     monkeypatch.setenv("ZAI_API_KEY", "placeholder-not-a-real-key")
-    monkeypatch.delenv("GLM_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("MODEL_API_BASE", raising=False)
     return written
 
 
@@ -422,7 +425,7 @@ def test_a_tampered_model_endpoint_fails_composition(
     keys, agent_db, finance, monkeypatch
 ) -> None:
     """A credential may only travel to the pinned provider endpoint."""
-    monkeypatch.setenv("GLM_OPENAI_BASE_URL", "https://open.bigmodel.cn.evil.test/api/paas/v4/")
+    monkeypatch.setenv("MODEL_API_BASE", "https://open.bigmodel.cn.evil.test/api/paas/v4/")
 
     async def scenario():
         async with agent_service(config_for(agent_db, finance), write_switch=shared_enabled_write_switch()):
@@ -524,6 +527,85 @@ def test_a_read_tool_call_runs_through_the_real_governed_path(
     assert gateway.calls[0]["envelope"].tool_aliases == ("meta.capabilities",)
 
 
+def test_a_configured_transcript_captures_the_whole_turn(
+    keys, agent_db, finance, tmp_path, monkeypatch
+) -> None:
+    """The transcript is composed for real, not wired only in its own tests.
+
+    A seam that exists only where a unit test constructs it is not wiring
+    (AGENTS.md §7). This runs the production composition root with the switch
+    set, and asserts that one message leaves a reassemblable turn on disk: the
+    input the device sent, the tool call as dispatched, its outcome before any
+    projection, the orchestrator's result, and the body the device got back.
+    """
+    directory = tmp_path / "transcripts"
+    monkeypatch.setenv(TRANSCRIPT_DIRECTORY_ENV, str(directory))
+    gateway = FakeGateway(ProposedToolCall(tool="meta.capabilities", arguments={}))
+
+    async def scenario():
+        async with agent_service(
+            config_for(agent_db, finance), build_gateway=lambda: gateway,
+            write_switch=shared_enabled_write_switch(),
+        ) as composed:
+            async with http_for(composed.deps) as client:
+                return await client.post(
+                    "/v1/chat/messages",
+                    json={"conversation_id": "c1", "text": "我有哪些能力？"},
+                    headers=chat_headers(),
+                )
+
+    response = asyncio.run(scenario())
+    assert response.status_code == 200, response.text
+
+    records = [
+        json.loads(line)
+        for path in sorted(directory.glob("*.jsonl"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    by_kind = {record["kind"]: record for record in records}
+    assert set(by_kind) == {
+        "user_message",
+        "tool_call",
+        "tool_result",
+        "turn_result",
+        "api_response",
+    }
+    assert by_kind["user_message"]["payload"]["text"] == "我有哪些能力？"
+    assert by_kind["tool_call"]["payload"]["tool"] == "meta.capabilities"
+    assert by_kind["turn_result"]["payload"]["state"] == "succeeded"
+    assert by_kind["api_response"]["payload"]["status_code"] == 200
+    assert by_kind["api_response"]["payload"]["body"]["state"] == "succeeded"
+    # One operation id joins every line of the turn. Without it the file is a
+    # pile of fragments rather than a transcript.
+    operation_ids = {record["turn"]["operation_id"] for record in records}
+    assert len(operation_ids) == 1
+    assert operation_ids != {None}
+
+
+def test_no_transcript_directory_writes_nothing(
+    keys, agent_db, finance, tmp_path, monkeypatch
+) -> None:
+    """The default deployment records nothing at all."""
+    monkeypatch.delenv(TRANSCRIPT_DIRECTORY_ENV, raising=False)
+    directory = tmp_path / "transcripts"
+
+    async def scenario():
+        async with agent_service(
+            config_for(agent_db, finance),
+            build_gateway=lambda: FakeGateway(ProposedAnswer(text="你好")),
+            write_switch=shared_enabled_write_switch(),
+        ) as composed:
+            async with http_for(composed.deps) as client:
+                return await client.post(
+                    "/v1/chat/messages",
+                    json={"conversation_id": "c1", "text": "在吗"},
+                    headers=chat_headers(),
+                )
+
+    assert asyncio.run(scenario()).json()["state"] == "succeeded"
+    assert not directory.exists()
+
+
 def test_a_second_message_reaches_the_model_with_the_first_turn_in_context(
     keys, agent_db, finance
 ) -> None:
@@ -586,8 +668,8 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
     The composed service is given a small soft limit and a structured client
     that returns valid checkpoints. Both the synchronous 200 path and a detached
     202 path must answer before their Compactor runs. The second turn also proves
-    the classifier runs without holding SQLite and that idempotent replay spends
-    no second classifier call.
+    the classifier runs after the terminal operation without holding SQLite and
+    that idempotent replay spends no second classifier call.
     """
     block_gateway = threading.Event()
     gateway_started = threading.Event()
@@ -683,11 +765,14 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
             )
 
         return StructuredModelClient(
-            model="openai/glm-5.2",
+            model="openai/glm-5.3-flash",
             api_key="k",
             api_base="https://open.bigmodel.cn/api/paas/v4/",
             generate=generate,
             input_budget_tokens=input_budget_tokens,
+            timeout=overrides.get("timeout", 20.0),
+            recorder=overrides.get("recorder"),
+            purpose=overrides.get("purpose", "structured"),
         )
 
     async def scenario():
@@ -728,11 +813,11 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
                     headers=second_headers,
                 )
                 assert gateway_started.is_set()
-                assert classifier_committed.is_set()
                 assert detached.status_code == 202, detached.text
                 assert not compaction_started.is_set()
                 release_gateway.set()
                 assert await asyncio.to_thread(compaction_started.wait, 5)
+                assert classifier_committed.is_set()
                 release_compaction.set()
                 await app.state.drain_background_tasks()
                 replayed = await client.post(
@@ -758,13 +843,15 @@ def test_crossing_the_soft_limit_compacts_after_the_turn_not_before(
     finally:
         engine.dispose()
 
-    # Each semantically distinct Session has one Checkpoint; raw events remain.
+    # Each semantically distinct Session has one Checkpoint; the retrospective
+    # split reassigns existing events and deliberately does not append a divider
+    # after an already-completed response.
     assert [row.status for row in checkpoints] == ["active", "active"]
     assert len(sessions) == 2
     assert {row.session_id for row in checkpoints} == {
         row.session_id for row in sessions
     }
-    assert events == 5
+    assert events == 4
 
 
 def test_a_turn_that_cannot_be_assembled_fails_safe_without_calling_the_model(
@@ -923,6 +1010,116 @@ def test_an_expense_write_crosses_both_composition_roots_offline(
             for event in session.query(AuditEvent).all()
         }
         assert audit_traces == {trace_id}
+    finance_engine.dispose()
+
+
+def test_category_picker_is_governed_but_not_model_visible_and_replays_in_timeline(
+    keys, agent_db, tmp_path: Path
+) -> None:
+    """The production composition keeps execution and model visibility separate.
+
+    This is the seam fake API authorizers cannot prove: the direct picker must
+    cross both real policy/transport roots, while the same tool stays absent
+    from model context and `/v1/capabilities`. Its verified row is then an
+    append-only Timeline marker a fresh app launch can replay.
+    """
+    finance_db = tmp_path / "finance-category.sqlite"
+    service = LoopbackFinanceService(
+        {
+            MCP_KID_ENV: "svc-test",
+            MCP_PEM_ENV: str(keys.service_public_pem),
+        },
+        database=finance_db,
+        write_fixture=True,
+    )
+    update_device(
+        agent_db,
+        scopes=json.dumps([CAPABILITY_SCOPE, EXPENSE_SCOPE]),
+    )
+    gateway = FakeGateway(
+        ProposedToolCall(
+            tool="finance.log_expense",
+            arguments={
+                "name": "午饭",
+                "input_amount": "20.00",
+                "input_currency": "CNY",
+                "occurred_on": "2026-07-25",
+                "is_family_expense": False,
+                "entry_kind": "expense",
+                "category": "餐饮",
+            },
+        )
+    )
+    create_key = str(uuid.uuid4())
+    correction_key = str(uuid.uuid4())
+    try:
+
+        async def scenario():
+            async with agent_service(
+                config_for(agent_db, service),
+                build_gateway=lambda: gateway,
+                write_switch=shared_enabled_write_switch(),
+            ) as composed:
+                async with http_for(composed.deps) as client:
+                    token = access_token(scopes=(CAPABILITY_SCOPE, EXPENSE_SCOPE))
+                    auth = {"Authorization": f"Bearer {token}"}
+                    created = await client.post(
+                        "/v1/chat/messages",
+                        json={
+                            "conversation_id": "c1",
+                            "text": "午饭 20，个人支出",
+                        },
+                        headers={
+                            **auth,
+                            "Idempotency-Key": create_key,
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    corrected = await client.post(
+                        "/v1/expense-records/rec000001/category",
+                        json={
+                            "category": "购物",
+                            "expected_current_category": "餐饮",
+                        },
+                        headers={
+                            **auth,
+                            "Idempotency-Key": correction_key,
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    timeline = await client.get(
+                        "/v1/conversations/c1/events", headers=auth
+                    )
+                    capabilities = await client.get("/v1/capabilities", headers=auth)
+                    return created, corrected, timeline, capabilities
+
+        created, corrected, timeline, capabilities = asyncio.run(scenario())
+    finally:
+        service.stop()
+
+    assert created.status_code == 200, created.text
+    assert corrected.status_code == 200, corrected.text
+    assert corrected.json()["record"]["category"] == "购物"
+    markers = [
+        event
+        for event in timeline.json()["events"]
+        if event["event_type"] == "expense_category_corrected"
+    ]
+    assert len(markers) == 1
+    assert markers[0]["content"]["record_id"] == "rec000001"
+    assert markers[0]["content"]["record"]["category"] == "购物"
+    assert gateway.calls[0]["envelope"].tool_aliases
+    assert "finance.update_expense_category" not in (
+        gateway.calls[0]["envelope"].tool_aliases
+    )
+    assert "finance.update_expense_category" not in {
+        tool["alias"] for tool in capabilities.json()["tools"]
+    }
+
+    finance_engine = create_finance_engine(finance_db)
+    with finance_session_factory(finance_engine)() as session:
+        assert session.get(ToolExecution, create_key).state == "succeeded"
+        assert session.get(ToolExecution, correction_key).state == "succeeded"
     finance_engine.dispose()
 
 
@@ -1113,6 +1310,8 @@ def test_an_unknown_device_dispatches_nothing(keys, agent_db) -> None:
     The bridge and control plane are `None` on purpose -- touching either would
     raise rather than quietly fail safe, so this proves nothing is attempted.
     """
+    from personal_agent_core.tool_ir import DEFAULT_CLIENT_WIRE_VERSION
+
     dispatcher = DeviceBoundDispatcher(
         device_id="dev-does-not-exist",
         sessions=session_factory(create_database_engine(agent_db)),
@@ -1124,6 +1323,7 @@ def test_an_unknown_device_dispatches_nothing(keys, agent_db) -> None:
         trace_id="00-trace-span-01",
         enabled_tools=frozenset({"meta.capabilities"}),
         manifest_version=MANIFEST_VERSION,
+        client_wire_version=DEFAULT_CLIENT_WIRE_VERSION,
     )
 
     resolved = dispatcher.resolve(tool="meta.capabilities", model_args={})
@@ -1507,6 +1707,42 @@ def test_periodic_recovery_never_adopts_an_operation_a_worker_still_owns(
     assert operation.failure_reason is None
 
 
+def _seed_calendar_directory(database: Path, rows: list[dict]) -> None:
+    """Write the phone's reported calendars, as a sync batch would have.
+
+    The device is `DEVICE_ID`, the same identity the composition authenticates
+    as, because the directory is per-device by construction: a row under any
+    other device would make the lookup answer `directory_empty` and the test
+    would be exercising a different failure than the one it names.
+    """
+    from personal_data_mcp.storage.engine import (
+        create_all as finance_create_all,
+        create_database_engine as finance_engine,
+        session_factory as finance_sessions,
+    )
+    from personal_data_mcp.storage.models import CalendarDirectory
+
+    engine = finance_engine(database)
+    finance_create_all(engine)
+    with finance_sessions(engine)() as session:
+        for row in rows:
+            session.add(
+                CalendarDirectory(
+                    device_id=DEVICE_ID,
+                    calendar_identifier=row["calendar_identifier"],
+                    title=row["title"],
+                    source_title=row.get("source_title", "iCloud"),
+                    allows_content_modifications=row.get(
+                        "allows_content_modifications", True
+                    ),
+                    is_subscribed=row.get("is_subscribed", False),
+                    updated_at=utc_now(),
+                )
+            )
+        session.commit()
+    engine.dispose()
+
+
 def _seed_finance_success(database: Path, key: str) -> None:
     from personal_data_mcp.storage.engine import (
         create_all as finance_create_all,
@@ -1684,3 +1920,407 @@ def test_the_review_list_is_served_by_the_composed_app(
     assert [r["review_id"] for r in listed.json()["reviews"]] == [review_id]
     assert listed.json()["reviews"][0]["item_count"] == 2
     assert acked.json()["status"] == "reviewed"
+
+
+def test_calendar_sync_crosses_both_composition_roots_offline(
+    keys, agent_db, tmp_path: Path
+) -> None:
+    """The device-side data channel is composed, not just seam-tested.
+
+    The sync route must execute `calendar.ingest_events` through the real
+    governed bridge against a real MCP process over a loopback socket, under a
+    Host Context naming the authenticated caller. The mirror row is then
+    stamped with that signed device identity and the text is sealed with the
+    server's keyring -- the assertions read the Finance database through a
+    raw connection exactly as an operator would.
+    """
+    from personal_agent_core.tool_ir import SCOPE_CALENDAR_READ
+    from personal_data_mcp.storage.engine import (
+        create_database_engine as finance_engine,
+        session_factory as finance_sessions,
+    )
+    from personal_data_mcp.storage.models import CalendarEvent
+
+    finance_db = tmp_path / "finance-calendar.sqlite"
+    service = LoopbackFinanceService(
+        {
+            MCP_KID_ENV: "svc-test",
+            MCP_PEM_ENV: str(keys.service_public_pem),
+        },
+        database=finance_db,
+        calendar=True,
+    )
+    update_device(
+        agent_db,
+        scopes=json.dumps([CAPABILITY_SCOPE, SCOPE_CALENDAR_READ]),
+    )
+    body = {
+        "window_start": "2026-09-07T00:00:00+08:00",
+        "window_end": "2026-09-08T00:00:00+08:00",
+        "events": [
+            {
+                "event_identifier": "ek-loopback-1",
+                "calendar_identifier": "cal-1",
+                "title": "网球",
+                "start": "2026-09-07T15:00:00+08:00",
+                "end": "2026-09-07T16:30:00+08:00",
+                "all_day": False,
+                "location": None,
+                "notes": None,
+                "last_modified": "2026-09-06T20:00:00+08:00",
+            }
+        ],
+        "window_complete": True,
+        "snapshot_as_of": "2026-09-07T07:30:00+00:00",
+    }
+    try:
+
+        async def scenario():
+            async with agent_service(
+                config_for(agent_db, service),
+                build_gateway=lambda: FakeGateway(ProposedAnswer(text="hi")),
+                write_switch=shared_enabled_write_switch(),
+            ) as composed:
+                # The production composition must actually wire the route, or
+                # the endpoint below would answer INTERNAL_ERROR, not succeed.
+                assert composed.deps.sync_ingest is not None
+                async with http_for(composed.deps) as client:
+                    token = access_token(
+                        scopes=(CAPABILITY_SCOPE, SCOPE_CALENDAR_READ)
+                    )
+                    return await client.post(
+                        "/v1/calendar/sync",
+                        json=body,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+
+        response = asyncio.run(scenario())
+    finally:
+        service.stop()
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "status": "ok",
+        "upserted": 1,
+        "skipped": 0,
+        "marked_deleted": 0,
+        "sync_epoch": 1,
+    }
+
+    engine = finance_engine(finance_db)
+    with finance_sessions(engine)() as session:
+        row = session.query(CalendarEvent).one()
+        assert row.event_identifier == "ek-loopback-1"
+        # The device identity is the signed Host Context claim -- the caller's
+        # device id -- never a composition constant and never a payload field.
+        assert row.device_id == DEVICE_ID
+        assert row.is_deleted is False
+    engine.dispose()
+
+
+def test_calendar_sync_refuses_a_device_without_the_current_manifest(
+    keys, agent_db, tmp_path: Path
+) -> None:
+    """The stale-manifest gate lives in the bridge's `execute`, and the sync
+    route passes through it: a device enrolled against an old version is
+    refused by the real policy root even though its token is valid and its
+    scope present."""
+    from personal_agent_core.tool_ir import SCOPE_CALENDAR_READ
+
+    finance_db = tmp_path / "finance-calendar-stale.sqlite"
+    service = LoopbackFinanceService(
+        {
+            MCP_KID_ENV: "svc-test",
+            MCP_PEM_ENV: str(keys.service_public_pem),
+        },
+        database=finance_db,
+        calendar=True,
+    )
+    update_device(
+        agent_db,
+        scopes=json.dumps([CAPABILITY_SCOPE, SCOPE_CALENDAR_READ]),
+        allowed_tools_version="0.0.1-stale",
+    )
+    body = {
+        "window_start": "2026-09-07T00:00:00+08:00",
+        "window_end": "2026-09-08T00:00:00+08:00",
+        "events": [],
+        "window_complete": True,
+        "snapshot_as_of": "2026-09-07T07:30:00+00:00",
+    }
+    try:
+
+        async def scenario():
+            async with agent_service(
+                config_for(agent_db, service),
+                build_gateway=lambda: FakeGateway(ProposedAnswer(text="hi")),
+                write_switch=shared_enabled_write_switch(),
+            ) as composed:
+                async with http_for(composed.deps) as client:
+                    token = access_token(
+                        scopes=(CAPABILITY_SCOPE, SCOPE_CALENDAR_READ),
+                        version="0.0.1-stale",
+                    )
+                    return await client.post(
+                        "/v1/calendar/sync",
+                        json=body,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+
+        response = asyncio.run(scenario())
+    finally:
+        service.stop()
+
+    assert response.status_code == 403, response.text
+    # One opaque code for "not an effective tool" (not allowlisted, not
+    # discovered, drifted, or granted) by design: distinguishing them would map
+    # out the tool surface. The version gate denies through the same door.
+    assert response.json()["error"]["code"] == "TOOL_NOT_ALLOWLISTED"
+def test_a_device_action_survives_a_202_timeout_and_the_poll_delivers_it(
+    keys, agent_db, tmp_path: Path
+) -> None:
+    """Review R6, reproduced end to end: the chat response used to be the
+    device action's only delivery channel, so a request that timed out at 202
+    handed the client an operation id and an action nobody would ever deliver
+    — the operation sat parked at `source_in_progress` until the sweep, with
+    the authorised write lost.
+
+    The production wiring runs here (real bridge, real dispatcher fork, real
+    seal), the model proposes `calendar.create_event`, and
+    `sync_wait_seconds=0.05` guarantees the 202. The client then polls the
+    operation by id — the exact thing the iOS client's `resume()` does — and
+    the projection must hand over the same authorised action the response
+    would have carried.
+    """
+    from personal_agent_core.tool_ir import (
+        CLIENT_WIRE_VERSION_HEADER,
+        SCOPE_CALENDAR_WRITE,
+    )
+
+    finance_db = tmp_path / "finance-device-action.sqlite"
+    # The phone's calendar directory, as a previous sync would have left it:
+    # the dispatcher resolves the model's calendar *name* against it before it
+    # may issue anything, and the model is never allowed to name an identifier.
+    _seed_calendar_directory(
+        finance_db,
+        [
+            {
+                "calendar_identifier": "uuid-ri-chang",
+                "title": "日常安排",
+            }
+        ],
+    )
+    # Calendar mode, and the device fork stops before any MCP *tool* call: the
+    # only thing it asks the Finance service is the directory read above.
+    service = LoopbackFinanceService(
+        {
+            MCP_KID_ENV: "svc-test",
+            MCP_PEM_ENV: str(keys.service_public_pem),
+        },
+        database=finance_db,
+        calendar=True,
+    )
+    update_device(
+        agent_db,
+        scopes=json.dumps([CAPABILITY_SCOPE, SCOPE_CALENDAR_WRITE]),
+    )
+    key = str(uuid.uuid4())
+    try:
+
+        async def scenario():
+            async with agent_service(
+                config_for(agent_db, service),
+                build_gateway=lambda: FakeGateway(
+                    ProposedToolCall(
+                        tool="calendar.create_event",
+                        arguments={
+                            "title": "网球",
+                            "start": "2026-09-12T15:00:00+08:00",
+                            "end": "2026-09-12T16:30:00+08:00",
+                            "all_day": False,
+                            "calendar": "日常安排",
+                            # The event's own timezone (Q11) is business data
+                            # and must reach the phone; the smuggled host field
+                            # next to it must not.
+                            "timezone": "Asia/Tokyo",
+                            "device_id": "someone-elses-device",
+                        },
+                    )
+                ),
+                write_switch=shared_enabled_write_switch(),
+            ) as composed:
+                # The composition under test must wire the action seal, or the
+                # device fork below would raise instead of parking.
+                assert composed.deps.action_keyring is not None
+                composed.deps.sync_wait_seconds = 0.05
+                app = build_app(composed.deps)
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://agent.local",
+                ) as client:
+                    token = access_token(
+                        scopes=(CAPABILITY_SCOPE, SCOPE_CALENDAR_WRITE)
+                    )
+                    headers = {
+                        "Authorization": f"Bearer {token}",
+                        "Idempotency-Key": key,
+                        "Content-Type": "application/json",
+                        # The capability the client claims, on every request
+                        # (design 2.5.1). Without it the issuance gate refuses
+                        # this write outright rather than letting a client that
+                        # cannot read `calendar_identifier` fall back to its
+                        # default calendar.
+                        CLIENT_WIRE_VERSION_HEADER: "2",
+                    }
+                    detached = await client.post(
+                        "/v1/chat/messages",
+                        json={"conversation_id": "c1", "text": "周六下午三点网球"},
+                        headers=headers,
+                    )
+                    # The fake model is fast, so either detached shape is
+                    # legitimate: the worker finished within the 50 ms wait and
+                    # the projection answered (202, parked), or the synthetic
+                    # timeout body answered first. Both carry the operation id;
+                    # the delivery door being fixed to the projection is
+                    # exactly why either shape converges on the same action.
+                    assert detached.status_code == 202, detached.text
+                    operation_id = detached.json()["operation_id"]
+                    # The worker finished its turn by the time the drain
+                    # returns; the poll then reads the parked operation.
+                    await app.state.drain_background_tasks()
+                    # Polled twice, by the same device, on the same parked
+                    # operation -- once as a client that cannot read the action
+                    # and once as one that can. This is the delivery gate over
+                    # real HTTP: the version is read from each request, so a
+                    # phone downgraded between issuing and delivering is
+                    # refused the action, while the operation stays parked for
+                    # the timeout sweep to settle honestly (design 2.5.3).
+                    downgraded = await client.get(
+                        f"/v1/operations/{operation_id}",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    polled = await client.get(
+                        f"/v1/operations/{operation_id}",
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            CLIENT_WIRE_VERSION_HEADER: "2",
+                        },
+                    )
+                    return detached, downgraded, polled
+
+        detached, downgraded, polled = asyncio.run(scenario())
+    finally:
+        service.stop()
+
+    # The v1 caller gets the parked state and nothing to execute -- the field
+    # is absent, not empty.
+    assert downgraded.status_code == 202, downgraded.text
+    assert downgraded.json()["state"] == "source_in_progress"
+    assert "device_actions" not in downgraded.json()
+
+    body = polled.json()
+    # Parked is still 202: the client settles by reaching a terminal state on
+    # a later poll (or the report endpoint's answer), and every one of those
+    # polls carried the action while the operation stayed parked.
+    assert polled.status_code == 202, polled.text
+    # The parked operation hands the action over — the attested arguments the
+    # bridge authorised, nothing re-derived and nothing the model invented.
+    assert body["state"] == "source_in_progress"
+    # A list, always — one action here, and the same field name would carry N
+    # of them. The client that received this request claimed version 2, so the
+    # delivery gate let it through.
+    assert body["device_actions"] == [
+        {
+            "action_id": key,
+            "tool": "calendar.create_event",
+            "wire_version": 2,
+            "event": {
+                "title": "网球",
+                "start": "2026-09-12T15:00:00+08:00",
+                "end": "2026-09-12T16:30:00+08:00",
+                "all_day": False,
+                "calendar": "日常安排",
+                "timezone": "Asia/Tokyo",
+                # The routing the server did, not anything the model said: the
+                # identifier comes from the directory and the title is the name
+                # the directory matched on. A client that picks its own calendar
+                # is the failure this field exists to prevent.
+                "calendar_identifier": "uuid-ri-chang",
+                "calendar_title": "日常安排",
+                "start_date": None,
+                "end_date": None,
+            },
+        }
+    ]
+
+    # The seal is on the row, in the database, sealed with the composition's
+    # keyring — not a test-side reconstruction.
+    engine = create_database_engine(agent_db)
+    with session_factory(engine)() as session:
+        operation = session.query(Operation).filter_by(idempotency_key=key).one()
+        assert operation.state == "source_in_progress"
+        assert operation.encrypted_device_action is not None
+    engine.dispose()
+
+
+@pytest.mark.parametrize("read_first", [False, True])
+@pytest.mark.parametrize("expanded", [False, True])
+def test_v2_uses_production_context_and_real_sdk(keys,agent_db,finance,read_first,expanded,monkeypatch):
+    if expanded:
+        import os
+        tokenizer=os.environ.get('ADK_TEST_TOKENIZER_PATH')
+        if not tokenizer:pytest.skip('official tokenizer required')
+        for key,value in {'ADK_INPUT_TOKEN_LIMIT':'200000','ADK_TOKENIZER_PATH':tokenizer,
+                          'MODEL_PROVIDER':'deepseek','MODEL_ID':'deepseek-flash',
+                          'MODEL_CONTEXT_TOKENS':'1000000','DEEPSEEK_API_KEY':'synthetic'}.items():
+            monkeypatch.setenv(key,value)
+    from dataclasses import replace
+    from personal_agent.runtime.witnessed_model import WitnessedLiteLlm
+    from test_witnessed_model import wire
+    from test_adk_runtime import fc
+    calls=[]
+    def model(prepared):
+        async def transport(request):
+            body=json.loads(request.content);calls.append(body)
+            context=json.loads(next(m['content'] for m in body['messages'] if m['role']=='user').split('\n',1)[1])['task_context']
+            metadata={'goal':'合成普通交流','source_refs':[context['current_user_source_ref']],'constraints':[]}
+            if read_first and len(calls)==1:return httpx.Response(200,json=wire(calls=[fc('meta_capabilities','read',arguments={},task=metadata)]))
+            if read_first:assert context['completed_results']
+            return httpx.Response(200,json=wire(calls=[fc('agent_finish','done',task=metadata,answer={'kind':'conversation','text':'你好','coverage':'complete','evidence_refs':[]})]))
+        return WitnessedLiteLlm(model='openai/synthetic',provider_name='zhipu',api_key='synthetic',binding=prepared.binding,transport=httpx.MockTransport(transport))
+    async def scenario():
+        async with agent_service(replace(config_for(agent_db,finance),v2_device_ids=frozenset({DEVICE_ID})),build_gateway=lambda:FakeGateway(ProposedAnswer('legacy')),write_switch=shared_enabled_write_switch()) as service:
+            service.deps.v2_model_factory=model
+            async with http_for(service.deps) as client:
+                return await client.post('/v1/chat/messages',json={'conversation_id':'c1','text':'你好'},headers={**chat_headers(),'X-Client-Wire-Version':'4'})
+    response=asyncio.run(scenario())
+    assert response.status_code==200,response.text
+    assert response.json()['result_envelope']['text']=='你好'
+    assert len(calls)==(2 if read_first else 1)
+
+
+@pytest.mark.parametrize('mode', ['allowed', 'disabled', 'extract_disabled', 'legacy_client', 'unselected', 'stopped', 'stale_manifest', 'revoked', 'missing_scope', 'allowlist'])
+def test_search_capabilities_and_execution_use_the_same_policy(keys, agent_db, finance, mode):
+    from personal_agent.search.adapter import SearchConfig
+    from personal_agent.api.app import AuthContext
+    update_device(agent_db, scopes=json.dumps(['public_web.read']),
+        status='revoked' if mode == 'revoked' else 'active',
+        revoked_at=utc_now() if mode == 'revoked' else None,
+        allowed_tools_version='stale' if mode == 'stale_manifest' else MANIFEST_VERSION)
+    if mode == 'missing_scope': update_device(agent_db, scopes='[]')
+    async def scenario():
+        async with agent_service(config_for(agent_db, finance,
+            v2_device_ids=frozenset() if mode == 'unselected' else frozenset({DEVICE_ID}),
+            v2_execution_enabled=mode != 'stopped',
+            allowed_tools=frozenset({'meta.capabilities'}) if mode == 'allowlist' else None,
+            search_config=SearchConfig(enabled=mode != 'disabled', extract_enabled=mode != 'extract_disabled', auth_mode='anonymous')),
+            build_gateway=lambda: FakeGateway(ProposedAnswer(text='hi')),
+            write_switch=shared_enabled_write_switch()) as composed:
+            auth = AuthContext(DEVICE_ID, ('public_web.read',), MANIFEST_VERSION, 3 if mode == 'legacy_client' else 4)
+            visible = {t['alias'] for t in composed.deps.capabilities(auth)}
+            for tool in ('search.web', 'search.read_page'):
+                expected = mode == 'allowed' or (mode == 'extract_disabled' and tool == 'search.web')
+                assert composed.deps.v2_search_allowed(auth, tool) == expected
+                assert (tool in visible) == expected
+            assert not composed.deps.v2_search_allowed(auth, 'finance.log_expense')
+    asyncio.run(scenario())

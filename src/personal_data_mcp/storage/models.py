@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Any, Final
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     ForeignKey,
     Index,
@@ -73,6 +74,16 @@ SCHEMA_SNAPSHOT_STATUSES: Final[tuple[str, ...]] = ("valid", "drifted")
 
 TABLE_KINDS: Final[tuple[str, ...]] = ("expense", "income", "family_fund")
 
+#: What a person reported finding in the ledger for an execution parked at
+#: `needs_manual_review`. The same vocabulary as the Agent side (DEV-040), so the
+#: two halves of one review never disagree about what a conclusion means. It is a
+#: report, never a state transition: `state` stays `needs_manual_review` forever,
+#: because a human observation must not overwrite what the system could prove.
+MANUAL_RESOLUTIONS: Final[tuple[str, ...]] = (
+    "confirmed_written",
+    "confirmed_not_written",
+)
+
 
 def _in_set(column: str, values: tuple[str, ...]) -> str:
     joined = ", ".join(f"'{value}'" for value in values)
@@ -123,6 +134,14 @@ class ToolExecution(Base):
     completed_at: Mapped[datetime | None] = mapped_column(
         UtcTimestamp, nullable=True
     )
+    #: A person's report about the ledger, for an execution that ended at
+    #: `needs_manual_review`. It is a flag beside the state, never instead of it:
+    #: `state` still means what the *system* proved, and this records only what a
+    #: human saw. It is what lets the observe alert stop once someone has looked.
+    manual_resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    manual_resolved_at: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
 
     __table_args__ = (
         CheckConstraint(_in_set("state", EXECUTION_STATES), name="state"),
@@ -137,6 +156,21 @@ class ToolExecution(Base):
             "state IN ('prepared', 'failed_safe', 'cancelled_pre_submit') "
             "OR submitted_at IS NOT NULL",
             name="post_submit_states_record_submission_time",
+        ),
+        CheckConstraint(
+            "manual_resolution IS NULL OR "
+            + _in_set("manual_resolution", MANUAL_RESOLUTIONS),
+            name="manual_resolution",
+        ),
+        # A conclusion and its timestamp are one fact; neither half may exist
+        # alone, and only a review-parked execution may carry one.
+        CheckConstraint(
+            "(manual_resolution IS NULL) = (manual_resolved_at IS NULL)",
+            name="manual_resolution_pairs_with_its_time",
+        ),
+        CheckConstraint(
+            "manual_resolution IS NULL OR state = 'needs_manual_review'",
+            name="manual_resolution_only_for_review",
         ),
         Index("ix_tool_executions_state", "state"),
     )
@@ -325,4 +359,284 @@ class AuditChainAnchor(Base):
     __table_args__ = (
         CheckConstraint("anchor_id = 1", name="singleton"),
         CheckConstraint("event_count >= 1", name="event_count_positive"),
+    )
+
+
+class CalendarEvent(Base):
+    """One event of the Apple-calendar mirror, per the calendar domain PRD.
+
+    The iPhone owns the calendar; this row is what the phone last reported, so
+    the table is named after that relationship: a mirror, not a second fact
+    source. `(calendar_identifier, event_identifier, start_ts)` is the
+    identity: EventKit scopes `eventIdentifier` per calendar store source, and
+    it expands each occurrence of a recurring event into its own `EKEvent` --
+    same identifier, different `startDate`. Two columns therefore cannot name
+    one occurrence, and the triple is what an upsert arbitrates on.
+
+    Sensitivity split: timestamps and identifiers are plaintext because the
+    window filter needs a real index over them; title/notes/location are
+    personal text and travel through restic backups, so they are sealed
+    envelopes like every other business content in this database.
+
+    Dates versus instants (design 5.2): `all_day_start_date`/`all_day_end_date`
+    are the authority for what an all-day event *says* -- a day, not an
+    instant -- and the epoch columns stay the implementation detail the window
+    filter and the sweep are built on. Rendering an all-day event by converting
+    its epoch to a local date is how a Tokyo all-day event turns into the
+    previous day in Shanghai, so the query never does it.
+    `date_anchor_unknown` is the honesty flag for rows whose local-date
+    attribution the device could not confirm (external all-day events, and
+    every row inherited from the v1 upload shape).
+    """
+
+    __tablename__ = "calendar_events"
+
+    #: The AAD row identity for the three sealed columns. The composite
+    #: business key is fine for lookups but three columns cannot name one AAD
+    #: string, so the row carries a surrogate for sealing.
+    row_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    calendar_identifier: Mapped[str] = mapped_column(Text, primary_key=True)
+    event_identifier: Mapped[str] = mapped_column(Text, primary_key=True)
+    #: Epoch seconds, UTC. Plaintext and indexed: the window filter and the
+    #: sort order are the query's whole shape. Part of the primary key because
+    #: one recurring series is many occurrences.
+    start_ts: Mapped[int] = mapped_column(Integer, primary_key=True)
+    end_ts: Mapped[int] = mapped_column(Integer, nullable=False)
+    all_day: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    #: The event's own IANA zone, for timed events only. All-day rows are
+    #: always null: an all-day event has a date, not an instant, so it has no
+    #: anchor zone to record (Henson 2026-09-10). Null on a *timed* row means
+    #: the upload predates the v2 shape, which renders as Asia/Shanghai --
+    #: byte-identical to the v1 behaviour.
+    timezone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: `YYYY-MM-DD`. Non-null exactly when `all_day`, and the authority for
+    #: the rendered date. `all_day_end_date` is exclusive (the day after the
+    #: last day), matching EventKit and the create contract.
+    all_day_start_date: Mapped[str | None] = mapped_column(Text, nullable=True)
+    all_day_end_date: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: True when the stored dates are a faithful projection of the device's
+    #: calendar but *not* evidence of the event's own local date: the device
+    #: could not confirm the anchor (an external app's all-day event, or a row
+    #: derived from the v1 shape). Rendered as 「日期归属未确认」 rather than
+    #: hidden or silently trusted.
+    date_anchor_unknown: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    title: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
+    notes: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
+    location: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedEnvelope, nullable=True
+    )
+    #: Over-limit flags (design 6). EventKit lets any other app put a whole
+    #: document in a note; the mirror is not a document store, so the device
+    #: uploads the field as null and raises the flag. Without the flag a
+    #: dropped note would be indistinguishable from an event that has none,
+    #: and the summary would report "no notes" about an event that has them.
+    title_over_limit: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    location_over_limit: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    notes_over_limit: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    #: Tombstone. The row is kept so a late stale chunk cannot be mistaken for
+    #: a new event, and queries exclude it by default.
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    #: The device's own per-event `last_modified` (EventKit-free approximation
+    #: the device may still send). Arbitrates field merges *between* snapshots;
+    #: never the sweep.
+    last_modified_ts: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: The snapshot instant of the upload that last wrote this row. This is
+    #: the sweep's arbiter: a row is "part of" snapshot N when this equals
+    #: N's instant, and a tombstone's version is the deleting snapshot's
+    #: instant, so only a newer snapshot's assertion clears it.
+    snapshot_ts: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: When this row last heard from the device. `data_as_of` is the max of it.
+    synced_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    created_by_agent: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    #: Which enrolled device last uploaded this row.
+    device_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("start_ts <= end_ts", name="start_before_or_equal_end"),
+        # An all-day row without dates could not be rendered at all (5.2:
+        # dates are the authority), and an all-day row carrying a zone would
+        # claim an anchor the probe proved does not exist. Both are states the
+        # ingest refuses; the constraints keep them out of the table even if a
+        # future writer forgets.
+        CheckConstraint(
+            "all_day = 0 OR (all_day_start_date IS NOT NULL "
+            "AND all_day_end_date IS NOT NULL AND timezone IS NULL)",
+            name="all_day_rows_carry_dates_and_no_zone",
+        ),
+        Index("ix_calendar_events_start_ts", "start_ts"),
+        Index("ix_calendar_events_end_ts", "end_ts"),
+    )
+
+
+class CalendarDirectory(Base):
+    """The device's own list of calendars, per design 2.1.
+
+    Routing a create to the right calendar happens on the server, so the
+    server needs the device's calendar names and identifiers. The device
+    uploads every regular event calendar in each sync batch (subscribed
+    calendars included -- the server has to be able to *refuse* one, which it
+    cannot do if it cannot see it); the events themselves never leave the
+    device for a subscribed calendar.
+
+    `title` is plaintext, unlike every other business string in this database,
+    and deliberately so: the routing rule is an exact-title lookup
+    (`WHERE title = ?`), which a sealed column cannot answer, and the value is
+    a calendar name the user chose -- not event content. The alternative
+    (sealing it and comparing in Python) would decrypt every calendar row on
+    every create to match one string.
+    """
+
+    __tablename__ = "calendar_directory"
+
+    device_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    calendar_identifier: Mapped[str] = mapped_column(Text, primary_key=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    #: The account/source the calendar belongs to, for the "same name across
+    #: accounts" case the routing rule has to disambiguate.
+    source_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: False for a read-only calendar (a subscribed one, or a birthday
+    #: container): a create must never be routed to one.
+    allows_content_modifications: Mapped[bool] = mapped_column(
+        Boolean, nullable=False
+    )
+    is_subscribed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    #: The snapshot instant of the batch that last asserted this row. The
+    #: phone uploads its *whole* directory every batch, so a statement that
+    #: does not name a calendar is a statement that the device does not have
+    #: it -- and ordering two such statements needs a version, exactly as
+    #: `calendar_events` does. Nullable because rows written before this column
+    #: existed carry no version testimony; null reads as *oldest*, so the first
+    #: statement after the upgrade may freely correct them.
+    snapshot_ts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: When a newer whole-directory statement stopped naming this calendar.
+    #: Retiring is not deleting: events already mirrored from this calendar
+    #: still point at its identifier and are still named by it, and the phone
+    #: re-adding the calendar clears this again. What it removes the row from
+    #: is *choice* -- `resolve_calendar_target` never routes to a calendar the
+    #: phone no longer lists.
+    retired_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
+
+
+class CalendarDeviceSync(Base):
+    """One device's calendar-sync watermark, per the snapshot-versioned mirror.
+
+    A row is written only when the device completes a whole window snapshot
+    (`window_complete=true` on a batch whose `snapshot_as_of` is newer than
+    the stored watermark). It answers three questions the event rows cannot:
+
+    - **Arbitration**: a snapshot older than the watermark is a late packet —
+      it may re-assert known rows but may not insert new ones, may not revive
+      a tombstone, and may never tombstone anything.
+    - **Freshness**: `data_as_of` / `mirror_stale` read this table, so a
+      partial upload (or a device that has never finished a snapshot) reads
+      as honestly stale instead of freshly wrong. An empty window still
+      completes, so an observed empty calendar is a real observation.
+    - **Coverage** (second review F7): the watermark records *which window*
+      it completed. A query window outside the covered range is honestly
+      stale even when the snapshot instant itself is recent — completing the
+      September window says nothing about January.
+    """
+
+    __tablename__ = "calendar_device_sync"
+
+    device_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    #: The `snapshot_as_of` instant of the newest completed snapshot.
+    #: Epoch seconds, UTC — the version every sweep and freshness check
+    #: arbitrates on.
+    watermark_ts: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: The window the completed snapshot covered. Epoch seconds, UTC. A
+    #: freshness answer may only trust the watermark for queries inside this
+    #: range; the columns are nullable because rows written before coverage
+    #: was recorded (second review F7) must still decode, and read as
+    #: covering nothing.
+    window_start_ts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    window_end_ts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: The mirror-rebuild epoch this device's uploads belong to (design 14.2).
+    #: A rollback to the barrier version resets the mirror's data and bumps
+    #: this; a v2 batch stamped with an older epoch is refused, so a window
+    #: captured before the reset can never write into the rebuilt mirror.
+    #: Stored here (schema 0007) so the barrier version can read it; the
+    #: comparison itself lands with that version's ingest (design 14.2), and
+    #: v1 uploads — which carry no epoch at all — are handled by the protocol
+    #: ratchet, not by this column.
+    sync_epoch: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    #: Whether this device's mirror is mid-rebuild (design 14.2). Presentation
+    #: state, not a safety predicate: it drives the 「正在重建 / 未同步」 line the
+    #: query renders, and it is cleared by a completed window of the current
+    #: epoch. While it is set this device's v1-shaped uploads are refused as a
+    #: redundant second line; after it clears, that refusal is still carried by
+    #: `CalendarIngestPolicy.min_ingest_protocol`, which clearing does not touch.
+    rebuild_pending: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    #: The instant the rebuild that set `rebuild_pending` ran, epoch seconds UTC.
+    #: Used for one thing only: a batch whose `snapshot_as_of` is at or before it
+    #: is logged as an old window still arriving, so an operator can see that the
+    #: controlled recovery did not take. It is **never** a refusal predicate --
+    #: a clock with zero skew lets an old window through any tolerance-based test
+    #: (design 14.2, R6-F20).
+    rebuild_instant: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: When this device last completed a snapshot (upload wall clock).
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class CalendarIngestPolicy(Base):
+    """The mirror's ingest policy — one row, and it is never absent.
+
+    This is the *channel's* policy rather than any one device's, which is why it
+    is not a column on `calendar_device_sync`: a rebuild empties that table, and
+    a ratchet that disappears when the rows it governed are wiped is not a
+    ratchet. The migration that created this table also inserted its row, so
+    "no row" is an implementation bug and the reader raises rather than
+    defaulting — defaulting is the one way this could fail open, and failing
+    open here means the old App's late packets write into a mirror that was
+    rebuilt without them.
+
+    `min_ingest_protocol` is the lowest client protocol version the ingest
+    channel still accepts. It is **one-way**: a rebuild raises it to 2, and
+    nothing lowers it — not a successful v2 window, not a failed one, not an
+    operator. The design's reason is that the premise for safely re-opening v1
+    ("confirm no v1 request is still in flight") has no executable proof (design
+    14.2, R6-F21/R7-F22), so the entry point is not built rather than built and
+    left unused.
+
+    `ingest_mode` is the maintenance switch the rollback runbook throws before
+    the data reset: `maintenance` refuses every calendar upload, both shapes.
+    """
+
+    __tablename__ = "calendar_ingest_policy"
+
+    policy_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    min_ingest_protocol: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    ingest_mode: Mapped[str] = mapped_column(
+        Text, nullable=False, default="normal", server_default="normal"
+    )
+    #: When the row last changed. Written by every policy transition, so an
+    #: operator reading the table after an incident can tell when the last one
+    #: happened.
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("policy_id = 1", name="singleton"),
+        CheckConstraint("min_ingest_protocol >= 1", name="min_ingest_protocol_positive"),
+        CheckConstraint(
+            "ingest_mode IN ('normal', 'maintenance')", name="ingest_mode_known"
+        ),
     )

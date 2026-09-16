@@ -110,15 +110,19 @@ class SignedCaller:
         arguments: dict[str, Any],
         *,
         host: HostContext | None = None,
+        declared: frozenset[str] = frozenset(),
         **host_kwargs: Any,
     ) -> dict[str, str]:
         """The headers a governed HTTP call sends, signed over `arguments`.
 
         The duplicate override is emitted exactly as the bridge emits it: only
         when the signed context carries one, and never as an argument.
+        `declared` is the target contract's own field names, which the real
+        bridge derives from the manifest; a caller that omits it signs as
+        though the tool declared nothing.
         """
         host = host or self.host_context(tool, **host_kwargs)
-        token = sign_host_context(self.ring, host, arguments)
+        token = sign_host_context(self.ring, host, arguments, declared=declared)
         headers = {
             "Authorization": f"Bearer {token}",
             "X-Request-ID": host.request_id,

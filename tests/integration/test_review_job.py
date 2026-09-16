@@ -14,10 +14,17 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from personal_agent.api.control_client import ControlPlaneError, SuccessfulWrite
+from personal_agent.api import events
+from personal_agent.api.control_client import (
+    ControlPlaneError,
+    RecordFields,
+    SuccessfulWrite,
+)
 from personal_agent.api.daily_review import ReviewResult
 from personal_agent.api.notifications import PushNotification, PushSendError
 from personal_agent.api.review_job import run_daily_review
+from personal_agent.context.config import default_context_config
+from personal_agent.context.session_manager import SessionManager
 from personal_agent.storage.engine import (
     create_all,
     create_database_engine,
@@ -109,6 +116,41 @@ def run(sessions, control, *, send=None, today=TODAY, max_days=7):
         send=send,
         max_days=max_days,
     )
+
+
+def run_with_timeline(sessions, control, *, send=None, today=TODAY, max_days=7):
+    """The same run, wired to seal the frozen `daily_review` Timeline card."""
+    return run_daily_review(
+        sessions,
+        control,
+        today=today,
+        now=lambda: NOW,
+        send=send,
+        max_days=max_days,
+        keyring=KEYRING,
+        session_manager=SessionManager(default_context_config()),
+    )
+
+
+def timeline_entries(sessions):
+    with sessions() as session:
+        timeline_id = events.canonical_timeline_id(session, now=NOW)
+        return events.list_timeline(session, KEYRING, conversation_id=timeline_id)
+
+
+class ValueControl(FakeControl):
+    """A control plane that also answers the review's value read."""
+
+    async def get_record_fields_batch(self, records):
+        return [
+            RecordFields(
+                table_kind=table_kind,
+                record_id=record_id,
+                values={"name": record_id, "amount": "12.00"},
+                unreadable_fields=(),
+            )
+            for table_kind, record_id in records
+        ]
 
 
 def reviews(sessions) -> list[DailyReview]:
@@ -303,3 +345,79 @@ def test_the_ledger_day_is_derived_from_asia_shanghai(sessions) -> None:
     )
 
     assert [r.review_date for r in reviews(sessions)] == ["2026-07-25"]
+
+
+# --- the frozen Timeline card (design `1j`) ----------------------------------
+
+
+def test_a_created_card_is_sealed_onto_the_timeline(sessions) -> None:
+    control = ValueControl({"2026-07-25": [write("recA"), write("recB")]})
+
+    report = run_with_timeline(sessions, control, send=Recorder())
+
+    assert report.emitted_review_events
+    entries = timeline_entries(sessions)
+    assert [entry.event_type for entry in entries] == ["daily_review"]
+    content = entries[0].content
+    assert content["review_date"] == "2026-07-25"
+    assert content["item_count"] == 2
+    assert [item["record_id"] for item in content["items"]] == ["recA", "recB"]
+    # The values are frozen at build time, exactly as read once from the control
+    # plane -- not pointers, and not read again on later runs.
+    assert content["items"][0]["values"]["amount"] == "12.00"
+    with sessions() as session:
+        review = session.scalars(select(DailyReview)).one()
+        assert review.timeline_event_id == entries[0].event_id
+
+
+def test_a_rerun_does_not_duplicate_the_timeline_card(sessions) -> None:
+    control = ValueControl({"2026-07-25": [write("recA")]})
+
+    run_with_timeline(sessions, control, send=Recorder())
+    second = run_with_timeline(sessions, control, send=Recorder())
+
+    assert second.emitted_review_events == []
+    assert len(timeline_entries(sessions)) == 1
+
+
+def test_a_late_success_seals_a_newer_snapshot(sessions) -> None:
+    control = ValueControl({"2026-07-25": [write("recA")]})
+    run_with_timeline(sessions, control, send=Recorder())
+    with sessions() as session:
+        card = session.scalars(select(DailyReview)).one()
+        card.status = "reviewed"
+        card.reviewed_at = NOW
+        session.commit()
+
+    control.by_day["2026-07-25"].append(write("recLate"))
+    second = run_with_timeline(sessions, control, send=Recorder())
+
+    assert [outcome.result for outcome in second.created] == [ReviewResult.UPDATED]
+    assert second.emitted_review_events
+    entries = timeline_entries(sessions)
+    assert len(entries) == 2
+    # The newest snapshot carries the late write; the older one stays sealed.
+    assert entries[-1].content["item_count"] == 2
+    with sessions() as session:
+        review = session.scalars(select(DailyReview)).one()
+        assert review.timeline_event_id == entries[-1].event_id
+
+
+def test_a_review_whose_event_was_lost_is_repaired(sessions) -> None:
+    """A crash between the review-row commit and the event append is repaired.
+
+    Simulated by building without the Timeline machinery -- the card and its push
+    exist but no event does -- then running the wired job again.
+    """
+    control = ValueControl({"2026-07-25": [write("recA")]})
+    run(sessions, control, send=Recorder())
+    assert timeline_entries(sessions) == []
+    with sessions() as session:
+        assert session.scalars(select(DailyReview)).one().timeline_event_id is None
+
+    second = run_with_timeline(sessions, control, send=Recorder())
+
+    assert second.emitted_review_events
+    entries = timeline_entries(sessions)
+    assert [entry.event_type for entry in entries] == ["daily_review"]
+    assert entries[0].content["review_date"] == "2026-07-25"

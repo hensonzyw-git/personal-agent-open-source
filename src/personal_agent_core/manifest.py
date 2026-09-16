@@ -81,6 +81,16 @@ def build_manifest() -> dict[str, Any]:
         "disabled_tools": [
             tool["name"] for tool in tools if not tool["enabled"]
         ],
+        #: The subset of enabled tools a model may be offered. Everything else
+        #: enabled is reachable only by a deterministic, device-authenticated
+        #: route. Emitted explicitly so the allowlist the service builds is read
+        #: from the signed artifact rather than re-derived from the IR by a
+        #: second expression that could disagree with the first.
+        "model_callable_tools": [
+            tool["name"]
+            for tool in tools
+            if tool["enabled"] and tool["model_callable"]
+        ],
         "allowed_tools_version": sha256_of(
             [
                 {"name": tool["name"], "contract_hash": tool["contract_hash"]}

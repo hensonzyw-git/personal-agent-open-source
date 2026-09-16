@@ -60,6 +60,7 @@ from personal_data_mcp.server.control import RecordReader
 from personal_data_mcp.server.finance_write import (
     FinanceWriteDependencies,
     build_expense_handler,
+    build_category_update_handler,
     build_family_fund_handler,
     build_income_handler,
     fresh_validation,
@@ -67,6 +68,14 @@ from personal_data_mcp.server.finance_write import (
 from personal_data_mcp.server.expense_query import (
     ExpenseQueryDependencies,
     build_handler as build_expense_query_handler,
+)
+from personal_data_mcp.server.calendar_ingest import (
+    CalendarIngestDependencies,
+    build_handler as build_calendar_ingest_handler,
+)
+from personal_data_mcp.server.calendar_query import (
+    CalendarQueryDependencies,
+    build_handler as build_calendar_query_handler,
 )
 from personal_data_mcp.server.handlers import ToolRegistry
 from personal_data_mcp.server.record_reader import build_record_reader
@@ -257,11 +266,39 @@ async def finance_tools(
             if query_cursor_secret is not None
             else None
         )
+        # The calendar mirror is credential-free: it reads this process's own
+        # database and seals text with the same data keyring the Finance
+        # handlers already hold. Its cursor reuses the same optional secret the
+        # Finance query cursor uses; without it the query tool stays unbound
+        # (and unadvertised) rather than serving an unauthenticated cursor.
+        calendar_query_handler = (
+            build_calendar_query_handler(
+                CalendarQueryDependencies(
+                    sessions=sessions,
+                    keyring=dependencies.keyring,
+                    cursor_secret=query_cursor_secret,
+                )
+            )
+            if query_cursor_secret is not None
+            else None
+        )
+        calendar_ingest_handler = build_calendar_ingest_handler(
+            CalendarIngestDependencies(
+                sessions=sessions,
+                keyring=dependencies.keyring,
+                # The uploading device is a property of the verified caller, so
+                # it cannot be baked in at composition: the handler stamps each
+                # row from the signed Host Context claims of the bridge call.
+            )
+        )
         registry = build_registry(
             expense_query_handler=query_handler,
             expense_write_handler=build_expense_handler(dependencies),
             income_write_handler=build_income_handler(dependencies),
             family_fund_handler=build_family_fund_handler(dependencies),
+            category_update_handler=build_category_update_handler(dependencies),
+            calendar_query_handler=calendar_query_handler,
+            calendar_ingest_handler=calendar_ingest_handler,
         )
         recovery_owner = f"finance-recovery-{uuid.uuid4()}"
         recovery_stop = asyncio.Event()

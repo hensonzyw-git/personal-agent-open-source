@@ -2,8 +2,8 @@
 from alembic import op
 import sqlalchemy as sa
 from personal_agent_core.sqlite import UtcTimestamp
-revision="0006_dal_resume_decisions"
-down_revision="0005_finance_safe_retry"
+revision="0014_dal_resume_decisions"
+down_revision="0013_adk_model_led"
 branch_labels=None
 depends_on=None
 

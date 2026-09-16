@@ -42,6 +42,7 @@ class LoopbackFinanceService:
         *,
         database: Path | None = None,
         write_fixture: bool = False,
+        calendar: bool = False,
         writes_enabled: bool = True,
     ) -> None:
         self.port = free_port()
@@ -57,10 +58,16 @@ class LoopbackFinanceService:
         args = [sys.executable, "-m", MODULE, str(self.port)]
         if database is not None:
             args.append(str(database))
+        if write_fixture and calendar:
+            raise ValueError("one registry mode per loopback service")
         if write_fixture:
             if database is None:
                 raise ValueError("the write fixture requires a Finance database")
             args.append("write-fixture")
+        if calendar:
+            if database is None:
+                raise ValueError("the calendar mode requires a Finance database")
+            args.append("calendar")
         self.process = subprocess.Popen(
             args,
             env={

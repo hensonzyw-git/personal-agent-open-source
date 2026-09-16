@@ -72,7 +72,19 @@ def run_migrations_online() -> None:
 
 
 def _pragma(connection, statement: str) -> None:
-    """Apply a PRAGMA outside any transaction, through the DBAPI cursor."""
+    """Apply a PRAGMA outside any transaction, through the DBAPI cursor.
+
+    `foreign_keys` is a no-op inside a transaction, and SQLite ignores it
+    *silently*, so getting this wrong leaves the setting at whatever the
+    connection already had and nothing says so. The OFF call below runs before
+    anything has opened a transaction and lands; the ON restore in the `finally`
+    runs after the migration, when one is still open, and did not -- which left
+    every connection this engine handed out afterwards with foreign keys off, so
+    the schema's `ON DELETE CASCADE` and `RESTRICT` were decoration. Ending the
+    transaction first is what makes the restore take effect.
+    """
+    if connection.in_transaction():
+        connection.rollback()
     cursor = connection.connection.cursor()
     try:
         cursor.execute(f"PRAGMA {statement}")

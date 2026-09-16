@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Callable, Final
+from typing import Any, Callable, Final, Literal
 
 import httpx2
 import jwt
@@ -184,24 +184,41 @@ class ProviderToken:
         return self._token
 
 
+def build_alert_payload(title: str, body: str) -> dict[str, Any]:
+    """The lock-screen alert: a title and a body, and nothing else.
+
+    No count, no id, no badge. A card that needs to carry a machine field adds
+    it separately (as ``build_payload`` does with ``review_id``); the alert
+    itself stays safe for a lock screen and Apple's infrastructure.
+
+    The icon `badge` is deliberately **not** set anywhere: a card's own count is
+    not the number of items still pending, and a stale badge that nothing clears
+    is worse than no badge. The app shows its own pending state and clears any
+    icon badge when it comes to the foreground.
+    """
+    return {
+        "aps": {
+            "alert": {
+                "title": title,
+                "body": body,
+            },
+            "sound": "default",
+        },
+    }
+
+
 def build_payload(notification: PushNotification) -> dict[str, Any]:
-    """The push body. A count and an id; deliberately nothing else.
+    """The Finance review push body. A count and an id; deliberately nothing else.
 
     Design 7.7 step 4 limits this to how many entries there are. No name, no
     amount, no category -- those would end up on a lock screen and inside
     Apple's infrastructure.
     """
-    return {
-        "aps": {
-            "alert": {
-                "title": "每日账目复核",
-                "body": f"有 {notification.item_count} 笔待复核",
-            },
-            "sound": "default",
-            "badge": notification.item_count,
-        },
-        "review_id": notification.review_id,
-    }
+    payload = build_alert_payload(
+        "每日账目复核", f"有 {notification.item_count} 笔待复核"
+    )
+    payload["review_id"] = notification.review_id
+    return payload
 
 
 class ApnsPushSender:
@@ -277,26 +294,63 @@ class ApnsPushSender:
     # --- the send ------------------------------------------------------------
 
     def __call__(self, notification: PushNotification) -> None:
-        device_token = self._device_token(notification.device_id)
+        # The review id is the natural collapse key: a requeued or retried
+        # delivery of the same card should replace a still-pending banner rather
+        # than stack a second one. Apple keeps one pending notification per
+        # (device, topic, collapse-id), so without this a retry that raced the
+        # first would land as two "有 N 笔待复核" banners on one lock screen.
+        self._send(
+            notification.device_id,
+            build_payload(notification),
+            collapse_id=f"review:{notification.review_id}",
+            priority="5",
+        )
+
+    def send_alert(
+        self,
+        device_id: str,
+        *,
+        title: str,
+        body: str,
+        collapse_id: str,
+        priority: Literal["5", "10"] = "5",
+    ) -> None:
+        """Deliver a lock-screen alert (title + body) to one enrolled device.
+
+        The generalised form of the review-card send: the Finance card is one
+        concrete alert, the risk-monitor card another. Everything the two share
+        — token resolution, the provider JWT, the permanent-failure handling —
+        lives in ``_send``.
+        """
+        self._send(
+            device_id,
+            build_alert_payload(title, body),
+            collapse_id=collapse_id,
+            priority=priority,
+        )
+
+    def _send(
+        self,
+        device_id: str,
+        payload: dict[str, Any],
+        *,
+        collapse_id: str,
+        priority: Literal["5", "10"],
+    ) -> None:
+        device_token = self._device_token(device_id)
         try:
             response = self._client.post(
                 f"/3/device/{device_token}",
-                json=build_payload(notification),
+                json=payload,
                 headers={
                     "authorization": f"bearer {self._token.value()}",
                     "apns-topic": self._config.topic,
                     "apns-push-type": "alert",
-                    "apns-priority": "5",
+                    "apns-priority": priority,
                     "apns-expiration": str(
                         int(self._now() + EXPIRATION.total_seconds())
                     ),
-                    # The review id is the natural collapse key: a requeued or
-                    # retried delivery of the same card should replace a still-
-                    # pending banner rather than stack a second one. Apple keeps
-                    # one pending notification per (device, topic, collapse-id),
-                    # so without this a retry that raced the first would land as
-                    # two "有 N 笔待复核" banners on one lock screen.
-                    "apns-collapse-id": f"review:{notification.review_id}",
+                    "apns-collapse-id": collapse_id,
                 },
             )
         except Exception as error:  # noqa: BLE001 - any transport failure retries

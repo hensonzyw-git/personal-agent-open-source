@@ -29,8 +29,11 @@ from personal_agent.api.finance_query_projection import (
     decode_finance_query_projection,
     summarise_query_projection,
 )
+from personal_agent.api.finance_record_projection import FinanceExpenseRecord
 from personal_agent.api.orchestrator import (
     Clarification,
+    CommitClarificationZeroWrite,
+    CommitFailedSafe,
     DirectAnswer,
     InterpreterError,
     PossibleDuplicate,
@@ -47,6 +50,14 @@ from personal_agent.auth.tokens import (
     issue_access_token,
 )
 from personal_agent.context.budget import ComponentKind
+from personal_agent.context.config import default_context_config
+from personal_agent.context.session_manager import (
+    CompactSessionState,
+    SessionManager,
+)
+from personal_agent.diagnostics import transcript
+from personal_agent.diagnostics.recording_dispatcher import RecordingDispatcher
+from personal_agent.diagnostics.transcript import TranscriptRecorder
 from personal_agent.storage.engine import (
     create_all,
     create_database_engine,
@@ -54,6 +65,7 @@ from personal_agent.storage.engine import (
 )
 from envelope_factory import envelope_factory
 from personal_agent.storage.models import (
+    ApiRequest,
     ContextSession,
     ContextCheckpoint,
     Conversation,
@@ -116,12 +128,19 @@ class FakeDispatcher:
         self._commit = commit
         self.commit_calls: list[dict] = []
 
-    def resolve(self, *, tool, model_args):
+    def resolve(self, *, tool, model_args, idempotency_key=None):
         return self._resolve
 
     def commit(self, *, intent, idempotency_key, duplicate_override):
         self.commit_calls.append(
-            {"idempotency_key": idempotency_key, "override": duplicate_override}
+            {
+                "idempotency_key": idempotency_key,
+                "override": duplicate_override,
+                # Recorded so a route that resolves its own intent -- the
+                # category correction -- can be checked on what it actually
+                # dispatched rather than only on what it answered.
+                "intent": intent,
+            }
         )
         return self._commit
 
@@ -203,6 +222,8 @@ def _client(
     sync_wait_seconds=30.0,
     ledger_url=None,
     compact_session=None,
+    recorder=None,
+    session_manager=None,
 ) -> TestClient:
     def build_dispatcher(auth, trace_id):
         if dispatcher_traces is not None:
@@ -224,12 +245,151 @@ def _client(
         sync_wait_seconds=sync_wait_seconds,
         ledger_url=ledger_url,
         compact_session=compact_session,
+        **({"session_manager": session_manager} if session_manager is not None else {}),
+        **({"recorder": recorder} if recorder is not None else {}),
     )
     return TestClient(build_app(deps))
 
 
 def _auth(token_ring, key=REQUEST_ID_1) -> dict:
     return {"Authorization": f"Bearer {_token(token_ring)}", "Idempotency-Key": key}
+
+
+class _BoundaryClassifier:
+    def __init__(self, answer) -> None:
+        self.answer = answer
+        self.calls = []
+
+    def classify(self, request):
+        self.calls.append(request)
+        return self.answer
+
+
+class _BoundaryStateProvider:
+    def compact_state(self, db, *, session):
+        return CompactSessionState(
+            topic_summary="已完成的旧话题",
+            domain="chat",
+            task_state="completed",
+        )
+
+
+def _boundary_manager(classifier: _BoundaryClassifier) -> SessionManager:
+    return SessionManager(
+        default_context_config(),
+        classifier=classifier,
+        state_provider=_BoundaryStateProvider(),
+    )
+
+
+def test_async_classifier_reassigns_a_completed_new_topic_turn(
+    engine, token_ring, keyring
+) -> None:
+    classifier = _BoundaryClassifier(
+        {
+            "decision": "open_new_session",
+            "reason": "task_boundary",
+            "confidence_band": "high",
+        }
+    )
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=FakeInterpreter(DirectAnswer("收到")),
+        dispatcher=FakeDispatcher(),
+        session_manager=_boundary_manager(classifier),
+    )
+
+    first = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "整理上周的项目复盘"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    second = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "帮我规划周末爬山"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    asyncio.run(client.app.state.drain_background_tasks())
+    assert len(classifier.calls) == 1
+
+    with session_factory(engine)() as session:
+        sessions = (
+            session.query(ContextSession)
+            .order_by(ContextSession.opened_at, ContextSession.session_id)
+            .all()
+        )
+        assert len(sessions) == 2
+        moved = (
+            session.query(ConversationEvent)
+            .filter(ConversationEvent.operation_id == second.json()["operation_id"])
+            .all()
+        )
+        assert moved
+        moved_session_ids = {event.session_id for event in moved}
+        assert len(moved_session_ids) == 1
+        new = next(item for item in sessions if item.session_id in moved_session_ids)
+        old = next(item for item in sessions if item.session_id != new.session_id)
+        assert old.status == "closed"
+        assert new.status == "open"
+        assert new.boundary_reason == "task_boundary"
+        original = (
+            session.query(ConversationEvent)
+            .filter(ConversationEvent.operation_id == first.json()["operation_id"])
+            .all()
+        )
+        assert original and {event.session_id for event in original} == {old.session_id}
+    assert len(classifier.calls) == 1
+
+
+def test_async_classifier_never_splits_a_parked_clarification(
+    engine, token_ring, keyring
+) -> None:
+    classifier = _BoundaryClassifier(
+        {
+            "decision": "open_new_session",
+            "reason": "task_boundary",
+            "confidence_band": "high",
+        }
+    )
+
+    class SequencedInterpreter:
+        def __init__(self) -> None:
+            self.results = [DirectAnswer("收到"), Clarification("请确认分类")]
+
+        def interpret(self, *, envelope):
+            return self.results.pop(0)
+
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=SequencedInterpreter(),
+        dispatcher=FakeDispatcher(),
+        session_manager=_boundary_manager(classifier),
+    )
+    client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "整理上周的项目复盘"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "帮我规划周末爬山"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert parked.json()["state"] == "waiting_for_clarification"
+    asyncio.run(client.app.state.drain_background_tasks())
+
+    with session_factory(engine)() as session:
+        sessions = session.query(ContextSession).all()
+        assert len(sessions) == 1
+        assert sessions[0].status == "open"
+    assert len(classifier.calls) == 1
 
 
 # --- auth --------------------------------------------------------------------
@@ -409,6 +569,118 @@ def test_the_same_key_with_a_different_body_conflicts(engine, token_ring, keyrin
         headers=_auth(token_ring),
     )
     assert resp.status_code == 409
+
+
+# --- the parts boundary (§3.1) ----------------------------------------------
+#
+# Text and parts are two forms of one request, and the boundary decides which
+# one it is before anything is persisted. A refusal here has to leave nothing
+# behind: §3.1's "非法 part 不落事件、不创建 operation" is what separates a
+# rejected request from a half-accepted one.
+
+
+def _parts_client(engine, token_ring, keyring):
+    return _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("ok")),
+        dispatcher=FakeDispatcher(),
+    )
+
+
+def _chat_rows(engine) -> tuple[int, int]:
+    with session_factory(engine)() as session:
+        return (
+            session.query(ApiRequest).count(),
+            session.query(Operation).count(),
+        )
+
+
+def test_a_parts_request_is_refused_while_the_chain_is_incomplete(
+    engine, token_ring, keyring
+) -> None:
+    """A photo the model never receives must be refused, not acknowledged.
+
+    Two halves are landed -- the model-input chain (#12) and §8's composed
+    switch (#13) -- and the switch's verdict is read, not assumed: it refuses
+    here because this deployment has no scanner exemption and no media surface,
+    not because a constant in the guard says so. What is still missing is §6's
+    authorized read, so an accepted request would anchor an image that nothing
+    can turn into a model input. §3.1 requires the refusal, and it must happen
+    "在任何模型调用前" -- so nothing is persisted either.
+
+    The refusal names both reasons, which is the point of composing the detail
+    from the switch rather than from a build-time list.
+    """
+    client = _parts_client(engine, token_ring, keyring)
+    resp = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "parts": [
+                {"type": "text", "text": "这张账单记一下"},
+                {"type": "image_ref", "media_id": "media_1"},
+            ],
+        },
+        headers=_auth(token_ring),
+    )
+    assert resp.status_code != 200
+    assert resp.json()["error"]["code"] == "UNSUPPORTED_OPERATION"
+    assert _chat_rows(engine) == (0, 0)
+
+
+def test_capabilities_reports_images_off_when_nothing_composed_them(
+    engine, token_ring, keyring
+) -> None:
+    """§8's same-source rule, from the client's side of it.
+
+    `_client` builds `AgentApiDeps` by hand, so what this pins is the default:
+    a service that composed no provider, no media and no approvals must not
+    advertise images. It also pins the field's shape, which the iOS side reads
+    as the sole authority for whether to offer the photo button.
+    """
+    client = _parts_client(engine, token_ring, keyring)
+
+    resp = client.get("/v1/capabilities", headers=_auth(token_ring))
+
+    assert resp.status_code == 200
+    assert resp.json()["images"] == {"enabled": False}
+
+
+def test_a_structurally_bad_part_is_not_reported_as_not_ready(
+    engine, token_ring, keyring
+) -> None:
+    """The two refusals answer different questions and must stay apart.
+
+    Reporting a malformed part as "not available yet" would tell a client to
+    retry later something that can never succeed, and would hide the typo that
+    caused it.
+    """
+    client = _parts_client(engine, token_ring, keyring)
+    resp = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "parts": [{"type": "image_ref", "media_id": "media_1", "data": "AAA"}],
+        },
+        headers=_auth(token_ring),
+    )
+    assert resp.json()["error"]["code"] == "INVALID_ARGUMENT"
+    assert _chat_rows(engine) == (0, 0)
+
+
+def test_text_and_parts_together_are_refused(engine, token_ring, keyring) -> None:
+    client = _parts_client(engine, token_ring, keyring)
+    resp = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "这张账单记一下",
+            "parts": [{"type": "image_ref", "media_id": "media_1"}],
+        },
+        headers=_auth(token_ring),
+    )
+    assert resp.json()["error"]["code"] == "INVALID_ARGUMENT"
+    assert _chat_rows(engine) == (0, 0)
 
 
 def test_confirmed_new_topic_cancels_a_parked_operation_and_writes_a_divider(
@@ -651,6 +923,181 @@ def test_repeated_clarification_is_exact_budgeted_and_not_duplicated(
     )
     assert old.json()["state"] == "cancelled_pre_submit"
     assert old.json()["record_id"] is None
+
+
+def test_finance_commit_question_is_persisted_for_the_next_continuation(
+    engine, token_ring, keyring
+) -> None:
+    class SequencedInterpreter:
+        def __init__(self):
+            self.calls = []
+
+        def interpret(self, *, envelope):
+            self.calls.append(envelope)
+            return ToolCall("finance.log_expense", {"name": "午饭"})
+
+    class SequencedDispatcher:
+        def __init__(self):
+            self.commits = [
+                CommitClarificationZeroWrite("这笔支出属于哪个分类？"),
+                Written("recCOMMITCLARIFICATION"),
+            ]
+
+        def resolve(self, *, tool, model_args, idempotency_key=None):
+            return Resolved(WriteIntent(tool, model_args))
+
+        def commit(self, *, intent, idempotency_key, duplicate_override):
+            return self.commits.pop(0)
+
+    interpreter = SequencedInterpreter()
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=interpreter,
+        dispatcher=SequencedDispatcher(),
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    assert parked.json()["state"] == "waiting_for_clarification"
+    assert parked.json()["clarification"] == "这笔支出属于哪个分类？"
+
+    resumed = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "餐饮",
+            "clarification_of": parked.json()["operation_id"],
+        },
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+
+    assert resumed.json()["record_id"] == "recCOMMITCLARIFICATION"
+    context = "\n".join(
+        interpreter.calls[1].texts_of(ComponentKind.CLARIFICATION_CONTEXT)
+    )
+    assert "这笔支出属于哪个分类？" in context
+    assert interpreter.calls[1].finance_intent_required is True
+
+
+def test_a_repeated_finance_commit_question_fails_safe_instead_of_reparking(
+    engine, token_ring, keyring
+) -> None:
+    class Interpreter:
+        def interpret(self, *, envelope):
+            return ToolCall("finance.log_expense", {"name": "午饭"})
+
+    class Dispatcher:
+        def __init__(self):
+            self.commits = [
+                CommitClarificationZeroWrite("这笔支出属于哪个分类？"),
+                CommitClarificationZeroWrite("这笔支出属于哪个分类？"),
+            ]
+
+        def resolve(self, *, tool, model_args, idempotency_key=None):
+            return Resolved(WriteIntent(tool, model_args))
+
+        def commit(self, *, intent, idempotency_key, duplicate_override):
+            return self.commits.pop(0)
+
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=Interpreter(),
+        dispatcher=Dispatcher(),
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    repeated = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "餐饮",
+            "clarification_of": parked.json()["operation_id"],
+        },
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+
+    assert repeated.json()["state"] == "failed_safe"
+    assert repeated.json()["failure_reason"] == "CLARIFICATION_REPEATED"
+
+
+def test_clarified_explicit_family_expense_keeps_the_expense_tool_requirement(
+    engine, token_ring, keyring
+) -> None:
+    class SequencedInterpreter:
+        def __init__(self):
+            self.calls = []
+            self.results = [
+                Clarification("这笔是昨天发生，还是很久以前发生？", reason="date"),
+                ToolCall(
+                    "finance.log_expense",
+                    {
+                        "name": "晚饭",
+                        "input_amount": "283.99",
+                        "input_currency": "CNY",
+                        "occurred_on": "2026-08-25",
+                        "is_family_expense": True,
+                        "entry_kind": "expense",
+                        "category": "餐饮",
+                    },
+                ),
+            ]
+
+        def interpret(self, *, envelope):
+            self.calls.append(envelope)
+            return self.results.pop(0)
+
+    interpreter = SequencedInterpreter()
+    intent = WriteIntent("finance.log_expense", {"name": "晚饭"})
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=interpreter,
+        dispatcher=FakeDispatcher(
+            resolve=Resolved(intent), commit=Written("recCLARIFIED_EXPENSE")
+        ),
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "昨天晚饭很久以前 283.99 家庭支出",
+        },
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    assert parked.json()["state"] == "waiting_for_clarification"
+    assert interpreter.calls[0].finance_clarification_required is True
+
+    resumed = client.post(
+        "/v1/chat/messages",
+        json={
+            "conversation_id": "c1",
+            "text": "昨天",
+            "clarification_of": parked.json()["operation_id"],
+        },
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+
+    assert resumed.json()["record_id"] == "recCLARIFIED_EXPENSE"
+    continuation = interpreter.calls[1]
+    assert continuation.finance_intent_required is True
+    assert continuation.finance_required_tool == "finance.log_expense"
+    assert continuation.finance_clarification_required is False
+    context = "\n".join(
+        continuation.texts_of(ComponentKind.CLARIFICATION_CONTEXT)
+    )
+    assert "昨天晚饭很久以前 283.99 家庭支出" in context
+    assert "这笔是昨天发生，还是很久以前发生？" in context
+    assert continuation.user_text == "昨天"
 
 
 def test_explicit_retry_binds_the_latest_zero_write_finance_failure(
@@ -1006,13 +1453,16 @@ def test_a_clarification_naming_an_unknown_timeline_is_refused(
 
 
 def test_slow_model_returns_202_and_finishes_in_the_worker(
-    engine, token_ring, keyring
+    engine, token_ring, keyring, tmp_path
 ) -> None:
     class SlowInterpreter:
         def interpret(self, *, envelope):
             time.sleep(0.1)
             return DirectAnswer("完成")
 
+    recorder = TranscriptRecorder(
+        tmp_path / "transcripts", service="api", now=lambda: NOW
+    )
     client = _client(
         engine,
         token_ring,
@@ -1020,6 +1470,7 @@ def test_slow_model_returns_202_and_finishes_in_the_worker(
         interpreter=SlowInterpreter(),
         dispatcher=FakeDispatcher(),
         sync_wait_seconds=0.01,
+        recorder=recorder,
     )
     with client:
         started = time.monotonic()
@@ -1042,6 +1493,26 @@ def test_slow_model_returns_202_and_finishes_in_the_worker(
             time.sleep(0.01)
         assert polled.status_code == 200
         assert polled.json()["answer"] == "完成"
+
+    responses = [
+        json.loads(line)
+        for path in recorder.directory.glob("*.jsonl")
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["kind"] == "api_response"
+    ]
+    assert any(
+        item["payload"]["delivery"] == "chat_detached"
+        and item["payload"]["status_code"] == 202
+        for item in responses
+    )
+    assert any(
+        item["payload"]["delivery"] == "operation_poll"
+        and item["payload"]["body"]["state"] == "succeeded"
+        for item in responses
+    )
+    assert not any(
+        item["payload"]["delivery"] == "chat_sync" for item in responses
+    )
 
 
 # --- poll, cancel, capabilities, events --------------------------------------
@@ -1274,6 +1745,79 @@ def test_duplicate_then_write_anyway_carries_the_override(engine, token_ring, ke
     }
     assert projected[3]["content"]["state"] == "succeeded"
     assert projected[3]["content"]["record_id"] == "recDUP"
+
+
+def test_a_write_anyway_override_is_recorded_under_its_own_operation(
+    engine, token_ring, keyring, tmp_path
+) -> None:
+    """The confirmed duplicate write is a real ledger write, and is recorded.
+
+    It reaches `run_operation` from the decision endpoint rather than from the
+    chat worker, so it is the one write that can miss the transcript scope
+    entirely -- leaving the tool records the wrapped dispatcher still writes
+    with no operation to group them under.
+    """
+    recorder = TranscriptRecorder(
+        tmp_path / "transcripts", service="api", now=lambda: NOW
+    )
+    intent = WriteIntent("finance.log_expense", {"name": "午饭", "amount": "45"})
+    # Wrapped exactly as `agent_service` wraps every dispatcher it composes.
+    dispatcher = RecordingDispatcher(
+        FakeDispatcher(
+            resolve=PossibleDuplicate("dup-1", intent, "午饭 ¥45 餐饮"),
+            commit=Written("recDUP"),
+        ),
+        recorder,
+    )
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(ToolCall("finance.log_expense", {"name": "午饭"})),
+        dispatcher=dispatcher,
+        recorder=recorder,
+    )
+    parked = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    assert parked.json()["state"] == "waiting_for_duplicate_decision"
+
+    decision = client.post(
+        "/v1/duplicate-checks/dup-1/decision",
+        json={"decision": "write_anyway"},
+        headers=_auth(token_ring, key=REQUEST_ID_2),
+    )
+    assert decision.status_code == 200
+    override_id = decision.json()["operation_id"]
+
+    records = [
+        json.loads(line)
+        for path in sorted(recorder.directory.glob("*.jsonl"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    # No orphans anywhere in the file: every record belongs to some message.
+    assert all(record["turn"] is not None for record in records)
+    override = [
+        record
+        for record in records
+        if record["turn"]["operation_id"] == override_id
+    ]
+    kinds = {record["kind"] for record in override}
+    assert {"tool_call", "tool_result", "turn_result"} <= kinds
+    (result,) = [
+        record for record in override if record["kind"] == "turn_result"
+    ]
+    assert result["payload"]["state"] == "succeeded"
+    assert result["payload"]["result"]["record_id"] == "recDUP"
+    # The override joins the source message's turn, so both operations share
+    # one Timeline turn while keeping separate operation ids.
+    source_id = parked.json()["operation_id"]
+    turns = {record["turn"]["turn_id"] for record in records}
+    assert len(turns) == 1
+    assert {record["turn"]["operation_id"] for record in records} == {
+        source_id,
+        override_id,
+    }
 
 
 def test_dismiss_decision_replays_and_rejects_a_different_check(
@@ -1649,3 +2193,568 @@ def test_the_resolution_lands_on_the_timeline_exactly_once(
     ]
     assert len(markers) == 1
     assert markers[0]["content"]["resolution"] == "confirmed_not_written"
+    # The domain travels with it, derived from the tool's own IR contract rather
+    # than a second list: the client's history line chooses its words by this
+    # value, and a marker appended without one can never be corrected.
+    assert markers[0]["content"]["domain"] == "finance"
+
+
+# --- `G1`: the category correction route -------------------------------------
+
+
+def _corrected(category: str = "购物") -> FinanceExpenseRecord:
+    return FinanceExpenseRecord(
+        name="午饭",
+        amount_cny="38.50",
+        occurred_on="2026-07-24",
+        is_family_expense=False,
+        category=category,
+        personal_spend_cny=None,
+        category_updated_at="2026-07-24T07:00:00Z",
+    )
+
+
+class _ReceiptThenRefusingInterpreter:
+    """Create the source receipt once; any second model call fails the test."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def interpret(self, *, envelope):
+        self.calls += 1
+        if self.calls > 1:
+            raise AssertionError("the category correction must never ask a model")
+        return ToolCall("finance.log_expense", {"name": "午饭"})
+
+
+def _client_with_expense_receipt(
+    engine,
+    token_ring,
+    keyring,
+    *,
+    correction,
+    original_category: str | None = "餐饮",
+    recorder=None,
+):
+    """Build the real Timeline owner a receipt-card correction requires."""
+    interpreter = _ReceiptThenRefusingInterpreter()
+    intent = WriteIntent("finance.log_expense", {"name": "午饭"})
+    original = FinanceExpenseRecord(
+        name="午饭",
+        amount_cny="38.50",
+        occurred_on="2026-07-24",
+        is_family_expense=False,
+        category=original_category,
+        personal_spend_cny="38.50",
+    )
+    dispatcher = FakeDispatcher(
+        resolve=Resolved(intent),
+        commit=Written("rec-1", record=original),
+    )
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=interpreter,
+        dispatcher=dispatcher,
+        **({} if recorder is None else {"recorder": recorder}),
+    )
+    seeded = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 38.50 个人支出"},
+        headers=_auth(token_ring, key=REQUEST_ID_4),
+    )
+    assert seeded.status_code == 200
+    assert seeded.json()["record_id"] == "rec-1"
+    dispatcher._commit = correction
+    dispatcher.commit_calls.clear()
+    return client, dispatcher, interpreter
+
+
+def test_a_category_correction_never_reaches_the_model(
+    engine, token_ring, keyring
+) -> None:
+    """The picker's tap is the decision; there is nothing to interpret.
+
+    The interpreter here raises if it is consulted, which is the point: this
+    route resolves its own intent, and the tool it dispatches is
+    `model_callable=False` in the IR precisely so no model turn can produce it.
+    """
+    client, dispatcher, interpreter = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=Written("rec-1", record=_corrected()),
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert reply.status_code == 200
+    body = reply.json()
+    assert body["state"] == "succeeded"
+    assert body["record_id"] == "rec-1"
+    assert body["record"]["category"] == "购物"
+    assert body["record"]["category_updated_at"] == "2026-07-24T07:00:00Z"
+    # Dispatched exactly the correction, under the client's own key.
+    assert len(dispatcher.commit_calls) == 1
+    call = dispatcher.commit_calls[0]
+    assert call["idempotency_key"] == REQUEST_ID_1
+    assert call["override"] is None
+    assert call["intent"].tool == "finance.update_expense_category"
+    assert call["intent"].model_args == {
+        "record_id": "rec-1",
+        "category": "购物",
+        "expected_current_category": "餐饮",
+    }
+    assert interpreter.calls == 1
+    timeline = client.get(
+        "/v1/conversations/c1/events",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    ).json()["events"]
+    marker = [
+        event
+        for event in timeline
+        if event["event_type"] == "expense_category_corrected"
+    ]
+    assert len(marker) == 1
+    assert marker[0]["operation_id"] == body["operation_id"]
+    assert marker[0]["content"]["record_id"] == "rec-1"
+    assert marker[0]["content"]["record"]["category"] == "购物"
+
+
+def test_a_category_correction_requires_an_anchored_expense_receipt(
+    engine, token_ring, keyring
+) -> None:
+    """A guessed ledger id cannot create an unowned, unreplayable correction."""
+    interpreter = _ReceiptThenRefusingInterpreter()
+    dispatcher = FakeDispatcher(commit=Written("rec-1", record=_corrected()))
+    client = _client(
+        engine,
+        token_ring,
+        keyring,
+        interpreter=interpreter,
+        dispatcher=dispatcher,
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert reply.status_code == 400
+    assert reply.json()["error"]["code"] == "INVALID_ARGUMENT"
+    assert dispatcher.commit_calls == []
+    assert interpreter.calls == 0
+
+
+def test_polling_a_correction_records_its_transcript_without_an_anchor(
+    engine, token_ring, keyring, tmp_path: Path
+) -> None:
+    """A card action has no user message, and that is not a wiring error.
+
+    Specifically a **failed** one. A correction that succeeds writes its
+    `expense_category_corrected` marker, and that marker is itself an anchoring
+    event — which is why this went unnoticed until the 2026-08-16 acceptance
+    run, where Feishu refused the update and the marker was therefore never
+    written. Every poll of that operation then raised inside the transcript
+    recorder and dropped the record. Nothing broke — the recorder never changes
+    API behaviour — but a transcript that logs a traceback instead of the
+    response is the opposite of a transcript, and the failing path is exactly
+    the one whose transcript is worth having.
+    """
+    recorder = TranscriptRecorder(
+        tmp_path / "transcripts", service="api", now=lambda: NOW
+    )
+    client, _dispatcher, _interpreter = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=CommitFailedSafe("SOURCE_UNAVAILABLE"),
+        recorder=recorder,
+    )
+    created = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    assert created.status_code == 200
+    operation_id = created.json()["operation_id"]
+
+    polled = client.get(
+        f"/v1/operations/{operation_id}", headers=_auth(token_ring)
+    )
+
+    assert polled.status_code == 200
+    # The response was recorded, under an identity that names the operation
+    # even though it names no turn.
+    records = [
+        json.loads(line)
+        for path in sorted(recorder.directory.glob("*.jsonl"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    responses = [
+        record
+        for record in records
+        if record.get("kind") == transcript.API_RESPONSE
+        and record.get("turn", {}).get("operation_id") == operation_id
+    ]
+    assert responses, "the poll's transcript was dropped"
+    # Identified by the operation, anchored to no turn — which is the honest
+    # shape for an action that was never a conversation turn.
+    assert responses[-1]["turn"]["turn_id"] is None
+    assert responses[-1]["turn"]["conversation_id"] is None
+    assert responses[-1]["turn"]["device_id"]
+
+
+def test_a_lost_correction_marker_never_fails_a_completed_write(
+    engine, token_ring, keyring, monkeypatch
+) -> None:
+    """The marker is presentation; the ledger row is the fact.
+
+    Raising here would report a governed write that already happened as a 500
+    and invite a retry for it.
+    """
+    client, dispatcher, _interpreter = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=Written("rec-1", record=_corrected()),
+    )
+    import personal_agent.api.app as app_module
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("timeline append failed")
+
+    monkeypatch.setattr(
+        app_module, "_append_expense_category_corrected", explode
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert reply.status_code == 200
+    assert reply.json()["state"] == "succeeded"
+    assert reply.json()["record"]["category"] == "购物"
+    assert len(dispatcher.commit_calls) == 1
+
+
+def test_a_correction_without_its_expectation_is_refused(
+    engine, token_ring, keyring
+) -> None:
+    """Omitting the compare-and-swap is not a request for a blind overwrite.
+
+    It is an out-of-date client, and reading the omission as "expect nothing"
+    would silently turn every stale card into an overwrite of someone else's
+    edit.
+    """
+    client, dispatcher, _ = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=Written("rec-1"),
+        original_category=None,
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert reply.status_code == 400
+    assert reply.json()["error"]["code"] == "INVALID_ARGUMENT"
+    assert dispatcher.commit_calls == []
+
+
+def test_a_null_expectation_is_a_value_not_an_omission(
+    engine, token_ring, keyring
+) -> None:
+    """A refund legitimately has no category, and saying so must be possible."""
+    client, dispatcher, _ = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=Written("rec-1", record=_corrected()),
+        original_category=None,
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": None},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert reply.status_code == 200
+    assert (
+        dispatcher.commit_calls[0]["intent"].model_args[
+            "expected_current_category"
+        ]
+        is None
+    )
+
+
+def test_replaying_a_correction_key_dispatches_once(
+    engine, token_ring, keyring
+) -> None:
+    client, dispatcher, _ = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=Written("rec-1", record=_corrected()),
+    )
+    body = {"category": "购物", "expected_current_category": "餐饮"}
+
+    first = client.post(
+        "/v1/expense-records/rec-1/category",
+        json=body,
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    second = client.post(
+        "/v1/expense-records/rec-1/category",
+        json=body,
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert first.json()["operation_id"] == second.json()["operation_id"]
+    assert len(dispatcher.commit_calls) == 1
+    timeline = client.get(
+        "/v1/conversations/c1/events",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    ).json()["events"]
+    assert sum(
+        event["event_type"] == "expense_category_corrected"
+        for event in timeline
+    ) == 1
+
+
+def test_the_same_key_under_a_different_correction_is_a_conflict(
+    engine, token_ring, keyring
+) -> None:
+    """Two corrections of the same row from different believed starting points
+    are different requests: one is working from a stale view, and sharing a key
+    would let the stale one replay as the fresh one's success."""
+    client, dispatcher, _ = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=Written("rec-1", record=_corrected()),
+    )
+
+    client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+    clash = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "旅行"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    assert clash.status_code == 409
+    assert len(dispatcher.commit_calls) == 1
+
+
+def test_a_failed_correction_carries_no_business_fields(
+    engine, token_ring, keyring
+) -> None:
+    """A correction that did not reach the ledger must not repaint the card.
+
+    `record` travels only with a proven write, so a safe failure leaves the
+    client with nothing to overlay and the row keeps the ledger's value.
+    """
+    client, dispatcher, _ = _client_with_expense_receipt(
+        engine,
+        token_ring,
+        keyring,
+        correction=CommitFailedSafe("SCOPE_DENIED"),
+    )
+
+    reply = client.post(
+        "/v1/expense-records/rec-1/category",
+        json={"category": "购物", "expected_current_category": "餐饮"},
+        headers=_auth(token_ring, key=REQUEST_ID_1),
+    )
+
+    body = reply.json()
+    assert body["state"] == "failed_safe"
+    assert body["record_id"] is None
+    assert "record" not in body
+    timeline = client.get(
+        "/v1/conversations/c1/events",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    ).json()["events"]
+    assert not any(
+        event["event_type"] == "expense_category_corrected"
+        for event in timeline
+    )
+
+
+# --- GET /v1/operations/by-key/{idempotency_key} -------------------------------
+#
+# The chat POST can hold the client for up to 30 seconds before handing back the
+# operation id, so the progress trail polls by the idempotency key it already
+# holds. Everything here is read-only: the endpoint projects the same operation
+# the by-id poll projects, and an unanchored key is a distinguishable 400, never
+# a 404 that could be read as "the key is free".
+
+
+def test_by_key_poll_returns_the_same_projection_as_by_id(
+    engine, token_ring, keyring
+) -> None:
+    class SlowInterpreter:
+        def interpret(self, *, envelope):
+            time.sleep(0.05)
+            return DirectAnswer("你好")
+
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=SlowInterpreter(),
+        dispatcher=FakeDispatcher(),
+        sync_wait_seconds=0.01,
+    )
+    key = REQUEST_ID_3
+    resp = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "hi"},
+        headers=_auth(token_ring, key=key),
+    )
+    assert resp.status_code == 202
+
+    polled = client.get(
+        f"/v1/operations/by-key/{key}",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert polled.status_code == 200
+    by_key = polled.json()
+    operation_id = by_key["operation_id"]
+
+    by_id = client.get(
+        f"/v1/operations/{operation_id}",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert by_id.status_code == 200
+    assert by_id.json() == by_key
+
+
+def test_by_key_poll_before_anchor_is_operation_not_anchored(
+    engine, token_ring, keyring
+) -> None:
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+    )
+    never_sent = REQUEST_ID_2
+    resp = client.get(
+        f"/v1/operations/by-key/{never_sent}",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "OPERATION_NOT_ANCHORED"
+
+
+def test_by_key_poll_of_another_devices_key_is_refused(
+    engine, token_ring, keyring
+) -> None:
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+    )
+    key = REQUEST_ID_3
+    created = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "hi"},
+        headers=_auth(token_ring, key=key),
+    )
+    assert created.status_code == 200
+
+    with session_factory(engine)() as session:
+        session.add(
+            Device(
+                device_id="dev-2",
+                display_name="Second iPhone",
+                public_key="K2",
+                device_key_thumbprint="THUMB2",
+                status="active",
+                scopes='["finance.write"]',
+                allowed_tools_version="v1",
+                created_at=NOW,
+            )
+        )
+        session.commit()
+    other_auth = {
+        "Authorization": (
+            "Bearer "
+            + _token(token_ring, device_id="dev-2", thumbprint="THUMB2")
+        )
+    }
+    resp = client.get(
+        f"/v1/operations/by-key/{key}", headers=other_auth
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "OPERATION_NOT_ANCHORED"
+
+
+def test_by_key_poll_requires_a_canonical_uuid_key(
+    engine, token_ring, keyring
+) -> None:
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+    )
+    for bad in ("not-a-uuid", REQUEST_ID_2.upper() + "-x", REQUEST_ID_2.upper()):
+        resp = client.get(
+            f"/v1/operations/by-key/{bad}",
+            headers={"Authorization": f"Bearer {_token(token_ring)}"},
+        )
+        assert resp.status_code == 400
+
+
+def test_by_key_poll_requires_authentication(engine, token_ring, keyring) -> None:
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(DirectAnswer("hi")),
+        dispatcher=FakeDispatcher(),
+    )
+    resp = client.get(f"/v1/operations/by-key/{REQUEST_ID_2}")
+    assert resp.status_code == 401
+
+
+def test_by_key_poll_projection_carries_the_tool_fact(
+    engine, token_ring, keyring
+) -> None:
+    """The trail reads `tool` straight from the dispatching transition."""
+    intent = WriteIntent("finance.log_expense", {"name": "午饭"})
+    dispatcher = FakeDispatcher(resolve=Resolved(intent), commit=Written("recABC"))
+    client = _client(
+        engine, token_ring, keyring,
+        interpreter=FakeInterpreter(ToolCall("finance.log_expense", {"name": "午饭"})),
+        dispatcher=dispatcher,
+    )
+    key = REQUEST_ID_3
+    resp = client.post(
+        "/v1/chat/messages",
+        json={"conversation_id": "c1", "text": "午饭 45"},
+        headers=_auth(token_ring, key=key),
+    )
+    assert resp.status_code == 200
+
+    polled = client.get(
+        f"/v1/operations/by-key/{key}",
+        headers={"Authorization": f"Bearer {_token(token_ring)}"},
+    )
+    assert polled.status_code == 200
+    body = polled.json()
+    assert body["tool"] == "finance.log_expense"
+    assert body["record_id"] == "recABC"

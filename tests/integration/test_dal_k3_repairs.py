@@ -283,10 +283,10 @@ def test_migration_preserves_existing_ambiguous_delivery(bridge_world):
     from sqlalchemy import text
     engine,bridge,auth,p,_=bridge_world
     bridge.decide(auth,click(p))
-    db.downgrade(engine,'0006_dal_resume_decisions')
+    db.downgrade(engine,'0014_dal_resume_decisions')
     with engine.begin() as c:c.execute(text("UPDATE dal_resume_deliveries SET status='expired',attempts=1"))
     db.upgrade(engine)
     with engine.connect() as c:
         assert c.execute(text('SELECT status,attempts FROM dal_resume_deliveries')).one()==('delivery_unknown',1)
         assert c.execute(text('PRAGMA foreign_key_check')).all()==[]
-    with pytest.raises(RuntimeError,match='ambiguous delivery'):db.downgrade(engine,'0006_dal_resume_decisions')
+    with pytest.raises(RuntimeError,match='ambiguous delivery'):db.downgrade(engine,'0014_dal_resume_decisions')

@@ -31,7 +31,7 @@ Usage (the operator supplies the credential; this file never reads `.env.local`)
 
 `--list` prints the cases, `--case ID` runs a subset, and `--dry-run` runs the
 checks that make no network call. `--check-model` makes one small call to verify
-that `GLM_CLASSIFIER_MODEL` names a model this account can actually use --
+that `CLASSIFIER_MODEL` names a model this account can actually use --
 worth doing first, because a rejected model id is indistinguishable from a
 provider outage once the case runners treat it as a legitimate refusal.
 
@@ -428,31 +428,31 @@ def endpoint_pinning_holds() -> tuple[bool, str]:
     """A tampered endpoint must be refused before any credential travels."""
     if not os.environ.get("ZAI_API_KEY"):
         return False, "ZAI_API_KEY is not set, so the pin cannot be checked"
-    original = os.environ.get("GLM_OPENAI_BASE_URL")
-    os.environ["GLM_OPENAI_BASE_URL"] = "https://attacker.invalid/v1"
+    original = os.environ.get("MODEL_API_BASE")
+    os.environ["MODEL_API_BASE"] = "https://attacker.invalid/v1"
     try:
         structured_client_from_env(input_budget_tokens=32_768)
     except Exception as exc:  # noqa: BLE001 - any refusal is the point
         return True, f"refused a tampered host ({type(exc).__name__})"
     finally:
         if original is None:
-            os.environ.pop("GLM_OPENAI_BASE_URL", None)
+            os.environ.pop("MODEL_API_BASE", None)
         else:
-            os.environ["GLM_OPENAI_BASE_URL"] = original
+            os.environ["MODEL_API_BASE"] = original
     return False, "a tampered host was accepted"
 
 
 def check_model() -> int:
     """One minimal call that answers "does this model id work at all?".
 
-    A wrong `GLM_CLASSIFIER_MODEL` reaches the case runners as an ordinary
+    A wrong `CLASSIFIER_MODEL` reaches the case runners as an ordinary
     provider failure, which they record as a legitimate refusal and score as a
     pass -- correct for the contract, useless for configuration. This asks the
     question directly and fails loudly, so a typo cannot hide behind the
     fail-closed behaviour it is supposed to be tested against.
     """
     model = os.environ.get(CLASSIFIER_MODEL_ENV) or os.environ.get(
-        "GLM_MODEL", "glm-5.2"
+        "MODEL_ID", "glm-5.3-flash"
     )
     print(f"classifier model: {model}")
     classifier = GlmBoundaryClassifier(
@@ -558,9 +558,9 @@ def main(argv: list[str] | None = None) -> int:
         report = {
             "kind": "cap001_provider_smoke",
             "generated_at": utc_now().isoformat(),
-            "model": os.environ.get("GLM_MODEL", "glm-5.2"),
+            "model": os.environ.get("MODEL_ID", "glm-5.3-flash"),
             "classifier_model": os.environ.get(CLASSIFIER_MODEL_ENV)
-            or os.environ.get("GLM_MODEL", "glm-5.2"),
+            or os.environ.get("MODEL_ID", "glm-5.3-flash"),
             "classifier_timeout_seconds": CLASSIFIER_TIMEOUT_SECONDS,
             "endpoint_pinning_refused_tampered_host": pinned,
             "cases": [

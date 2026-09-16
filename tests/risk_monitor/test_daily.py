@@ -1,0 +1,440 @@
+"""Daily-pipeline wiring tests (no network; derive/collect helpers only)."""
+
+from __future__ import annotations
+
+import json
+from datetime import date, datetime, timedelta, timezone
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from risk_monitor import daily as daily_mod
+from risk_monitor.daily import (
+    _anomalous_jump,
+    _raw_artifact_rows,
+    collect_ai_basket,
+    collect_breadth,
+    collect_fred,
+    derive_market_values,
+    recompute_state,
+    run,
+)
+from risk_monitor.domain.models import Observation, ScoreSnapshot
+from risk_monitor.domain.storage import create_database_engine, init_schema
+from risk_monitor.ingestion.fred import FRED_SERIES
+from risk_monitor.replay import replay_score
+from risk_monitor.scoring.policy import load_policy
+
+
+def _series(values, start_day=1):
+    return [((date(2026, 1, start_day) + timedelta(days=i)).isoformat(), v) for i, v in enumerate(values)]
+
+
+def test_derive_market_values():
+    raw = {
+        "spx_history": _series([100.0] * 200 + [110.0]),
+        "hy_oas_history": _series([1.0] * 30 + [1.5]),
+        "bbb_oas_latest": ("2026-08-20", 1.0),
+        "dgs10_latest": ("2026-08-20", 4.65),
+        "vix_latest": ("2026-08-20", 16.0),
+    }
+    mbs, css, as_of = derive_market_values(raw)
+    assert mbs["market.spx_vs_200dma_pct"] == 9.945
+    assert mbs["market.vix"] == 16.0
+    assert css["credit.hy_oas_pct"] == 1.5
+    assert css["credit.hy_oas_20d_change"] == 50.0  # (1.5 - 1.0) * 100 bp
+    assert css["credit.bbb_oas_pct"] == 1.0
+    assert as_of == "2026-08-20"  # latest date across ALL series, not just SPX
+
+
+def test_anomalous_jump_flags_a_large_single_day_move():
+    """A score move larger than MAX_SCORE_DAY_JUMP is flagged; a small one and a
+    missing previous snapshot are not."""
+    assert _anomalous_jump(None, (30.0, 40.0, 60.0)) is False
+    assert _anomalous_jump((30.0, 40.0, 60.0), (30.0, 40.0, 60.0)) is False
+    assert _anomalous_jump((30.0, 40.0, 60.0), (75.0, 40.0, 60.0)) is True  # MBS +45
+    assert _anomalous_jump((30.0, 40.0, 60.0), (30.0, 40.0, 21.0)) is False  # AFRS -39 < 40
+
+
+class _StubTencent:
+    def __init__(self, closes):
+        self._closes = closes
+
+    def collect_closes(self, tickers):
+        return self._closes, {}
+
+
+def test_collect_breadth_metric_keys():
+    up = _series([100.0] * 200 + [110.0])
+    down = _series([100.0] * 201)
+    stub = _StubTencent({"UP": up, "DOWN": down})
+    metrics, meta, bs = collect_breadth(stub, ["UP", "DOWN"])  # type: ignore[arg-type]
+    assert metrics["market.spx_pct_above_200dma"] == 50.0
+    assert "market.breadth_20d_change" not in metrics  # only one signal day -> None
+    assert meta["coverage"] == 1.0
+    assert meta["tickers_ok"] == 2
+
+
+def test_collect_breadth_empty_when_no_signal():
+    stub = _StubTencent({"SHORT": _series([100.0] * 100)})
+    metrics, meta, bs = collect_breadth(stub, ["SHORT"])  # type: ignore[arg-type]
+    assert metrics == {}
+    assert meta["coverage"] == 0.0
+    assert bs == []
+
+
+def test_collect_ai_basket_maps_ticker_to_entity():
+    """The six AI names are collected and keyed by entity_id, not ticker."""
+    up = _series([100.0] * 200 + [110.0])
+    closes = {name: up for name in ("NVDA", "ORCL", "MSFT", "META", "AMZN", "GOOGL")}
+    stub = _StubTencent(closes)
+    result, errors = collect_ai_basket(stub)  # type: ignore[arg-type]
+    assert set(result) == {"NVDA", "ORCL", "MSFT", "META", "AMZN", "GOOGL"}
+    assert result["NVDA"] is up
+    assert errors == {}
+
+
+def test_collect_ai_basket_omits_failed_names():
+    """A name Yahoo fails on is dropped (fail-closed per name), not zero."""
+    up = _series([100.0] * 200 + [110.0])
+    stub = _StubTencent({"NVDA": up, "ORCL": up})  # 4 names absent
+    result, errors = collect_ai_basket(stub)  # type: ignore[arg-type]
+    assert set(result) == {"NVDA", "ORCL"}
+    assert errors == {}
+
+
+def test_collect_ai_basket_surfaces_failed_names():
+    """A Yahoo failure on one name is surfaced as provenance, not swallowed —
+    so audit can distinguish 'failed pull' from 'no 200dma signal yet'."""
+    up = _series([100.0] * 200 + [110.0])
+
+    class _ErroringTencent(_StubTencent):
+        def collect_closes(self, tickers):
+            closes, _ = super().collect_closes(tickers)
+            closes.pop("META", None)  # a failed name is absent from closes
+            return closes, {"META": "Yahoo META: HTTP 429"}
+
+    stub = _ErroringTencent({name: up for name in ("NVDA", "ORCL", "MSFT", "META", "AMZN", "GOOGL")})
+    result, errors = collect_ai_basket(stub)  # type: ignore[arg-type]
+    assert "META" in errors
+    assert set(result) == {"NVDA", "ORCL", "MSFT", "AMZN", "GOOGL"}
+
+
+def test_collect_breadth_drops_metrics_below_pull_coverage_threshold():
+    """A partial Yahoo pull (only 2 of 100 names) must not produce breadth from
+    the subset — the two MBS indicators become unavailable instead."""
+    up = _series([100.0] * 200 + [110.0])
+    down = _series([100.0] * 201)
+    stub = _StubTencent({"UP": up, "DOWN": down})
+    tickers = ["UP", "DOWN"] + [f"T{i}" for i in range(98)]
+    metrics, meta, bs = collect_breadth(stub, tickers)  # type: ignore[arg-type]
+    assert metrics == {}
+    assert meta["below_threshold"] is True
+    assert meta["pull_coverage"] < 0.8
+
+
+def test_collect_breadth_fails_closed_on_signal_coverage():
+    """A full pull whose tickers mostly lack a 200dma signal (blank ``day``
+    arrays for suspended/invalid codes) must fail closed, not score the
+    signal-bearing subset as if it were the whole market."""
+    up = _series([100.0] * 200 + [110.0])
+    closes = {"UP": up}
+    for i in range(99):
+        closes[f"EMPTY{i}"] = []  # pulled, but a blank day array
+    stub = _StubTencent(closes)
+    metrics, meta, bs = collect_breadth(stub, list(closes))  # type: ignore[arg-type]
+    assert meta["pull_coverage"] == 1.0  # every ticker "pulled"
+    assert meta["coverage"] < 0.8  # but almost none has a signal
+    assert meta["below_threshold"] is True
+    assert metrics == {}
+
+
+def test_collect_breadth_fails_closed_on_effective_coverage():
+    """Pull coverage 0.81 and signal coverage 0.80 each pass the old independent
+    0.8 gate, yet their product (~0.65) is well under 80% of the index. The gate
+    must be on the effective coverage, not the two fractions in isolation."""
+    up = _series([100.0] * 200 + [110.0])
+    closes = {}
+    for i in range(65):
+        closes[f"OK{i}"] = up
+    for i in range(16):
+        closes[f"EMPTY{i}"] = []  # pulled, but no 200dma signal
+    assert len(closes) == 81
+    stub = _StubTencent(closes)
+    tickers = list(closes) + [f"UNPULLED{i}" for i in range(19)]  # 100 requested
+    assert len(tickers) == 100
+
+    metrics, meta, bs = collect_breadth(stub, tickers)  # type: ignore[arg-type]
+    # 81/100 pulled = 0.81, 65/81 signalled ≈ 0.80 — both ≥ 0.8 individually.
+    assert meta["pull_coverage"] == 0.81
+    assert meta["coverage"] >= 0.8
+    # Effective coverage ≈ 0.65 < 0.8, so breadth must fail closed.
+    assert meta["below_threshold"] is True
+    assert metrics == {}
+
+
+class _FlakyFred:
+    def history(self, series_id):
+        if series_id == FRED_SERIES["credit.hy_oas_pct"]:
+            raise RuntimeError("hy oas down")
+        return _series([100.0] * 200 + [110.0])
+
+    def latest(self, series_id):
+        if series_id == FRED_SERIES["market.vix"]:
+            raise RuntimeError("vix down")
+        return ("2026-08-20", 1.0)
+
+
+def test_collect_fred_isolates_series_failures():
+    """A failing series degrades to ``None`` + a failure entry, never crashes
+    the run (ADR-0001 fail-closed)."""
+    raw, failures = collect_fred(_FlakyFred())  # type: ignore[arg-type]
+    assert raw["spx_history"] is not None
+    assert raw["hy_oas_history"] is None
+    assert raw["vix_latest"] is None
+    assert raw["bbb_oas_latest"] == ("2026-08-20", 1.0)
+    assert failures["credit.hy_oas_pct"] == "RuntimeError"
+    assert failures["market.vix"] == "RuntimeError"
+
+
+def test_derive_market_values_with_failed_series():
+    """A failed series yields no value (metric omitted), never a crash or a
+    fabricated number."""
+    raw = {
+        "spx_history": None,
+        "hy_oas_history": _series([1.0] * 30 + [1.5]),
+        "bbb_oas_latest": None,
+        "dgs10_latest": ("2026-08-20", 4.65),
+        "vix_latest": ("2026-08-20", 16.0),
+    }
+    mbs, css, as_of = derive_market_values(raw)
+    assert "market.spx_vs_200dma_pct" not in mbs
+    assert mbs["market.vix"] == 16.0
+    assert css["credit.hy_oas_pct"] == 1.5
+    assert "credit.bbb_oas_pct" not in css
+    # SPX is down but HY/Vix/10Y still have a real date; as_of must be that
+    # date, never a fabricated date.today() fallback.
+    assert as_of == "2026-08-20"
+
+
+def _snapshot(as_of, state):
+    return ScoreSnapshot(
+        as_of_date=as_of,
+        mbs=30.0,
+        css=40.0,
+        afrs=60.0,
+        component_json=json.dumps({"indication": {"state": state, "reasons": ["afrs>=55"]}}),
+        policy_version="2026-08-21.1",
+        quality_status="ok",
+        created_at=datetime.now(timezone.utc),
+    )
+
+
+def test_same_day_reruns_do_not_advance_state(tmp_path):
+    """N snapshots written on the SAME day must count as one day of
+    confirmation, not N — otherwise a same-day re-run bypasses the 5-day
+    upgrade gate."""
+    policy = load_policy()
+    engine = create_database_engine(tmp_path / "risk.db")
+    init_schema(engine)
+    with Session(engine) as s:
+        for _ in range(5):
+            s.add(_snapshot(date(2026, 8, 20), "RISK_ACCUMULATION"))
+        s.commit()
+
+    state, _reasons, _conf = recompute_state(engine, policy)
+    assert state == "NORMAL"  # one distinct day, not five
+
+
+def test_five_distinct_days_advance_state(tmp_path):
+    """Positive control: five distinct days at RISK_ACCUMULATION do upgrade."""
+    policy = load_policy()
+    engine = create_database_engine(tmp_path / "risk.db")
+    init_schema(engine)
+    with Session(engine) as s:
+        for i in range(5):
+            s.add(_snapshot(date(2026, 8, 20 - i), "RISK_ACCUMULATION"))
+        s.commit()
+
+    state, _reasons, _conf = recompute_state(engine, policy)
+    assert state == "RISK_ACCUMULATION"
+
+
+# ---------------------------------------------------------------------------
+# Full-chain composition test: drive daily.run() with stubbed clients and verify
+# the production wiring (FRED + breadth + ai_basket + term_financing + EDGAR)
+# really composes, persists the qualitative labels, and replays back to the
+# identical scores (§5.1 "production composition 必须真实存在").
+# ---------------------------------------------------------------------------
+
+def _series_end(end: date, n: int, value: float) -> list[tuple[str, float]]:
+    start = end - timedelta(days=n - 1)
+    return [( (start + timedelta(days=i)).isoformat(), value) for i in range(n)]
+
+
+def _ramp_end(end: date, n: int, first: float, last: float) -> list[tuple[str, float]]:
+    start = end - timedelta(days=n - 1)
+    step = (last - first) / (n - 1)
+    return [( (start + timedelta(days=i)).isoformat(), round(first + step * i, 6)) for i in range(n)]
+
+
+def _companyfacts():
+    """Minimal healthy companyfacts JSON (same shape as the AFRS tests)."""
+
+    def fact(start, end, val):
+        return {"start": start, "end": end, "val": val, "form": "10-K", "fp": "FY"}
+
+    usgaap = {
+        "PaymentsToAcquireProductiveAssets": {"units": {"USD": [
+            fact("2024-01-29", "2025-01-26", 30_000_000_000),
+            fact("2023-01-30", "2024-01-28", 10_000_000_000),
+        ]}},
+        "NetCashProvidedByUsedInOperatingActivities": {"units": {"USD": [
+            fact("2024-01-29", "2025-01-26", 60_000_000_000),
+            fact("2023-01-30", "2024-01-28", 50_000_000_000),
+        ]}},
+        "RevenueFromContractWithCustomerExcludingAssessedTax": {"units": {"USD": [
+            fact("2024-01-29", "2025-01-26", 100_000_000_000),
+            fact("2023-01-30", "2024-01-28", 100_000_000_000),
+        ]}},
+        "AccountsReceivableNetCurrent": {"units": {"USD": [
+            {"end": "2025-01-26", "val": 11_000_000_000},
+            {"end": "2024-01-28", "val": 10_000_000_000},
+        ]}},
+    }
+    return {"facts": {"us-gaap": usgaap}}
+
+
+class _RunFred:
+    base_url = "https://api.stlouisfed.org/fred"
+
+    def __init__(self):
+        end = date(2026, 8, 20)
+        self._series = {
+            FRED_SERIES["market.spx_close"]: _ramp_end(end, 220, 100.0, 110.0),
+            FRED_SERIES["credit.hy_oas_pct"]: _ramp_end(end, 40, 4.4, 5.0),
+            FRED_SERIES["treasury.10y_yield"]: _ramp_end(end, 40, 3.9, 4.0),
+            FRED_SERIES["treasury.10y_real_yield"]: _ramp_end(end, 40, 0.9, 1.0),
+            FRED_SERIES["treasury.30y_yield"]: _ramp_end(end, 40, 4.0, 4.01),
+        }
+
+    def history(self, series_id):
+        return self._series.get(series_id, [])
+
+    def latest(self, series_id):
+        return {
+            FRED_SERIES["credit.bbb_oas_pct"]: ("2026-08-20", 1.75),
+            FRED_SERIES["treasury.10y_yield"]: ("2026-08-20", 4.0),
+            FRED_SERIES["market.vix"]: ("2026-08-20", 16.0),
+        }.get(series_id, ("2026-08-20", 1.0))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _RunTencent:
+    base_url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    count = 500
+
+    def __init__(self, tencent_codes=None):
+        self._end = date(2026, 8, 20)
+
+    def collect_closes(self, tickers):
+        closes = {}
+        for t in tickers:
+            series = _series_end(self._end, 220, 100.0)
+            series[-1] = (series[-1][0], 101.0)  # last close above 200dma -> green
+            closes[t] = series
+        return closes, {}
+
+
+class _RunEdgar:
+    def company_facts(self, cik):
+        return _companyfacts()
+
+
+def test_run_composition_and_replay_roundtrip(tmp_path, monkeypatch):
+    """The full daily.run() pipeline composed from stub clients must produce all
+    four scores and a deterministic action, persist the qualitative proxy
+    labels in ``value_text`` (not drop them), and replay the same day back to
+    the identical scores."""
+    monkeypatch.setattr(daily_mod, "FredClient", _RunFred)
+    monkeypatch.setattr(daily_mod, "TencentClient", _RunTencent)
+    monkeypatch.setattr(daily_mod, "EdgarClient", _RunEdgar)
+    monkeypatch.setattr(daily_mod, "load_tickers", lambda: ["UP", "DOWN", "UP2"])
+
+    result = run(db_path=str(tmp_path / "run.db"))
+
+    policy = load_policy()
+    assert result["as_of"] == "2026-08-20"
+    assert result["mbs"] is not None
+    assert result["css"] is not None
+    assert result["afrs"] is not None
+    assert result["rates_credit"] is not None
+    assert result["state"] in ("NORMAL", "RISK_ACCUMULATION", "CREDIT_CONFIRMATION", "DELEVERAGING")
+    assert result["action"] == policy["actions"][result["state"]]
+    assert result["fred_failures"] == {}
+    assert result["quality_status"] == "ok"
+    assert isinstance(result["stale_days"], int)
+    assert result["anomalous"] is False  # fresh db: no prior snapshot to compare
+    # The seam between `_serialise_outcome` and the card formatter is exercised:
+    # the run really emits the per-indicator breakdown the card consumes.
+    assert len(result["mbs_components"]) == 5  # 4 available + fwd_eps_revisions
+    assert len(result["css_components"]) == 5
+    assert len(result["rates_credit_components"]) == 9  # 8 core + reserved MOVE
+
+    # The qualitative proxy labels were persisted in value_text, not dropped.
+    engine = create_database_engine(tmp_path / "run.db")
+    with Session(engine) as s:
+        labels = {
+            o.metric_id: o.value_text
+            for o in s.scalars(select(Observation).where(
+                Observation.metric_id.in_(["credit.ai_basket", "credit.term_financing"])))
+        }
+        assert labels["credit.ai_basket"] == "green"
+        assert labels["credit.term_financing"] == "green"
+        snapshot = s.scalars(select(ScoreSnapshot)).one()
+        assert snapshot.quality_status == "ok"
+
+    # Replay reproduces the identical scores from persisted observations.
+    with Session(engine) as s:
+        r = replay_score(s, policy, date.fromisoformat(result["as_of"]))
+    assert r["matches_mbs"] is True
+    assert r["matches_css"] is True
+    assert r["matches_rates_credit"] is True
+
+
+def test_missing_core_rcs_inputs_raise_a_quality_warning(tmp_path, monkeypatch):
+    class PartialFred(_RunFred):
+        def latest(self, series_id):
+            if series_id in {
+                FRED_SERIES["treasury.2y_yield"],
+                FRED_SERIES["treasury.3m_yield"],
+                FRED_SERIES["treasury.10y_real_yield"],
+            }:
+                return ("2026-08-20", None)
+            return super().latest(series_id)
+
+    monkeypatch.setattr(daily_mod, "FredClient", PartialFred)
+    monkeypatch.setattr(daily_mod, "TencentClient", _RunTencent)
+    monkeypatch.setattr(daily_mod, "EdgarClient", _RunEdgar)
+    monkeypatch.setattr(daily_mod, "load_tickers", lambda: ["UP", "DOWN", "UP2"])
+
+    result = run(db_path=str(tmp_path / "partial-rates.db"))
+
+    assert result["fred_failures"] == {}
+    assert result["rates_credit"] is not None
+    assert result["rates_credit_meta"]["missing_core"]
+    assert result["quality_status"] == "data_quality_warning"
+
+
+def test_raw_artifacts_keep_the_dgs10_history_used_for_changes():
+    history = [("2026-08-01", 4.0), ("2026-09-02", 4.2)]
+    rows = dict(_raw_artifact_rows({
+        "dgs10_history": history,
+        "dgs10_latest": ("2026-09-02", 4.2),
+    }))
+    assert rows[FRED_SERIES["treasury.10y_yield"]] == history

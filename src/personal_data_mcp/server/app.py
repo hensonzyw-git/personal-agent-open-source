@@ -35,7 +35,11 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
 from personal_agent_core.finance_tools import FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
-from personal_agent_core.host_context import HOST_ONLY_FIELDS, ServiceKeyRing
+from personal_agent_core.host_context import (
+    HOST_ONLY_FIELDS,
+    ServiceKeyRing,
+    declared_model_fields,
+)
 from personal_agent_core.mcp_protocol import ModernProtocolOnlyMiddleware
 from personal_agent_core.write_switch import WriteSwitch
 from personal_data_mcp.server.authz import Authorizer
@@ -153,10 +157,16 @@ async def dispatch(
 
         # Verify before the handler. Nothing below this line may run for a
         # call that fails here.
+        # A host-only name this contract declares is the tool's own business
+        # field (see `declared_model_fields`); it is neither rejected here nor
+        # dropped from the hash, and the Host derived the same exemption from
+        # the same manifest before signing.
+        declared = declared_model_fields(contract["model_input_schema"])
         verified_call = authorizer.authorize(
             tool=name,
             arguments=arguments,
             headers=headers,
+            declared=declared,
             required_scopes=tuple(contract["required_scopes"]),
         )
         # After authorisation, so that an unauthenticated caller cannot probe
@@ -171,7 +181,7 @@ async def dispatch(
                     internal_detail=f"{name} refused: {switch_state.detail}",
                 )
 
-        forbidden = sorted(set(arguments) & HOST_ONLY_FIELDS)
+        forbidden = sorted(set(arguments) & (HOST_ONLY_FIELDS - declared))
         if forbidden:
             raise AppError(
                 ErrorCode.HOST_CONTEXT_MISMATCH,
@@ -225,6 +235,9 @@ def build_registry(
     expense_write_handler=None,
     income_write_handler=None,
     family_fund_handler=None,
+    category_update_handler=None,
+    calendar_query_handler=None,
+    calendar_ingest_handler=None,
 ) -> ToolRegistry:
     """The production tool set for this build.
 
@@ -234,6 +247,14 @@ def build_registry(
     contract is simply not advertised as executable. `finance.log_expense_batch`
     has no parameter here at all, because it is disabled in the manifest and
     registering it would be refused.
+
+    The calendar query and ingest handlers are credential-free too: the mirror
+    is this process's own database. `calendar.create_event` is
+    device-executed, so it takes no dependency parameter — it is registered
+    with the fail-closed guard whenever the server stands up with its domain,
+    because the registry advertises only what has a handler and the model must
+    see the tool it is supposed to choose (the real execution is intercepted
+    by the dispatcher's device branch, never by this handler).
     """
     registry = ToolRegistry()
     registry.register(meta.TOOL_NAME, meta.build_handler(registry))
@@ -242,9 +263,26 @@ def build_registry(
         ("finance.log_expense", expense_write_handler),
         ("finance.log_income", income_write_handler),
         ("finance.update_family_fund", family_fund_handler),
+        # Enabled, and reachable only from the device-authenticated category
+        # route: `model_callable=False` keeps it out of the Agent's allowlist,
+        # so registering it here does not put it in front of the model.
+        ("finance.update_expense_category", category_update_handler),
+        ("calendar.query_events", calendar_query_handler),
+        # Same idea as the category route: enabled for the device-sync bridge,
+        # absent from the model channel.
+        ("calendar.ingest_events", calendar_ingest_handler),
     ):
         if handler is not None:
             registry.register(name, handler)
+    calendar_query_ready = calendar_query_handler is not None
+    calendar_ingest_ready = calendar_ingest_handler is not None
+    if calendar_query_ready and calendar_ingest_ready:
+        from personal_data_mcp.server.calendar_guard import (
+            CreateGuard,
+            build_handler as build_create_guard,
+        )
+
+        registry.register("calendar.create_event", build_create_guard(CreateGuard()))
     return registry
 
 

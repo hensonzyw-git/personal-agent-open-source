@@ -421,7 +421,7 @@ def visible_tools(aliases: tuple[str, ...]) -> list[VisibleTool]:
 
 
 def endpoint_pinning_holds() -> tuple[bool, str]:
-    """A tampered `GLM_OPENAI_BASE_URL` must be refused before any network call.
+    """A tampered `MODEL_API_BASE` must be refused before any network call.
 
     Run first and offline: if the pin has regressed, the credential is the thing
     at risk, so nothing else should be attempted.
@@ -431,9 +431,9 @@ def endpoint_pinning_holds() -> tuple[bool, str]:
         # The credential is read before the endpoint is validated, so without it
         # this check would "pass" for the wrong reason.
         return False, "ZAI_API_KEY is not set, so the pin cannot be checked"
-    original = os.environ.get("GLM_OPENAI_BASE_URL")
+    original = os.environ.get("MODEL_API_BASE")
     hostile = "https://open.bigmodel.cn.attacker.example/api/paas/v4/"
-    os.environ["GLM_OPENAI_BASE_URL"] = hostile
+    os.environ["MODEL_API_BASE"] = hostile
     try:
         glm_gateway_from_env()
     except ModelGatewayError as exc:
@@ -445,9 +445,9 @@ def endpoint_pinning_holds() -> tuple[bool, str]:
         return False, "the gateway accepted a non-pinned endpoint"
     finally:
         if original is None:
-            os.environ.pop("GLM_OPENAI_BASE_URL", None)
+            os.environ.pop("MODEL_API_BASE", None)
         else:
-            os.environ["GLM_OPENAI_BASE_URL"] = original
+            os.environ["MODEL_API_BASE"] = original
 
 
 def schema_problems(tools: list[VisibleTool], result: Interpretation) -> list[str]:
@@ -767,7 +767,7 @@ def main(argv: list[str] | None = None) -> int:
             "kind": "glm_live_smoke",
             "generated_at": now.isoformat(),
             "ledger_today": today,
-            "model": os.environ.get("GLM_MODEL", "glm-5.2"),
+            "model": os.environ.get("MODEL_ID", "glm-5.3-flash"),
             "catalog": list(COMPOSED_ALIASES),
             "endpoint_pinning_refused_tampered_host": pinned,
             # The same statement the console makes, in the artifact. A saved

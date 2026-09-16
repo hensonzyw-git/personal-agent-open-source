@@ -7,10 +7,14 @@ gateway uses, and the answer is required to arrive as a function call so the
 schema is enforced by the provider rather than by parsing free text.
 
 Everything here fails closed. Prose instead of a call, several calls, a
-different function name, arguments that are not an object, a `thought` part, an
-unsupported part payload, a partial or errored response, a timeout: all raise
+different function name, arguments that are not an object, an unsupported part
+payload, a partial or errored response, a timeout: all raise
 `StructuredCallError`, and each caller turns that into its own safe outcome --
 `continue_session` for the classifier, `provider_failed` for the Compactor.
+The reasoning text of a `thought` part is excluded (GLM 5.3-class models
+always reason; the raw response stays in the audit transcript); the part
+itself is still validated and its call counted, and a thought-only response
+still fails as "no call".
 
 What this module does *not* do is repair a payload. A returned object is handed
 to the caller's own validators untouched, because a provider that repaired its
@@ -21,11 +25,19 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Final
 
 from personal_agent.context.budget import HeuristicTokenEstimator
+from personal_agent.diagnostics import transcript
+from personal_agent.diagnostics.transcript import NullRecorder, Recorder
+from personal_agent.runtime.model_providers import (
+    PROVIDERS,
+    ToolNameMapper,
+    provider_for_api_base,
+)
 from personal_agent.runtime.glm_gateway import (
     ZHIPU_API_BASE,
     Generate,
@@ -81,6 +93,8 @@ class StructuredModelClient:
         generate: Generate | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         deadline_grace_seconds: float = DEADLINE_GRACE_SECONDS,
+        recorder: Recorder | None = None,
+        purpose: str = "structured",
     ) -> None:
         if deadline_grace_seconds <= 0:
             raise StructuredCallError("deadline grace must be positive")
@@ -102,6 +116,8 @@ class StructuredModelClient:
         self._timeout = timeout
         self._input_budget_tokens = input_budget_tokens
         self._generate = generate or generate_with_adk
+        self._recorder = recorder or NullRecorder()
+        self._purpose = purpose
         # Python cannot kill a thread whose provider ignored its own timeout, so
         # this bounds the *wait*, not the call, and keeps at most one abandoned
         # worker per client. The classifier runs in the request path before the
@@ -125,6 +141,23 @@ class StructuredModelClient:
                 "parameters": request.parameters_schema,
             },
         }
+        # A provider that rejects characters in the business function name
+        # gets a sanitized declaration and the forced-choice subset under the
+        # sanitized name; the response name is mapped back before the
+        # expected-name comparison below. One name per call, so no collision
+        # is possible here.
+        mapper = ToolNameMapper.for_provider(
+            PROVIDERS[provider_for_api_base(self._api_base) or "zhipu"]
+        ).build([request.function_name])
+        sent_name = (
+            mapper.to_provider(request.function_name)
+            if mapper.has_mapping()
+            else request.function_name
+        )
+        declaration = {
+            "type": "function",
+            "function": {**declaration["function"], "name": sent_name},
+        }
         estimated_input_tokens = HeuristicTokenEstimator().estimate(
             canonical_json(
                 {
@@ -135,7 +168,7 @@ class StructuredModelClient:
                     "declarations": [declaration],
                     "tool_config": {
                         "mode": "ANY",
-                        "allowed_function_names": [request.function_name],
+                        "allowed_function_names": [sent_name],
                     },
                 }
             )
@@ -144,9 +177,56 @@ class StructuredModelClient:
             raise StructuredCallError(
                 "structured model input exceeded the configured budget"
             )
-        return _parse(
-            self._generate_bounded(request, declaration),
-            expected=request.function_name,
+        self._recorder.record(
+            transcript.MODEL_REQUEST,
+            {
+                "purpose": self._purpose,
+                "model": self._model,
+                "api_base": self._api_base,
+                "temperature": request.temperature,
+                "max_tokens": request.max_tokens,
+                "timeout_seconds": self._timeout,
+                "system_instruction": request.system,
+                "messages": [{"role": "user", "content": request.user_content}],
+                "declarations": [declaration],
+                "allowed_function_names": [sent_name],
+                "estimated_input_tokens": estimated_input_tokens,
+            },
+        )
+        started = time.monotonic()
+        try:
+            response = self._generate_bounded(request, declaration)
+        except StructuredCallError as exc:
+            self._record_failure("provider_call", exc, started)
+            raise
+        self._recorder.record(
+            transcript.MODEL_RESPONSE,
+            {
+                "purpose": self._purpose,
+                "model": self._model,
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "raw": response,
+            },
+        )
+        try:
+            return _parse(response, expected=sent_name)
+        except StructuredCallError as exc:
+            self._record_failure("response_validation", exc, started)
+            raise
+
+    def _record_failure(
+        self, phase: str, error: StructuredCallError, started: float
+    ) -> None:
+        self._recorder.record(
+            transcript.MODEL_FAILURE,
+            {
+                "purpose": self._purpose,
+                "phase": phase,
+                "model": self._model,
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "error_type": type(error).__name__,
+                "message": str(error),
+            },
         )
 
     def _generate_bounded(
@@ -157,7 +237,9 @@ class StructuredModelClient:
 
         def invoke() -> None:
             try:
-                outcome.put((True, self._call_generator(request, declaration)))
+                outcome.put(
+                    (True, self._call_generator(request, declaration))
+                )
             except BaseException as exc:  # noqa: BLE001 - reported to the caller
                 outcome.put((False, exc))
 
@@ -209,7 +291,7 @@ class StructuredModelClient:
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
                 timeout=self._timeout,
-                allowed_function_names=[request.function_name],
+                allowed_function_names=[declaration["function"]["name"]],
             )
         except StructuredCallError:
             raise
@@ -221,23 +303,25 @@ class StructuredModelClient:
 
 #: The classifier may run on a smaller, faster model than Chat. The 2026-07-29
 #: live run measured 8.3s, 12.2s and 16.7s for the flagship, with one 20s
-#: timeout, on a call that sits in the request path before the message is
-#: anchored -- unusable as latency, however correct the answers were. This is a
-#: closed-schema judgement, not a conversation, so a deployment should name a
-#: fast model here. It is **not** given a default of its own: inventing a model
-#: id that may not exist would fail at runtime, so an unset value keeps today's
-#: behaviour and the operator opts in.
+#: timeout.  Classification now runs after the message is anchored, but the
+#: separate model slot still lets an operator tune cost and worker throughput.
+#: This is a closed-schema judgement, not a conversation, so a deployment may
+#: name a fast model here. It is **not** given a default of its own: inventing a
+#: model id that may not exist would fail at runtime, so an unset value keeps
+#: today's behaviour and the operator opts in.
 #:
 #: Read-only check on 2026-08-07: the ECS deployment sets neither this nor
-#: ``GLM_MODEL``, so the classifier still falls back to the Chat model and both
+#: ``MODEL_ID``, so the classifier still falls back to the Chat model and both
 #: run on the same one. The isolation exists in code and not yet in production.
 #: Do not read the paragraph above as a description of what is deployed.
-CLASSIFIER_MODEL_ENV: Final[str] = "GLM_CLASSIFIER_MODEL"
+CLASSIFIER_MODEL_ENV: Final[str] = "CLASSIFIER_MODEL"
 
-#: The in-path deadline. Shorter than the Compactor's on purpose: a classifier
-#: that does not answer in time continues the current Session (§6.1 step 9),
-#: which costs some irrelevance, while a slow one costs the user every message.
-CLASSIFIER_TIMEOUT_SECONDS: Final[float] = 8.0
+#: Boundary classification runs after the response has been anchored, so it no
+#: longer consumes the chat request's latency budget.  Keep the timeout bounded
+#: for worker recovery, but give the auxiliary model the normal provider window:
+#: real production calls were observed to take longer than the former 8 seconds.
+#: Any timeout still fails closed to the existing Session (§6.1 step 9).
+CLASSIFIER_TIMEOUT_SECONDS: Final[float] = 20.0
 
 
 def structured_client_from_env(
@@ -245,23 +329,38 @@ def structured_client_from_env(
     input_budget_tokens: int,
     generate: Generate | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
-    model_env: str = "GLM_MODEL",
+    model_env: str = "MODEL_ID",
+    recorder: Recorder | None = None,
+    purpose: str = "structured",
 ) -> StructuredModelClient:
     """Build the production client from an already-loaded environment.
 
     `model_env` lets one deployment run the two auxiliary calls on different
-    models. It falls back to `GLM_MODEL`, so an unset override changes nothing.
+    models. It falls back to `MODEL_ID`, so an unset override changes nothing.
+    The provider comes from ``MODEL_PROVIDER`` (default: Zhipu) and decides
+    which pinned endpoint and which credential variable apply.
     """
     import os
 
-    model = os.environ.get(model_env) or os.environ.get("GLM_MODEL", "glm-5.2")
+    from personal_agent.runtime.model_providers import (
+        canonical_api_base,
+        credential_from_env,
+        provider_from_env,
+    )
+
+    provider = provider_from_env()
+    model = (
+        os.environ.get(model_env) or os.environ.get("MODEL_ID") or ""
+    ).strip() or provider.default_model
     return StructuredModelClient(
         model=f"openai/{model}",
-        api_key=require_env("ZAI_API_KEY"),
+        api_key=credential_from_env(provider),
         input_budget_tokens=input_budget_tokens,
-        api_base=os.environ.get("GLM_OPENAI_BASE_URL", ZHIPU_API_BASE),
+        api_base=os.environ.get("MODEL_API_BASE", canonical_api_base(provider)),
         generate=generate,
         timeout=timeout,
+        recorder=recorder,
+        purpose=purpose,
     )
 
 
@@ -278,10 +377,12 @@ def _parse(response: Any, *, expected: str) -> dict[str, Any]:
 
     calls: list[Any] = []
     for part in parts:
-        if getattr(part, "thought", False):
-            raise StructuredCallError(
-                "structured response contained thought content"
-            )
+        # GLM 5.3-class models always reason (same policy as the Chat
+        # gateway): a `thought` part's text is private reasoning, not prose,
+        # but the part is still fully validated and its call counted, so an
+        # unsupported payload or an extra call on a thought part still fails
+        # closed.
+        thought = bool(getattr(part, "thought", False))
         unsupported = _unsupported_fields(part)
         if unsupported:
             raise StructuredCallError(
@@ -292,7 +393,7 @@ def _parse(response: Any, *, expected: str) -> dict[str, Any]:
         if call is not None:
             calls.append(call)
         text = getattr(part, "text", None)
-        if isinstance(text, str) and text.strip():
+        if isinstance(text, str) and text.strip() and not thought:
             # Prose beside a structured answer is not a second opinion to pick
             # from; it means the contract was not followed.
             raise StructuredCallError("structured response contained prose")

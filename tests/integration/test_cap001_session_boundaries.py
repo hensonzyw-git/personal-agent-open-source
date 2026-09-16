@@ -209,7 +209,88 @@ def _waiting_operation(db, keyring: KeyRing, *, session_id: str, state: str) -> 
     db.flush()
 
 
+def _completed_finance_operation(db, keyring: KeyRing, *, session_id: str) -> None:
+    db.add(
+        ApiRequest(
+            request_id="req-finance",
+            device_id="dev-1",
+            client_request_id="client-finance",
+            request_fingerprint="fp-finance",
+            received_at=NOW,
+        )
+    )
+    db.add(
+        Operation(
+            operation_id="op-finance",
+            request_id="req-finance",
+            trace_id="tr-finance",
+            idempotency_key="key-finance",
+            state="succeeded",
+            tool="finance.log_expense",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    db.flush()
+    events.append_event(
+        db,
+        keyring,
+        conversation_id=CANONICAL,
+        session_id=session_id,
+        turn_id="trn-finance",
+        event_type=events.OPERATION_RESULT,
+        content={"status": "succeeded"},
+        operation_id="op-finance",
+        now=NOW,
+    )
+    db.flush()
+
+
 # -- F-D1 / F-D2: every non-terminal operation pins its Session ------------
+
+
+def test_eight_hours_always_opens_a_fresh_session(db) -> None:
+    _open_session(db, last_event_at=NOW - timedelta(hours=8))
+
+    decision = _manager().select_session(
+        db,
+        conversation_id=CANONICAL,
+        user_text="继续昨天的旅行计划",
+        now=NOW,
+    )
+
+    assert decision.opened is True
+    assert decision.reason == "idle_timeout"
+
+
+def test_completed_finance_tool_splits_a_plainly_unrelated_request(db, keyring) -> None:
+    _open_session(db)
+    _completed_finance_operation(db, keyring, session_id="ses-1")
+
+    decision = _manager().select_session(
+        db,
+        conversation_id=CANONICAL,
+        user_text="帮我规划周末爬山",
+        now=NOW + timedelta(minutes=3),
+    )
+
+    assert decision.opened is True
+    assert decision.reason == "completed_tool_unrelated"
+
+
+def test_completed_finance_tool_keeps_a_finance_followup(db, keyring) -> None:
+    _open_session(db)
+    _completed_finance_operation(db, keyring, session_id="ses-1")
+
+    decision = _manager().select_session(
+        db,
+        conversation_id=CANONICAL,
+        user_text="把这笔改成 30",
+        now=NOW + timedelta(minutes=3),
+    )
+
+    assert decision.opened is False
+    assert decision.session_id == "ses-1"
 
 
 @pytest.mark.parametrize(

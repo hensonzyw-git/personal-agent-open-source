@@ -39,6 +39,7 @@ from personal_agent.storage.models import (
     RECOVERABLE_OPERATION_STATES,
     Operation,
 )
+from personal_agent_core.tool_ir import TOOL_CONTRACTS
 
 
 #: How long an operation must have sat at the same state before recovery may
@@ -92,6 +93,16 @@ class RecoveryPlan:
     target_state: str | None = None
     safe_result: str | None = None
     reason: str | None = None
+
+
+#: Recovery actions for device-executed operations. They are a separate class
+#: from `RecoveryAction` on purpose: none of them reconcile against Finance.
+#: A device-action operation's authoritative twin is the phone's report
+#: (already settled via the result endpoint) or its silence (the timeout
+#: sweep's job, on a device-chosen deadline, not Finance's execution store).
+class DeviceRecoveryAction(StrEnum):
+    SKIP = "skip"  # not Finance's to reconcile; the sweep owns its timeout
+    RECONCILE = "reconcile"  # a connector-executed tool; normal path
 
 
 #: The only pre-submit recoverable state. A `dispatching` operation may not have
@@ -167,6 +178,7 @@ def plan_recovery(
     finance_status: FinanceExecutionStatus | None,
     *,
     quiet: bool,
+    executor: str = "mcp",
 ) -> RecoveryPlan:
     """Decide how to project a Finance status onto a recoverable operation.
 
@@ -182,9 +194,32 @@ def plan_recovery(
     already state the rule -- an absent row is a race, not proof -- and it had
     been applied to the dispatcher and never here. Making it a parameter means a
     future caller cannot reach the branch without answering the question.
+
+    `executor` names what performed the write. A device-executed operation has
+    no Finance execution twin at all: the authoritative twin is the phone's
+    report (which settles the operation through the result endpoint) or its
+    silence (the device timeout sweep's decision, parked at
+    `needs_manual_review`, never projected from Finance's absence). Reconciling
+    one against the Finance execution store would read a `None` status as
+    evidence about a write Finance knows nothing about — the exact
+    absence-as-proof mistake this module exists to prevent.
     """
     if agent_state not in RECOVERABLE_OPERATION_STATES:
         raise ValueError(f"{agent_state} is not a recoverable operation state")
+    if executor == "device" and agent_state != _PRE_SUBMIT_RECOVERABLE:
+        # Not Finance's to reconcile, and not pre-submit: the response left, so
+        # settlement is the device report's or the timeout sweep's. LEAVE keeps
+        # it out of every projection while those own it. (The pre-submit device
+        # case is decided below, after the quiet-period guard — review R8,
+        # 2026-09-08: crashing in `dispatching` used to LEAVE the operation
+        # re-scanned forever instead of resolving it.)
+        return RecoveryPlan(
+            RecoveryAction.LEAVE,
+            reason=(
+                "device-executed operation: settlement is the device report's "
+                "or the timeout sweep's, not Finance's execution store"
+            ),
+        )
     agent_pre_submit = agent_state == _PRE_SUBMIT_RECOVERABLE
 
     if not quiet:
@@ -194,6 +229,31 @@ def plan_recovery(
         return RecoveryPlan(
             RecoveryAction.LEAVE,
             reason="a live worker may still own this operation",
+        )
+
+    if executor == "device":
+        # Quiet, pre-submit, device-executed: the crash happened before the
+        # action could be issued anywhere. Delivery is not what makes this
+        # zero-write — an action is handed over from the seal on its own row,
+        # and reaching `dispatching` writes none (the seal is written by the
+        # same transition that parks it at `source_in_progress`). So a row
+        # still at `dispatching` is one no client was ever told about, which is
+        # zero-write evidence by construction — the same rule as Finance's own
+        # no-execution pre-submit branch below. (Review R8, 2026-09-08.)
+        #
+        # This deliberately also covers an item of a frozen action plan
+        # (design 4.1): a plan item still at `dispatching` was never issued. It
+        # may have been *resumable* from its own retained arguments, but
+        # resuming is a client's retry of the message, and a retry that never
+        # comes cannot leave a row in flight forever. Its siblings are separate
+        # rows with actions already sealed on them, and they are untouched.
+        return RecoveryPlan(
+            RecoveryAction.RESOLVE,
+            target_state="failed_safe",
+            reason=(
+                "device action crashed in dispatching: no action was ever "
+                "sealed for it, so nothing was handed to the phone"
+            ),
         )
 
     if finance_status is None:
@@ -294,12 +354,15 @@ def apply_recovery(
     *,
     now: datetime,
     quiet: bool,
+    executor: str = "mcp",
 ) -> RecoveryPlan:
     """Project a Finance status onto one operation, walking legal transitions.
 
     Returns the plan that was applied. `LEAVE` changes no state.
     """
-    plan = plan_recovery(operation.state, finance_status, quiet=quiet)
+    plan = plan_recovery(
+        operation.state, finance_status, quiet=quiet, executor=executor
+    )
 
     if plan.action is RecoveryAction.ADVANCE_IN_PROGRESS:
         _walk(session, operation, ("source_in_progress",), now, plan)
@@ -364,6 +427,7 @@ def recover_pending(
             status_by_id.get(operation.operation_id),
             now=now,
             quiet=quiet,
+            executor=_executor_of(operation.tool),
         )
         results.append((operation.operation_id, plan))
     return results
@@ -406,3 +470,20 @@ def _manual_review(
 
 def _nonempty(value: str | None) -> bool:
     return bool(value and value.strip())
+
+
+#: Device-executed tools, derived from the IR — never hand-listed, so a second
+#: device tool is skipped by recovery automatically.
+def _executor_of(tool: str | None) -> str:
+    """The IR executor of the operation's tool, defaulting to `mcp`.
+
+    `None` (an operation that never named a tool) and an unknown name both
+    default to the connector path: those operations are Finance's to reason
+    about, and the control plane will report no execution for them.
+    """
+    if tool is None:
+        return "mcp"
+    for contract in TOOL_CONTRACTS:
+        if contract.name == tool:
+            return contract.executor
+    return "mcp"

@@ -97,6 +97,13 @@ def test_a_formula_uses_the_only_shape_with_live_provider_evidence() -> None:
     assert view.values["personal_spend"] == "20.00"
 
 
+def test_a_bare_number_formula_result_from_get_record_is_readable() -> None:
+    """`get_record` returns the number result without the envelope; the 2026-08-19
+    live probe observed `17` and `41.91` for 个人支出."""
+    assert project({"个人支出": 17}).values["personal_spend"] == "17.00"
+    assert project({"个人支出": 41.91}).values["personal_spend"] == "41.91"
+
+
 @pytest.mark.parametrize(
     "cell",
     [
@@ -105,7 +112,6 @@ def test_a_formula_uses_the_only_shape_with_live_provider_evidence() -> None:
         {"type": 2, "value": "20"},
         {"type": 2},
         True,
-        20,
         "20",
         [],
     ],

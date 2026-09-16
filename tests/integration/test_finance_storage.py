@@ -89,6 +89,25 @@ def test_upgrade_and_downgrade_round_trip(tmp_path: Path) -> None:
     engine.dispose()
 
 
+def test_every_column_a_model_declares_exists_after_migrating(tmp_path: Path) -> None:
+    """A model column with no migration is invisible until production reads it.
+
+    The round trip above compares table *names*, so a forgotten column passes
+    every test in this repository that does not happen to touch it -- and a
+    test that touches it may be reading a `create_all` schema instead of a
+    migrated one. This is the guard for the class: migrated shape and declared
+    shape are compared column by column, for every table.
+    """
+    engine = create_database_engine(tmp_path / "columns.sqlite")
+    db.upgrade(engine)
+    inspector = inspect(engine)
+    for table, model in sorted(Base.metadata.tables.items()):
+        migrated = {column["name"] for column in inspector.get_columns(table)}
+        assert migrated == set(model.columns.keys()), table
+    db.downgrade(engine, "base")
+    engine.dispose()
+
+
 def test_audit_anchor_migration_witnesses_the_existing_tail(tmp_path: Path) -> None:
     engine = create_database_engine(tmp_path / "audit-anchor-migration.sqlite")
     db.upgrade(engine, "0002_duplicate_check_idempotency_key")

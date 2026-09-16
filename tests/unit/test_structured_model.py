@@ -2,8 +2,11 @@
 
 Covers F-H1..F-H11 (`docs/CAP-001失败集_v0.1.md` §7.5). The provider is a
 non-deterministic boundary, so these are the failure shapes first: prose instead
-of a call, several calls, another function, non-object arguments, thought
-content, an unsupported part payload, a provider error.
+of a call, several calls, another function, non-object arguments, an unsupported
+part payload, a provider error. The reasoning text of a `thought` part is
+excluded (GLM 5.3-class models always reason); the part itself is still
+validated and its call counted, and a thought-only response still fails as no
+call.
 
 What these cannot show is whether a real GLM produces those shapes -- that is
 F-H12, the live evidence.
@@ -61,6 +64,15 @@ def _text(value, *, thought=False):
     return SimpleNamespace(text=value, thought=thought, function_call=None)
 
 
+def _thinking_call(name, args):
+    """One ADK Part carrying reasoning text AND the structured call."""
+    return SimpleNamespace(
+        text="hidden reasoning",
+        thought=True,
+        function_call=SimpleNamespace(name=name, args=args),
+    )
+
+
 def _client(response=None, *, raises=None):
     def generate(**kwargs):
         generate.kwargs = kwargs
@@ -71,7 +83,7 @@ def _client(response=None, *, raises=None):
     generate.kwargs = None
     return (
         StructuredModelClient(
-            model="openai/glm-5.2",
+            model="openai/glm-5.3-flash",
             api_key="k",
             input_budget_tokens=32_768,
             api_base=PINNED,
@@ -113,7 +125,7 @@ def test_an_over_budget_request_is_refused_before_the_generator() -> None:
         return _response(_call("decide", {}))
 
     client = StructuredModelClient(
-        model="openai/glm-5.2",
+        model="openai/glm-5.3-flash",
         api_key="k",
         input_budget_tokens=1,
         api_base=PINNED,
@@ -134,7 +146,6 @@ def test_an_over_budget_request_is_refused_before_the_generator() -> None:
         _response(_call("something_else", {})),
         _response(_call("decide", ["not", "an", "object"])),
         _response(_call("decide", "still not an object")),
-        _response(_text("hidden", thought=True), _call("decide", {})),
         _response(_call("decide", {}), error_code="MAX_TOKENS"),
         _response(_call("decide", {}), partial=True),
         _response(_call("decide", {}), interrupted=True),
@@ -143,6 +154,56 @@ def test_an_over_budget_request_is_refused_before_the_generator() -> None:
 def test_every_malformed_structured_response_fails_closed(response) -> None:
     client, _ = _client(response)
     with pytest.raises(StructuredCallError):
+        client.call(_request())
+
+
+def test_thought_content_is_skipped_beside_the_structured_call() -> None:
+    """GLM 5.3-class models always reason: the thought part is skipped and the
+    single structured call is accepted."""
+    client, _ = _client(
+        _response(
+            _text("hidden reasoning", thought=True),
+            _call("decide", {"ok": True}),
+        )
+    )
+    assert client.call(_request()) == {"ok": True}
+
+
+def test_a_thought_only_structured_response_fails_closed() -> None:
+    client, _ = _client(_response(_text("hidden reasoning", thought=True)))
+    with pytest.raises(StructuredCallError):
+        client.call(_request())
+
+
+def test_a_thought_part_that_also_carries_the_structured_call_is_accepted() -> None:
+    """A single Part can carry reasoning text and the call: the call is counted
+    and the reasoning text is not treated as prose."""
+    client, _ = _client(_response(_thinking_call("decide", {"ok": True})))
+    assert client.call(_request()) == {"ok": True}
+
+
+def test_a_thought_part_with_an_unsupported_payload_still_fails_closed() -> None:
+    client, _ = _client(
+        _response(
+            types.Part(
+                text="hidden reasoning",
+                thought=True,
+                inline_data=types.Blob(
+                    mime_type="application/octet-stream",
+                    data=b"unsupported",
+                ),
+            )
+        )
+    )
+    with pytest.raises(StructuredCallError, match="unsupported content"):
+        client.call(_request())
+
+
+def test_a_thought_part_that_carries_a_call_still_counts_toward_multiple_calls() -> None:
+    client, _ = _client(
+        _response(_thinking_call("decide", {}), _call("decide", {}))
+    )
+    with pytest.raises(StructuredCallError, match="carried 2 function calls"):
         client.call(_request())
 
 
@@ -175,7 +236,7 @@ def test_a_provider_that_never_returns_is_bounded() -> None:
         return _response(_call("decide", {}))
 
     client = StructuredModelClient(
-        model="openai/glm-5.2",
+        model="openai/glm-5.3-flash",
         api_key="k",
         input_budget_tokens=32_768,
         api_base=PINNED,
@@ -210,7 +271,7 @@ def test_two_clients_do_not_share_one_in_flight_slot() -> None:
         return _response(_call("decide", {}))
 
     busy = StructuredModelClient(
-        model="openai/glm-5.2",
+        model="openai/glm-5.3-flash",
         api_key="k",
         input_budget_tokens=32_768,
         api_base=PINNED,
@@ -231,14 +292,14 @@ def test_two_clients_do_not_share_one_in_flight_slot() -> None:
 def test_the_classifier_may_run_on_its_own_model(monkeypatch) -> None:
     """An unset override changes nothing; a set one is used verbatim."""
     monkeypatch.setenv("ZAI_API_KEY", "k")
-    monkeypatch.setenv("GLM_MODEL", "glm-5.2")
+    monkeypatch.setenv("MODEL_ID", "glm-5.3-flash")
     monkeypatch.delenv(CLASSIFIER_MODEL_ENV, raising=False)
-    monkeypatch.delenv("GLM_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("MODEL_API_BASE", raising=False)
 
     default = structured_client_from_env(
         input_budget_tokens=32_768, model_env=CLASSIFIER_MODEL_ENV
     )
-    assert default._model == "openai/glm-5.2"
+    assert default._model == "openai/glm-5.3-flash"
 
     monkeypatch.setenv(CLASSIFIER_MODEL_ENV, "glm-fast-placeholder")
     overridden = structured_client_from_env(
@@ -251,7 +312,7 @@ def test_the_classifier_may_run_on_its_own_model(monkeypatch) -> None:
     # Chat is untouched by the override.
     assert (
         structured_client_from_env(input_budget_tokens=32_768)._model
-        == "openai/glm-5.2"
+        == "openai/glm-5.3-flash"
     )
 
 
@@ -264,7 +325,7 @@ def test_a_transport_failure_fails_closed() -> None:
 def test_a_tampered_endpoint_is_refused_before_any_call() -> None:
     with pytest.raises(Exception):
         StructuredModelClient(
-            model="openai/glm-5.2",
+            model="openai/glm-5.3-flash",
             api_key="k",
             input_budget_tokens=32_768,
             api_base="https://attacker.invalid/v1",
@@ -275,7 +336,7 @@ def test_a_tampered_endpoint_is_refused_before_any_call() -> None:
 def test_the_timeout_stays_within_the_turn_budget() -> None:
     with pytest.raises(StructuredCallError):
         StructuredModelClient(
-            model="openai/glm-5.2",
+            model="openai/glm-5.3-flash",
             api_key="k",
             input_budget_tokens=32_768,
             api_base=PINNED,
@@ -578,3 +639,29 @@ def test_a_provider_failure_reaches_the_compactor_as_a_failure() -> None:
     client, _ = _client(_response(_text("我总结不了")))
     with pytest.raises(StructuredCallError):
         GlmCompactorProvider(client).compact(_compactor_request())
+
+
+def test_the_structured_client_follows_the_provider_registry(monkeypatch) -> None:
+    """MODEL_PROVIDER=deepseek swaps endpoint and credential for aux calls."""
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv("MODEL_ID", "DeepSeek-V4-Flash-Vision-Exp")
+    monkeypatch.delenv("MODEL_API_BASE", raising=False)
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+
+    client = structured_client_from_env(input_budget_tokens=32_768)
+    assert client._model == "openai/DeepSeek-V4-Flash-Vision-Exp"
+    assert client._api_base == "https://api.deepseek.com/"
+    assert client._api_key == "sk-test"
+
+
+def test_the_structured_client_refuses_a_cross_provider_base(monkeypatch) -> None:
+    from personal_agent.runtime.model_gateway import ModelGatewayError
+
+    monkeypatch.setenv("MODEL_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setenv(
+        "MODEL_API_BASE", "https://open.bigmodel.cn/api/paas/v4/"
+    )
+    with pytest.raises(ModelGatewayError):
+        structured_client_from_env(input_budget_tokens=32_768)

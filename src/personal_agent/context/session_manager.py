@@ -26,6 +26,7 @@ change a device scope, a tool allowlist or an operation state.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -35,12 +36,17 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from personal_agent.context.config import ContextConfig
+from personal_agent.runtime.bookkeeping_intent import is_finance_intent_candidate
 from personal_agent.storage.models import (
     SESSION_BOUNDARY_REASONS,
     TERMINAL_OPERATION_STATES,
     ContextSession,
 )
+from personal_agent_core.timeutil import parse_rfc3339
 from personal_agent_core.errors import AppError, ErrorCode
+
+
+logger = logging.getLogger(__name__)
 
 
 CLASSIFIER_VERSION: Final[str] = "session-boundary-v1"
@@ -54,6 +60,12 @@ MAX_DOMAIN_CHARS: Final[int] = 64
 _TERMINAL_OPERATION_SQL: Final[str] = ", ".join(
     f"'{state}'" for state in sorted(TERMINAL_OPERATION_STATES)
 )
+
+
+def _sqlite_moment(value: datetime | str | None) -> datetime | None:
+    """Normalise SQLite aggregate output before assigning an ORM datetime field."""
+    return parse_rfc3339(value) if isinstance(value, str) else value
+
 
 #: The explicit signals a user can give in words. Deliberately a closed literal
 #: set rather than a model judgement: design §6.1 makes a correction outrank the
@@ -260,6 +272,34 @@ class SessionManager:
             .one_or_none()
         )
 
+    def system_event_session(
+        self, db, *, conversation_id: str, now: datetime
+    ) -> str:
+        """The Session a scheduler-initiated presentation event lands in.
+
+        A daily-review card has no user turn to anchor to, so it reuses the
+        Session that is already open -- which is where the next message would
+        continue anyway -- and opens a first Session when the Timeline has none
+        (a fresh install whose first content is the review, not a message). The
+        first Session carries `boundary_reason = None`, exactly as a first
+        message's would: it is not the outcome of a boundary decision.
+        """
+        current = self.open_session(db, conversation_id=conversation_id)
+        if current is not None:
+            return current.session_id
+        decision = self._open_new(
+            db,
+            conversation_id=conversation_id,
+            previous=None,
+            reason=None,
+            relation_kind="new_topic",
+            parent=None,
+            now=now,
+            classifier_version=None,
+            confidence_band=None,
+        )
+        return decision.session_id
+
     def non_terminal_session_id(self, db, *, conversation_id: str) -> str | None:
         """The Session holding an operation whose state may still change.
 
@@ -357,13 +397,43 @@ class SessionManager:
                 confidence_band=None,
             )
 
-        # Step 7. Idle time, domain, task completion and semantic continuity
-        # are inputs to *one* judgement, not separate triggers. A long silence
-        # alone is deliberately not a boundary: the reason code §6.2 defines is
-        # `idle_and_unrelated`, and only the classifier can supply the second
-        # half of that. Someone who steps away for two hours and comes back to
-        # the same task keeps their context.
         idle_minutes = self._idle_minutes(current, now)
+        # A stale working context is never silently revived.  A closed-set
+        # resume marker ("继续上次的话题") is represented by a fresh `resumes`
+        # Session pointing at the most recent closed one (step 5 above), not
+        # by keeping yesterday's raw Session open. Other phrasings fall
+        # through to the ordinary decision.
+        if idle_minutes is not None and idle_minutes >= self._config.session_idle_minutes:
+            return self._open_new(
+                db,
+                conversation_id=conversation_id,
+                previous=current,
+                reason="idle_timeout",
+                relation_kind="new_topic",
+                parent=None,
+                now=now,
+                classifier_version=None,
+                confidence_band=None,
+            )
+        # A successful governed Finance action is a strong completion signal.
+        # The next plainly non-Finance request must not inherit ledger context;
+        # short references such as "这笔" and ordinary Finance follow-ups stay.
+        if self._completed_finance_tool_is_unrelated(
+            db, session_id=current.session_id, user_text=user_text
+        ):
+            return self._open_new(
+                db,
+                conversation_id=conversation_id,
+                previous=current,
+                reason="completed_tool_unrelated",
+                relation_kind="new_topic",
+                parent=None,
+                now=now,
+                classifier_version=None,
+                confidence_band=None,
+            )
+
+        # Remaining semantic boundaries are a best-effort classifier fallback.
         if resolved_classification is None:
             # Compatibility path for standalone callers. The production API
             # always supplies a resolved value so no model call occurs while its
@@ -398,6 +468,41 @@ class SessionManager:
             now=now,
             classifier_version=CLASSIFIER_VERSION,
             confidence_band=outcome.confidence_band,
+        )
+
+    @staticmethod
+    def _completed_finance_tool_is_unrelated(
+        db, *, session_id: str, user_text: str
+    ) -> bool:
+        """Whether a terminal Finance action ends before an unrelated request.
+
+        This is deliberately a narrow Phase-1 continuity policy, not a general
+        semantic router: only a persisted succeeded Finance tool is a boundary
+        witness.  Future domains must register their own host-owned policy
+        rather than letting a model infer permissions from a tool name.
+        """
+        tool = db.execute(
+            text(
+                "SELECT o.tool FROM operations AS o "
+                "JOIN conversation_events AS e ON e.operation_id = o.operation_id "
+                "WHERE e.session_id = :sid AND o.state = 'succeeded' "
+                "AND o.tool LIKE 'finance.%' "
+                "ORDER BY e.timeline_sequence DESC LIMIT 1"
+            ),
+            {"sid": session_id},
+        ).scalar_one_or_none()
+        if tool is None:
+            return False
+        text_value = user_text.strip()
+        if not text_value:
+            return False
+        finance_followup_markers = (
+            "这笔", "那笔", "刚才", "刚刚", "账", "支出", "收入", "消费",
+            "花销", "报销", "退款", "收据", "记", "改成", "删除",
+        )
+        return not (
+            is_finance_intent_candidate(text_value)
+            or any(marker in text_value for marker in finance_followup_markers)
         )
 
     def prepare_classification(
@@ -439,6 +544,20 @@ class SessionManager:
             or current is None
             or self._classifier is None
             or self._state_provider is None
+            or (
+                current is not None
+                and (
+                    self._idle_minutes(current, now) is not None
+                    and self._idle_minutes(current, now)
+                    >= self._config.session_idle_minutes
+                )
+            )
+            or (
+                current is not None
+                and self._completed_finance_tool_is_unrelated(
+                    db, session_id=current.session_id, user_text=user_text
+                )
+            )
         ):
             return PreparedClassification(
                 expected_session_id,
@@ -485,6 +604,158 @@ class SessionManager:
             prepared.expected_timeline_sequence,
             outcome,
         )
+
+    def apply_retroactive_boundary(
+        self,
+        db,
+        *,
+        conversation_id: str,
+        operation_id: str,
+        resolved: ResolvedClassification,
+        now: datetime,
+    ) -> SessionDecision | None:
+        """Move one completed turn into a new Session after async classification.
+
+        The classifier deliberately runs outside the request path.  Its answer is
+        therefore useful only while the originally-open Session still contains
+        this operation as its newest material and while no checkpoint has
+        incorporated that material.  Anything else is a concurrent change, not
+        an excuse to rewrite a later turn or invalidate an already-verified
+        summary: leave the Session untouched and let a later message be judged
+        from fresh state.
+
+        Timeline events remain immutable in content and sequence.  Only their
+        Session membership is reassigned, atomically with closing the old
+        segment and opening the new one.  A parked clarification is non-terminal
+        and therefore cannot cross this boundary.
+        """
+        outcome = resolved.outcome
+        source_id = resolved.expected_session_id
+        def skip(reason: str) -> None:
+            logger.info(
+                "asynchronous Session boundary skipped operation_id=%s reason=%s",
+                operation_id,
+                reason,
+            )
+
+        if (
+            outcome is None
+            or outcome.decision != "open_new_session"
+            or source_id is None
+        ):
+            skip("not_open_new")
+            return None
+
+        operation_state = db.execute(
+            text("SELECT state FROM operations WHERE operation_id = :oid"),
+            {"oid": operation_id},
+        ).scalar_one_or_none()
+        if operation_state not in TERMINAL_OPERATION_STATES:
+            skip("operation_not_terminal")
+            return None
+
+        rows = db.execute(
+            text(
+                "SELECT event_id, session_id, timeline_sequence, created_at "
+                "FROM conversation_events "
+                "WHERE conversation_id = :cid AND operation_id = :oid "
+                "ORDER BY timeline_sequence"
+            ),
+            {"cid": conversation_id, "oid": operation_id},
+        ).mappings().all()
+        if not rows or any(row["session_id"] != source_id for row in rows):
+            skip("operation_events_changed")
+            return None
+
+        current = self.open_session(db, conversation_id=conversation_id)
+        if current is None or current.session_id != source_id:
+            skip("open_session_changed")
+            return None
+        first_sequence = rows[0]["timeline_sequence"]
+        last_sequence = rows[-1]["timeline_sequence"]
+        # A later event means another request already relied on this Session.
+        # Reclassifying the earlier operation at that point would silently
+        # change the context of the later one.
+        later = db.execute(
+            text(
+                "SELECT 1 FROM conversation_events "
+                "WHERE conversation_id = :cid AND session_id = :sid "
+                "AND timeline_sequence > :last LIMIT 1"
+            ),
+            {"cid": conversation_id, "sid": source_id, "last": last_sequence},
+        ).scalar_one_or_none()
+        if later is not None:
+            skip("later_event_exists")
+            return None
+        # An active checkpoint binds an event range to this Session id.  Rather
+        # than weakening that evidence in a background job, leave this turn
+        # where it is and classify a later fresh turn.
+        checkpointed = db.execute(
+            text(
+                "SELECT 1 FROM context_checkpoints "
+                "WHERE session_id = :sid AND status = 'active' "
+                "AND covered_through_sequence >= :first LIMIT 1"
+            ),
+            {"sid": source_id, "first": first_sequence},
+        ).scalar_one_or_none()
+        if checkpointed is not None:
+            skip("checkpointed")
+            return None
+
+        decision = self._open_new(
+            db,
+            conversation_id=conversation_id,
+            previous=current,
+            reason=outcome.reason,
+            relation_kind="new_topic",
+            parent=None,
+            now=now,
+            classifier_version=CLASSIFIER_VERSION,
+            confidence_band=outcome.confidence_band,
+        )
+        if not decision.opened:  # pragma: no cover - guarded by the open check
+            return None
+        db.execute(
+            text(
+                "UPDATE conversation_events SET session_id = :target "
+                "WHERE conversation_id = :cid AND operation_id = :oid "
+                "AND session_id = :source"
+            ),
+            {
+                "target": decision.session_id,
+                "cid": conversation_id,
+                "oid": operation_id,
+                "source": source_id,
+            },
+        )
+        # `_open_new` closed the source while it still contained this operation.
+        # Re-read each segment's last event after reassignment so future idle
+        # calculations use their real boundaries rather than the classifier's
+        # completion time.
+        source_last = db.execute(
+            text(
+                "SELECT MAX(created_at) FROM conversation_events "
+                "WHERE conversation_id = :cid AND session_id = :sid"
+            ),
+            {"cid": conversation_id, "sid": source_id},
+        ).scalar_one()
+        target_last = db.execute(
+            text(
+                "SELECT MAX(created_at) FROM conversation_events "
+                "WHERE conversation_id = :cid AND session_id = :sid"
+            ),
+            {"cid": conversation_id, "sid": decision.session_id},
+        ).scalar_one()
+        current.last_event_at = _sqlite_moment(source_last)
+        opened = db.get(ContextSession, decision.session_id)
+        if opened is None:  # pragma: no cover - _open_new flushed it
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="retroactive Session was not persisted",
+            )
+        opened.last_event_at = _sqlite_moment(target_last)
+        db.flush()
+        return decision
 
     @staticmethod
     def _outcome_for_current(

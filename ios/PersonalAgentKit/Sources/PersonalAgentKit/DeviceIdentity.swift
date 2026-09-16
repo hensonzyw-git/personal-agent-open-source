@@ -148,9 +148,26 @@ public enum DeviceKeyKind: String, Sendable {
 /// On a real iPhone the software branch does not exist, so an unavailable Enclave
 /// is an error rather than a silent downgrade.
 public struct DeviceIdentityFactory: Sendable {
+    #if os(macOS) && DEBUG
+    // Internal, macOS debug-only seam. Offline tests must not block on the
+    // real Secure Enclave or create hardware credentials. No iPhone build
+    // contains this override or a software fallback.
+    private var useSoftwareForTesting = false
+    static var softwareForTests: Self {
+        var factory = Self()
+        factory.useSoftwareForTesting = true
+        return factory
+    }
+    #endif
     public init() {}
 
     public func create() throws -> (identity: any DeviceIdentity, kind: DeviceKeyKind, blob: Data) {
+        #if os(macOS) && DEBUG
+        if useSoftwareForTesting {
+            let identity = SoftwareDeviceIdentity()
+            return (identity, .software, identity.persistentRepresentation)
+        }
+        #endif
         if SecureEnclaveDeviceIdentity.isAvailable {
             let identity = try SecureEnclaveDeviceIdentity()
             return (identity, .secureEnclave, identity.persistentRepresentation)

@@ -23,6 +23,8 @@ from personal_agent.api.composition import (
     CompositionError,
     agent_service,
 )
+from personal_agent.media.config import MediaConfigError, media_config_from_env
+from personal_agent.runtime.modality import ModalityConfigError, master_switch
 from personal_agent_core.write_switch import (
     WriteSwitchConfigError,
     load_write_switch,
@@ -145,6 +147,24 @@ def main() -> None:
     # is validated at composition.
     ledger_url = os.environ.get("PERSONAL_AGENT_LEDGER_URL", "").strip() or None
 
+    # `#18`: §4.3's media ceilings. Absence is a normal outcome -- images are
+    # off -- while an unreadable value stops the boot, because a typo in a unit
+    # file would otherwise surface as an upload failing for no visible reason.
+    try:
+        media = media_config_from_env()
+    except MediaConfigError as error:
+        raise SystemExit(str(error)) from error
+
+    # `#13`. §8's master switch, validated here for the same reason a media
+    # value is: a typo in a unit file must stop the boot rather than surface as
+    # every image turn failing for no visible reason. The switch is *read* on
+    # each request (the capability is a callable), so this call is the
+    # fail-fast; the value itself is not carried forward.
+    try:
+        master_switch()
+    except ModalityConfigError as error:
+        raise SystemExit(str(error)) from error
+
     config = AgentServiceConfig(
         database=args.database,
         finance_mcp_url=args.finance_mcp_url,
@@ -155,6 +175,12 @@ def main() -> None:
         ),
         ledger_url=ledger_url,
         dal_resume_config=Path(os.environ["PERSONAL_AGENT_DAL_RESUME_BRIDGE_CONFIG"]) if os.environ.get("PERSONAL_AGENT_DAL_RESUME_BRIDGE_CONFIG") else None,
+
+        media=media,
+        v2_device_ids=_v2_devices_from_env(),
+        v2_execution_enabled=os.environ.get('ADK_RUNTIME_V2_EXECUTION','true')=='true',
+        trip_query_enabled=os.environ.get('FINANCE_TRIP_QUERY_ENABLED','false')=='true',
+        search_config=_search_config_from_env(),
     )
     try:
         asyncio.run(_serve(config, args, bind, write_switch=write_switch))
@@ -206,3 +232,17 @@ def _serve_restore_read_only(database: Path, args, bind: BindTarget) -> None:
             uvicorn.run(app, host=bind.host, port=bind.port, **kwargs)
     finally:
         engine.dispose()
+
+
+def _search_config_from_env():
+    from personal_agent.search.adapter import SearchConfig
+    return SearchConfig(enabled=os.environ.get('SEARCH_ENABLED')=='true',
+        extract_enabled=os.environ.get('SEARCH_EXTRACT_ENABLED')=='true',
+        auth_mode=os.environ.get('SEARCH_AUTH_MODE'),
+        daily_limit=int(os.environ.get('SEARCH_DAILY_LIMIT','100')))
+
+
+def _v2_devices_from_env():
+    mode=os.environ.get('CHAT_RUNTIME','legacy')
+    if mode not in {'legacy','adk_v2'}:raise ValueError('CHAT_RUNTIME must be legacy or adk_v2')
+    return frozenset(x.strip() for x in os.environ.get('ADK_RUNTIME_V2_DEVICES','').split(',') if x.strip()) if mode=='adk_v2' else frozenset()

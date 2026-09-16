@@ -224,6 +224,26 @@ async def check():
 
 asyncio.run(check())
 '
+# The calendar domain's tools must be advertised too. `calendar.create_event`
+# is a device-executed write: the server advertises it and its handler is a
+# fail-closed guard — real execution happens on the phone — so advertising it
+# here proves the IR-derived fork deployed, not that any event was written.
+expect_success "mcp catalog advertises calendar.create_event and calendar.ingest_events" \
+  sudo -u "$MCP_USER" /opt/personal-agent/.venv/bin/python -c '
+import asyncio
+from personal_agent.mcp_client.core import McpClientCore, StreamableHttpTransport
+
+async def check():
+    async with McpClientCore(
+        "finance", StreamableHttpTransport(url="http://127.0.0.1:8811/mcp")
+    ) as client:
+        names = {tool.name for tool in await client.list_tools()}
+        missing = {"calendar.create_event", "calendar.ingest_events"} - names
+        if missing:
+            raise SystemExit(f"missing calendar tools: {sorted(missing)}")
+
+asyncio.run(check())
+'
 # The API requires a device token; an unauthenticated request must be a 401,
 # which proves the app answered through the Unix socket.
 API_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
@@ -272,25 +292,11 @@ expect_success "backup user can read api staging dir" \
   sudo -u "$BACKUP_USER" ls /var/backups/personal-agent/api
 expect_success "backup user can read mcp staging dir" \
   sudo -u "$BACKUP_USER" ls /var/backups/personal-agent/mcp
-# Listing a directory is not opening a file, and on 2026-08-01 that difference
-# was the whole defect: the dirs were 0770 group=backup and listed fine, while
-# every staged file inside was 0600 owner-only under UMask=0077. The backup ran,
-# stat'd all three inputs, and died on its first actual read. Assert the read.
-for pair in "agent.latest.sqlite:api" "deletion-manifest.json:api" \
-            "dal.latest.sqlite:dal" \
-            "finance.latest.sqlite:mcp"; do
-  f="${pair%%:*}"; sub="${pair##*:}"
-  p=/var/backups/personal-agent/$sub/$f
-  if [ ! -e "$p" ]; then
-    fail "staged file $p does not exist (has the db-backup unit run?)"
-  else
-    expect_success "backup user can OPEN staged $sub/$f" \
-      sudo -u "$BACKUP_USER" head -c 1 "$p"
-  fi
-done
+expect_success "backup user can OPEN staged dal snapshot" \
+  sudo -u "$BACKUP_USER" head -c 1 /var/backups/personal-agent/dal/dal.latest.sqlite
 # Staging dirs: 2770, owned by the service user, group backup, no 'other'. The
 # setgid bit is what makes new staged files inherit the backup group.
-for pair in "$API_USER:api" "$MCP_USER:mcp" "personal-agent-dal:dal"; do
+for pair in "personal-agent-dal:dal"; do
   owner="${pair%%:*}"; sub="${pair##*:}"
   d=/var/backups/personal-agent/$sub
   m="$(stat -c %a "$d")"; while [ "${#m}" -lt 4 ]; do m="0$m"; done
@@ -301,6 +307,39 @@ for pair in "$API_USER:api" "$MCP_USER:mcp" "personal-agent-dal:dal"; do
     fail "staging dir $d is $(stat -c %U:%G "$d")/$m, want $owner:$BACKUP_USER setgid (2770) with no 'other'"
   fi
 done
+# The API snapshot, manifest and media ciphertext are one immutable run now.
+# Do not test just `ls`: the consumer's real boundary is its verifier, which
+# opens every declared file, checks each ciphertext hash, and rejects extras.
+expect_success "backup user can verify the published media bundle" \
+  sudo -u "$BACKUP_USER" /opt/personal-agent/.venv/bin/personal-agent-media-backup-bundle \
+    verify --stage-root /var/backups/personal-agent/api
+expect_success "backup user can OPEN staged mcp finance snapshot" \
+  sudo -u "$BACKUP_USER" head -c 1 /var/backups/personal-agent/mcp/finance.latest.sqlite
+if [ "$(stat -c %U:%G:%a /var/backups/personal-agent/media-bundle.lock)" = "root:root:444" ] &&
+   [ "$(stat -c %U:%G:%a /var/backups/personal-agent)" = "root:root:755" ]; then
+  pass "media bundle lock is root-owned and openable by both producer and consumer"
+else
+  fail "media bundle lock or parent is replaceable; run install.sh"
+fi
+# The API bundle's parent and run directory deliberately are not group-writable:
+# read access is enough for restic, while group write would let the backup
+# identity replace a run or the latest pointer after verification.
+for d in /var/backups/personal-agent/api /var/backups/personal-agent/api/media-runs; do
+  if [ "$(stat -c %U:%G:%a "$d")" = "$API_USER:$BACKUP_USER:2750" ]; then
+    pass "media bundle directory $d is API-writable and backup-read-only"
+  else
+    fail "media bundle directory $d is $(stat -c %U:%G:%a "$d"), want $API_USER:$BACKUP_USER:2750"
+  fi
+done
+expect_refused "backup user cannot replace media bundle pointer" \
+  sudo -u "$BACKUP_USER" test -w /var/backups/personal-agent/api
+expect_refused "backup user cannot replace media bundle runs" \
+  sudo -u "$BACKUP_USER" test -w /var/backups/personal-agent/api/media-runs
+if [ "$(stat -c %U:%G:%a /var/backups/personal-agent/mcp)" = "$MCP_USER:$BACKUP_USER:2770" ]; then
+  pass "mcp staging dir remains setgid for its direct snapshot writer"
+else
+  fail "mcp staging dir is $(stat -c %U:%G:%a /var/backups/personal-agent/mcp), want $MCP_USER:$BACKUP_USER:2770"
+fi
 expect_success "personal-agent-backup.timer enabled" \
   systemctl is-enabled --quiet personal-agent-backup.timer
 expect_success "personal-agent-db-backup.timer enabled" \
@@ -321,6 +360,11 @@ expect_success "personal-agent-cleanup.timer enabled" \
   systemctl is-enabled --quiet personal-agent-cleanup.timer
 expect_success "personal-agent-cleanup.timer active" \
   systemctl is-active --quiet personal-agent-cleanup.timer
+expect_success "personal-agent-media-cleanup.timer enabled" \
+  systemctl is-enabled --quiet personal-agent-media-cleanup.timer
+expect_success "personal-agent-media-cleanup.timer active" \
+  systemctl is-active --quiet personal-agent-media-cleanup.timer
+expect_oneshot_succeeded personal-agent-media-cleanup.service
 expect_oneshot_succeeded personal-agent-review.service
 expect_oneshot_succeeded personal-agent-cleanup.service
 expect_oneshot_succeeded personal-agent-backup.service

@@ -23,6 +23,9 @@ class ErrorCode(StrEnum):
 
     # Request and authorisation
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
+    QUERY_CAPACITY_EXCEEDED = "QUERY_CAPACITY_EXCEEDED"
+    CLIENT_UPGRADE_REQUIRED = "CLIENT_UPGRADE_REQUIRED"
+    RUNTIME_UNAVAILABLE = "RUNTIME_UNAVAILABLE"
     SCOPE_DENIED = "SCOPE_DENIED"
     TOOL_NOT_ALLOWLISTED = "TOOL_NOT_ALLOWLISTED"
     UNSUPPORTED_OPERATION = "UNSUPPORTED_OPERATION"
@@ -35,10 +38,19 @@ class ErrorCode(StrEnum):
     BOOKKEEPING_TOOL_REQUIRED = "BOOKKEEPING_TOOL_REQUIRED"
     #: A Finance read was answered from model text instead of the fact source.
     FINANCE_TOOL_REQUIRED = "FINANCE_TOOL_REQUIRED"
+    #: An explicit calendar-create request was answered with prose and no
+    #: EventKit-backed device action was issued.
+    CALENDAR_TOOL_REQUIRED = "CALENDAR_TOOL_REQUIRED"
 
     # Finance semantics
     CLARIFICATION_REQUIRED = "CLARIFICATION_REQUIRED"
+    CLARIFICATION_REPEATED = "CLARIFICATION_REPEATED"
     CATEGORY_NOT_ALLOWED = "CATEGORY_NOT_ALLOWED"
+    #: A category correction was refused because the row no longer holds the
+    #: category the caller believed it held. Deliberately distinct from a plain
+    #: conflict: nothing was written, and the caller is expected to show the
+    #: value the ledger actually has rather than retry blindly.
+    CATEGORY_CHANGED_ELSEWHERE = "CATEGORY_CHANGED_ELSEWHERE"
     POSSIBLE_DUPLICATE = "POSSIBLE_DUPLICATE"
     FX_RATE_UNAVAILABLE = "FX_RATE_UNAVAILABLE"
     NO_CHANGE_REQUIRED = "NO_CHANGE_REQUIRED"
@@ -56,18 +68,71 @@ class ErrorCode(StrEnum):
     BATCH_ATOMICITY_UNAVAILABLE = "BATCH_ATOMICITY_UNAVAILABLE"
     BATCH_COMMIT_UNKNOWN = "BATCH_COMMIT_UNKNOWN"
 
+    # Calendar device-executed actions. The iPhone EventKit is the fact source:
+    # a denial or an execution failure it *reports* is zero-write evidence, at
+    # the same trust level as Finance reporting its own refusal. The timeout is
+    # deliberately not here as a zero-write claim — a report that never arrived
+    # means the write may exist, which is `needs_manual_review`, not a code.
+    DEVICE_ACTION_DENIED = "DEVICE_ACTION_DENIED"
+    DEVICE_EXECUTION_FAILED = "DEVICE_EXECUTION_FAILED"
+
     # Timeline and context (`CAP-001`). The later cross-cutting codes
     # (`MEMORY_POLICY_REJECTED`, `MEDIA_NOT_READY`, `UNSUPPORTED_MODALITY`,
     # `INVALID_EVENT_CURSOR`) arrive with the CAP that serves their route; a
     # code with no caller is surface, not readiness.
     TIMELINE_MISMATCH = "TIMELINE_MISMATCH"
+    #: The progress trail polls by idempotency key because the chat POST can
+    #: hold the client for up to 30 seconds before naming the operation. A key
+    #: nothing has anchored yet is a distinguishable 400, never a bare 404 that
+    #: could be read as "this key is free, send a new request".
+    OPERATION_NOT_ANCHORED = "OPERATION_NOT_ANCHORED"
     INVALID_CURSOR = "INVALID_CURSOR"
     CONTEXT_BUDGET_EXCEEDED = "CONTEXT_BUDGET_EXCEEDED"
     CONTEXT_UNAVAILABLE = "CONTEXT_UNAVAILABLE"
     PENDING_OPERATION_NOT_CANCELLABLE = "PENDING_OPERATION_NOT_CANCELLABLE"
+    CALENDAR_SYNC_RESET_REQUIRED = "CALENDAR_SYNC_RESET_REQUIRED"
+
+    # Media (`#18`). `MEDIA_NOT_READY` is the name the comment above reserved
+    # for this CAP; the other three are the distinctions §5.2's state machine
+    # makes and a client has to act on differently, which is the test for
+    # whether a code deserves to exist.
+    #: The object is real and not yet usable -- `pending`/`uploading` at
+    #: `complete`, or anything but `ready`/`bound` at `GET`. Retryable, and
+    #: specifically not a 404: "not yet" and "never" are different answers, and
+    #: a client that reads one as the other either gives up early or polls
+    #: forever.
+    MEDIA_NOT_READY = "MEDIA_NOT_READY"
+    #: §6's stripe lock is held by a reader or another writer. Also retryable,
+    #: and separate from `MEDIA_NOT_READY` because nothing is wrong with the
+    #: object -- the refusal is about the moment, not the state.
+    MEDIA_BUSY = "MEDIA_BUSY"
+    #: No such object *for this device*. Identical to what an id that never
+    #: existed gets, so the endpoint cannot be used to ask whether an id is
+    #: real.
+    MEDIA_NOT_FOUND = "MEDIA_NOT_FOUND"
+    #: §5.2: "删除后返回墓碑，不复活". A tombstone is not an absence -- saying so
+    #: is what lets a client stop retrying instead of concluding it mistyped.
+    MEDIA_GONE = "MEDIA_GONE"
 
     # Internal
     INTERNAL_ERROR = "INTERNAL_ERROR"
+
+
+class ClarificationQuestion(StrEnum):
+    """Closed Finance questions that may cross the MCP error boundary.
+
+    A connector is never allowed to put a resolver's arbitrary detail on the
+    wire.  These are deliberately fixed product questions, selected only from
+    the small enum below.  The Host persists one of them as the exact pending
+    question, so a later answer has a meaningful continuation context instead
+    of the generic ``CLARIFICATION_REQUIRED`` catalogue message.
+    """
+
+    EXPENSE_CATEGORY = "这笔支出属于哪个分类？"
+    TRIP = "这笔旅行支出对应哪一趟行程？"
+    ORIGINAL_EXPENSE = "这笔退款或 AA 对应哪一笔原消费？"
+    TRIP_CATEGORY_CONFLICT = "这笔应按旅行还是原分类记录？"
+    INCOME_SUBJECT = "这笔收入的事项是什么？"
 
 
 class ModelFailureReason(StrEnum):
@@ -106,6 +171,9 @@ MODEL_RETRYABLE_FAILURE_REASONS: Final[frozenset[str]] = frozenset(
 #: amounts, record identifiers, Base or table identifiers.
 ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.INVALID_ARGUMENT: "请求参数不符合工具合同",
+    ErrorCode.QUERY_CAPACITY_EXCEEDED: "查询结果超过处理容量，请缩小查询范围；未返回不完整统计",
+    ErrorCode.CLIENT_UPGRADE_REQUIRED: "请升级客户端后继续此任务",
+    ErrorCode.RUNTIME_UNAVAILABLE: "此任务的运行时暂不可用，任务和回执已保留",
     ErrorCode.SCOPE_DENIED: "当前设备没有执行该操作的权限",
     ErrorCode.TOOL_NOT_ALLOWLISTED: "该工具不在服务端允许集合内",
     ErrorCode.UNSUPPORTED_OPERATION: "该操作一期不开放，请在电脑端飞书账本处理",
@@ -118,8 +186,17 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.FINANCE_TOOL_REQUIRED: (
         "这是账务查询，但未调用 Finance 工具，未返回账本结果"
     ),
+    ErrorCode.CALENDAR_TOOL_REQUIRED: (
+        "这是创建日程请求，但未调用日历工具，没有创建任何日程"
+    ),
     ErrorCode.CLARIFICATION_REQUIRED: "信息不完整，需要先确认后才能记账",
+    ErrorCode.CLARIFICATION_REPEATED: (
+        "同一项信息已回答但仍无法完成，未写入任何记录"
+    ),
     ErrorCode.CATEGORY_NOT_ALLOWED: "分类不在账本的合法选项内",
+    ErrorCode.CATEGORY_CHANGED_ELSEWHERE: (
+        "这笔的分类已被其他地方改过，未覆盖；请确认账本当前的分类后再决定"
+    ),
     ErrorCode.POSSIBLE_DUPLICATE: "发现同日完全相同的记录，请确认是否仍然记录",
     ErrorCode.FX_RATE_UNAVAILABLE: "暂时无法取得参考汇率，未写入任何记录",
     ErrorCode.NO_CHANGE_REQUIRED: "目标余额与当前余额相同，无需写入",
@@ -134,13 +211,25 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     ErrorCode.SOURCE_COMMITTED_MISMATCH: "写入后回读的字段与预期不一致",
     ErrorCode.BATCH_ATOMICITY_UNAVAILABLE: "多笔写入尚未启用，一笔也没有记录",
     ErrorCode.BATCH_COMMIT_UNKNOWN: "多笔写入结果未知，正在按批次键核验",
+    ErrorCode.DEVICE_ACTION_DENIED: "设备上的日历没有授权这次写入",
+    ErrorCode.DEVICE_EXECUTION_FAILED: "设备写入日历失败，没有产生日程",
     ErrorCode.TIMELINE_MISMATCH: "该会话标识不属于当前对话记录",
+    ErrorCode.OPERATION_NOT_ANCHORED: "该请求键还没有对应的操作记录，请继续等待",
     ErrorCode.INVALID_CURSOR: "翻页游标无效或已过期",
     ErrorCode.CONTEXT_BUDGET_EXCEEDED: "本轮必要上下文超出可用长度，未调用模型",
     ErrorCode.CONTEXT_UNAVAILABLE: "暂时无法安全组装对话上下文",
+    # `#18`. These four are read by a client that is mid-upload, so each says
+    # what to do next rather than what went wrong: wait, re-send, stop. A
+    # message that only names the refusal leaves the client to guess, and the
+    # guesses (retry a tombstone, abandon a busy lock) are both wrong.
+    ErrorCode.MEDIA_NOT_READY: "图片还在处理中，请稍后重试",
+    ErrorCode.MEDIA_BUSY: "图片存储正忙，请稍后重试",
+    ErrorCode.MEDIA_NOT_FOUND: "找不到这张图片",
+    ErrorCode.MEDIA_GONE: "这张图片已被删除",
     ErrorCode.PENDING_OPERATION_NOT_CANCELLABLE: (
         "当前待办可能已提交，不能放弃后另开话题"
     ),
+    ErrorCode.CALENDAR_SYNC_RESET_REQUIRED: "日历镜像已重建，请重新同步当前日历",
     ErrorCode.INTERNAL_ERROR: "服务内部错误",
 }
 
@@ -162,6 +251,7 @@ class ErrorEnvelope(BaseModel):
     retryable: bool
     operation_id: str | None = None
     trace_id: str | None = None
+    clarification_question: ClarificationQuestion | None = None
 
 
 class AppError(Exception):
@@ -176,11 +266,20 @@ class AppError(Exception):
         code: ErrorCode,
         *,
         internal_detail: str | None = None,
+        clarification_question: ClarificationQuestion | None = None,
     ) -> None:
         if code not in ERROR_MESSAGES:
             raise ValueError(f"error code has no outward message: {code!r}")
+        if (
+            clarification_question is not None
+            and code is not ErrorCode.CLARIFICATION_REQUIRED
+        ):
+            raise ValueError(
+                "clarification_question is valid only for CLARIFICATION_REQUIRED"
+            )
         self.code = code
         self.internal_detail = internal_detail
+        self.clarification_question = clarification_question
         super().__init__(code.value)
 
     @property
@@ -200,6 +299,7 @@ class AppError(Exception):
             retryable=self.retryable,
             operation_id=operation_id,
             trace_id=trace_id,
+            clarification_question=self.clarification_question,
         )
 
     def __str__(self) -> str:

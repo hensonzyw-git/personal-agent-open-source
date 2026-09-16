@@ -80,4 +80,55 @@ struct LedgerJumpTests {
     func emptyIsNil() throws {
         #expect(try capabilities(ledgerURL: "").validatedLedgerURL == nil)
     }
+
+    @Test("a legacy capability response defaults image input closed")
+    func missingImagesDefaultsClosed() throws {
+        let decoded = try capabilities(ledgerURL: nil)
+        #expect(!decoded.images.enabled)
+        #expect(decoded.images.maxContentBytes == nil)
+        #expect(decoded.images.allowedMIMEs.isEmpty)
+    }
+
+    @Test("image limits are server facts, not client defaults")
+    func decodesImageLimits() throws {
+        let decoded = try JSONDecoder().decode(Capabilities.self, from: Data("""
+        {
+          "allowed_tools_version": "v1", "tools": [], "conversation_id": "conv-1",
+          "images": {"enabled": true, "max_content_bytes": 123, "max_dimension": 45,
+                     "allowed_mimes": ["image/jpeg"]}
+        }
+        """.utf8))
+        #expect(decoded.images.enabled)
+        #expect(decoded.images.maxContentBytes == 123)
+        #expect(decoded.images.maxDimension == 45)
+        #expect(decoded.images.allowedMIMEs == ["image/jpeg"])
+    }
+
+    @Test("disabled images without media limits preserve the tool catalog")
+    func disabledImagesKeepTools() throws {
+        let decoded = try JSONDecoder().decode(Capabilities.self, from: Data("""
+        {"allowed_tools_version":"v1","tools":[{"alias":"meta.capabilities"}],
+         "conversation_id":"conv-1","images":{"enabled":false}}
+        """.utf8))
+        #expect(decoded.tools.map(\.alias) == ["meta.capabilities"])
+        #expect(!decoded.images.enabled)
+        #expect(decoded.images.allowedMIMEs.isEmpty)
+        #expect(decoded.images.maxContentBytes == nil)
+        #expect(decoded.images.maxDimension == nil)
+    }
+
+    @Test("malformed image facts and enabled images without MIME facts are refused",
+          arguments: [
+            #"{"enabled":true}"#,
+            #"{"enabled":false,"allowed_mimes":42}"#,
+            #"{"enabled":"false"}"#,
+            #"{"allowed_mimes":[]}"#,
+            #"{"enabled":false,"max_dimension":"large"}"#
+          ])
+    func rejectsInvalidImageFacts(_ images: String) {
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(Capabilities.ImageInputCapability.self,
+                                     from: Data(images.utf8))
+        }
+    }
 }

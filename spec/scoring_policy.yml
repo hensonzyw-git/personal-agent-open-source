@@ -1,0 +1,468 @@
+# US / AI systemic risk monitor — frozen scoring & state policy
+#
+# Encodes PRD §4 (four-stage state machine), §5 (three scores) and §10 (alert
+# severity). This file is the rule baseline; every score_snapshot and
+# state_snapshot records the `policy_version` it was computed under, so a
+# replay against the same raw artifacts + this file reproduces identical output.
+#
+# All thresholds are TRANSPARENT HEURISTICS, not statistically validated
+# (PRD §15.6). They are a risk-review scaffold, not investment advice.
+
+policy_version: "2026-09-11.1"
+definition_version: "2026-09-11.1"
+# Extraction correction only: aligned annual XBRL facts and dated breadth
+# coverage. Indicator weights, bands and action thresholds are unchanged.
+description: >
+  First frozen baseline for the US/AI systemic-risk monitor. Bands are
+  green/yellow/orange/red mapped to 0/35/65/100; each score is the weighted
+  mean of its atomic indicators. A metric that is `not_disclosed` or otherwise
+  unavailable is excluded and its weight renormalised over the remaining
+  indicators (never treated as 0/green).
+
+# ---------------------------------------------------------------------------
+# Band semantics used by every numeric atomic indicator.
+#   lo: inclusive lower bound; hi: exclusive upper bound; null = unbounded.
+#   A value falls in the FIRST matching band scanned green -> yellow -> orange -> red.
+#   map: score contributed when the value falls in that band.
+# ---------------------------------------------------------------------------
+band_semantics: &bands
+  green:  { map: 0 }
+  yellow: { map: 35 }
+  orange: { map: 65 }
+  red:    { map: 100 }
+
+# ---------------------------------------------------------------------------
+# §4 four-stage state machine
+# ---------------------------------------------------------------------------
+state_machine:
+  states: [NORMAL, RISK_ACCUMULATION, CREDIT_CONFIRMATION, DELEVERAGING]
+
+  # upgrade: condition must hold for `upgrade_days` consecutive trading days,
+  # OR a major-fact override fires immediately.
+  upgrade_days: 5
+  # downgrade: next-lower condition must hold for `downgrade_days` consecutive
+  # trading days before stepping down (anti-churn; avoids VIX/OAS one-day
+  # reversals flipping state).
+  downgrade_days: 20
+
+  # major-fact override (PRD §4.1): immediate upgrade regardless of day count.
+  # Requires human review and a manual_override with evidence + expiry.
+  major_fact_overrides:
+    - "investment-grade issuer downgraded to high-yield"
+    - "key company formally lowers capex guidance"
+    - "major default / liquidity event"
+    - "trading-market freeze"
+
+  transitions:
+    NORMAL:
+      enter: "mbs < 35 AND css < 35 AND no key red flag"
+      exit_up_to: RISK_ACCUMULATION
+    RISK_ACCUMULATION:
+      enter: "afrs >= 55 OR >=2 market early-warning items; css < 55"
+      exit_up_to: CREDIT_CONFIRMATION
+      exit_down_to: NORMAL
+    CREDIT_CONFIRMATION:
+      enter: "(afrs >= 55 AND css >= 55) OR (css >= 70 AND mbs >= 55)"
+      exit_up_to: DELEVERAGING
+      exit_down_to: RISK_ACCUMULATION
+    DELEVERAGING:
+      enter: >
+        (css >= 75 AND mbs >= 70)
+        OR (hy_oas > 6.0% AND breadth < 37% AND spx < 200dma)
+        OR major_fact_override
+      exit_down_to: CREDIT_CONFIRMATION
+
+  # a systemic-red composite rule, kept explicit for explainability (PRD §10.2)
+  systemic_red_combo:
+    rule_id: systemic_red_combo_v1
+    when_all:
+      - { metric: market.spx_vs_200dma_pct,   op: "<", value: 0 }
+      - { metric: market.spx_pct_above_200dma, op: "<", value: 37 }
+      - { metric: credit.hy_oas_pct,          op: ">", value: 6 }
+    for_trading_days: 5
+    effect: { set_minimum_state: DELEVERAGING, alert_severity: CRITICAL }
+
+# ---------------------------------------------------------------------------
+# §5.1 Market Breakdown Score (MBS)
+# ---------------------------------------------------------------------------
+mbs:
+  purpose: "breadth/trend/volatility diffusion of risk beyond a few AI names; NOT a valuation score"
+  indicators:
+    - metric_id: market.spx_vs_200dma_pct
+      weight: 25
+      unit: percent
+      bands:
+        green:  { lo: 2.0,  hi: null }
+        yellow: { lo: -2.0, hi: 2.0 }
+        orange: { lo: -8.0, hi: -2.0 }
+        red:    { lo: null, hi: -8.0 }
+    - metric_id: market.spx_pct_above_200dma
+      weight: 30
+      unit: percent
+      note: "breadth: % of S&P 500 constituents above their 200dma"
+      # Raw-close convention (Tencent source): ~3pp below dividend-adjusted;
+      # bands shifted -3pp so labels keep their pre-swap meaning (measured
+      # 2026-08-22, 72.46% adjusted vs 69.26% raw). See ADR-0001.
+      bands:
+        green:  { lo: 57.0, hi: null }
+        yellow: { lo: 47.0, hi: 57.0 }
+        orange: { lo: 37.0, hi: 47.0 }
+        red:    { lo: null, hi: 37.0 }
+    - metric_id: market.vix
+      weight: 15
+      unit: index
+      note: "volatility only as a co-signal; never triggers an upgrade alone"
+      bands:
+        green:  { lo: null, hi: 20.0 }
+        yellow: { lo: 20.0, hi: 25.0 }
+        orange: { lo: 25.0, hi: 30.0 }
+        red:    { lo: 30.0, hi: null }
+    - metric_id: market.breadth_20d_change
+      weight: 10
+      unit: percentage_points
+      bands:
+        green:  { lo: -5.0, hi: null }
+        yellow: { lo: -10.0, hi: -5.0 }
+        orange: { lo: -20.0, hi: -10.0 }
+        red:    { lo: null, hi: -20.0 }
+    - metric_id: market.fwd_eps_revisions
+      weight: 20
+      type: qualitative
+      bands:
+        green:  "upgrades / stable"
+        yellow: "mild net downgrades"
+        orange: "consecutive downgrades"
+        red:    "broad, accelerating downgrades"
+      default_when_unavailable: unavailable  # MVP: exclude & renormalise (PRD §15.5)
+
+  confirm_threshold: 55     # MBS >= 55 = market confirmation forming
+  diffusion_threshold: 70   # MBS >= 70 = significant diffusion
+
+# ---------------------------------------------------------------------------
+# §5.2 Credit Stress Score (CSS) — the primary confirmation layer
+# ---------------------------------------------------------------------------
+css:
+  purpose: "is the financial system pricing higher financing/default risk; most important confirmation layer"
+  indicators:
+    - metric_id: credit.hy_oas_pct
+      weight: 30
+      unit: percent
+      note: "> 6.0% is a strong deleveraging signal"
+      bands:
+        green:  { lo: null, hi: 4.0 }
+        yellow: { lo: 4.0,  hi: 4.5 }
+        orange: { lo: 4.5,  hi: 5.5 }
+        red:    { lo: 5.5,  hi: null }
+    - metric_id: credit.hy_oas_20d_change
+      weight: 15
+      unit: basis_points
+      bands:
+        green:  { lo: null, hi: 25.0 }
+        yellow: { lo: 25.0, hi: 50.0 }
+        orange: { lo: 50.0, hi: 100.0 }
+        red:    { lo: 100.0, hi: null }
+    - metric_id: credit.bbb_oas_pct
+      weight: 15
+      unit: percent
+      note: "whether pressure spreads from high-yield into the IG edge"
+      bands:
+        green:  { lo: null, hi: 1.25 }
+        yellow: { lo: 1.25, hi: 1.50 }
+        orange: { lo: 1.50, hi: 2.00 }
+        red:    { lo: 2.00, hi: null }
+    - metric_id: credit.ai_basket
+      weight: 25
+      type: qualitative
+      note: >
+        NVDA/ORCL/MSFT/META/AMZN/GOOGL; ORCL is the preferred sentinel.
+        Uses per-company equal-weight median plus a worst_two correction:
+        two-or-more names at orange force this item to >= 65.
+      bands:
+        green:  "stable"
+        yellow: "one name worsening"
+        orange: "multiple names accelerating"
+        red:    "rating + CDS + bond market worsening in unison"
+      default_when_unavailable: proxy   # single-name CDS unavailable -> TRACE spread/rating proxy, flag proxy=true
+    - metric_id: credit.term_financing
+      weight: 15
+      type: qualitative
+      note: "30Y treasury 20d change + corp issuance/tradability; high rates alone != crisis"
+      bands:
+        green:  "stable"
+        yellow: "rising"
+        orange: "fast rise with widening spreads"
+        red:    "rates + spreads + issuance window all worsening"
+
+# ---------------------------------------------------------------------------
+# §5.4 Rates & Credit Score (RCS) — Treasury as a financing-condition layer
+# ---------------------------------------------------------------------------
+# RCS is a separate 20% target module. The existing monitor has no linear
+# all-score total; RCS therefore feeds the state/action rules directly: a high
+# 10Y yield alone only slows new
+# buying; rates + real-yield + credit deterioration is required before an
+# exposure-reduction review. The thresholds are transparent heuristics, not
+# statistically validated and not investment advice.
+rates_credit:
+  purpose: "Treasury level, real rates, curve regime and credit co-movement; high rates alone are not a crash signal"
+  score_weight: 0.20
+  state_input_requirement: >
+    The RCS score may raise the state only when every non-optional core input
+    below is available. A partial score remains visible with
+    DATA_QUALITY_WARNING but cannot be renormalised into an escalation signal.
+  indicators:
+    - metric_id: rates.10y_yield_pct
+      weight: 20
+      unit: percent
+      bands:
+        green:  { lo: null, hi: 4.5 }
+        yellow: { lo: 4.5, hi: 4.7 }
+        orange: { lo: 4.7, hi: 5.0 }
+        red:    { lo: 5.0, hi: null }
+    - metric_id: rates.10y_real_yield_pct
+      weight: 15
+      unit: percent
+      note: "10Y TIPS real yield; a rising real discount rate is more important than nominal level alone"
+      bands:
+        green:  { lo: null, hi: 1.5 }
+        yellow: { lo: 1.5, hi: 2.0 }
+        orange: { lo: 2.0, hi: 2.5 }
+        red:    { lo: 2.5, hi: null }
+    - metric_id: rates.10y_20d_change_bp
+      weight: 15
+      unit: basis_points
+      bands:
+        green:  { lo: null, hi: 0.0 }
+        yellow: { lo: 0.0, hi: 10.0 }
+        orange: { lo: 10.0, hi: 25.0 }
+        red:    { lo: 25.0, hi: null }
+    - metric_id: rates.10y_real_20d_change_bp
+      weight: 15
+      unit: basis_points
+      bands:
+        green:  { lo: null, hi: 0.0 }
+        yellow: { lo: 0.0, hi: 10.0 }
+        orange: { lo: 10.0, hi: 20.0 }
+        red:    { lo: 20.0, hi: null }
+    - metric_id: rates.10y_2y_spread_bp
+      weight: 5
+      unit: basis_points
+      note: "Curve level is context only; inversion is not treated as an automatic crash trigger"
+      bands:
+        green:  { lo: 0.0, hi: null }
+        yellow: { lo: -50.0, hi: 0.0 }
+        orange: { lo: -100.0, hi: -50.0 }
+        red:    { lo: null, hi: -100.0 }
+    - metric_id: rates.10y_3m_spread_bp
+      weight: 5
+      unit: basis_points
+      note: "Curve level is context only; inversion is not treated as an automatic crash trigger"
+      bands:
+        green:  { lo: 0.0, hi: null }
+        yellow: { lo: -100.0, hi: 0.0 }
+        orange: { lo: -200.0, hi: -100.0 }
+        red:    { lo: null, hi: -200.0 }
+    - metric_id: rates.30y_20d_change_bp
+      weight: 10
+      unit: basis_points
+      bands:
+        green:  { lo: null, hi: 0.0 }
+        yellow: { lo: 0.0, hi: 15.0 }
+        orange: { lo: 15.0, hi: 30.0 }
+        red:    { lo: 30.0, hi: null }
+    - metric_id: rates.hy_oas_20d_change_bp
+      weight: 15
+      unit: basis_points
+      note: "Credit widening is the confirmation half of the rates + credit signal"
+      bands:
+        green:  { lo: null, hi: 25.0 }
+        yellow: { lo: 25.0, hi: 50.0 }
+        orange: { lo: 50.0, hi: 100.0 }
+        red:    { lo: 100.0, hi: null }
+    - metric_id: rates.move_index
+      weight: 0
+      unit: index
+      note: "Reserved for a verified MOVE daily source; unavailable in the current free-source baseline"
+      bands:
+        green:  { lo: null, hi: 100.0 }
+        yellow: { lo: 100.0, hi: 120.0 }
+        orange: { lo: 120.0, hi: 150.0 }
+        red:    { lo: 150.0, hi: null }
+  optional_evidence:
+    - rates.move_index
+    - rates.treasury_liquidity
+    - rates.fed_funds_futures
+    - market.valuation
+
+# ---------------------------------------------------------------------------
+# §5.3 AI Fundamental Risk Score (AFRS) — leading indicator, not a sell signal
+# ---------------------------------------------------------------------------
+afrs:
+  purpose: "before a credit event, has the AI capex loop made cash flow / commitments / revenue quality fragile"
+  sector_aggregation:
+    median_six: 0.60          # equal-weight median of the 6 companies
+    worst_two_mean: 0.25      # mean of the two worst company_afrs
+    chain_red_flags: 0.15     # chain-level vendor-financing/guarantee flags
+    min_names: 4              # fewer extracted company scores -> unavailable; never extrapolate one issuer into a sector signal
+  company_indicators:
+    - metric_id: company.capex_ocf_pct
+      weight: 18
+      unit: percent
+      applies: [ORCL, MSFT, META, AMZN, GOOGL]   # NVDA lower weight per PRD
+      note: "capex > ocf, or accelerating without ocf following, is orange/red"
+      bands:
+        green:  { lo: null, hi: 70.0 }
+        yellow: { lo: 70.0, hi: 100.0 }
+        orange: { lo: 100.0, hi: 130.0 }
+        red:    { lo: 130.0, hi: null }
+      consecutive_improvement_downgrades_band: 2   # two straight improving quarters may drop one band
+    - metric_id: company.fcf_ocf_pct
+      weight: 18
+      unit: percent
+      applies: [NVDA, ORCL, MSFT, META, AMZN, GOOGL]
+      note: "orange/red only when TTM or two consecutive quarters hold"
+      bands:
+        green:  { lo: 20.0,  hi: null }
+        yellow: { lo: 0.0,   hi: 20.0 }
+        orange: { lo: -20.0, hi: 0.0 }
+        red:    { lo: null,  hi: -20.0 }
+    - metric_id: company.leverage_financing
+      weight: 14
+      unit: mixed
+      applies: [NVDA, ORCL, MSFT, META, AMZN, GOOGL]
+      type: qualitative
+      note: >
+        net debt, net_debt/ocf, new_debt/cash_capex, interest cover, rating change.
+        new_debt/cash_capex numeric bands below.
+      sub_bands:
+        new_debt_over_cash_capex_pct:
+          green:  { lo: null, hi: 20.0 }
+          yellow: { lo: 20.0, hi: 40.0 }
+          orange: { lo: 40.0, hi: 70.0 }
+          red:    { lo: 70.0, hi: null }
+      bands:
+        green:  "net cash or low leverage, cover improving"
+        yellow: "leverage rising but manageable"
+        orange: "new debt >> capex, cover deteriorating"
+        red:    "rating under pressure + financing-dependent"
+    - metric_id: company.commitments_ttm_ocf
+      weight: 16
+      unit: ratio
+      applies: [ORCL, MSFT, META, AMZN, GOOGL]
+      note: >
+        (uncommenced_lease + purchase + construction commitments) / TTM OCF.
+        Keep each commitment's raw value + possible-overlap flag; never sum
+        overlapping items into one precise debt.
+      bands:
+        green:  { lo: null, hi: 1.0 }
+        yellow: { lo: 1.0,  hi: 3.0 }
+        orange: { lo: 3.0,  hi: 6.0 }
+        red:    { lo: 6.0,  hi: null }
+    - metric_id: company.rpo_quality
+      weight: 10
+      unit: mixed
+      applies: [ORCL, MSFT, AMZN, GOOGL]
+      type: qualitative
+      note: "RPO growth vs revenue/cash-receipts growth; customer concentration, financing, cancellability need evidence notes"
+      bands:
+        green:  "RPO growing in line with cash receipts"
+        yellow: "RPO outgrowing cash receipts slightly"
+        orange: "RPO materially outgrowing cash, concentration rising"
+        red:    "financing-linked RPO, cancellable, or undisclosed quality"
+    - metric_id: company.ar_dso_concentration
+      weight: 10
+      unit: percentage_points
+      applies: [NVDA, ORCL, MSFT, META, AMZN, GOOGL]
+      note: >
+        (A/R growth - revenue growth) in pp; must move in the same direction as
+        DSO to escalate one band.
+      bands:
+        green:  { lo: null, hi: 10.0 }
+        yellow: { lo: 10.0, hi: 25.0 }
+        orange: { lo: 25.0, hi: 50.0 }
+        red:    { lo: 50.0, hi: null }
+    - metric_id: company.linked_financing
+      weight: 14
+      unit: mixed
+      applies: [NVDA, ORCL, MSFT, META, AMZN, GOOGL]
+      type: qualitative
+      note: >
+        vendor financing / equity-then-purchase / guarantees / residual value
+        guarantees / project-finance buyback / revolving contracts. Media
+        inference alone never scores red.
+      bands:
+        green:  "no verified linked financing"
+        yellow: "fact present but small / explainable"
+        orange: "material, or tied to customer purchase / guarantee / buyback"
+        red:    "multi-node, financing-dependent, or disclosure worsening"
+
+# ---------------------------------------------------------------------------
+# §10.1 alert severity
+# ---------------------------------------------------------------------------
+alerts:
+  INFO:
+    condition: "new disclosure, data revision, or a single yellow light"
+    notify: weekly_summary
+  WATCH:
+    condition: "any score crosses 55; key metric 20d material deterioration; coverage drop"
+    notify: same_day_summary
+  WARNING:
+    condition: "state -> RISK_ACCUMULATION, or two scores >= 55"
+    notify: immediate + weekly_highlight
+  ACTION_REVIEW:
+    condition: "state -> CREDIT_CONFIRMATION"
+    notify: immediate + rule-based exposure-review checklist (no trade instructions)
+  CRITICAL:
+    condition: "state -> DELEVERAGING, or major-fact override"
+    notify: immediate + mandatory human confirmation
+
+# ---------------------------------------------------------------------------
+# §10.2 daily action conclusion (deterministic, from the *confirmed* state)
+#
+# This is the "判断结果" Henson reads on the daily push: the four-stage state
+# projected onto a single action level. It is a rule, not a model output, so it
+# is reproducible from the same (policy, state) pair and auditable. It is a
+# personal decision signal, NOT automated trading and NOT advice to others.
+# ---------------------------------------------------------------------------
+actions:
+  NORMAL: "持有（无需操作）"
+  RISK_ACCUMULATION: "观察，暂不卖出（重仓可减）"
+  CREDIT_CONFIRMATION: "减仓（降低敞口）"
+  DELEVERAGING: "卖出 / 大幅减仓（强制人工确认）"
+
+# ---------------------------------------------------------------------------
+# §15.6 free secondary-data proxies for qualitative indicators
+#
+# The qualitative indicators (ai_basket, term_financing) have no free daily
+# primary source; these rules map a free proxy input to the indicator's band
+# label. proxy=true is always surfaced, never reported as a real credit signal.
+# All thresholds are heuristics, tunable, and versioned with the policy.
+# ---------------------------------------------------------------------------
+proxies:
+  ai_basket:
+    source: equity_proxy
+    proxy: true
+    note: >
+      Six-name equity drawdown vs 200dma as a credit-stress proxy. No free
+      individual-issuer CDS/bond spread exists (ADR-0001 §4); proxy=true.
+    per_name_bands:
+      green:  { lo: 0.0,   hi: null }
+      yellow: { lo: -10.0, hi: 0.0 }
+      orange: { lo: -25.0, hi: -10.0 }
+      red:    { lo: null,  hi: -25.0 }
+    aggregate:
+      min_names: 4        # fewer names with a signal than this -> unavailable
+      orange_names: 2     # >= this many names at orange/red -> ai_basket orange
+      yellow_names: 1     # >= this many names at yellow-or-worse -> ai_basket yellow
+  term_financing:
+    source: dgs30_20d_change
+    proxy: true
+    note: >
+      30Y treasury 20d change (basis points) as a term/tradability proxy. The
+      "high rates alone != crisis" caveat is preserved by the thresholds; the
+      corp-issuance half is not free daily (SIFMA is monthly) and is left
+      unavailable in MVP.
+    bands:
+      green:  { lo: null, hi: 25.0 }
+      yellow: { lo: 25.0, hi: 50.0 }
+      orange: { lo: 50.0, hi: 75.0 }
+      red:    { lo: 75.0, hi: null }

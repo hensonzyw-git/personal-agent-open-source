@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>ADKAcceptanceURL</key><string>$(ADK_ACCEPTANCE_URL)</string>
+<key>ADKAcceptanceCertificateSHA256</key><string>$(ADK_ACCEPTANCE_CERT_SHA256)</string>
+<key>NSLocalNetworkUsageDescription</key><string>连接这台 Mac 上的合成数据验收服务。</string>
+</dict></plist>

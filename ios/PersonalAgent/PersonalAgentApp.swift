@@ -8,12 +8,34 @@ import SwiftUI
 /// problem from a model problem during the first real rollout.
 @main
 struct PersonalAgentApp: App {
+    #if !ACCEPTANCE && !ADK_ACCEPTANCE
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
 
+    /// §13.1a: the all-day round-trip probe runs on the real device with the
+    /// `--allday-probe` launch argument (Xcode scheme → Run → Arguments).
+    /// It replaces the whole app surface for that launch — the probe must
+    /// work before enrollment, so it never depends on a session.
+    private let alldayProbe =
+        ProcessInfo.processInfo.arguments.contains("--allday-probe")
+    #endif
+
     var body: some Scene {
         WindowGroup {
-            RootView(model: model)
+            #if ADK_ACCEPTANCE
+            ADKAcceptanceScene()
+            #elseif ACCEPTANCE
+            // The isolated acceptance build. `AppModel` — and with it the
+            // device session, the enrollment, the Keychain namespace and the
+            // EventKit mirror engine — is never constructed on this path. The
+            // two branches are compile-time siblings, not a run-time choice:
+            // see `AcceptanceScene`.
+            AcceptanceScene()
+            #else
+            if alldayProbe {
+                AllDayProbeView()
+            } else {
+                RootView(model: model)
                 // The project predates its asset catalogue, so
                 // `ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME` was never set and
                 // an `AccentColor` asset alone does not become the global tint --
@@ -28,9 +50,15 @@ struct PersonalAgentApp: App {
                     // exists, because uploading a token needs a device id and
                     // an access token.
                     model.bindPushCoordinator(into: appDelegate)
+                    // Cleared here in addition to `applicationDidBecomeActive`:
+                    // a cold launch into the badge state must clear it even if
+                    // the delegate callback is the one thing that did not run.
+                    AppDelegate.clearBadge()
                     await model.start()
                     await model.registerPushIfPermitted()
                 }
+            }
+            #endif
         }
     }
 }

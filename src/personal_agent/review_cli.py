@@ -26,6 +26,8 @@ from personal_agent.api.apns import ApnsConfigError, build_push_sender
 from personal_agent.api.composition import build_review_control
 from personal_agent.api.daily_review import MAX_CATCH_UP_DAYS
 from personal_agent.api.review_job import run_daily_review
+from personal_agent.context.config import default_context_config
+from personal_agent.context.session_manager import SessionManager
 from personal_agent.keys import load_agent_data_keyring
 from personal_agent.storage.engine import (
     check_integrity,
@@ -86,18 +88,24 @@ def main() -> None:
     check_integrity(engine)
     sessions = session_factory(engine)
     control = build_review_control(finance_control_url=args.finance_control_url)
+    keyring = load_agent_data_keyring()
+    session_manager = SessionManager(default_context_config())
 
     try:
-        sender = build_push_sender(
-            session_factory=sessions, keyring=load_agent_data_keyring()
-        )
+        sender = build_push_sender(session_factory=sessions, keyring=keyring)
     except ApnsConfigError as exc:
         engine.dispose()
         raise SystemExit(str(exc)) from exc
 
     try:
         report = run_daily_review(
-            sessions, control, send=sender, today=today, max_days=args.max_days
+            sessions,
+            control,
+            send=sender,
+            today=today,
+            max_days=args.max_days,
+            keyring=keyring,
+            session_manager=session_manager,
         )
     finally:
         if sender is not None:
@@ -108,6 +116,7 @@ def main() -> None:
         print(f"{outcome.review_date}: {outcome.result} ({outcome.item_count} items)")
     print(
         f"cards created: {len(report.created)}; "
+        f"timeline cards sealed: {len(report.emitted_review_events)}; "
         f"notification rows queued: {report.queued_notifications}; "
         f"delivery attempts: {report.attempted_notifications}"
     )

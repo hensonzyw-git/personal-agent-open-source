@@ -15,6 +15,8 @@ from personal_agent.runtime.bookkeeping_intent import (
     is_finance_query_request,
     is_finance_retry_request,
     is_bookkeeping_write_request,
+    is_expense_write_request,
+    is_income_write_request,
 )
 
 
@@ -57,6 +59,41 @@ def test_bookkeeping_write_requests_are_refused(text: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
+        "记收入 公积金 4000",
+        "记收入",
+        "发工资 12000",
+        "公积金入账 4000",
+    ],
+)
+def test_explicit_income_write_requests_are_identified(text: str) -> None:
+    assert is_income_write_request(text) is True
+    assert is_finance_intent_candidate(text) is True
+
+
+def test_an_explicit_family_expense_selects_the_expense_tool() -> None:
+    text = "昨天晚饭很久以前 283.99 家庭支出"
+    assert is_expense_write_request(text) is True
+    assert is_finance_intent_candidate(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "公积金 4000",
+        "查一下今年收入多少",
+        "工资是多少",
+        "怎么记收入",
+    ],
+)
+def test_ambiguous_or_question_income_phrases_do_not_select_the_income_tool(
+    text: str,
+) -> None:
+    assert is_income_write_request(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         # No amount: a query or a request for help, not a claim of a write.
         "今天花了多少",
         "帮我查一下上个月的交通费",
@@ -74,6 +111,9 @@ def test_bookkeeping_write_requests_are_refused(text: str) -> None:
         # not a claim of a write -- the single 一 in 记一下 is not an amount.
         "帮我记一下这个月的支出",
         "记一下午饭",
+        # Calendar creation with time and duration must not become bookkeeping
+        # merely because “验收” contains the Chinese character 收.
+        "明天上午 10 点，在日常安排创建一个名为“Personal Agent 验收”的 30 分钟日程",
     ],
 )
 def test_non_bookkeeping_messages_are_left_alone(text: str) -> None:

@@ -14,7 +14,9 @@ Type=oneshot
 User=personal-agent-api
 Group=personal-agent-api
 ExecStart=/opt/personal-agent/.venv/bin/personal-agent-cleanup \
-    --database /var/lib/personal-agent-api/agent.sqlite
+    --database /var/lib/personal-agent-api/agent.sqlite \
+    --transcript-directory /var/lib/personal-agent-api/transcripts \
+    --transcript-retention-days 14
 ReadWritePaths=/var/lib/personal-agent-api
 # The cleanup CLI needs no configuration or key material. Deny those paths even
 # though the Unix user that owns the database can normally read them.

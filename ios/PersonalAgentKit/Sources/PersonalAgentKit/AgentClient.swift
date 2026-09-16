@@ -168,12 +168,151 @@ public struct AgentClient: Sendable {
         )
     }
 
+    /// Post a structured chat request.  This overload is intentionally not a
+    /// replacement for the text-only method above: text-only callers preserve
+    /// the old `text` wire shape and therefore the old request fingerprint.
+    public func sendChatMessage(
+        conversationID: String,
+        parts: [ChatInputPart],
+        clarificationOf: String? = nil,
+        startNewSession: Bool = false,
+        idempotencyKey: String,
+        token: String
+    ) async throws -> OperationReceipt {
+        try await sendEncoded(
+            method: "POST",
+            path: "/v1/chat/messages",
+            body: StructuredChatRequest(
+                conversationID: conversationID,
+                parts: parts,
+                clarificationOf: clarificationOf,
+                startNewSession: startNewSession
+            ),
+            token: token,
+            headers: ["Idempotency-Key": idempotencyKey],
+            accepting: [200, 202],
+            as: OperationReceipt.self
+        )
+    }
+
+    // --- media upload (`CAP-003`, design §5.2) ------------------------------
+
+    public func createMediaUpload(
+        declaration: MediaUploadDeclaration,
+        idempotencyKey: String,
+        token: String
+    ) async throws -> CreatedMediaUpload {
+        try await sendEncoded(
+            method: "POST",
+            path: "/v1/media/uploads",
+            body: declaration,
+            token: token,
+            headers: ["Idempotency-Key": idempotencyKey],
+            accepting: [200, 201],
+            as: CreatedMediaUpload.self
+        )
+    }
+
+    /// Upload the already-prepared bytes.  The binary body is deliberately not
+    /// passed through the JSON helper: there is no base64 expansion, and the
+    /// server's independent binary ceiling remains the one that governs it.
+    public func putMediaContent(
+        mediaID: String, body: Data, token: String
+    ) async throws -> MediaUploadReceipt {
+        try await sendData(
+            method: "PUT",
+            path: "/v1/media/content/\(mediaID)",
+            body: body,
+            contentType: "application/octet-stream",
+            token: token,
+            as: MediaUploadReceipt.self
+        )
+    }
+
+    public func completeMediaUpload(
+        mediaID: String, token: String
+    ) async throws -> CompletedMediaUpload {
+        try await send(
+            method: "POST",
+            path: "/v1/media/uploads/\(mediaID)/complete",
+            token: token,
+            accepting: [200, 202],
+            as: CompletedMediaUpload.self
+        )
+    }
+
+    public func readMedia(mediaID: String, token: String) async throws -> Data {
+        guard UUID(uuidString: mediaID) != nil,
+              let url = Self.url(path: "/v1/media/\(mediaID)", query: [], relativeTo: baseURL)
+        else { throw AgentClientError.malformedResponse }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.setValue(ClientWireVersion.value, forHTTPHeaderField: ClientWireVersion.header)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw AgentClientError.malformedResponse }
+        guard http.statusCode == 200 else {
+            throw AgentClientError.from(status: http.statusCode, body: data)
+        }
+        return data
+    }
+
+    /// Correct one recorded expense's 分类, from the receipt card's picker.
+    ///
+    /// `expectedCurrentCategory` is the compare-and-swap and is **not**
+    /// optional in the JSON sense: `nil` is sent as an explicit `null`, meaning
+    /// "I believe this row currently has no category", which is a real state for
+    /// a refund. Omitting the key entirely is refused by the server, precisely
+    /// so a client that has not been updated cannot be read as requesting a
+    /// blind overwrite of whatever the row now holds.
+    ///
+    /// The reply is a normal `OperationReceipt`, so a category correction is
+    /// polled, cancelled and rendered by exactly the machinery every other
+    /// governed write already goes through.
+    public func updateExpenseCategory(
+        recordID: String,
+        category: String,
+        expectedCurrentCategory: String?,
+        idempotencyKey: String,
+        token: String
+    ) async throws -> OperationReceipt {
+        try await send(
+            method: "POST",
+            path: "/v1/expense-records/\(recordID)/category",
+            body: [
+                "category": category,
+                // `send` encodes a nil value as an explicit JSON `null` rather
+                // than dropping the key, which is exactly what this contract
+                // needs: the server refuses a body with the key absent.
+                "expected_current_category": expectedCurrentCategory,
+            ],
+            token: token,
+            headers: ["Idempotency-Key": idempotencyKey],
+            accepting: [200, 202],
+            as: OperationReceipt.self
+        )
+    }
+
     public func operation(
         operationID: String, token: String
     ) async throws -> OperationReceipt {
         try await send(
             method: "GET",
             path: "/v1/operations/\(operationID)",
+            token: token,
+            accepting: [200, 202],
+            as: OperationReceipt.self
+        )
+    }
+
+    /// The progress trail's poll, resolved by idempotency key. Same projection
+    /// as the by-id poll; the server answers `400 OPERATION_NOT_ANCHORED` while
+    /// the key names nothing yet.
+    public func operation(
+        idempotencyKey: String, token: String
+    ) async throws -> OperationReceipt {
+        try await send(
+            method: "GET",
+            path: "/v1/operations/by-key/\(idempotencyKey)",
             token: token,
             accepting: [200, 202],
             as: OperationReceipt.self
@@ -326,12 +465,117 @@ public struct AgentClient: Sendable {
         )
     }
 
+    // --- device actions and the calendar mirror ------------------------------
+
+    /// Report what this device did with a device-executed action.
+    ///
+    /// No `Idempotency-Key`: the action id IS the key. The server locates the
+    /// operation by it, and its CAS makes settlement exactly-once — a replay
+    /// returns the current projection with 200 rather than a second
+    /// transition, so re-sending the same report after a lost reply is safe.
+    public func reportDeviceActionResult(
+        actionID: String,
+        body: DeviceActionResultBody,
+        token: String
+    ) async throws -> OperationReceipt {
+        try await send(
+            method: "POST",
+            path: "/v1/device-actions/\(actionID)/result",
+            jsonBody: [
+                "result": body.result,
+                "event_id": body.eventID as Any?,
+                "detail": body.detail as Any?,
+            ],
+            token: token,
+            accepting: [200],
+            as: OperationReceipt.self
+        )
+    }
+
+    /// Answer 「仍要创建」 for a calendar write the device reported as a duplicate
+    /// (design §3.3).
+    ///
+    /// **A closed body and no `Idempotency-Key`, both on purpose.** The decision
+    /// carries no parameters — the server resumes the arguments the original
+    /// turn was already authorised to make — and it derives its own key from the
+    /// source operation (`uuid5(ns, "<operation_id>:calendar-override")`), so
+    /// the idempotency is in the derivation rather than in anything this client
+    /// sends. A second tap, a concurrent tap and a retry after a lost reply all
+    /// present the same endpoint and the same action id, and the server's
+    /// INSERT-or-get answers every one of them with the same derived operation.
+    /// Minting a key here would add a durable local slot with nothing to protect
+    /// and a second way for the client to be wrong.
+    ///
+    /// The reply is that operation's own projection, on the first tap and on
+    /// every replay: parked, it hands the re-issued action over the same
+    /// delivery door every other response uses — and the delivery gate is the
+    /// capability header, so a build too old to run the action is never handed
+    /// it. Settled, it reports what the phone did with it.
+    public func overrideDeviceAction(
+        actionID: String, token: String
+    ) async throws -> OperationReceipt {
+        try await send(
+            method: "POST",
+            path: "/v1/device-actions/\(actionID)/override",
+            // The route is closed: `{}` is the only accepted body, and an empty
+            // one is refused rather than defaulted, so the shape is sent
+            // explicitly rather than omitted.
+            jsonBody: [:],
+            token: token,
+            accepting: [200, 202],
+            as: OperationReceipt.self
+        )
+    }
+
+    /// Upload one mirror batch. The reply is the server's ingest summary;
+    /// a 400 means the whole batch was refused and the caller should fix its
+    /// window, never split the batch to sneak a bad event through.
+    ///
+    /// `snapshotAsOf` is the batch's *version*: identical across every batch
+    /// of one window, because EventKit exposes no per-event modification time
+    /// and the snapshot instant is the only thing the device can vouch for.
+    /// The server's schema makes it required — a request without it is
+    /// INVALID_ARGUMENT, not a defaulted snapshot (second review F1).
+    public func uploadCalendarSync(
+        windowStart: Date,
+        windowEnd: Date,
+        events: [CalendarMirrorEvent],
+        calendars: [CalendarDirectoryEntry],
+        windowComplete: Bool,
+        snapshotAsOf: Date,
+        syncEpoch: Int,
+        token: String
+    ) async throws -> CalendarSyncResponse {
+        try await send(
+            method: "POST",
+            path: "/v1/calendar/sync",
+            jsonBody: [
+                "window_start": RFC3339.string(from: windowStart) as Any?,
+                "window_end": RFC3339.string(from: windowEnd) as Any?,
+                // Always present, even when empty: the field is nullable in
+                // the schema, and an empty array says "this device has no
+                // ordinary event calendars" — a fact — where omitting the key
+                // says "this build does not know about directories" and would
+                // leave a stale one in place.
+                "calendars": calendars.map(CalendarMirrorWire.directoryEntry),
+                "events": events.map(CalendarMirrorWire.event),
+                "window_complete": windowComplete,
+                "snapshot_as_of": RFC3339.string(from: snapshotAsOf),
+                "sync_epoch": syncEpoch,
+            ],
+            token: token,
+            accepting: [200],
+            as: CalendarSyncResponse.self
+        )
+    }
+
     // --- transport -----------------------------------------------------------
 
     private func send<Response: Decodable>(
         method: String,
         path: String,
         body: [String: String?]? = nil,
+        jsonBody: [String: Any]? = nil,
         booleanBody: [String: Bool] = [:],
         token: String? = nil,
         headers: [String: String] = [:],
@@ -350,13 +594,30 @@ public struct AgentClient: Sendable {
         // first real-device chat send "failed" at 20.6s while the write
         // completed server-side (2026-08-01). Nginx allows 75s upstream.
         request.timeoutInterval = 45
+        // What this build can implement, on every request it sends (design
+        // §2.5). The calendar issuance and delivery gates read it per request,
+        // never from anything persisted, which is what makes a downgraded or
+        // restored device safe the moment it comes back. Set before the
+        // caller's own headers so a test can still override it deliberately.
+        request.setValue(
+            ClientWireVersion.value, forHTTPHeaderField: ClientWireVersion.header
+        )
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         for (name, value) in headers {
             request.setValue(value, forHTTPHeaderField: name)
         }
-        if let body {
+        // `jsonBody` carries the shapes `body` cannot express: nested arrays
+        // of objects (the calendar mirror batch) and JSON nulls inside them.
+        // At most one of the two is given; both would be an encoding bug here.
+        if jsonBody != nil {
+            precondition(body == nil, "use body or jsonBody, not both")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(
+                withJSONObject: jsonBody!
+            )
+        } else if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             var encoded = body.mapValues { $0 as Any? ?? NSNull() }
             for (field, value) in booleanBody {
@@ -392,6 +653,79 @@ public struct AgentClient: Sendable {
         throw AgentClientError.from(status: http.statusCode, body: data)
     }
 
+    private func sendEncoded<Response: Decodable, Body: Encodable>(
+        method: String,
+        path: String,
+        body: Body,
+        token: String? = nil,
+        headers: [String: String] = [:],
+        accepting: Set<Int> = [200, 201],
+        as type: Response.Type
+    ) async throws -> Response {
+        let encoded: Data
+        do {
+            encoded = try JSONEncoder().encode(body)
+        } catch {
+            throw AgentClientError.malformedResponse
+        }
+        return try await sendData(
+            method: method,
+            path: path,
+            body: encoded,
+            contentType: "application/json",
+            token: token,
+            headers: headers,
+            accepting: accepting,
+            as: type
+        )
+    }
+
+    private func sendData<Response: Decodable>(
+        method: String,
+        path: String,
+        body: Data,
+        contentType: String,
+        token: String? = nil,
+        headers: [String: String] = [:],
+        accepting: Set<Int> = [200, 201],
+        as type: Response.Type
+    ) async throws -> Response {
+        guard let url = Self.url(path: path, query: [], relativeTo: baseURL) else {
+            throw AgentClientError.invalidBaseURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 45
+        request.httpBody = body
+        request.setValue(ClientWireVersion.value, forHTTPHeaderField: ClientWireVersion.header)
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+        return try await receive(request, accepting: accepting, as: type)
+    }
+
+    private func receive<Response: Decodable>(
+        _ request: URLRequest, accepting: Set<Int>, as type: Response.Type
+    ) async throws -> Response {
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw AgentClientError.transport(
+                "\(request.url?.absoluteString ?? "<unknown>"): \(error.localizedDescription)"
+            )
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw AgentClientError.malformedResponse
+        }
+        if accepting.contains(http.statusCode) {
+            do { return try JSONDecoder().decode(Response.self, from: data) }
+            catch { throw AgentClientError.malformedResponse }
+        }
+        throw AgentClientError.from(status: http.statusCode, body: data)
+    }
+
     private static func url(
         path: String, query: [URLQueryItem], relativeTo base: URL
     ) -> URL? {
@@ -401,6 +735,18 @@ public struct AgentClient: Sendable {
         else { return nil }
         components.queryItems = query
         return components.url
+    }
+}
+
+private struct StructuredChatRequest: Encodable {
+    let conversationID: String
+    let parts: [ChatInputPart]
+    let clarificationOf: String?
+    let startNewSession: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case conversationID = "conversation_id", parts
+        case clarificationOf = "clarification_of", startNewSession = "start_new_session"
     }
 }
 
@@ -469,6 +815,50 @@ public struct Capabilities: Decodable, Sendable {
     /// client never invents the address, so "no jump offered" is the honest
     /// rendering of a missing value.
     public let ledgerURL: String?
+    /// The server's current photo verdict and the public bounds a client needs
+    /// to prepare one before it ever starts an upload.  A missing field is
+    /// closed for compatibility with an older server.
+    public let images: ImageInputCapability
+
+    public struct ImageInputCapability: Decodable, Sendable, Equatable {
+        public let enabled: Bool
+        public let maxContentBytes: Int?
+        public let maxDimension: Int?
+        public let allowedMIMEs: [String]
+
+        private enum CodingKeys: String, CodingKey {
+            case enabled
+            case maxContentBytes = "max_content_bytes"
+            case maxDimension = "max_dimension"
+            case allowedMIMEs = "allowed_mimes"
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            enabled = try container.decode(Bool.self, forKey: .enabled)
+            maxContentBytes = try container.decodeIfPresent(Int.self, forKey: .maxContentBytes)
+            maxDimension = try container.decodeIfPresent(Int.self, forKey: .maxDimension)
+            // A text-only deployment has no media limits to advertise. Missing
+            // MIME facts are safe only while images are explicitly disabled.
+            if enabled {
+                allowedMIMEs = try container.decode([String].self, forKey: .allowedMIMEs)
+            } else {
+                allowedMIMEs = try container.decodeIfPresent([String].self, forKey: .allowedMIMEs) ?? []
+            }
+        }
+
+        public init(
+            enabled: Bool = false,
+            maxContentBytes: Int? = nil,
+            maxDimension: Int? = nil,
+            allowedMIMEs: [String] = []
+        ) {
+            self.enabled = enabled
+            self.maxContentBytes = maxContentBytes
+            self.maxDimension = maxDimension
+            self.allowedMIMEs = allowedMIMEs
+        }
+    }
 
     public struct Tool: Decodable, Sendable {
         public let alias: String
@@ -487,6 +877,17 @@ public struct Capabilities: Decodable, Sendable {
         case tools
         case conversationID = "conversation_id"
         case ledgerURL = "ledger_url"
+        case images
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        allowedToolsVersion = try container.decode(String.self, forKey: .allowedToolsVersion)
+        tools = try container.decode([Tool].self, forKey: .tools)
+        conversationID = try container.decode(String.self, forKey: .conversationID)
+        ledgerURL = try container.decodeIfPresent(String.self, forKey: .ledgerURL)
+        images = try container.decodeIfPresent(ImageInputCapability.self, forKey: .images)
+            ?? .init()
     }
 }
 
@@ -525,6 +926,21 @@ public struct PushTokenState: Decodable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case deviceID = "device_id"
         case hasPushToken = "has_push_token"
+    }
+}
+
+/// The ingest summary `POST /v1/calendar/sync` answers with — the server's
+/// output schema for `calendar.ingest_events`, projected to the device.
+public struct CalendarSyncResponse: Decodable, Sendable, Equatable {
+    public let status: String
+    public let upserted: Int
+    public let skipped: Int
+    public let markedDeleted: Int
+    public let syncEpoch: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case status, upserted, skipped
+        case markedDeleted = "marked_deleted", syncEpoch = "sync_epoch"
     }
 }
 

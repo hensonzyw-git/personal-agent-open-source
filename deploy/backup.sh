@@ -26,19 +26,22 @@ set -euo pipefail
 STAGING=/var/backups/personal-agent
 BACKUP_STATE_DIR=/var/lib/personal-agent-backup
 MARKER="$BACKUP_STATE_DIR/last-successful-backup"
-API_DB_SNAPSHOT="$STAGING/api/agent.latest.sqlite"
 MCP_DB_SNAPSHOT="$STAGING/mcp/finance.latest.sqlite"
+RISK_DB_SNAPSHOT="$STAGING/api/risk_monitor.latest.sqlite"
 # The protected ledger config, staged by personal-data-mcp-db-backup. Read from
 # staging, never from /var/lib/personal-data-mcp: that dir is 0700 and this user
 # is deliberately not able to enter it.
 STAGED_LEDGER_CONFIG="$STAGING/mcp/ledger.synthetic_test.2026.json"
 UNIT_DIR=/etc/systemd/system
-# The deletion-manifest export the restore must replay. Produced alongside the
-# Agent snapshot by personal-agent-db-backup; see that unit.
-DELETION_MANIFEST="$STAGING/api/deletion-manifest.json"
 # The DAL workflow database snapshot (R09-B backup-set decision, 2026-09-02).
 # Staged by personal-agent-dal-db-backup from the DAL service's own 0700 dir.
 DAL_DB_SNAPSHOT="$STAGING/dal/dal.latest.sqlite"
+# The API service publishes an immutable DB + deletion-manifest + ciphertext
+# media run here. This backup user holds this separate bundle lock shared from
+# verification through restic, so the producer/GC cannot switch or reclaim the
+# run under a consumer that has already checked it.
+BUNDLE_STAGE="$STAGING/api"
+BUNDLE_LOCK="$STAGING/media-bundle.lock"
 
 # DEV-036 idempotency is one successful offsite snapshot per Shanghai calendar
 # day. systemd serialises starts of this unit, while flock also covers an
@@ -85,6 +88,23 @@ export AWS_SECRET_ACCESS_KEY="$OSS_SECRET_ACCESS_KEY"
 
 echo "== DEV-035 backup $(date -u +%FT%TZ) =="
 
+if [ ! -r "$BUNDLE_LOCK" ]; then
+  echo "FAIL: media bundle lock is not readable at $BUNDLE_LOCK" >&2
+  exit 1
+fi
+exec 8<"$BUNDLE_LOCK"
+flock -s 8
+BUNDLE_INFO=$(/opt/personal-agent/.venv/bin/personal-agent-media-backup-bundle \
+  verify --stage-root "$BUNDLE_STAGE")
+BUNDLE_DIR=$(printf '%s' "$BUNDLE_INFO" | /opt/personal-agent/.venv/bin/python -c \
+  'import json, sys; print(json.load(sys.stdin)["path"])')
+case "$BUNDLE_DIR" in
+  "$BUNDLE_STAGE"/media-runs/*) ;;
+  *) echo "FAIL: verified media bundle path escapes staging: $BUNDLE_DIR" >&2; exit 1 ;;
+esac
+API_DB_SNAPSHOT="$BUNDLE_DIR/agent.sqlite"
+DELETION_MANIFEST="$BUNDLE_DIR/deletion-manifest.json"
+
 # The exact set restic will be handed. Declared once, checked once, passed once:
 # a pre-flight over a different list than the transfer proves nothing about the
 # transfer. On 2026-08-01 the checks covered three staged files while restic was
@@ -92,9 +112,9 @@ echo "== DEV-035 backup $(date -u +%FT%TZ) =="
 # still sitting in the mcp 0700 live dir -- gave EPERM *after* restic had already
 # written a partial snapshot to OSS.
 INPUT_LABELS=(
-  "agent snapshot"
+  "complete media bundle"
   "finance snapshot"
-  "deletion-manifest export"
+  "risk snapshot"
   "ledger config"
   "api unit"
   "mcp unit"
@@ -103,9 +123,9 @@ INPUT_LABELS=(
   "dal snapshot"
 )
 INPUTS=(
-  "$API_DB_SNAPSHOT"
+  "$BUNDLE_DIR"
   "$MCP_DB_SNAPSHOT"
-  "$DELETION_MANIFEST"
+  "$RISK_DB_SNAPSHOT"
   "$STAGED_LEDGER_CONFIG"
   "$UNIT_DIR/personal-agent-api.service"
   "$UNIT_DIR/personal-data-mcp.service"
@@ -126,6 +146,13 @@ INPUTS=(
 for i in "${!INPUTS[@]}"; do
   path="${INPUTS[$i]}"
   label="${INPUT_LABELS[$i]}"
+  if [ -d "$path" ]; then
+    if [ ! -r "$path" ]; then
+      echo "FAIL: $label directory is not readable at $path" >&2
+      exit 1
+    fi
+    continue
+  fi
   if [ ! -s "$path" ]; then
     echo "FAIL: $label missing or empty at $path" >&2
     exit 1
@@ -136,12 +163,12 @@ for i in "${!INPUTS[@]}"; do
   fi
 done
 # A valid manifest may legitimately hold zero entries (nothing has been deleted
-# yet), but it must be a JSON array -- a non-array body is a broken export, and
-# shipping one would let a future restore drill replay nothing and look
-# successful. Reject anything that is not `[]` or a list of entries.
+# yet), but it must be the sealed bundle object with an `entries` list -- a
+# malformed body would let a future restore drill replay nothing and look
+# successful.
 if ! /opt/personal-agent/.venv/bin/python -c \
-  "import json; assert isinstance(json.load(open('$DELETION_MANIFEST')), list)"; then
-  echo "FAIL: deletion-manifest export is not a JSON array at $DELETION_MANIFEST" >&2
+  "import json; body=json.load(open('$DELETION_MANIFEST')); assert isinstance(body, dict) and isinstance(body.get('entries'), list)"; then
+  echo "FAIL: deletion-manifest export is not a sealed bundle entries object at $DELETION_MANIFEST" >&2
   exit 1
 fi
 

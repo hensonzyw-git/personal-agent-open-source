@@ -50,6 +50,7 @@ fi
 .venv/bin/pip install --quiet --no-deps --force-reinstall releases/$(basename "$WHEEL")
 .venv/bin/personal-agent-api --help >/dev/null
 .venv/bin/personal-data-mcp --help >/dev/null
+.venv/bin/risk-monitor-daily --help >/dev/null
 echo "installed: \$(.venv/bin/pip show personal-agent | head -2 | tail -1)"
 EOF
 

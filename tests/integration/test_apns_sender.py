@@ -29,6 +29,7 @@ from personal_agent.api.apns import (
     ApnsPushSender,
     ProviderToken,
     TOKEN_LIFETIME,
+    build_alert_payload,
     build_payload,
     load_apns_config,
 )
@@ -249,14 +250,59 @@ def test_the_provider_token_is_es256_and_carries_the_key_id(config) -> None:
 def test_the_payload_holds_the_count_and_the_id_and_nothing_else() -> None:
     payload = build_payload(NOTIFICATION)
     assert payload["review_id"] == "rev_1"
-    assert payload["aps"]["badge"] == 3
+    # The icon badge is not this payload's to set: one card's item count is not
+    # the number of reviews still pending, and a stale badge nothing clears is
+    # worse than none.
+    assert "badge" not in payload["aps"]
     flattened = json.dumps(payload, ensure_ascii=False)
     # Nothing that could be a ledger figure or a merchant name.
     for forbidden in ("CNY", "¥", "amount", "咖啡", "category"):
         assert forbidden not in flattened
 
 
+def test_build_alert_payload_is_title_and_body_only() -> None:
+    payload = build_alert_payload("系统性风险监控", "系统性风险 正常")
+    assert payload["aps"]["alert"] == {"title": "系统性风险监控", "body": "系统性风险 正常"}
+    assert payload["aps"]["sound"] == "default"
+    assert "badge" not in payload["aps"]
+    # No machine field leaks in: a generic alert carries no id, count or sum.
+    assert set(payload) == {"aps"}
+
+
 # --- the send -----------------------------------------------------------------
+
+
+def test_send_alert_delivers_a_generic_alert(
+    config, sessions, keyring
+) -> None:
+    """The generalised path the risk card reuses: a title and body, the caller's
+    collapse id and priority, and nothing else in the body."""
+    seen: dict = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["headers"] = dict(request.headers)
+        seen["body"] = json.loads(request.content)
+        return httpx2.Response(200)
+
+    sender = _sender(config, sessions, keyring, handler)
+    sender.send_alert(
+        DEVICE_ID,
+        title="系统性风险监控",
+        body="系统性风险 去杠杆 — MBS 70.0 / CSS 80.0 / AFRS 60.0",
+        collapse_id="risk:2026-08-21",
+        priority="10",
+    )
+
+    assert seen["url"].endswith(f"/3/device/{PUSH_TOKEN}")
+    assert seen["headers"]["apns-collapse-id"] == "risk:2026-08-21"
+    assert seen["headers"]["apns-priority"] == "10"
+    assert seen["body"]["aps"]["alert"]["title"] == "系统性风险监控"
+    assert "badge" not in seen["body"]["aps"]
+    assert set(seen["body"]) == {"aps"}
+
+
+
 
 
 def test_a_200_is_acceptance_and_carries_the_right_request(
@@ -278,7 +324,7 @@ def test_a_200_is_acceptance_and_carries_the_right_request(
     assert seen["headers"]["apns-push-type"] == "alert"
     assert seen["headers"]["authorization"].startswith("bearer ")
     assert seen["headers"]["apns-collapse-id"] == "review:rev_1"
-    assert seen["body"]["aps"]["badge"] == 3
+    assert "badge" not in seen["body"]["aps"]
 
 
 @pytest.mark.parametrize(
@@ -536,3 +582,8 @@ def test_the_review_cli_wires_the_sender_rather_than_leaving_a_seam() -> None:
         for keyword in node.keywords
     }
     assert "send" in keywords
+    # The Timeline card is the same class of seam: without these the run builds
+    # cards and queues pushes but never seals the frozen `daily_review` event,
+    # and the review would have no entry point once the page is gone.
+    assert "keyring" in keywords
+    assert "session_manager" in keywords

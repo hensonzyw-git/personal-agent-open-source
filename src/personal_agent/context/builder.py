@@ -71,10 +71,19 @@ from personal_agent.context.untrusted import frame_untrusted_data as _frame
 from personal_agent.keys import HmacKey, HmacKeyRing
 from personal_agent.policy.bridge import VisibleTool
 from personal_agent.runtime.bookkeeping_intent import (
+    is_expense_write_request,
     is_finance_intent_candidate,
     is_finance_query_request,
     is_finance_retry_request,
+    is_income_write_request,
 )
+from personal_agent.runtime.model_input import (
+    ImageInputPart,
+    InputPart,
+    TextInputPart,
+    image_parts,
+)
+from personal_agent.runtime.calendar_intent import is_calendar_create_request
 from personal_agent.storage.models import (
     TERMINAL_OPERATION_STATES,
     ContextCheckpoint,
@@ -88,7 +97,13 @@ from personal_agent_core.errors import (
     AppError,
     ErrorCode,
 )
-from personal_agent_core.finance_tools import FINANCE_QUERY_TOOL
+from personal_agent_core.finance_tools import (
+    FINANCE_EXPENSE_TOOL,
+    FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS,
+    FINANCE_INCOME_TOOL,
+    FINANCE_QUERY_TOOL,
+    FINANCE_WRITE_TOOLS,
+)
 from personal_agent_core.manifest import canonical_json
 
 SCHEMA_VERSION: Final[str] = "context_envelope_v1"
@@ -150,6 +165,65 @@ def finance_source_allows_receipt_date_default(source_text: str) -> bool:
     model evaluator so it scores the same Host default boundary as production.
     """
     return not _EXPLICIT_DATE_IN_FINANCE_SOURCE_RE.search(source_text)
+
+
+# A relative date together with “很久以前” has two plausible readings: the
+# latter may be a merchant name, or it may contradict the payment date.  This
+# is a ledger meaning boundary, so the Host requires a clarification instead
+# of trusting the provider to retain every token while extracting the name.
+_RESOLVED_RELATIVE_DAY_RE = re.compile(r"(?:今天|昨天|前天)")
+_AMBIGUOUS_HISTORIC_TIME_RE = re.compile(r"很久以前")
+
+
+def finance_source_requires_time_clarification(source_text: str) -> bool:
+    """Whether a source contains the known date-versus-merchant ambiguity."""
+    return bool(
+        _RESOLVED_RELATIVE_DAY_RE.search(source_text)
+        and _AMBIGUOUS_HISTORIC_TIME_RE.search(source_text)
+    )
+
+
+def _continuation_finance_parts(
+    finance_retry_context: FinanceRetryContext | None,
+    clarification_context: ClarificationContext | None,
+    user_text: str,
+) -> tuple[str, ...]:
+    """The user texts that together form the request a continuation resumes.
+
+    A clarification resolves one missing fact of an *existing* request, so the
+    request is the original text, every answered exchange, and the current
+    message -- "记账" answered by "午饭 20块" is one bookkeeping request only
+    once the answer is part of it. A Finance retry re-runs the same request,
+    so its original text (which already carries the failed intent) plus its
+    own answered chain joins too. On a plain turn the current message is the
+    whole request.
+
+    The texts stay separate on purpose. A single joined string would let the
+    shape predicates match *across* segment boundaries, and those can only
+    misread text that was never one utterance: "午饭 45" is a bookkeeping
+    request, "餐饮" is not, and joining them into "午饭 45 餐饮" breaks the
+    terminal-amount shape so the request loses its intent (found by the suite
+    after the first join-based fix, 2026-08-30); "买 3" + "月 5 号到" would
+    fabricate a date. Callers therefore evaluate the shape predicates per
+    part -- intent if *any* part holds, the receipt-day default refused if
+    *any* part names a date -- and may join the parts only for the *routing*
+    predicates, whose compound rules (an amount next to the frozen
+    `个人支出`/`家庭支出` wording) describe the chain as one request.
+    """
+    if finance_retry_context is not None:
+        return (
+            finance_retry_context.original_user_text,
+            *(item.answer for item in finance_retry_context.completed_exchanges),
+            user_text,
+        )
+    if clarification_context is not None:
+        return (
+            clarification_context.original_user_text,
+            *(item.answer for item in clarification_context.completed_exchanges),
+            user_text,
+        )
+    return (user_text,)
+
 
 #: Recorded when an *ancestor* Session's Checkpoint had to go to fit the budget.
 #: This Session's own Checkpoint is never in that set: it is what replaces this
@@ -257,9 +331,15 @@ class ContextEnvelope:
     #: A direct answer is forbidden for this turn. This is derived by the
     #: trusted builder, never by the provider, and includes sealed safe retries.
     finance_intent_required: bool = False
+    #: A direct answer is forbidden: an EventKit-backed calendar create tool
+    #: call is required before the operation can claim success.
+    calendar_create_intent_required: bool = False
     #: The exact Finance tool required where the intent is unambiguous. Query
     #: turns use this to prevent a model from turning a read into a write.
     finance_required_tool: str | None = None
+    #: A source has an unresolved date-versus-merchant ambiguity.  The gateway
+    #: permits only a clarification or safe failure until the user answers.
+    finance_clarification_required: bool = False
     #: The trusted Builder derived that the source Finance write contains no
     #: date expression, so the Host may use its receipt-day default if the
     #: provider redundantly asks for one.  This stays separate from the model's
@@ -279,6 +359,16 @@ class ContextEnvelope:
     #: Estimated tokens per component kind, before the safety margin. §16.1
     #: requires the per-component numbers in trace, not only the total.
     component_tokens: Mapping[str, int] = field(default_factory=dict)
+    #: This turn's structured input: the user's words and the authorized image
+    #: bytes, in order (§8's chain from the sealed request to the provider).
+    #: Empty for every text-only turn, which is why the gateway can send those
+    #: exactly as it always has.
+    #:
+    #: The bytes live here and only here. They are not a component, not a trace
+    #: field and not part of `source_fingerprint`: an envelope is recorded in
+    #: evidence, and §8 forbids "raw base64、凭据、完整载荷" in a record. The
+    #: budget still knows what they cost -- that is `IMAGE_INPUT`'s `tokens`.
+    input_parts: tuple[InputPart, ...] = ()
     _budget_validation_witness: InitVar[object | None] = None
 
     def __post_init__(self, _budget_validation_witness: object | None) -> None:
@@ -347,6 +437,11 @@ class ContextEnvelope:
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail="a required Finance tool needs a Finance turn",
             )
+        if self.finance_clarification_required and not self.finance_intent_required:
+            raise AppError(
+                ErrorCode.INTERNAL_ERROR,
+                internal_detail="a Finance clarification gate needs a Finance turn",
+            )
         if self.finance_retry_unbound and not self.finance_intent_required:
             raise AppError(
                 ErrorCode.INTERNAL_ERROR,
@@ -354,12 +449,16 @@ class ContextEnvelope:
             )
         if self.finance_date_default_eligible and (
             not self.finance_intent_required
-            or self.finance_required_tool is not None
+            or (
+                self.finance_required_tool is not None
+                and self.finance_required_tool
+                not in FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
+            )
         ):
             raise AppError(
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail=(
-                    "a Finance date default is only valid for a write intent"
+                    "a Finance date default is only valid for a date-defaultable write"
                 ),
             )
         if self.finance_date_default_retry and not self.finance_intent_required:
@@ -367,6 +466,7 @@ class ContextEnvelope:
                 ErrorCode.INTERNAL_ERROR,
                 internal_detail="a date-default retry needs a Finance turn",
             )
+        self._check_input_parts()
         # "Immutable" has to be true of the containers too, or a caller holding
         # the envelope could still edit what a model was told it may send.
         if not isinstance(self.components, tuple):
@@ -377,6 +477,57 @@ class ContextEnvelope:
         for name in ("dropped_counts", "component_tokens"):
             object.__setattr__(
                 self, name, MappingProxyType(dict(getattr(self, name)))
+            )
+
+    def _check_input_parts(self) -> None:
+        """Re-check that the parts are what this envelope was measured as.
+
+        Two things can go wrong here, and both fail silently at the provider.
+        An image the budget never counted is an input the hard limit does not
+        describe; a text part that is not the user input is a message the
+        budget measured one half of and the model is asked about the other.
+        Neither is visible downstream, so both are refused here.
+        """
+        if not isinstance(self.input_parts, tuple):
+            raise _envelope_error("envelope input parts must be a tuple")
+        texts = [p for p in self.input_parts if isinstance(p, TextInputPart)]
+        images = [p for p in self.input_parts if isinstance(p, ImageInputPart)]
+        if len(texts) + len(images) != len(self.input_parts):
+            raise _envelope_error("envelope carries an unknown input part")
+        # Empty parts mean a pre-media turn, whose whole message is `user_text`
+        # and whose request the gateway builds exactly as it always has. There
+        # is no second copy of the message for it to disagree with.
+        if self.input_parts:
+            if len(texts) > 1:
+                raise _envelope_error("an input may carry at most one text part")
+            if texts and self.input_parts[0] is not texts[0]:
+                # §3.1's order, held at the provider for the same reason: the
+                # instruction is read before the picture it is about.
+                raise _envelope_error("a text part must precede the images")
+            if texts:
+                if texts[0].text != self.user_text:
+                    raise _envelope_error(
+                        "the text part is not the user input this envelope measured"
+                    )
+            elif self.user_text:
+                # No text part and a non-empty message: the two disagree about
+                # what the user said, and only one of them was budgeted.
+                raise _envelope_error(
+                    "an input with no text part carries no user text"
+                )
+
+        counted = [
+            item for item in self.components if item.kind is ComponentKind.IMAGE_INPUT
+        ]
+        if len(counted) != len(images):
+            raise _envelope_error(
+                "an envelope must count exactly the images it carries"
+            )
+        if sum(item.tokens or 0 for item in counted) != sum(
+            part.token_upper_bound for part in images
+        ):
+            raise _envelope_error(
+                "the counted image cost is not the cost of the images carried"
             )
 
     # -- accessors ------------------------------------------------------
@@ -450,7 +601,9 @@ class ContextEnvelope:
             "compaction_requested": self.compaction_requested,
             "checkpoint_rebuild_required": self.checkpoint_rebuild_required,
             "finance_intent_required": self.finance_intent_required,
+            "calendar_create_intent_required": self.calendar_create_intent_required,
             "finance_required_tool": self.finance_required_tool,
+            "finance_clarification_required": self.finance_clarification_required,
             "finance_date_default_eligible": self.finance_date_default_eligible,
             "finance_retry_unbound": self.finance_retry_unbound,
             "finance_date_default_retry": self.finance_date_default_retry,
@@ -513,6 +666,7 @@ class ContextBuilder:
         essential_tools: Iterable[str] = (),
         preferences: Sequence[str] = (),
         memories: Sequence[MemoryCandidate] = (),
+        input_parts: tuple[InputPart, ...] = (),
     ) -> ContextEnvelope:
         session = db.get(ContextSession, session_id)
         if session is None or session.conversation_id != conversation_id:
@@ -520,6 +674,7 @@ class ContextBuilder:
                 ErrorCode.CONTEXT_UNAVAILABLE,
                 internal_detail="session does not belong to this Timeline",
             )
+        images = image_parts(input_parts)
         current_event = self._current_user_event(
             db,
             keyring,
@@ -527,6 +682,7 @@ class ContextBuilder:
             session_id=session_id,
             event_id=current_event_id,
             expected_text=user_text,
+            carries_image=bool(images),
         )
 
         checkpoint = self._compactor.active_checkpoint(
@@ -564,6 +720,22 @@ class ContextBuilder:
                 ErrorCode.CONTEXT_UNAVAILABLE,
                 internal_detail="a turn cannot carry two continuation contexts",
             )
+        # §8 counts every image in this turn into the mandatory input, at its
+        # own upper bound, before anything droppable is considered. One
+        # component per image rather than one for the turn: the count then
+        # reflects the request, and a trace says how many photos were charged
+        # for without naming any of them.
+        components.extend(
+            self._budgeter.component(
+                ComponentKind.IMAGE_INPUT,
+                "",
+                label="image_input",
+                ordinal=index,
+                tokens=part.token_upper_bound,
+            )
+            for index, part in enumerate(images)
+        )
+
         source_operation_ids = (
             clarification_context.source_operation_ids
             if clarification_context is not None
@@ -602,10 +774,98 @@ class ContextBuilder:
                 ComponentKind.USER_INPUT, user_text, label="user_input"
             )
         )
+        # Finance routing is Host-owned state, derived from the original request
+        # for a continuation.  It has to be resolved *before* declarations are
+        # given to the Budgeter: otherwise a long ordinary Session can trim away
+        # every governed Finance tool and leave a self-contradictory envelope
+        # (Finance required, but unavailable to the provider).
+        #
+        # The request a continuation resumes is the original text *plus* every
+        # answered clarification *plus* the current message, not the original
+        # text alone: "记账" answered by "午饭 20块" is a bookkeeping write
+        # only once the answer is part of the source. Dropping the answers
+        # left a bare original that no intent predicate matched, so a later
+        # write turn lost its Finance state and the Host never injected the
+        # required receipt date (observed live 2026-08-30: 「记账」→「午饭 20
+        # 块」→「个人」 failed at the MCP occurred_on gate). Excluding the
+        # current message instead left a covering answer with no Finance tools
+        # at all (review finding MAJOR-1, 2026-08-30). The parts are evaluated
+        # separately -- intent if *any* part matches, the receipt-day default
+        # refused if *any* part names a date -- because the shape predicates
+        # must never read across utterance boundaries (see
+        # `_continuation_finance_parts`). The chain is also joined for the
+        # routing predicates: `is_expense_write_request` requires the amount
+        # and the frozen `个人支出`/`家庭支出` wording in one string, and on a
+        # chain like "昨天午饭 45" → "家庭支出" they arrive in different parts
+        # -- the request is one expense either way, so routing reads the
+        # joined chain while intent and the date guards read only whole parts
+        # (the docstring above records why the shapes must not join).
+        finance_parts = _continuation_finance_parts(
+            finance_retry_context, clarification_context, user_text
+        )
+        finance_joined = "".join(finance_parts)
+        finance_intent_required = (
+            finance_retry_context is not None
+            or any(is_finance_intent_candidate(part) for part in finance_parts)
+            or is_finance_intent_candidate(finance_joined)
+            or is_finance_retry_request(user_text)
+        )
+        finance_required_tool = (
+            FINANCE_QUERY_TOOL
+            if is_finance_query_request(finance_joined)
+            else (
+                FINANCE_INCOME_TOOL
+                if is_income_write_request(finance_joined)
+                else (
+                    FINANCE_EXPENSE_TOOL
+                    if is_expense_write_request(finance_joined)
+                    else None
+                )
+            )
+        )
+        finance_essential_tools = (
+            frozenset({finance_required_tool})
+            if finance_required_tool is not None
+            else (FINANCE_WRITE_TOOLS if finance_intent_required else frozenset())
+        )
+        finance_date_default_eligible = (
+            finance_intent_required
+            and (
+                finance_required_tool is None
+                or finance_required_tool in FINANCE_HOST_DEFAULT_OCCURRED_ON_TOOLS
+            )
+            and all(
+                finance_source_allows_receipt_date_default(text)
+                for text in (*finance_parts, finance_joined)
+            )
+        )
+        finance_clarification_required = (
+            clarification_context is None
+            and finance_intent_required
+            and any(
+                finance_source_requires_time_clarification(text)
+                for text in (*finance_parts, finance_joined)
+            )
+        )
+        finance_retry_unbound = (
+            clarification_context is None
+            and finance_retry_context is None
+            and is_finance_retry_request(user_text)
+        )
+        calendar_create_intent_required = is_calendar_create_request(user_text)
+        calendar_essential_tools = (
+            frozenset({"calendar.create_event"})
+            if calendar_create_intent_required
+            else frozenset()
+        )
         declarations = self._tool_declarations(
             effective_tools,
             candidate_tools=candidate_tools,
-            essential_tools=essential_tools,
+            essential_tools=(
+                *essential_tools,
+                *finance_essential_tools,
+                *calendar_essential_tools,
+            ),
         )
         components.extend(declarations)
 
@@ -630,36 +890,6 @@ class ContextBuilder:
             row.checkpoint_id
             for _, row in lineage
             if _checkpoint_label(row.checkpoint_id) in surviving_labels
-        )
-
-        finance_source_text = (
-            finance_retry_context.original_user_text
-            if finance_retry_context is not None
-            else (
-                clarification_context.original_user_text
-                if clarification_context is not None
-                else user_text
-            )
-        )
-        finance_intent_required = (
-            finance_retry_context is not None
-            or is_finance_intent_candidate(finance_source_text)
-            or is_finance_retry_request(user_text)
-        )
-        finance_required_tool = (
-            FINANCE_QUERY_TOOL
-            if is_finance_query_request(finance_source_text)
-            else None
-        )
-        finance_date_default_eligible = (
-            finance_intent_required
-            and finance_required_tool is None
-            and finance_source_allows_receipt_date_default(finance_source_text)
-        )
-        finance_retry_unbound = (
-            clarification_context is None
-            and finance_retry_context is None
-            and is_finance_retry_request(user_text)
         )
 
         return ContextEnvelope(
@@ -687,7 +917,9 @@ class ContextBuilder:
                         source_operation_ids
                     ),
                     "finance_intent_required": finance_intent_required,
+                    "calendar_create_intent_required": calendar_create_intent_required,
                     "finance_required_tool": finance_required_tool,
+                    "finance_clarification_required": finance_clarification_required,
                     "finance_date_default_eligible": finance_date_default_eligible,
                     "finance_retry_unbound": finance_retry_unbound,
                     "checkpoint_id": checkpoint_id,
@@ -703,13 +935,16 @@ class ContextBuilder:
                 outcome.compaction_requested or checkpoint_rebuild_required
             ),
             finance_intent_required=finance_intent_required,
+            calendar_create_intent_required=calendar_create_intent_required,
             finance_required_tool=finance_required_tool,
+            finance_clarification_required=finance_clarification_required,
             finance_date_default_eligible=finance_date_default_eligible,
             finance_retry_unbound=finance_retry_unbound,
             checkpoint_rebuild_required=checkpoint_rebuild_required,
             trimmed=trimmed,
             dropped_counts=dict(outcome.dropped_counts),
             component_tokens=self._tokens_by_kind(outcome.components),
+            input_parts=input_parts,
             _budget_validation_witness=_BUDGET_VALIDATION_WITNESS,
         )
 
@@ -756,7 +991,7 @@ class ContextBuilder:
         for item in components:
             totals[item.kind.value] = totals.get(
                 item.kind.value, 0
-            ) + self._budgeter.estimate(item.text)
+            ) + self._budgeter.cost(item)
         return totals
 
     # -- sections -------------------------------------------------------
@@ -893,6 +1128,7 @@ class ContextBuilder:
         session_id: str,
         event_id: str,
         expected_text: str,
+        carries_image: bool = False,
     ) -> ConversationEvent:
         """Return the persisted anchor for this turn, or refuse any mismatch.
 
@@ -900,6 +1136,13 @@ class ContextBuilder:
         `USER_INPUT` component to that exact immutable event prevents both a
         free-floating caller string and the same message appearing once as raw
         history and once as current input.
+
+        `carries_image` relaxes one clause and no more. Equality with the
+        persisted event is required in every case -- a photo is not a licence to
+        answer about a message the user did not send -- but non-emptiness is not
+        required when an image is present: §8's "纯图片...不能被空文本校验...提前当
+        空请求". There is no flag a caller can pass; the builder derives it from
+        the parts it was given, exactly as the budgeter derives its own.
         """
         row = db.get(ConversationEvent, event_id)
         if (
@@ -925,7 +1168,7 @@ class ContextBuilder:
         persisted_text = content.get("text") if isinstance(content, dict) else None
         if (
             not isinstance(expected_text, str)
-            or not expected_text.strip()
+            or (not carries_image and not expected_text.strip())
             or persisted_text != expected_text
         ):
             raise AppError(
@@ -1243,7 +1486,11 @@ class ContextBuilder:
         selected = [
             tool
             for tool in effective_tools
-            if candidates is None or tool.alias in candidates
+            if (
+                candidates is None
+                or tool.alias in candidates
+                or tool.alias in essential
+            )
         ]
         # The caller's order is relevance order: the Router puts its best
         # candidate first, and the governed catalog puts the business tool ahead
@@ -1270,6 +1517,11 @@ class ContextBuilder:
             )
             for index, tool in enumerate(selected)
         ]
+
+
+def _envelope_error(detail: str) -> AppError:
+    """A malformed envelope. Never a caller's fault, and never retryable."""
+    return AppError(ErrorCode.INTERNAL_ERROR, internal_detail=detail)
 
 
 def _fingerprint(key: HmacKey | HmacKeyRing, body: Mapping[str, Any]) -> str:

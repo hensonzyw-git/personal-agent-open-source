@@ -1,0 +1,16 @@
+# Run the daily systemic-risk monitor at 10:00 Asia/Shanghai.
+#
+# 10:00, not earlier: the card covers the *completed* US trading day, whose close
+# (16:00 ET) lands at ~04:00-05:00 Asia/Shanghai, and FRED/Tencent publish the
+# day's series within a few hours after that. Henson reads the card on waking.
+# Persistent so a box that was down through the window still builds the card on
+# next boot.
+[Unit]
+Description=Personal Agent daily systemic-risk monitor at 10:00
+
+[Timer]
+OnCalendar=*-*-* 10:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

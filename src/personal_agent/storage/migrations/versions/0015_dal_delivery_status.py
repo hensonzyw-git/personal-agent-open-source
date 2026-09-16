@@ -1,8 +1,8 @@
 """Preserve ambiguity after attempted delivery; constrain durable status truth."""
 from alembic import op
 import sqlalchemy as sa
-revision='0007_dal_delivery_status'
-down_revision='0006_dal_resume_decisions'
+revision='0015_dal_delivery_status'
+down_revision='0014_dal_resume_decisions'
 branch_labels=None
 depends_on=None
 

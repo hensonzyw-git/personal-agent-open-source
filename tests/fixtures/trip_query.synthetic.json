@@ -1,0 +1,58 @@
+{
+  "status": "ok",
+  "view": "by_trip",
+  "filters_applied": {
+    "date_range": {
+      "start": "2026-01-01",
+      "end": "2026-12-31"
+    },
+    "categories": [
+      "旅行"
+    ],
+    "name_contains": [],
+    "is_family_expense": "all",
+    "personal_amount_cny": null
+  },
+  "metric": "personal_spend_total_cny",
+  "record_count": 4,
+  "source_system": "feishu_bitable",
+  "evidence": {
+    "kind": "aggregate_query",
+    "query_id": "qry_3e1e7ec2d8da20c3ba7a3ccf",
+    "config_checksum": "f210e14b7c902ca063a5694cd7a5152710495e58f6092c171f1d73799ca1a48d",
+    "schema_snapshot_checksum": "accc4a10740aa01f209abe236aa934bc26732396b019b7b3ed6daa018ec27b90",
+    "scanned_pages": 1,
+    "matched_count": 4,
+    "started_at": "2026-07-24T04:00:00.000000Z",
+    "completed_at": "2026-07-24T04:00:00.000000Z",
+    "parser_version": "trip-query-v1",
+    "result_checksum": "1313e537a84f624b8e227dcc183133401decd7679bba3138f3b2841146271922"
+  },
+  "coverage": {
+    "scan_complete": true,
+    "scope_coverage": "complete",
+    "assignment_complete": false,
+    "source_years": [
+      2026
+    ],
+    "unassigned_record_count": 1
+  },
+  "personal_spend_total_cny": "285.00",
+  "by_trip": [
+    {
+      "trip_tag": "东京02",
+      "personal_spend_total_cny": "200.00",
+      "record_count": 1
+    },
+    {
+      "trip_tag": "东京01",
+      "personal_spend_total_cny": "80.00",
+      "record_count": 2
+    },
+    {
+      "trip_tag": null,
+      "personal_spend_total_cny": "5.00",
+      "record_count": 1
+    }
+  ]
+}

@@ -27,11 +27,14 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
+from personal_agent.api import events
 from personal_agent.api.control_client import (
     ControlPlaneError,
     FinanceControlClient,
     SuccessfulWrite,
 )
+from personal_agent.api.review_view import review_detail
+from personal_agent.storage.models import DailyReview
 from personal_agent_core.sqlite import run_write_transaction
 from personal_agent.api.daily_review import (
     MAX_CATCH_UP_DAYS,
@@ -64,6 +67,8 @@ class ReviewRunReport:
     #: current state of the world and must not read as "a push went out".
     queued_notifications: int = 0
     attempted_notifications: int = 0
+    #: Review ids whose frozen Timeline card was sealed this run.
+    emitted_review_events: list[str] = field(default_factory=list)
     stopped_early_on: str | None = None
 
     @property
@@ -80,11 +85,21 @@ def run_daily_review(
     send: PushSender | None = None,
     run: Callable[[Any], Any] = asyncio.run,
     max_days: int = MAX_CATCH_UP_DAYS,
+    keyring: Any | None = None,
+    session_manager: Any | None = None,
 ) -> ReviewRunReport:
-    """Build any missing cards, queue their notifications, and attempt delivery."""
+    """Build any missing cards, queue their notifications, and attempt delivery.
+
+    When `keyring` and `session_manager` are both supplied the run also seals each
+    created / reopened card as a frozen `daily_review` Timeline event, and repairs
+    any card whose event is missing (a crash between the review-row commit and
+    the event append). Without them the run is the pre-Timeline behaviour; the
+    console entrypoint always supplies them.
+    """
     moment = now()
     day_now = today if today is not None else ledger_date(moment)
     read_writes = _writes_reader(control, run)
+    emit_events = keyring is not None and session_manager is not None
     report = ReviewRunReport()
 
     for day in catch_up_days(day_now, max_days):
@@ -130,6 +145,26 @@ def run_daily_review(
                 raise
         report.outcomes.append(outcome)
 
+        # Seal the card after the build has committed: the value read is a Feishu
+        # round-trip and must not sit inside the build transaction. Emitting for a
+        # CREATED or UPDATED card, and for a card whose event is still owed, keeps
+        # "read once at push time" true while the repair path closes the one crash
+        # window that would otherwise leave a review with no Timeline entry at all.
+        if emit_events and outcome.review_id is not None:
+            if outcome.should_notify or _review_missing_event(
+                sessions, outcome.review_id
+            ):
+                _emit_review_event(
+                    sessions,
+                    control,
+                    run,
+                    keyring,
+                    session_manager,
+                    review_id=outcome.review_id,
+                    now=moment,
+                )
+                report.emitted_review_events.append(outcome.review_id)
+
     # `deliver_pending` commits each row itself, so no transaction is held
     # across a provider call. A real APNs sender crosses the network to Apple;
     # holding one transaction across N sends would let a concurrent commit cost
@@ -145,6 +180,79 @@ def run_daily_review(
             raise
 
     return report
+
+
+def _review_missing_event(sessions: Callable[[], Any], review_id: str) -> bool:
+    """Whether a review has no frozen Timeline card yet.
+
+    Read fresh rather than through a caller's session: the build committed in a
+    different session, and the identity map of any session that already read the
+    row would not see the just-written `timeline_event_id`.
+    """
+    with sessions() as session:
+        review = session.get(DailyReview, review_id)
+        return review is not None and review.timeline_event_id is None
+
+
+def _emit_review_event(
+    sessions: Callable[[], Any],
+    control: FinanceControlClient,
+    run: Callable[[Any], Any],
+    keyring: Any,
+    session_manager: Any,
+    *,
+    review_id: str,
+    now: datetime,
+) -> str:
+    """Seal one card's frozen snapshot onto the Timeline.
+
+    Values are read once here and never again: the sealed event is what a client
+    renders from now on. The read and the append are separate transactions
+    because the read crosses into Feishu and must not be held open across it
+    (rule 5.2).
+    """
+
+    def read_record(records: list[tuple[str, str]]):
+        return run(control.get_record_fields_batch(records))
+
+    with sessions() as session:
+        detail = review_detail(session, review_id, read_record)
+
+    content = {
+        "review_id": detail["review_id"],
+        "review_date": detail["review_date"],
+        "item_count": detail["item_count"],
+        "items": detail["items"],
+    }
+
+    # The append closure is defined inside the `with` block, exactly like
+    # `build_day`, so the `session` it reads is unambiguously the write
+    # transaction's session and not the one the value read used above.
+    with sessions() as session:
+        def append_and_mark() -> str:
+            review = session.get(DailyReview, review_id)
+            if review is None:
+                raise ControlPlaneError(
+                    "the review vanished before its card was sealed"
+                )
+            timeline_id = events.canonical_timeline_id(session, now=now)
+            event_id = events.append_event(
+                session,
+                keyring,
+                conversation_id=timeline_id,
+                session_id=session_manager.system_event_session(
+                    session, conversation_id=timeline_id, now=now
+                ),
+                turn_id=events.new_turn_id(),
+                event_type=events.DAILY_REVIEW,
+                content=content,
+                operation_id=None,
+                now=now,
+            )
+            review.timeline_event_id = event_id
+            return event_id
+
+        return run_write_transaction(session, append_and_mark)
 
 
 def _writes_reader(

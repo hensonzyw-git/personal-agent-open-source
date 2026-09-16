@@ -146,6 +146,104 @@ def test_downgrade_returns_to_an_empty_database(tmp_path: Path) -> None:
     engine.dispose()
 
 
+def test_receipt_record_migration_round_trips_a_populated_database(
+    tmp_path: Path,
+) -> None:
+    """`0006` adds the `G1` business fields to a database that already has rows.
+
+    Two things are proven here that the model alone cannot: that the SQLite
+    batch copy keeps existing operations, and that the check constraint really
+    exists in the database rather than only in `__table_args__`. A constraint
+    that lives only in the model is not a constraint -- recovery, the reconciler
+    and a migration all write through raw SQL.
+    """
+    path = tmp_path / "receipt-record-migration.sqlite"
+    engine = create_database_engine(path)
+    db.upgrade(engine, "0005_finance_safe_retry")
+    timestamp = "2026-08-15T00:00:00Z"
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO devices (device_id, display_name, public_key, "
+                "device_key_thumbprint, status, scopes, allowed_tools_version, "
+                "created_at) VALUES ('dev', 'phone', 'key', 'thumb', 'active', "
+                "'[]', 'v1', :timestamp)"
+            ),
+            {"timestamp": timestamp},
+        )
+        for suffix in ("written", "refused"):
+            connection.execute(
+                text(
+                    "INSERT INTO api_requests (request_id, device_id, "
+                    "client_request_id, request_fingerprint, received_at) "
+                    "VALUES (:request_id, 'dev', :client_id, :fingerprint, "
+                    ":timestamp)"
+                ),
+                {
+                    "request_id": f"req-{suffix}",
+                    "client_id": f"client-{suffix}",
+                    "fingerprint": f"fp-{suffix}",
+                    "timestamp": timestamp,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO operations (operation_id, request_id, trace_id, "
+                    "idempotency_key, state, state_version, cancel_requested, "
+                    "client_detached, created_at, updated_at) VALUES "
+                    "(:operation_id, :request_id, :trace_id, :key, :state, 1, "
+                    "0, 0, :timestamp, :timestamp)"
+                ),
+                {
+                    "operation_id": f"op-{suffix}",
+                    "request_id": f"req-{suffix}",
+                    "trace_id": f"trace-{suffix}",
+                    "key": f"key-{suffix}",
+                    "state": "succeeded" if suffix == "written" else "failed_safe",
+                    "timestamp": timestamp,
+                },
+            )
+
+    db.upgrade(engine)
+    envelope = '{"v": 1, "ct": "x"}'
+    with engine.begin() as connection:
+        # No backfill: a write that predates `G1` says so by holding NULL.
+        assert connection.execute(
+            text("SELECT encrypted_result_record FROM operations")
+        ).scalars().all() == [None, None]
+        connection.execute(
+            text(
+                "UPDATE operations SET encrypted_result_record = :envelope "
+                "WHERE operation_id = 'op-written'"
+            ),
+            {"envelope": envelope},
+        )
+
+    with engine.begin() as connection:
+        # A `failed_safe` row carrying a name and an amount would render as a
+        # receipt for a write that never happened.
+        with pytest.raises(IntegrityError):
+            connection.execute(
+                text(
+                    "UPDATE operations SET encrypted_result_record = :envelope "
+                    "WHERE operation_id = 'op-refused'"
+                ),
+                {"envelope": envelope},
+            )
+
+    db.downgrade(engine, "0005_finance_safe_retry")
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT operation_id FROM operations ORDER BY operation_id")
+        ).scalars().all() == ["op-refused", "op-written"]
+        assert "encrypted_result_record" not in {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(operations)"))
+        }
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    engine.dispose()
+
+
 def test_finance_retry_migration_round_trips_a_populated_database(
     tmp_path: Path,
 ) -> None:
@@ -224,6 +322,263 @@ def test_finance_retry_migration_round_trips_a_populated_database(
     with engine.connect() as connection:
         assert connection.execute(
             text("SELECT retry_of_operation_id FROM operations")
+        ).scalars().all() == [None, None]
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    engine.dispose()
+
+
+def test_calendar_override_migration_round_trips_a_populated_database(
+    tmp_path: Path,
+) -> None:
+    """Design 3.3's three columns survive a downgrade and an upgrade.
+
+    Two of them are load-bearing in a way a plain `ADD COLUMN` would not show:
+    the lineage is a self-referencing foreign key (so the rebuild has to keep
+    `foreign_keys=ON` honest through a table copy) and `parent_operation_derives_once`
+    is the constraint that makes a double tap one operation. Both are asserted
+    here against real rows rather than only against the schema.
+    """
+    path = tmp_path / "calendar-override-migration.sqlite"
+    engine = create_database_engine(path)
+    db.upgrade(engine, "0009_device_action_seal")
+    timestamp = "2026-09-07T00:00:00Z"
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO devices (device_id, display_name, public_key, "
+                "device_key_thumbprint, status, scopes, allowed_tools_version, "
+                "created_at) VALUES ('dev', 'phone', 'key', 'thumb', 'active', "
+                "'[]', 'v1', :timestamp)"
+            ),
+            {"timestamp": timestamp},
+        )
+        for suffix in ("source", "derived", "other"):
+            connection.execute(
+                text(
+                    "INSERT INTO api_requests (request_id, device_id, "
+                    "client_request_id, request_fingerprint, received_at) "
+                    "VALUES (:request_id, 'dev', :client_id, :fingerprint, "
+                    ":timestamp)"
+                ),
+                {
+                    "request_id": f"req-{suffix}",
+                    "client_id": f"client-{suffix}",
+                    "fingerprint": f"fp-{suffix}",
+                    "timestamp": timestamp,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO operations (operation_id, request_id, trace_id, "
+                    "idempotency_key, state, state_version, cancel_requested, "
+                    "client_detached, created_at, updated_at) VALUES "
+                    "(:operation_id, :request_id, :trace_id, :key, "
+                    "'source_in_progress', 1, 0, 0, :timestamp, :timestamp)"
+                ),
+                {
+                    "operation_id": f"op-{suffix}",
+                    "request_id": f"req-{suffix}",
+                    "trace_id": f"trace-{suffix}",
+                    "key": f"key-{suffix}",
+                    "timestamp": timestamp,
+                },
+            )
+
+    db.upgrade(engine)
+    with engine.begin() as connection:
+        # No backfill: a write that predates the override has no parent and no
+        # report, which is exactly what NULL means here.
+        assert connection.execute(
+            text("SELECT parent_operation_id FROM operations")
+        ).scalars().all() == [None, None, None]
+        connection.execute(
+            text(
+                "UPDATE operations SET parent_operation_id = 'op-source', "
+                "device_result = 'duplicate' WHERE operation_id = 'op-derived'"
+            )
+        )
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+
+    with engine.begin() as connection:
+        # One derived operation per source, enforced rather than intended: the
+        # unique index is what makes a double tap read the first one back.
+        with pytest.raises(IntegrityError):
+            connection.execute(
+                text(
+                    "UPDATE operations SET parent_operation_id = 'op-source' "
+                    "WHERE operation_id = 'op-other'"
+                )
+            )
+    with engine.begin() as connection:
+        # The report vocabulary is closed at the storage layer too, so a typo
+        # cannot make an operation look overridable -- or hide one that is.
+        with pytest.raises(IntegrityError):
+            connection.execute(
+                text(
+                    "UPDATE operations SET device_result = 'already_there' "
+                    "WHERE operation_id = 'op-other'"
+                )
+            )
+    with engine.begin() as connection:
+        # An operation cannot be its own origin.
+        with pytest.raises(IntegrityError):
+            connection.execute(
+                text(
+                    "UPDATE operations SET parent_operation_id = 'op-other' "
+                    "WHERE operation_id = 'op-other'"
+                )
+            )
+
+    db.downgrade(engine, "0009_device_action_seal")
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT operation_id FROM operations ORDER BY operation_id")
+        ).scalars().all() == ["op-derived", "op-other", "op-source"]
+        columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(operations)"))
+        }
+        assert not {"encrypted_request", "parent_operation_id", "device_result"} & columns
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+
+    db.upgrade(engine)
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT parent_operation_id FROM operations")
+        ).scalars().all() == [None, None, None]
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    engine.dispose()
+
+
+def test_action_plan_migration_round_trips_a_populated_database(
+    tmp_path: Path,
+) -> None:
+    """Design 4.1's two plan columns are one fact, and the database says so.
+
+    A check constraint that lives only in `__table_args__` is not a constraint:
+    recovery, the reconciler and a migration all write through raw SQL. So the
+    three claims are asserted against real rows -- a plan key with no index (a
+    list nobody can order), an index with no key (a position in a list nobody
+    can find), a negative index (not a position at all), and a second row
+    claiming a position already taken (the derived key `uuid5(plan_key, index)`
+    would then name two different events).
+    """
+    path = tmp_path / "action-plan-migration.sqlite"
+    engine = create_database_engine(path)
+    db.upgrade(engine, "0010_calendar_override")
+    timestamp = "2026-09-10T00:00:00Z"
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO devices (device_id, display_name, public_key, "
+                "device_key_thumbprint, status, scopes, allowed_tools_version, "
+                "created_at) VALUES ('dev', 'phone', 'key', 'thumb', 'active', "
+                "'[]', 'v1', :timestamp)"
+            ),
+            {"timestamp": timestamp},
+        )
+        for suffix in ("anchor", "second"):
+            connection.execute(
+                text(
+                    "INSERT INTO api_requests (request_id, device_id, "
+                    "client_request_id, request_fingerprint, received_at) "
+                    "VALUES (:request_id, 'dev', :client_id, :fingerprint, "
+                    ":timestamp)"
+                ),
+                {
+                    "request_id": f"req-{suffix}",
+                    "client_id": f"client-{suffix}",
+                    "fingerprint": f"fp-{suffix}",
+                    "timestamp": timestamp,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO operations (operation_id, request_id, trace_id, "
+                    "idempotency_key, state, state_version, cancel_requested, "
+                    "client_detached, created_at, updated_at) VALUES "
+                    "(:operation_id, :request_id, :trace_id, :key, "
+                    "'source_in_progress', 1, 0, 0, :timestamp, :timestamp)"
+                ),
+                {
+                    "operation_id": f"op-{suffix}",
+                    "request_id": f"req-{suffix}",
+                    "trace_id": f"trace-{suffix}",
+                    "key": f"key-{suffix}",
+                    "timestamp": timestamp,
+                },
+            )
+
+    db.upgrade(engine)
+    with engine.begin() as connection:
+        # No backfill: an operation that is not part of a several-action turn has
+        # no position, which is what NULL says.
+        assert connection.execute(
+            text("SELECT plan_key, plan_index FROM operations")
+        ).all() == [(None, None), (None, None)]
+        connection.execute(
+            text(
+                "UPDATE operations SET plan_key = 'plan-1', plan_index = 0 "
+                "WHERE operation_id = 'op-anchor'"
+            )
+        )
+        connection.execute(
+            text(
+                "UPDATE operations SET plan_key = 'plan-1', plan_index = 1 "
+                "WHERE operation_id = 'op-second'"
+            )
+        )
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+
+    with engine.begin() as connection:
+        with pytest.raises(IntegrityError):  # a key with no index
+            connection.execute(
+                text(
+                    "UPDATE operations SET plan_index = NULL "
+                    "WHERE operation_id = 'op-anchor'"
+                )
+            )
+    with engine.begin() as connection:
+        with pytest.raises(IntegrityError):  # an index with no key
+            connection.execute(
+                text(
+                    "UPDATE operations SET plan_key = NULL "
+                    "WHERE operation_id = 'op-anchor'"
+                )
+            )
+    with engine.begin() as connection:
+        with pytest.raises(IntegrityError):  # not a position
+            connection.execute(
+                text(
+                    "UPDATE operations SET plan_index = -1 "
+                    "WHERE operation_id = 'op-anchor'"
+                )
+            )
+    with engine.begin() as connection:
+        with pytest.raises(IntegrityError):  # a position already taken
+            connection.execute(
+                text(
+                    "UPDATE operations SET plan_key = 'plan-1', plan_index = 0 "
+                    "WHERE operation_id = 'op-second'"
+                )
+            )
+
+    db.downgrade(engine, "0010_calendar_override")
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT operation_id FROM operations ORDER BY operation_id")
+        ).scalars().all() == ["op-anchor", "op-second"]
+        columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(operations)"))
+        }
+        assert not {"plan_key", "plan_index"} & columns
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+
+    db.upgrade(engine)
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT plan_key FROM operations")
         ).scalars().all() == [None, None]
         assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
     engine.dispose()

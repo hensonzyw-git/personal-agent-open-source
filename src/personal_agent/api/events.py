@@ -31,11 +31,11 @@ import hashlib
 import hmac
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Final
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from personal_agent.keys import HmacKey, HmacKeyRing
@@ -44,6 +44,7 @@ from personal_agent.storage.models import (
     Conversation,
     ConversationAlias,
     ConversationEvent,
+    MediaBinding,
 )
 from personal_agent_core.crypto import KeyRing
 from personal_agent_core.errors import AppError, ErrorCode
@@ -59,11 +60,30 @@ OPERATION_RESULT = "operation_result"
 #: from the operation result it caused. It is presentation state, not dialogue,
 #: and therefore deliberately absent from `MODEL_VISIBLE_EVENT_TYPES`.
 DUPLICATE_DECISION = "duplicate_decision"
+#: `G1`. A verified category correction for an existing expense row. This is a
+#: presentation fact, like `DUPLICATE_DECISION`: it lets every client resolve an
+#: old receipt to the ledger row's newer category without rewriting the sealed
+#: original operation. It is deliberately absent from
+#: `MODEL_VISIBLE_EVENT_TYPES`; tapping a picker is not new dialogue or an
+#: instruction for a later model turn.
+EXPENSE_CATEGORY_CORRECTED = "expense_category_corrected"
 #: `CAP-001` design 6.1: a boundary is a persisted, displayable Timeline fact,
 #: so every device shows the same divider. Neither divider event is ever fed to
 #: the model as an instruction.
 SESSION_DIVIDER = "session_divider"
 SESSION_BOUNDARY_CORRECTED = "session_boundary_corrected"
+#: The daily review card, sealed by the nightly job with the ledger values read
+#: at build time (design `1j`). It is presentation, not dialogue: the scheduler
+#: writes it without a user turn, and feeding a frozen review to the model as an
+#: instruction would be noise at best. Deliberately absent from
+#: `MODEL_VISIBLE_EVENT_TYPES`.
+DAILY_REVIEW = "daily_review"
+#: The systemic-risk daily card, sealed by the risk-monitor job with the scores
+#: read at build time. Presentation, not dialogue, exactly like ``DAILY_REVIEW``:
+#: the scheduler writes it without a user turn, and a frozen score snapshot is
+#: not an instruction for a later model turn. Deliberately absent from
+#: `MODEL_VISIBLE_EVENT_TYPES`.
+RISK_REPORT = "risk_report"
 
 #: Event types the Context Builder may show the model as conversation history.
 #: Dividers are presentation, not dialogue.
@@ -289,6 +309,33 @@ def list_timeline(
     return [_entry(keyring, event) for event in events]
 
 
+def event_exists_with(
+    session,
+    keyring: KeyRing,
+    *,
+    event_type: str,
+    content_key: str,
+    content_value: Any,
+) -> bool:
+    """True when an event of ``event_type`` already carries
+    ``content[content_key] == content_value`` (decrypted).
+
+    The idempotency primitive for scheduler-written cards: the risk report is
+    sealed once per Shanghai calendar day (its ``sealed_on``), so a same-day
+    rerun finds the existing card and adds nothing, while a new morning always
+    seals a fresh card. Scans only that event type, not the whole Timeline.
+    """
+    rows = (
+        session.query(ConversationEvent)
+        .filter(ConversationEvent.event_type == event_type)
+        .all()
+    )
+    return any(
+        _entry(keyring, event).content.get(content_key) == content_value
+        for event in rows
+    )
+
+
 def read_page(
     session,
     keyring: KeyRing,
@@ -354,6 +401,22 @@ def read_page(
         rows = rows[:limit]
 
     entries = tuple(_entry(keyring, event) for event in rows)
+    # Existing messages store media in bindings, not in encrypted event text.
+    # Project only this page's references; model history continues to use _entry.
+    user_ids = [entry.event_id for entry in entries if entry.event_type == USER_MESSAGE]
+    if user_ids:
+        references: dict[str, list[dict[str, str]]] = {}
+        for event_id, media_id in session.execute(
+            select(MediaBinding.event_id, MediaBinding.media_id)
+            .where(MediaBinding.event_id.in_(user_ids))
+            .order_by(MediaBinding.event_id, MediaBinding.ordinal)
+        ):
+            references.setdefault(event_id, []).append({"type": "image_ref", "media_id": media_id})
+        entries = tuple(
+            replace(entry, content={**entry.content, "parts": references[entry.event_id]})
+            if entry.event_id in references else entry
+            for entry in entries
+        )
     if not entries:
         # An empty page still has to say honestly whether more exists in the
         # direction that was asked for, and must not mint a cursor that anchors

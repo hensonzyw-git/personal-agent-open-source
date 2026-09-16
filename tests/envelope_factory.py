@@ -22,6 +22,7 @@ from personal_agent.context.continuation import (
     FinanceRetryContext,
 )
 from personal_agent.policy.bridge import VisibleTool
+from personal_agent.runtime.model_input import InputPart
 from personal_agent_core.crypto import KeyRing
 
 
@@ -49,6 +50,7 @@ def envelope_factory(
         user_text: str,
         clarification_context: ClarificationContext | None,
         finance_retry_context: FinanceRetryContext | None,
+        input_parts: tuple[InputPart, ...] = (),
     ) -> ContextEnvelope:
         return builder.build(
             session,
@@ -62,6 +64,7 @@ def envelope_factory(
             effective_tools=list(tools),
             clarification_context=clarification_context,
             finance_retry_context=finance_retry_context,
+            input_parts=input_parts,
         )
 
     return build_envelope

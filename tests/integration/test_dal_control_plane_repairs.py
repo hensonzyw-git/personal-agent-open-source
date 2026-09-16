@@ -336,3 +336,29 @@ def test_delivery_cancellation_stops_batch_after_current_outcome(bridge_world):
     with engine.connect() as c:
         rows=c.execute(text('SELECT status,attempts FROM dal_resume_deliveries ORDER BY status')).all()
         assert rows==[('accepted',1),('queued',0)]
+
+
+def test_release_lifespan_runs_adk_recovery_and_dal_delivery_together(
+    bridge_world, token_ring, keyring, monkeypatch,
+):
+    import threading
+    from personal_agent.api import runtime_v2
+
+    recovered, delivered = threading.Event(), threading.Event()
+    monkeypatch.setattr(runtime_v2, 'recovery_needed', lambda deps: True)
+
+    def resumable(deps):
+        recovered.set()
+        return []
+
+    monkeypatch.setattr(runtime_v2, 'resumable', resumable)
+    bridge_world[1].deliver_pending = lambda *, stop_event: delivered.set()
+    app = composed_app(bridge_world, token_ring, keyring)
+
+    async def run():
+        async with app.router.lifespan_context(app):
+            assert await asyncio.to_thread(recovered.wait, 1)
+            assert await asyncio.to_thread(delivered.wait, 1)
+        assert app.state.dal_resume_delivery_task.cancelled()
+
+    asyncio.run(run())

@@ -183,6 +183,7 @@ public actor DeviceSession {
             CredentialKey.pendingChatSend,
             // `DEV-031`: same reasoning for unconfirmed duplicate decisions.
             CredentialKey.pendingDuplicateDecisions,
+            CredentialKey.pendingMediaSend,
             // Delete the authoritative envelope last. If removing a legacy item
             // fails, the complete enrollment remains recoverable.
             CredentialKey.enrollment,
@@ -244,9 +245,65 @@ public actor DeviceSession {
         }
     }
 
+    /// The structured parts form is safe under exactly the same one-refresh
+    /// rule as text: the caller's idempotency key is replayed, never replaced.
+    public func sendChatMessage(
+        conversationID: String,
+        parts: [ChatInputPart],
+        clarificationOf: String?,
+        startNewSession: Bool = false,
+        idempotencyKey: String
+    ) async throws -> OperationReceipt {
+        try await authorized {
+            try await self.client.sendChatMessage(
+                conversationID: conversationID,
+                parts: parts,
+                clarificationOf: clarificationOf,
+                startNewSession: startNewSession,
+                idempotencyKey: idempotencyKey,
+                token: $0
+            )
+        }
+    }
+
+    // --- `CAP-003` media upload ---------------------------------------------
+
+    public func createMediaUpload(
+        declaration: MediaUploadDeclaration, idempotencyKey: String
+    ) async throws -> CreatedMediaUpload {
+        try await authorized {
+            try await self.client.createMediaUpload(
+                declaration: declaration, idempotencyKey: idempotencyKey, token: $0
+            )
+        }
+    }
+
+    public func putMediaContent(
+        mediaID: String, body: Data
+    ) async throws -> MediaUploadReceipt {
+        try await authorized {
+            try await self.client.putMediaContent(mediaID: mediaID, body: body, token: $0)
+        }
+    }
+
+    public func completeMediaUpload(mediaID: String) async throws -> CompletedMediaUpload {
+        try await authorized {
+            try await self.client.completeMediaUpload(mediaID: mediaID, token: $0)
+        }
+    }
+
     public func operation(operationID: String) async throws -> OperationReceipt {
         try await authorized {
             try await self.client.operation(operationID: operationID, token: $0)
+        }
+    }
+
+    /// The progress trail's poll. Read-only and keyed by the caller's own
+    /// idempotency key, so the one-retry refresh policy cannot create anything:
+    /// a refresh-and-retry asks the same question about the same key.
+    public func operation(idempotencyKey: String) async throws -> OperationReceipt {
+        try await authorized {
+            try await self.client.operation(idempotencyKey: idempotencyKey, token: $0)
         }
     }
 
@@ -302,6 +359,86 @@ public actor DeviceSession {
             try await self.client.resolveManualReview(
                 operationID: operationID,
                 resolution: resolution,
+                token: $0
+            )
+        }
+    }
+
+    /// `G1`. Safe under the one-retry refresh policy because the client key is
+    /// carried: a refresh-and-retry presents the same key and the server replays
+    /// the same operation rather than issuing a second correction.
+    public func updateExpenseCategory(
+        recordID: String,
+        category: String,
+        expectedCurrentCategory: String?,
+        idempotencyKey: String
+    ) async throws -> OperationReceipt {
+        try await authorized {
+            try await self.client.updateExpenseCategory(
+                recordID: recordID,
+                category: category,
+                expectedCurrentCategory: expectedCurrentCategory,
+                idempotencyKey: idempotencyKey,
+                token: $0
+            )
+        }
+    }
+
+    // --- calendar device actions and the mirror --------------------------------
+
+    /// Safe under the one-retry policy without any client key: the action id
+    /// IS the key, and the server's CAS makes a re-sent report answer the
+    /// settled projection rather than re-settling.
+    public func reportDeviceActionResult(
+        actionID: String,
+        body: DeviceActionResultBody
+    ) async throws -> OperationReceipt {
+        try await authorized {
+            try await self.client.reportDeviceActionResult(
+                actionID: actionID, body: body, token: $0
+            )
+        }
+    }
+
+    /// Answer 「仍要创建」 for a write the phone reported as a duplicate (design
+    /// §3.3).
+    ///
+    /// Safe under the one-retry policy without any client key: the server
+    /// derives the key from the source operation, so the retry and the original
+    /// tap cannot be two different decisions. What is *not* safe to retry a
+    /// second time is running the re-issued action twice — the device owns that
+    /// marker, in `ChatTimeline`, and the reply being lost is precisely the case
+    /// it exists for.
+    public func overrideDeviceAction(
+        actionID: String
+    ) async throws -> OperationReceipt {
+        try await authorized {
+            try await self.client.overrideDeviceAction(actionID: actionID, token: $0)
+        }
+    }
+
+    /// A read-scope upload (`calendar.event.read`): it exists to be read back,
+    /// so a retry that re-presents an identical whole batch is safe — the
+    /// upsert arbitrates by the snapshot version and identical rows are
+    /// skipped.
+    public func uploadCalendarSync(
+        windowStart: Date,
+        windowEnd: Date,
+        events: [CalendarMirrorEvent],
+        calendars: [CalendarDirectoryEntry],
+        windowComplete: Bool,
+        snapshotAsOf: Date,
+        syncEpoch: Int
+    ) async throws -> CalendarSyncResponse {
+        try await authorized {
+            try await self.client.uploadCalendarSync(
+                windowStart: windowStart,
+                windowEnd: windowEnd,
+                events: events,
+                calendars: calendars,
+                windowComplete: windowComplete,
+                snapshotAsOf: snapshotAsOf,
+                syncEpoch: syncEpoch,
                 token: $0
             )
         }
@@ -508,6 +645,15 @@ public actor DeviceSession {
 /// ones `ChatTimeline` can reach. Conforming the real session means the tests can
 /// stub HTTP alone and still exercise the real token policy.
 extension DeviceSession: ChatBackend {}
+
+/// The media pipeline uses the same token and one-refresh policy as chat, but
+/// has its own narrow protocol so the upload helper cannot learn any of the
+/// operation or Timeline APIs.
+extension DeviceSession: MediaUploadBackend {
+    public func readMedia(mediaID: String) async throws -> Data {
+        try await authorized { try await self.client.readMedia(mediaID: mediaID, token: $0) }
+    }
+}
 
 /// `DEV-031`: the review surface, same reasoning as above.
 extension DeviceSession: ReviewBackend {}
