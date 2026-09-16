@@ -131,7 +131,7 @@ def run_process(inventory, attempt, plan, *, heartbeat, deadline, prompt=b''):
     try:inventory.transition(attempt,'starting','running',observation=observation)
     except BaseException:
         process.kill();process.wait(timeout=5);raise
-    output=bytearray();errors=bytearray();event_count=0;reason=None;forced=False;requested=False
+    output=bytearray();errors=bytearray();event_count=0;reason=None;forced=False;requested=False;truncated=False
     sel=selectors.DefaultSelector()
     for stream in (process.stdout,process.stderr):os.set_blocking(stream.fileno(),False);sel.register(stream,selectors.EVENT_READ)
     os.set_blocking(process.stdin.fileno(),False)
@@ -158,7 +158,7 @@ def run_process(inventory, attempt, plan, *, heartbeat, deadline, prompt=b''):
                     continue
                 chunk=os.read(key.fd,65536)
                 if not chunk:sel.unregister(key.fileobj);continue
-                if len(output)+len(errors)+len(chunk)>plan.output_bytes:reason='CLI_OUTPUT_LIMIT';break
+                if len(output)+len(errors)+len(chunk)>plan.output_bytes:reason='CLI_OUTPUT_LIMIT';truncated=True;break
                 (output if key.fileobj is process.stdout else errors).extend(chunk)
                 if key.fileobj is process.stdout:
                     event_count += chunk.count(b'\n')
@@ -174,7 +174,7 @@ def run_process(inventory, attempt, plan, *, heartbeat, deadline, prompt=b''):
         requested,forced = stop['requested'],stop['forced']
         if not stop['process_exited']: reason = 'PROCESS_GROUP_STOP_UNPROVEN'
         return dict(raw=bytes(output),stderr=bytes(errors),event_count=event_count,exit_code=process.returncode,reason=reason,
-            truncated=reason=='CLI_OUTPUT_LIMIT',stop={'requested':requested,'forced':forced,'process_exited':stop['process_exited']},
+            truncated=truncated,stop={'requested':requested,'forced':forced,'process_exited':stop['process_exited']},
             started_at=observation['started_at'],ended_at=int(time.time()))
     finally:
         sel.close()

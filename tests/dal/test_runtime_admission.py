@@ -179,9 +179,9 @@ def test_report_evidence_is_bounded_redacted_and_tests_not_invented(runtime):
     root=Path(r['temp'])/'reports';root.mkdir()
     (root/'result.test.json').write_text('{"assertion":"api_key=synthetic-secret-value"}')
     (root/'change.patch').write_text('+api_key=synthetic-secret-value')
-    (root/'skip').symlink_to('/etc/passwd')
+    (root/'skip').symlink_to(root/'result.test.json')
     plan=LaunchPlan(**dict(row['observation']['plan'],task_directories={'reports':str(root)}))
-    result=collect_evidence(plan,r,{'raw':b'api_key=synthetic-secret-value'})
+    result=collect_evidence(plan,r,{'raw':b'api_key=synthetic-secret-value','stop':{'process_exited':True}})
     assert len(result['artifacts'])==3 and len(result['tests'])==1
     assert result['tests'][0].startswith('Unverified task-produced')
     assert 'synthetic-secret-value' not in json.dumps(result)

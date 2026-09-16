@@ -7,49 +7,110 @@ import stat
 from personal_agent_dal.machine.execution_results import _SECRET
 
 
+_FILE_LIMIT = 131072
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+
+def _open_directory(path):
+    """Anchor every component at a held dirfd; never follow directory symlinks."""
+    path = Path(path)
+    fd = os.open('/' if path.is_absolute() else '.', _DIR_FLAGS)
+    try:
+        for part in path.parts:
+            if part in ('/', '.'): continue
+            if part == '..': raise OSError('parent traversal refused')
+            child = os.open(part, _DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _read_regular(directory, name):
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > _FILE_LIMIT:
+            return None
+        raw = bytearray()
+        while len(raw) <= _FILE_LIMIT:
+            chunk = os.read(fd, _FILE_LIMIT + 1 - len(raw))
+            if not chunk: break
+            raw.extend(chunk)
+        after = os.fstat(fd)
+        if (len(raw) > _FILE_LIMIT or after.st_nlink != 1 or
+                after.st_size != len(raw) or
+                (before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
+                (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+            return None
+        return bytes(raw)
+    finally:
+        os.close(fd)
+
+
 def collect_evidence(plan, reservation, process):
     artifacts=[]; git=[]; tests=[]
+    result=dict(tests=tests,git_evidence=git,artifacts=artifacts)
     def record(raw, kind, label, target):
         clean=_SECRET.sub('[REDACTED]',raw.decode('utf-8',errors='replace')).encode()
         target.append(dict(kind=kind,artifact_id=label,sha256=hashlib.sha256(clean).hexdigest()))
-    # Only digest sanitized evidence. Files remain local; no remote availability claim.
     record(process['raw'],'report','local-cli-stream-redacted',artifacts)
-    roots=[(Path(plan.task_directories['reports']),'report')] if plan.task_directories else []
+    # Even directory enumeration is forbidden while task group absence is unknown.
+    if not process.get('stop', {}).get('process_exited'):
+        return result
     total=0;visited=0
-    for root,kind in roots:
-        for directory,dirs,files in os.walk(root,followlinks=False):
-            visited+=1
-            if visited>128 or len(artifacts)>=60:break
-            dirs[:]=sorted(d for d in dirs if not (Path(directory)/d).is_symlink())[:64]
-            for name in sorted(files):
-                if len(artifacts)>=60: break
-                path=Path(directory)/name
+    def reports(fd, prefix=''):
+        nonlocal total, visited
+        visited += 1
+        if visited > 128 or len(artifacts) >= 60: return
+        # Bound enumeration as well as content; names are task-produced.
+        with os.scandir(fd) as entries:
+            names=[]
+            for entry in entries:
+                names.append(entry.name)
+                if len(names) >= 128: break
+        for name in sorted(names):
+            if total > 1048576 or len(artifacts) >= 60: return
+            relative=prefix+name
+            try:
+                child=os.open(name,_DIR_FLAGS,dir_fd=fd)
+            except OSError:
+                child=None
+            if child is not None:
                 try:
-                    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
-                    try:
-                        st=os.fstat(fd)
-                        if not stat.S_ISREG(st.st_mode) or st.st_nlink!=1 or st.st_size>131072:continue
-                        raw=os.read(fd,131073)
-                    finally:os.close(fd)
-                    total+=len(raw)
-                    if total>1048576:return dict(tests=tests,git_evidence=git,artifacts=artifacts)
-                    if len(raw)>131072:continue
-                    suffix=path.suffix.lower()
-                    actual_kind='patch' if suffix in ('.patch','.diff') else 'test_report' if name.endswith(('.junit.xml','.test.json')) else kind
-                    label='local-report-'+hashlib.sha256(str(path.relative_to(root)).encode()).hexdigest()[:24]
-                    record(raw,actual_kind,label,artifacts)
-                    if actual_kind=='test_report':tests.append('Unverified task-produced test report: '+label+' sha256='+artifacts[-1]['sha256'])
-                except OSError:continue
-    # Direct metadata observations do not execute repository hooks or interpret
-    # model prose as Git success. They are bounded source evidence, not a diff.
+                    if visited < 128: reports(child,relative+'/')
+                finally: os.close(child)
+                continue
+            try: raw=_read_regular(fd,name)
+            except OSError: continue
+            if raw is None: continue
+            total+=len(raw)
+            if total>1048576:return
+            kind='patch' if Path(name).suffix.lower() in ('.patch','.diff') else 'test_report' if name.endswith(('.junit.xml','.test.json')) else 'report'
+            label='local-report-'+hashlib.sha256(relative.encode()).hexdigest()[:24]
+            record(raw,kind,label,artifacts)
+            if kind=='test_report':tests.append('Unverified task-produced test report: '+label+' sha256='+artifacts[-1]['sha256'])
+    if plan.task_directories:
+        try: fd=_open_directory(plan.task_directories['reports'])
+        except OSError: fd=None
+        if fd is not None:
+            try: reports(fd)
+            finally: os.close(fd)
+    # Writable metadata is task-produced input, never independent Git success.
     root=Path(reservation['git'])/'repository'
     for name in ('HEAD','logs/HEAD','index','COMMIT_EDITMSG'):
-        path=root/name
+        fd=None
         try:
-            if path.is_symlink() or not path.is_file() or path.stat().st_size>131072:continue
-            record(path.read_bytes(),'report','local-git-'+name.replace('/','-'),git)
-        except OSError:continue
-    return dict(tests=tests,git_evidence=git,artifacts=artifacts)
+            fd=_open_directory(root/Path(name).parent)
+            raw=_read_regular(fd,Path(name).name)
+            if raw is not None:
+                record(raw,'report','unverified-task-git-'+name.replace('/','-'),git)
+        except OSError: pass
+        finally:
+            if fd is not None: os.close(fd)
+    return result
 
 
 def bounded_git_patch(plan, reservation, git_pin):
@@ -86,4 +147,11 @@ def bounded_git_patch(plan, reservation, git_pin):
     except (OSError,subprocess.TimeoutExpired):return None
     finally:
         stream.close();child.stdout.close()
-        if child.poll() is None:child.kill();child.wait(timeout=1)
+        if child.poll() is None:
+            from personal_agent_dal.worker.supervisor import SupervisorRefusal
+            try:
+                child.kill()
+                child.wait(timeout=1)
+            except (OSError, subprocess.TimeoutExpired):
+                if child.poll() is None:
+                    raise SupervisorRefusal('GIT_EVIDENCE_STOP_UNPROVEN') from None

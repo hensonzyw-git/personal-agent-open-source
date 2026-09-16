@@ -137,13 +137,20 @@ def _execute_runtime(transport, lease, *, supervisor, attempt, kill_switch=lambd
             provisioning=db.execute('SELECT body FROM runtime_provisioning WHERE reservation_id=?',(row['reservation_id'],)).fetchone()
         if provisioning:
             from personal_agent_dal.worker.runtime_evidence import bounded_git_patch
-            patch=bounded_git_patch(plan,reservation,json.loads(provisioning[0])['binding']['git_pin'])
+            try:
+                patch=bounded_git_patch(plan,reservation,json.loads(provisioning[0])['binding']['git_pin'])
+            except SupervisorRefusal as exc:
+                if str(exc) == 'GIT_EVIDENCE_STOP_UNPROVEN':
+                    inv.transition(attempt,'running','unknown',observation={
+                        'evidence_helper_stop_unproven': {'boot_id': supervisor.boot_id,
+                            'reason': 'GIT_EVIDENCE_STOP_UNPROVEN'}})
+                raise
             if patch:evidence['git_evidence'].append(patch)
     body={k:context[k] for k in ('feature_id','action_id','attempt_id','job_id','worker_id','job_lease_epoch','lease_id','policy_lease_epoch','snapshot_sha256','execution_role')}
     body.update(schema='dal.execution-result/1.0',request_id='runtime-'+attempt,attempt_version=status['attempt_version'],
         fence=status['fence'],execution_spec_sha256=context['execution_spec_sha256'],manifest_sha256=sha,
         **parsed,started_at=process['started_at'],ended_at=process['ended_at'],stop=process['stop'],cli_exit_code=process['exit_code'],
-        **evidence,unverified=[*(['synthetic fixture; production_enabled=false'] if not plan.production_enabled else []),'Provider requests and cost not independently verified','Tests are unverified unless source evidence is listed'],
+        **evidence,unverified=[*(['synthetic fixture; production_enabled=false'] if not plan.production_enabled else []),'Provider requests and cost not independently verified','Task-produced test reports and Git metadata are unverified; metadata is not independent proof of Git success'],
         truncated=process['truncated'],redacted=False)
     # Scan diagnostic strings before persisting; retain bounded evidence without
     # retaining raw credential-bearing streams. Usage is observable, not inferred.
@@ -151,7 +158,7 @@ def _execute_runtime(transport, lease, *, supervisor, attempt, kill_switch=lambd
     stderr = _SECRET.sub('[REDACTED]', process['stderr'].decode('utf-8', errors='replace'))
     body['redacted'] = stderr != process['stderr'].decode('utf-8', errors='replace')
     body['unverified'].extend(['Observable event steps: '+str(process['event_count']),
-        'stdout sha256: '+__import__('hashlib').sha256(process['raw']).hexdigest(),
+        'redacted stdout sha256: '+__import__('hashlib').sha256(_SECRET.sub('[REDACTED]', process['raw'].decode('utf-8', errors='replace')).encode()).hexdigest(),
         'stdout bytes retained: '+str(len(process['raw'])),
         'stderr (bounded): '+stderr[:4096]])
     try:
@@ -160,7 +167,8 @@ def _execute_runtime(transport, lease, *, supervisor, attempt, kill_switch=lambd
     except ValueError:
         # JSON escaping/UTF-8 expansion can exceed the envelope even when a CLI
         # report is under its character limit. Persist a failed bounded envelope.
-        body.update(report='',tool_events=[],outcome='failed',reason='CLI_RESULT_ENVELOPE_LIMIT',truncated=True)
+        body.update(report='',tool_events=[],outcome='unknown' if parsed['outcome']=='unknown' else 'failed',
+            reason=parsed['reason'] if parsed['outcome']=='unknown' else 'CLI_RESULT_ENVELOPE_LIMIT',truncated=True)
         body,digest=canonical_result(body)
     request=dict(schema='dal.worker-execution-transport/1.0',result=body,result_sha256=digest)
     inv.transition(attempt,'running','result_ready',result=request)
@@ -196,8 +204,29 @@ def _reconcile_owned(inv, row, transport=None, lease=None):
     if row['state'] in ('dispatch_requested','granted'):
         observation['reconciliation_stop'] = dict(requested=False,forced=False,process_exited=True,reason='NO_START_INTENT')
     previous_stop = row['observation'].get('reconciliation_stop')
-    if row['state'] in ('starting', 'running', 'unknown') and not (previous_stop or {}).get('process_exited'):
-        refreshed = stop_registered(row['observation'], boot_id=inv.supervisor.boot_id)
+    helper = row['observation'].get('evidence_helper_stop_unproven')
+    if row['state'] in ('starting', 'running', 'unknown') and (helper or not (previous_stop or {}).get('process_exited')):
+        if helper:
+            # The main CLI was already stopped before this separate helper ran.
+            # Its PID/group cannot witness helper termination. Without a helper
+            # identity, same-boot reconciliation remains unresolved indefinitely
+            # (without waiting). Restart/heartbeat must never clear this marker.
+            # Only an independently checked OS boot change proves it gone here.
+            from personal_agent_dal.worker.runtime_process import os_boot_id
+            from subprocess import TimeoutExpired
+            try:
+                current_boot = os_boot_id()
+            except (OSError, SupervisorRefusal, TimeoutExpired):
+                current_boot = None
+            gone = bool(helper.get('boot_id') and current_boot and
+                        current_boot == inv.supervisor.boot_id and
+                        current_boot != helper['boot_id'])
+            refreshed = dict(requested=False, forced=False, process_exited=gone,
+                reason='BOOT_CHANGED_NO_SIGNAL' if gone else 'GIT_EVIDENCE_STOP_UNPROVEN')
+            if gone:
+                refreshed.update(previous_boot_id=helper['boot_id'], boot_id=current_boot)
+        else:
+            refreshed = stop_registered(row['observation'], boot_id=inv.supervisor.boot_id)
         if previous_stop:
             # Preserve actual signals from earlier reconciliation attempts.
             for flag in ('requested', 'forced'):
