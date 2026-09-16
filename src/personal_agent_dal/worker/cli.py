@@ -79,8 +79,10 @@ def _open_transport(config: WorkerConfig) -> Iterator[WorkerTransport]:
         finally:
             engine.dispose()
         return
+    from personal_agent_dal.worker.prelaunch import transport_identity
     transport = RemoteHttpAdapter(
         RemoteTransportSettings(
+            identity=transport_identity(config),
             endpoint=transport_config.endpoint,
             worker_id=config.worker_id,
             machine_id=transport_config.machine_id,

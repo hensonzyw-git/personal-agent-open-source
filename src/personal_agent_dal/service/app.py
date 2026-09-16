@@ -45,13 +45,16 @@ from personal_agent_dal.service.operator_tokens import (
     OperatorTokenError,
     verify_operator_token,
 )
-from personal_agent_dal.service.tokens import TokenError, issue_token, verify_token
+from personal_agent_dal.service.tokens import (
+    TokenError, issue_token, verify_token_claims, BOUND_TOKEN_SCHEMA,
+)
 from personal_agent_dal.storage.audit import append_audit_event
 from personal_agent_dal.storage.engine import session_factory
 from personal_agent_dal.storage.transport_models import (
     WORKER_CAPABILITIES,
     WorkerCheckpoint,
     WorkerEnrollment,
+    SupervisorIdentity,
 )
 from personal_agent_dal.storage.worker_models import WORKER_JOB_STATES
 from personal_agent_dal.worker import queue
@@ -83,7 +86,7 @@ CHANGED_FILE_MAX_LENGTH = 512
 ID_MAX_LENGTH = 256
 LAST_ERROR_MAX_LENGTH = 4096
 DESCRIPTION_MAX_LENGTH = 8192
-TOKEN_TTL_SECONDS = 3600
+TOKEN_TTL_SECONDS = 2592000
 RATE_LIMIT_MAX_REQUESTS = 120
 RATE_LIMIT_WINDOW_SECONDS = 60.0
 LEASE_TTL_SECONDS = 60
@@ -112,6 +115,17 @@ class EnrollRequest(_Closed):
     worker_id: _Id
     machine_id: _Id
     capabilities: list[Annotated[str, Field(min_length=1)]] = Field(min_length=1)
+
+
+class RefreshSupervisor(_Closed):
+    kid: _Id
+    boot_id: _Id
+    supervisor_epoch: int = Field(ge=1, strict=True)
+
+
+class RefreshRequest(EnrollRequest):
+    expected_registration_epoch: int = Field(ge=1, strict=True)
+    supervisor: RefreshSupervisor
 
 
 class ClaimRequest(_Closed):
@@ -186,10 +200,10 @@ def _enrollment(engine: Engine, worker_id: str) -> WorkerEnrollment | None:
 
 def _upsert_enrollment(
     engine: Engine, worker_id: str, machine_id: str, capabilities: list[str]
-) -> None:
+) -> int | None:
     sessions = session_factory(engine)
 
-    def _body(session: Any) -> None:
+    def _body(session: Any) -> int | None:
         row = session.get(WorkerEnrollment, worker_id)
         caps = json.dumps(sorted(capabilities))
         if row is None:
@@ -208,9 +222,10 @@ def _upsert_enrollment(
                 row.registration_epoch += 1
             row.machine_id = machine_id
             row.capabilities = caps
+        return row.registration_epoch if row is not None else None
 
     with sessions() as session:
-        run_write_transaction(session, lambda: _body(session))
+        return run_write_transaction(session, lambda: _body(session))
 
 
 def _record_checkpoint_fenced(
@@ -417,17 +432,36 @@ class Service:
             raise _http(401, "missing_bearer_token")
         token = header[len("Bearer "):].strip()
         try:
-            worker_id, capabilities = verify_token(
+            claims = verify_token_claims(
                 token, key=self.service_key, now_epoch=int(time.time())
             )
         except TokenError as exc:
             raise _http(401, "token_invalid") from exc
-        enrollment = _enrollment(self.engine, worker_id)
-        if enrollment is None:
-            raise _http(403, "unknown_worker")
-        if enrollment.revoked_at is not None:
-            # Revocation is observed here, fail-closed at the auth boundary.
-            raise _http(403, "worker_revoked")
+        worker_id, capabilities = claims['worker_id'], claims['capabilities']
+        # A new session and scalar SELECTs avoid both ORM and transaction snapshots.
+        with session_factory(self.engine)() as session:
+            table = WorkerEnrollment.__table__
+            enrollment = session.execute(select(table).where(table.c.worker_id == worker_id)).mappings().one_or_none()
+            if enrollment is None:
+                raise _http(403, "unknown_worker")
+            if enrollment['revoked_at'] is not None:
+                raise _http(403, "worker_revoked")
+            if capabilities != json.loads(enrollment['capabilities']):
+                raise _http(403, "worker_identity_mismatch")
+            if claims['schema'] == BOUND_TOKEN_SCHEMA:
+                if (claims['machine_id'], claims['registration_epoch']) != (enrollment['machine_id'], enrollment['registration_epoch']):
+                    raise _http(403, "worker_identity_mismatch")
+                if session.execute(select(SupervisorIdentity.kid).where(
+                    SupervisorIdentity.worker_id == worker_id,
+                    SupervisorIdentity.machine_id == claims['machine_id'],
+                    SupervisorIdentity.registration_epoch == claims['registration_epoch'],
+                    SupervisorIdentity.revoked_at.is_(None),
+                ).limit(1)).first() is None:
+                    raise _http(403, "worker_identity_unavailable")
+            elif enrollment['registration_epoch'] is not None or session.execute(
+                select(SupervisorIdentity.kid).where(SupervisorIdentity.worker_id == worker_id).limit(1)
+            ).first() is not None:
+                raise _http(403, "worker_identity_mismatch")
         if not self.rate_limiter.allow(("worker", worker_id), time.time()):
             raise _http(429, "rate_limited")
         return worker_id, capabilities
@@ -665,13 +699,15 @@ def create_app(
         unknown = [c for c in body.capabilities if c not in WORKER_CAPABILITIES]
         if unknown:
             raise _http(403, "unknown_capability")
-        _upsert_enrollment(engine, body.worker_id, body.machine_id, body.capabilities)
+        epoch = _upsert_enrollment(engine, body.worker_id, body.machine_id, body.capabilities)
         expires_at = int(time.time()) + token_ttl_seconds
         token = issue_token(
             worker_id=body.worker_id,
             capabilities=body.capabilities,
             expires_at_epoch=expires_at,
             key=service_key,
+            machine_id=body.machine_id if epoch is not None else None,
+            registration_epoch=epoch,
         )
         _append_redacted_audit(engine, event_type="worker.enroll", outcome="accepted")
         return {
@@ -681,6 +717,44 @@ def create_app(
             "token": token,
             "token_expires_at": expires_at,
         }
+
+    @app.post("/token/refresh")
+    def refresh_token(
+        body: RefreshRequest, request: Request,
+        _: None = Depends(transport_body_guard),
+    ) -> dict[str, Any]:
+        if not service.rate_limiter.allow(("refresh", "__global__"), time.time()):
+            raise _http(429, "rate_limited")
+        try:
+            service.check_enrollment_secret(request)
+            if body.capabilities != sorted(set(body.capabilities)) or any(c not in WORKER_CAPABILITIES for c in body.capabilities):
+                raise _http(400, "invalid")
+            # Only existing authority is read. A concurrent committed change may
+            # obsolete the issued token, but auth always rechecks its epoch.
+            with session_factory(engine)() as session:
+                workers = WorkerEnrollment.__table__
+                supervisors = SupervisorIdentity.__table__
+                row = session.execute(select(workers).where(workers.c.worker_id == body.worker_id)).mappings().one_or_none()
+                supervisor = session.execute(select(supervisors).where(supervisors.c.kid == body.supervisor.kid)).mappings().one_or_none()
+                if row is None or supervisor is None or row['revoked_at'] is not None or supervisor['revoked_at'] is not None:
+                    raise _http(403, "worker_identity_unavailable")
+                expected = dict(worker_id=body.worker_id, machine_id=body.machine_id,
+                    registration_epoch=body.expected_registration_epoch,
+                    boot_id=body.supervisor.boot_id, supervisor_epoch=body.supervisor.supervisor_epoch)
+                if (row['machine_id'] != body.machine_id or row['registration_epoch'] != body.expected_registration_epoch
+                    or json.loads(row['capabilities']) != body.capabilities
+                    or any(supervisor[k] != v for k,v in expected.items())):
+                    raise _http(403, "worker_identity_mismatch")
+                expires_at = int(time.time()) + token_ttl_seconds
+                token = issue_token(worker_id=body.worker_id,machine_id=body.machine_id,
+                    registration_epoch=body.expected_registration_epoch,capabilities=body.capabilities,
+                    expires_at_epoch=expires_at,key=service_key)
+        except HTTPException:
+            _append_redacted_audit(engine, event_type="worker.token_refresh", outcome="refused")
+            raise
+        _append_redacted_audit(engine, event_type="worker.token_refresh", outcome="accepted")
+        return dict(schema_version=SCHEMA_VERSION,worker_id=body.worker_id,
+                    capabilities=body.capabilities,token=token,token_expires_at=expires_at)
 
     @app.post("/jobs/claim")
     def claim(

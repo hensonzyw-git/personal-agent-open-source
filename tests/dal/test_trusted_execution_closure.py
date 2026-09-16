@@ -34,9 +34,10 @@ def launched(world,tmp_path):
     switch=tmp_path/'kill'
     app=create_app(world,service_key=b'synthetic',enrollment_secret=b'synthetic-enroll',lease_ttl_seconds=720,
         kill_switch_path=switch,resume_config={'issuer':'pa','audience':'dal','keys':{},'profiles':[]})
-    t=RemoteHttpAdapter(SimpleNamespace(worker_id='w',endpoint='https://testserver',retry_attempts=1),client=TestClient(app))
+    t=RemoteHttpAdapter(SimpleNamespace(worker_id='w',endpoint='https://testserver',retry_attempts=1, machine_id='synthetic', capabilities=(),
+        identity=dict(worker_id='w',machine_id='synthetic',registration_epoch=1,kid='k',boot_id='boot',supervisor_epoch=1)),client=TestClient(app))
     expiry=int(utc_now().timestamp())+600
-    t._token=CachedToken('w',issue_token(worker_id='w',capabilities=[],key=b'synthetic',expires_at_epoch=expiry),expiry)
+    t._token=CachedToken('w',issue_token(worker_id='w',machine_id='synthetic',registration_epoch=1,capabilities=[],key=b'synthetic',expires_at_epoch=expiry),expiry)
     l=t.claim(); c=t.prelaunch_context(l)
     payload=dict(schema='dal.launch-manifest/1.1',kid='k',worker_id='w',machine_id='synthetic',registration_epoch=1,
         boot_id='boot',supervisor_epoch=1,attempt_id=r['attempt_id'],workspace_id='workspace',workspace_generation=1,

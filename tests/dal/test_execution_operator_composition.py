@@ -217,7 +217,7 @@ def test_prelaunch_missing_profile_and_replacement_without_trust(world,launched)
     from personal_agent_dal.service.tokens import issue_token
     from personal_agent_dal.storage.machine_models import ExecutionJobBinding
     _,lease,result,_=launched
-    auth=issue_token(worker_id='w',capabilities=[],key=KEY,expires_at_epoch=int(time.time())+600)
+    auth=issue_token(worker_id='w',machine_id='synthetic',registration_epoch=1,capabilities=[],key=KEY,expires_at_epoch=int(time.time())+600)
     cfg=config(world);cfg['profiles']=[]
     c=client(world,cfg)
     route=f'/worker/jobs/{lease.job_id}/prelaunch-context'

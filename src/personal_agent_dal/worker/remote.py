@@ -12,7 +12,7 @@ The security properties this module is responsible for, all fail-closed:
   compromised or misconfigured server cannot walk a bearer token to another host.
 * **A credential only ever travels to that pinned endpoint.** The enrollment
   secret is read from an owner-only file at the moment of enrollment and is sent
-  to `/enroll` alone. The token it returns is cached owner-only on the worker,
+  only to the fixed `/enroll` or `/token/refresh` endpoint. The token it returns is cached owner-only on the worker,
   is never logged, and is never placed in a URL.
 * **Every request body is digest-bound.** `X-Transport-Body-Digest` is the
   sha256 of the exact bytes written to the socket, computed from the same buffer
@@ -37,6 +37,7 @@ import json
 import os
 import re
 import stat
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -75,7 +76,7 @@ ENROLLMENT_SECRET_HEADER: Final[str] = "X-Enrollment-Secret"
 #: cannot cross the expiry boundary and be rejected for a clock difference.
 TOKEN_REFRESH_SKEW_SECONDS: Final[int] = 60
 
-#: A `/enroll` is attempted at most once per request; a second 401 is a refusal.
+#: At most one recovery after a 401; a second 401 is a refusal.
 _MAX_REAUTH: Final[int] = 1
 
 #: The only shapes accepted off the wire for values that will reach a `git`
@@ -191,12 +192,15 @@ def read_token_expiry(path: Path) -> tuple[str, int] | None:
 
 def _load_token(path: Path) -> CachedToken | None:
     try:
-        mode = stat.S_IMODE(path.stat().st_mode)
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            return None
+        mode = stat.S_IMODE(info.st_mode)
     except OSError:
         return None
     if mode != 0o600:
-        # A world- or group-readable token cache is treated as absent: re-enroll
-        # rather than use a credential whose custody is already broken.
+        # A world- or group-readable cache is absent; recover through the
+        # configured identity path, never use the exposed credential.
         return None
     try:
         body = json.loads(path.read_text("utf-8"))
@@ -222,8 +226,8 @@ def _store_token(path: Path, cached: CachedToken) -> None:
     """Write the token cache owner-only, atomically, never through a symlink."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
-    tmp = path.parent / f".{path.name}.tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(
@@ -299,6 +303,7 @@ class RemoteTransportSettings:
     retry_attempts: int
     backoff_base_seconds: float
     backoff_max_seconds: float
+    identity: dict[str, Any] | None = None
 
 
 class RemoteHttpAdapter(WorkerTransport):
@@ -312,6 +317,12 @@ class RemoteHttpAdapter(WorkerTransport):
         sleep: Callable[[float], None] = time.sleep,
         now_epoch: Callable[[], int] = lambda: int(time.time()),
     ) -> None:
+        self._endpoint = validate_endpoint(settings.endpoint)
+        self._identity = getattr(settings, "identity", None)
+        if self._identity is not None:
+            from personal_agent_dal.worker.prelaunch import validate_transport_identity
+            validate_transport_identity(self._identity, worker_id=settings.worker_id, machine_id=settings.machine_id)
+            self._identity = dict(self._identity)
         self._settings = settings
         self._sleep = sleep
         self._now_epoch = now_epoch
@@ -334,19 +345,37 @@ class RemoteHttpAdapter(WorkerTransport):
     # --- credentials ---------------------------------------------------------
 
     def _current_token(self) -> str:
-        """Return a usable bearer token, enrolling only when one is needed."""
+        """Return a usable token, renewing the configured identity when needed."""
         if self._token is None:
             self._token = _load_token(self._settings.token_cache_path)
         cached = self._token
         if (
             cached is not None
             and cached.worker_id == self._settings.worker_id
+            and self._matches_identity(cached)
             and cached.expires_at - TOKEN_REFRESH_SKEW_SECONDS > self._now_epoch()
         ):
             return cached.token
-        return self._enroll()
+        return self._renew()
 
-    def _enroll(self) -> str:
+    def _matches_identity(self, cached: CachedToken) -> bool:
+        if self._identity is None:
+            return True
+        from personal_agent_dal.service.tokens import token_claims, TokenError, BOUND_TOKEN_SCHEMA
+        try:
+            claims = token_claims(cached.token)
+        except TokenError:
+            return False
+        identity = self._identity
+        return (claims['schema'] == BOUND_TOKEN_SCHEMA
+            and all(claims[k] == identity[k] for k in ('worker_id','machine_id','registration_epoch'))
+            and claims['capabilities'] == sorted(self._settings.capabilities)
+            and claims['exp'] == cached.expires_at)
+
+    def _renew(self) -> str:
+        return self._enroll(refresh=self._identity is not None)
+
+    def _enroll(self, *, refresh: bool = False) -> str:
         """Exchange the operator-delivered enrollment secret for a token."""
         secret = _read_owner_only(
             self._settings.enrollment_secret_path, "enrollment_secret"
@@ -356,15 +385,30 @@ class RemoteHttpAdapter(WorkerTransport):
             "request_id": new_id(),
             "worker_id": self._settings.worker_id,
             "machine_id": self._settings.machine_id,
-            "capabilities": list(self._settings.capabilities),
+            "capabilities": sorted(self._settings.capabilities),
         }
+        if self._identity is not None:
+            # A bound worker can never enter enrollment, even through this helper.
+            refresh = True
+            identity = self._identity
+            body.update(expected_registration_epoch=identity['registration_epoch'],
+                supervisor={k:identity[k] for k in ('kid','boot_id','supervisor_epoch')})
+        try:
+            secret_header = secret.decode('utf-8')
+        except UnicodeError:
+            raise TransportError('enrollment_secret_invalid') from None
+        operation = 'refresh' if refresh else 'enroll'
         response = self._send(
-            "/enroll",
+            "/token/refresh" if refresh else "/enroll",
             body,
-            headers={ENROLLMENT_SECRET_HEADER: secret.decode("utf-8")},
+            headers={ENROLLMENT_SECRET_HEADER: secret_header},
         )
         if response.status_code != 200:
-            raise TransportError(f"enroll_refused:{_error_code(response)}")
+            code = _error_code(response)
+            if code not in {'enrollment_secret_invalid','worker_identity_unavailable','worker_identity_mismatch',
+                            'worker_revoked','rate_limited','invalid','unknown_capability'}:
+                code = str(response.status_code)
+            raise TransportError(f"{operation}_refused:{code}")
         payload = _closed(_json(response), _ENROLL_FIELDS, "enroll")
         token, expires_at = payload["token"], payload["token_expires_at"]
         if not isinstance(token, str) or not token:
@@ -376,6 +420,12 @@ class RemoteHttpAdapter(WorkerTransport):
         cached = CachedToken(
             worker_id=self._settings.worker_id, token=token, expires_at=expires_at
         )
+        if (not self._matches_identity(cached)
+            or not isinstance(payload['capabilities'], list)
+            or not all(isinstance(c, str) for c in payload['capabilities'])
+            or sorted(payload['capabilities']) != sorted(self._settings.capabilities)
+            or expires_at - TOKEN_REFRESH_SKEW_SECONDS <= self._now_epoch()):
+            raise TransportError('credential_identity_mismatch')
         _store_token(self._settings.token_cache_path, cached)
         self._token = cached
         return token
@@ -397,10 +447,10 @@ class RemoteHttpAdapter(WorkerTransport):
             **headers,
         }
         try:
-            response = (self._client.get(path, headers=request_headers) if method == "GET" else
-                        self._client.post(path, content=payload, headers=request_headers))
+            response = (self._client.get(self._endpoint + path, headers=request_headers, follow_redirects=False) if method == "GET" else
+                        self._client.post(self._endpoint + path, content=payload, headers=request_headers, follow_redirects=False))
         except httpx.HTTPError as error:
-            raise TransportError(f"network:{type(error).__name__}") from error
+            raise TransportError(f"network:{type(error).__name__}") from None
         if 300 <= response.status_code < 400:
             # A redirect would be the one way a bearer token could reach a host
             # that is not the pinned one. Refuse instead of following.
@@ -440,16 +490,16 @@ class RemoteHttpAdapter(WorkerTransport):
             )
             status = response.status_code
             if status == 401 and reauths < _MAX_REAUTH:
-                # The token was rejected: drop it and enroll exactly once more.
+                # The token was rejected: recover the same identity exactly once.
                 reauths += 1
                 self._token = None
-                self._enroll()
+                self._renew()
                 continue
             if status == 401:
                 raise TransportError("unauthorized", job_id=job_id)
             if status == 403:
                 raise TransportDisabledError(
-                    f"forbidden:{_error_code(response)}", job_id=job_id
+                    f"forbidden:{self._safe_auth_error(response)}", job_id=job_id
                 )
             if status == 503 and _error_code(response) == "kill_switch_active":
                 raise TransportDisabledError("kill_switch_active", job_id=job_id)
@@ -462,6 +512,13 @@ class RemoteHttpAdapter(WorkerTransport):
                 self._sleep(self._backoff(attempts))
                 continue
             return response
+
+    @staticmethod
+    def _safe_auth_error(response: httpx.Response) -> str:
+        code = _error_code(response)
+        return code if code in {'worker_revoked', 'worker_identity_mismatch',
+            'worker_identity_unavailable', 'unknown_worker', 'capability_missing',
+            'worker_mismatch'} else 'unparseable'
 
     def _backoff(self, attempt: int) -> float:
         delay = self._settings.backoff_base_seconds * (2 ** (attempt - 1))

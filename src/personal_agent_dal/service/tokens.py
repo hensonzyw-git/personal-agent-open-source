@@ -1,13 +1,4 @@
-"""Enrollment tokens for the Worker Transport (DAL-R04/R05).
-
-A token is `base64url(canonical payload).hmac_sha256(payload, service_key)`.
-The payload is `{worker_id, capabilities, exp}` where `exp` is epoch seconds.
-Verification is fail-closed: an undecodable, unverifiable, or expired token is
-a refusal, never a partial identity. The token is opaque and short-lived; it is
-returned exactly once, in the `/enroll` response body, and is never logged or
-echoed by any other endpoint.
-"""
-
+"""Closed, signed Worker credentials; legacy tokens carry no registration authority."""
 from __future__ import annotations
 
 import base64
@@ -18,67 +9,84 @@ from typing import Final
 
 from personal_agent_core.manifest import canonical_json
 
-
-TOKEN_SCHEMA: Final[str] = "dal.worker-token/1.0"
+TOKEN_SCHEMA: Final[str] = 'dal.worker-token/1.0'
+BOUND_TOKEN_SCHEMA: Final[str] = 'dal.worker-token/2.0'
 
 
 class TokenError(Exception):
-    """A token that cannot establish identity (invalid, tampered, or expired)."""
+    """A malformed, unverifiable, or expired credential."""
 
 
 def _sign(payload_b64: str, key: bytes) -> str:
-    return hmac.new(key, payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
+    return hmac.new(key, payload_b64.encode('ascii'), hashlib.sha256).hexdigest()
 
 
-def issue_token(
-    *,
-    worker_id: str,
-    capabilities: list[str],
-    expires_at_epoch: int,
-    key: bytes,
-) -> str:
-    """Issue an HMAC-signed, expiring enrollment token."""
-    payload = canonical_json(
-        {
-            "schema": TOKEN_SCHEMA,
-            "worker_id": worker_id,
-            "capabilities": sorted(capabilities),
-            "exp": expires_at_epoch,
-        }
-    )
-    payload_b64 = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
-    return f"{payload_b64}.{_sign(payload_b64, key)}"
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise TokenError('duplicate field')
+        result[key] = value
+    return result
 
 
-def verify_token(
-    token: str,
-    *,
-    key: bytes,
-    now_epoch: int,
-) -> tuple[str, list[str]]:
-    """Return `(worker_id, capabilities)` or raise `TokenError`."""
+def token_claims(token: str) -> dict:
+    """Parse the closed shape only, without authenticating it (client cache check)."""
     try:
-        payload_b64, signature = token.split(".", 1)
-    except ValueError as exc:
-        raise TokenError("malformed token") from exc
-    if not hmac.compare_digest(_sign(payload_b64, key), signature):
-        raise TokenError("bad signature")
-    padding = "=" * (-len(payload_b64) % 4)
+        raw, signature = token.split('.')
+        if len(signature) != 64 or any(c not in '0123456789abcdef' for c in signature):
+            raise TokenError('malformed signature')
+        payload = json.loads(base64.b64decode(raw + '=' * (-len(raw) % 4), altchars=b'-_', validate=True),
+                             object_pairs_hook=_unique_object)
+        if not isinstance(payload, dict):
+            raise TokenError('payload shape')
+        fields = {'schema','worker_id','capabilities','exp'}
+        if payload.get('schema') == BOUND_TOKEN_SCHEMA:
+            fields |= {'machine_id','registration_epoch'}
+            if (not isinstance(payload.get('machine_id'),str) or not payload['machine_id']
+                or type(payload.get('registration_epoch')) is not int or payload['registration_epoch'] < 1):
+                raise TokenError('identity shape')
+        elif payload.get('schema') != TOKEN_SCHEMA:
+            raise TokenError('unknown schema')
+        if set(payload) != fields:
+            raise TokenError('payload shape')
+        caps = payload['capabilities']
+        if (not isinstance(payload['worker_id'],str) or not payload['worker_id']
+            or type(payload['exp']) is not int or payload['exp'] < 1
+            or not isinstance(caps,list)
+            or not all(isinstance(c,str) and c for c in caps)
+            or caps != sorted(set(caps))):
+            raise TokenError('payload shape')
+        return payload
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise TokenError('malformed token') from exc
+
+
+def issue_token(*, worker_id: str, capabilities: list[str], expires_at_epoch: int,
+                key: bytes, machine_id: str | None = None, registration_epoch: int | None = None) -> str:
+    payload = dict(schema=TOKEN_SCHEMA,worker_id=worker_id,capabilities=sorted(capabilities),exp=expires_at_epoch)
+    if machine_id is not None or registration_epoch is not None:
+        payload.update(schema=BOUND_TOKEN_SCHEMA,machine_id=machine_id,registration_epoch=registration_epoch)
+    raw = base64.urlsafe_b64encode(canonical_json(payload).encode()).decode().rstrip('=')
+    token = f'{raw}.{_sign(raw,key)}'
+    token_claims(token)
+    return token
+
+
+def verify_token_claims(token: str, *, key: bytes, now_epoch: int) -> dict:
+    payload = token_claims(token)
+    raw, signature = token.split('.')
     try:
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise TokenError("undecodable payload") from exc
-    worker_id = payload.get("worker_id")
-    capabilities = payload.get("capabilities")
-    exp = payload.get("exp")
-    if (
-        not isinstance(worker_id, str)
-        or not worker_id
-        or not isinstance(capabilities, list)
-        or not all(isinstance(c, str) for c in capabilities)
-        or not isinstance(exp, int)
-    ):
-        raise TokenError("payload shape is not closed")
-    if now_epoch >= exp:
-        raise TokenError("token expired")
-    return worker_id, capabilities
+        valid = hmac.compare_digest(_sign(raw,key),signature)
+    except (UnicodeError, ValueError) as exc:
+        raise TokenError('bad signature') from exc
+    if not valid:
+        raise TokenError('bad signature')
+    if now_epoch >= payload['exp']:
+        raise TokenError('token expired')
+    return payload
+
+
+def verify_token(token: str, *, key: bytes, now_epoch: int) -> tuple[str,list[str]]:
+    claims = verify_token_claims(token,key=key,now_epoch=now_epoch)
+    return claims['worker_id'],claims['capabilities']

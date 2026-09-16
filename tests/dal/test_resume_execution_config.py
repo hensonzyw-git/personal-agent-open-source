@@ -150,6 +150,10 @@ def test_trust_only_real_replacement_signed_dispatch(world, setup):
         assert set(s.scalars(select(WorkflowProfileRevision.profile))) == {'B'}
     register_supervisor(world, kid='supervisor', worker_id='w', machine_id='synthetic',
         public_key=encode_device_public_key(key.public_key()), boot_id='boot', supervisor_epoch=1)
+    # Supervisor provisioning invalidates the former epoch-less credential.
+    assert prelaunch(c, job, auth).status_code == 403
+    auth = issue_token(worker_id='w', machine_id='synthetic', registration_epoch=1,
+                       capabilities=[], key=KEY, expires_at_epoch=int(time.time())+600)
     payload = dict(schema='dal.launch-manifest/1.1', kid='supervisor', worker_id='w', machine_id='synthetic',
         registration_epoch=1, boot_id='boot', supervisor_epoch=1, attempt_id=ctx['attempt_id'],
         workspace_id='workspace', workspace_generation=1, isolation_policy_sha256='a'*64,

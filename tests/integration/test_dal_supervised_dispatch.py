@@ -31,10 +31,11 @@ def composed(world,tmp_path):
         public_key=encode_device_public_key(key.public_key()),boot_id='boot',supervisor_epoch=1)
     app=create_app(world,service_key=b'synthetic-service',enrollment_secret=b'synthetic-enroll',
         resume_config={'issuer':'pa','audience':'dal','keys':{},'profiles':[]})
-    settings=SimpleNamespace(worker_id='w',endpoint='https://testserver',retry_attempts=1)
+    settings=SimpleNamespace(worker_id='w',endpoint='https://testserver',retry_attempts=1, machine_id='synthetic-mini', capabilities=(),
+        identity=dict(worker_id='w',machine_id='synthetic-mini',registration_epoch=1,kid='supervisor',boot_id='boot',supervisor_epoch=1))
     transport=RemoteHttpAdapter(settings,client=TestClient(app))
     expires=int(utc_now().timestamp())+600
-    transport._token=CachedToken('w',issue_token(worker_id='w',capabilities=[],key=b'synthetic-service',expires_at_epoch=expires),expires)
+    transport._token=CachedToken('w',issue_token(worker_id='w',machine_id='synthetic-mini',registration_epoch=1,capabilities=[],key=b'synthetic-service',expires_at_epoch=expires),expires)
     lease=transport.claim()
     assert lease is not None and lease.job_id!='j'
     identity=dict(kid='supervisor',worker_id='w',machine_id='synthetic-mini',registration_epoch=1,

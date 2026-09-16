@@ -24,6 +24,35 @@ def load_supervisor_config(path):
     return body
 
 
+def validate_transport_identity(identity, *, worker_id, machine_id):
+    fields = {'kid','worker_id','machine_id','registration_epoch','boot_id','supervisor_epoch'}
+    if not isinstance(identity, dict) or set(identity) != fields:
+        raise SupervisorRefusal('SUPERVISOR_IDENTITY_INVALID')
+    if any(type(identity[k]) is not int or identity[k] < 1 for k in ('registration_epoch','supervisor_epoch')):
+        raise SupervisorRefusal('SUPERVISOR_IDENTITY_INVALID')
+    if any(not isinstance(identity[k], str) or not identity[k] for k in fields - {'registration_epoch','supervisor_epoch'}):
+        raise SupervisorRefusal('SUPERVISOR_IDENTITY_INVALID')
+    if (identity['worker_id'],identity['machine_id']) != (worker_id,machine_id):
+        raise SupervisorRefusal('SIGNER_IDENTITY_STALE')
+
+
+def transport_identity(config):
+    """Load public expected identity from the existing production configuration.
+
+    No signing key, provider credential or runtime admission is read here.
+    """
+    if config.supervisor_config_path is None:
+        if config.schema_version in ('dal.worker-config/2.0','dal.worker-config/2.1'):
+            raise SupervisorRefusal('SUPERVISOR_CONFIG_REQUIRED')
+        return None
+    body = load_supervisor_config(config.supervisor_config_path)
+    identity = body['identity']
+    validate_transport_identity(identity, worker_id=config.worker_id, machine_id=config.transport.machine_id)
+    if (identity['boot_id'],identity['supervisor_epoch']) != (body['boot_id'],body['supervisor_epoch']):
+        raise SupervisorRefusal('SIGNER_IDENTITY_STALE')
+    return dict(identity)
+
+
 def prepare(transport,lease,context,*,supervisor,pins,read_roots,identity,key,repository=None):
     """Reserve and acknowledge the concrete inventory, without consuming dispatch."""
     if context['job_id']!=lease.job_id or context['job_lease_epoch']!=lease.lease_epoch:
