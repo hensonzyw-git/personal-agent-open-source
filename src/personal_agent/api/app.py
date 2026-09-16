@@ -557,11 +557,30 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         await asyncio.sleep(0)
         await bounded(tuple(compaction_tasks))
 
+    async def join_before_cancel(task):
+        """Defer caller cancellation until dependency-using work has settled."""
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except BaseException:
+                break
+        if cancelled:
+            # Retrieve any failure without serializing sensitive exception text.
+            if not task.cancelled():
+                task.exception()
+            raise asyncio.CancelledError
+        return task.result()
+
     async def resume_v2(stop):
         from personal_agent.api.runtime_v2 import resumable
         while not stop.is_set():
             try:
-                for operation_id, auth in await asyncio.to_thread(resumable,deps):
+                for operation_id, auth in await join_before_cancel(
+                    asyncio.create_task(asyncio.to_thread(resumable, deps))
+                ):
                     if operation_id in operation_tasks:continue
                     task=asyncio.create_task(asyncio.to_thread(_process_chat,deps,auth,operation_id))
                     operation_tasks[operation_id]=task
@@ -578,7 +597,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             import sqlite3
             import threading
             from sqlalchemy.exc import OperationalError
-            failures = 0
+            retry_delay = 0.25
             while True:
                 # Cancellation cannot stop a running thread. Drain it before the
                 # lifespan releases dependencies; never start another delivery.
@@ -588,40 +607,57 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                     await asyncio.shield(flight)
                 except asyncio.CancelledError:
                     stop.set()
-                    await asyncio.gather(flight, return_exceptions=True)
+                    await join_before_cancel(asyncio.gather(flight, return_exceptions=True))
                     raise
                 except (sqlite3.OperationalError, OperationalError, OSError):
-                    failures += 1
-                    if failures >= 3:
-                        logger.error("DAL resume delivery stopped: transient retry budget exhausted")
-                        raise
-                    logger.warning("DAL resume delivery transient failure; retry %d/2", failures)
-                    await asyncio.sleep(0.25 * 2 ** (failures - 1))
+                    logger.warning("DAL resume delivery transient failure; retrying")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30.0)
                     continue
                 except Exception:
                     logger.error("DAL resume delivery stopped: unexpected failure")
                     raise
-                failures = 0
+                retry_delay = 0.25
                 await asyncio.sleep(5)
-        task = asyncio.create_task(deliveries()) if deps.dal_resume else None
-        _app.state.dal_resume_delivery_task = task
-        if task:
-            # Retrieve failures promptly; logs above contain fixed classifications,
-            # never the exception's SQL, assertion, URL or response body.
-            task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
-        stop=asyncio.Event()
+        task = recovery = None
+        _app.state.dal_resume_delivery_task = None
+        _app.state.adk_recovery_task = None
+        stop = asyncio.Event()
         from personal_agent.api.runtime_v2 import recovery_needed
-        recovery=asyncio.create_task(resume_v2(stop)) if await asyncio.to_thread(recovery_needed,deps) else None
         try:
+            # Discover before starting delivery; cancellation still joins this
+            # database-using thread before composition can release its engine.
+            needed = await join_before_cancel(
+                asyncio.create_task(asyncio.to_thread(recovery_needed, deps))
+            )
+            task = asyncio.create_task(deliveries()) if deps.dal_resume else None
+            _app.state.dal_resume_delivery_task = task
+            if task:
+                # Retrieve failures promptly with only fixed-classification logs.
+                task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            recovery = asyncio.create_task(resume_v2(stop)) if needed else None
+            _app.state.adk_recovery_task = recovery
+            if recovery:
+                recovery.add_done_callback(lambda done: None if done.cancelled() else done.exception())
             yield
         finally:
-            stop.set()
-            if recovery is not None:
-                await recovery
-            if task:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            await drain_background_tasks()
+            async def cleanup():
+                stop.set()
+                if task:
+                    task.cancel()
+                try:
+                    if recovery is not None:
+                        await recovery
+                finally:
+                    try:
+                        if task:
+                            await asyncio.gather(task, return_exceptions=True)
+                    finally:
+                        await drain_background_tasks()
+
+            # A second cancellation must not abandon the delivery thread or skip
+            # ADK/background drains. systemd bounds the whole process instead.
+            await join_before_cancel(asyncio.create_task(cleanup()))
 
     app = FastAPI(lifespan=lifespan)
     # The service composition runs one API process. Hold admission across both

@@ -158,14 +158,12 @@ def composed_app(bridge_world, token_ring, keyring):
         capabilities=lambda a: [],now=utc_now,dal_resume=bridge))
 
 
-@pytest.mark.parametrize('failure,expected_calls', [('transient',3),('unexpected',1)])
-def test_lifespan_failures_are_bounded_and_observed(bridge_world, token_ring, keyring, caplog, failure, expected_calls):
+def test_lifespan_unexpected_failure_is_terminal_and_observed(bridge_world, token_ring, keyring, caplog):
     bridge = bridge_world[1]
     calls = 0
     def fail(**kwargs):
         nonlocal calls
         calls += 1
-        if failure == 'transient': raise OperationalError('synthetic-private-sql', {}, Exception('detail'))
         raise RuntimeError('synthetic-private-detail')
     bridge.deliver_pending = fail
     app = composed_app(bridge_world,token_ring,keyring)
@@ -176,12 +174,13 @@ def test_lifespan_failures_are_bounded_and_observed(bridge_world, token_ring, ke
                 await asyncio.wait_for(asyncio.shield(task), 2)
             assert task.done()
     asyncio.run(run())
-    assert calls == expected_calls
+    assert calls == 1
     assert 'stopped' in caplog.text
     assert 'synthetic-private' not in caplog.text
 
 
-def test_lifespan_shutdown_drains_inflight_thread(bridge_world, token_ring, keyring):
+@pytest.mark.parametrize('already_cancelled', [False, True])
+def test_lifespan_shutdown_drains_inflight_thread(bridge_world, token_ring, keyring, already_cancelled):
     import threading
     bridge = bridge_world[1]
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
@@ -200,6 +199,9 @@ def test_lifespan_shutdown_drains_inflight_thread(bridge_world, token_ring, keyr
         await context.__aenter__()
         try:
             assert await asyncio.to_thread(entered.wait, 1)
+            if already_cancelled:
+                app.state.dal_resume_delivery_task.cancel()
+                await asyncio.sleep(.01)
             shutdown = asyncio.create_task(context.__aexit__(None,None,None))
             await asyncio.sleep(.02)
             assert not shutdown.done()
@@ -362,3 +364,188 @@ def test_release_lifespan_runs_adk_recovery_and_dal_delivery_together(
         assert app.state.dal_resume_delivery_task.cancelled()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('error_kind', ['sqlite', 'sqlalchemy', 'os'])
+def test_delivery_transients_continue_with_capped_delay_and_reset(
+    bridge_world, token_ring, keyring, monkeypatch, caplog, error_kind,
+):
+    import sqlite3
+    calls, delays = 0, []
+    sleep = asyncio.sleep
+    errors = {
+        'sqlite': lambda: sqlite3.OperationalError('synthetic-private'),
+        'sqlalchemy': lambda: OperationalError('synthetic-private', {}, Exception('private')),
+        'os': lambda: OSError('synthetic-private'),
+    }
+
+    def deliver(**kwargs):
+        nonlocal calls
+        calls += 1
+        # Past both the old strike count and the overflow threshold of an
+        # unbounded integer exponent. Success must reset the next retry delay.
+        if calls <= 1100 or calls == 1102:
+            raise errors[error_kind]()
+
+    async def fast_sleep(delay):
+        delays.append(delay)
+        await sleep(0)
+
+    bridge_world[1].deliver_pending = deliver
+    app = composed_app(bridge_world, token_ring, keyring)
+
+    async def run():
+        async with app.router.lifespan_context(app):
+            while calls < 1103:
+                await sleep(.001)
+            assert not app.state.dal_resume_delivery_task.done()
+
+    monkeypatch.setattr(asyncio, 'sleep', fast_sleep)
+    asyncio.run(asyncio.wait_for(run(), 10))
+    assert delays[:9] == [.25, .5, 1, 2, 4, 8, 16, 30, 30]
+    assert max(delays) == 30
+    assert delays[1100:1102] == [5, .25]
+    assert 'synthetic-private' not in caplog.text
+    assert 'stopped' not in caplog.text
+
+
+@pytest.mark.parametrize('outcome', ['failure', 'cancel'])
+def test_startup_discovery_settles_without_starting_delivery(
+    bridge_world, token_ring, keyring, monkeypatch, outcome,
+):
+    import threading
+    from personal_agent.api import app as app_module, runtime_v2
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    drained, deliveries = [], []
+
+    def discovery(deps):
+        entered.set()
+        assert release.wait(3)
+        finished.set()
+        if outcome == 'failure':
+            raise RuntimeError('synthetic discovery failure')
+        return True
+
+    monkeypatch.setattr(runtime_v2, 'recovery_needed', discovery)
+    monkeypatch.setattr(app_module, '_join_boundary_workers', lambda workers: drained.append(True))
+    bridge_world[1].deliver_pending = lambda **kwargs: deliveries.append(True)
+    app = composed_app(bridge_world, token_ring, keyring)
+
+    async def run():
+        context = app.router.lifespan_context(app)
+        startup = asyncio.create_task(context.__aenter__())
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            if outcome == 'cancel':
+                startup.cancel()
+                await asyncio.sleep(.01)
+                startup.cancel()
+                await asyncio.sleep(.01)
+                assert not startup.done()
+        finally:
+            release.set()
+        with pytest.raises(RuntimeError if outcome == 'failure' else asyncio.CancelledError):
+            await startup
+        assert finished.is_set()
+        assert app.state.dal_resume_delivery_task is None
+
+    asyncio.run(run())
+    assert drained == [True]
+    assert deliveries == []
+
+
+@pytest.mark.parametrize('outcome', ['failure', 'cancel', 'shutdown_cancel'])
+def test_recovery_failure_or_cancellation_cannot_skip_delivery_and_background_drain(
+    bridge_world, token_ring, keyring, monkeypatch, outcome,
+):
+    import threading
+    from personal_agent.api import app as app_module, runtime_v2
+    delivery_entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    recovery_entered, recovery_release = threading.Event(), threading.Event()
+    drained = []
+    monkeypatch.setattr(runtime_v2, 'recovery_needed', lambda deps: True)
+    if outcome == 'failure':
+        class FailedRecoveryStop(asyncio.Event):
+            async def wait(self):
+                await super().wait()
+                raise RuntimeError('synthetic recovery wait failure')
+        monkeypatch.setattr(asyncio, 'Event', FailedRecoveryStop)
+
+    def resumable(deps):
+        recovery_entered.set()
+        assert recovery_release.wait(3)
+        return []
+
+    def delivery(*, stop_event):
+        delivery_entered.set()
+        assert release.wait(3)
+        assert stop_event.is_set()
+        finished.set()
+
+    monkeypatch.setattr(runtime_v2, 'resumable', resumable)
+    monkeypatch.setattr(app_module, '_join_boundary_workers', lambda workers: drained.append(finished.is_set()))
+    bridge_world[1].deliver_pending = delivery
+    app = composed_app(bridge_world, token_ring, keyring)
+
+    async def run():
+        context = app.router.lifespan_context(app)
+        await context.__aenter__()
+        try:
+            assert await asyncio.to_thread(delivery_entered.wait, 1)
+            assert await asyncio.to_thread(recovery_entered.wait, 1)
+            if outcome == 'cancel':
+                app.state.adk_recovery_task.cancel()
+            shutdown = asyncio.create_task(context.__aexit__(None, None, None))
+            await asyncio.sleep(.02)
+            if outcome == 'shutdown_cancel':
+                shutdown.cancel()
+                await asyncio.sleep(.01)
+                shutdown.cancel()
+            recovery_release.set()
+            await asyncio.sleep(.02)
+            assert not shutdown.done()
+            assert drained == []
+        finally:
+            recovery_release.set()
+            release.set()
+        with pytest.raises(RuntimeError if outcome == 'failure' else asyncio.CancelledError):
+            await asyncio.wait_for(shutdown, 1)
+        assert app.state.dal_resume_delivery_task.done()
+        assert app.state.adk_recovery_task.done()
+        assert finished.is_set()
+
+    asyncio.run(run())
+    assert drained == [True]
+
+
+def test_shutdown_during_transient_backoff_starts_no_more_deliveries(
+    bridge_world, token_ring, keyring, monkeypatch,
+):
+    calls = 0
+    sleep = asyncio.sleep
+
+    def deliver(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise OSError('synthetic-private')
+
+    bridge_world[1].deliver_pending = deliver
+    app = composed_app(bridge_world, token_ring, keyring)
+
+    async def run():
+        backoff = asyncio.Event()
+
+        async def held_sleep(delay):
+            if delay == .25:
+                backoff.set()
+                await asyncio.Event().wait()
+            else:
+                await sleep(delay)
+
+        monkeypatch.setattr(asyncio, 'sleep', held_sleep)
+        async with app.router.lifespan_context(app):
+            await asyncio.wait_for(backoff.wait(), 1)
+        assert app.state.dal_resume_delivery_task.cancelled()
+
+    asyncio.run(run())
+    assert calls == 1

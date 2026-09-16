@@ -99,3 +99,14 @@ def test_rollback_stops_and_removes_every_dev036_unit_without_deleting_state() -
         assert unit in rollback
     assert "rm -rf" not in rollback
     assert "/var/lib/personal-agent-backup" in rollback
+
+
+def test_pa_process_stop_bounds_graceful_thread_drain() -> None:
+    unit = _read('deploy/systemd/personal-agent-api.service')
+    settings = dict(line.split('=', 1) for line in unit.splitlines()
+                    if '=' in line and not line.startswith('#'))
+    assert settings['TimeoutStopSec'] == '60s'
+    assert settings['KillMode'] == 'control-group'
+    assert settings['SendSIGKILL'] == 'yes'
+    assert settings['Restart'] == 'on-failure'
+    assert '--socket /run/personal-agent/api.sock' in unit
