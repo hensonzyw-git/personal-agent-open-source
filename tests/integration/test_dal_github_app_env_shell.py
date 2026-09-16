@@ -16,6 +16,7 @@ import os
 import stat
 import subprocess
 from pathlib import Path
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -153,6 +154,38 @@ def test_gate_refuses_a_non_pem_key_file(tmp_path: Path) -> None:
     result = _run_gate(tmp_path, key=junk)
     assert result.returncode != 0, "a non-PEM key file must not pass"
     assert "private key" in result.stderr
+
+
+@pytest.mark.parametrize('kind', ['ec', 'public', 'encrypted', 'inconsistent', 'truncated'])
+def test_gate_refuses_invalid_rsa_private_keys(tmp_path: Path, kind: str) -> None:
+    """Synthetic keys exercise parse, type, encryption and consistency failures."""
+    import base64
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec, rsa
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    if kind == 'ec':
+        key = ec.generate_private_key(ec.SECP256R1())
+    if kind == 'public':
+        content = key.public_key().public_bytes(serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo)
+    elif kind == 'inconsistent':
+        der = key.private_bytes(serialization.Encoding.DER,
+            serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption())
+        # Corrupt only the CRT coefficient, leaving a parseable RSA structure.
+        der = der[:-1] + bytes([der[-1] ^ 1])
+        content = (b'-----BEGIN RSA PRIVATE KEY-----\n' + base64.encodebytes(der)
+                   + b'-----END RSA PRIVATE KEY-----\n')
+    else:
+        encryption = (serialization.BestAvailableEncryption(b'synthetic-only')
+                      if kind == 'encrypted' else serialization.NoEncryption())
+        content = key.private_bytes(serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8, encryption)
+        if kind == 'truncated': content = content[:100]
+    path = tmp_path / 'synthetic-invalid.pem'
+    path.write_bytes(content)
+    result = _run_gate(tmp_path, key=path)
+    assert result.returncode != 0
+    assert 'private key' in result.stderr
 
 
 def test_gate_refuses_loose_permissions(tmp_path: Path) -> None:

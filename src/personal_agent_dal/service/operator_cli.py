@@ -278,6 +278,8 @@ def main(argv: list[str] | None = None) -> int:
         "reconcile-sweep",
         help="run one read-only reconciliation pass over unknown effects",
     )
+    from personal_agent_dal.service.execution_cli import add_commands, COMMANDS, run
+    add_commands(sub)
     args = parser.parse_args(argv)
 
     global _CA_BUNDLE
@@ -304,6 +306,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         token = _read_token_file(args.token_file)
+
+    if args.command in COMMANDS:
+        return run(args, token)
 
     if args.command == "whoami":
         print(_token_expiry(token))

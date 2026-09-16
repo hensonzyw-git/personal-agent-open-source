@@ -143,15 +143,21 @@ def _issue_policy_lease(s, *, episode, intent, attempt, action, job, worker_id):
     return lease
 
 
-def _context(s,*,job_id,worker_id,job_lease_epoch,enabled=True):
-    # Fresh database authority, before any episode-dependent response. Keep
-    # this read and the episode lookup in the caller's single transaction.
+def require_job_authority(s,*,job_id,worker_id,job_lease_epoch):
+    """Read fresh authority before revealing configuration or episode state."""
     job=s.scalar(select(WorkerJob).where(WorkerJob.job_id==job_id)
         .execution_options(populate_existing=True))
     if (not job or job.worker_id!=worker_id or job.state not in ('leased','running')
             or job.lease_epoch!=job_lease_epoch or job.lease_expires_at is None
             or job.lease_expires_at<=utc_now()):
         raise ValueError('JOB_LEASE_STALE')
+    return job
+
+
+def _context(s,*,job_id,worker_id,job_lease_epoch,enabled=True):
+    # Recheck in this transaction even if the transport already checked.
+    job=require_job_authority(s,job_id=job_id,worker_id=worker_id,
+        job_lease_epoch=job_lease_epoch)
     episode=s.scalar(select(ResumeEpisode).where(ResumeEpisode.job_id==job_id))
     if not episode:
         if job.execution_mode == 'provider_v1':

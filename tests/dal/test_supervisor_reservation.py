@@ -258,9 +258,12 @@ def test_worker_uses_shared_executable_checks(tmp_path, monkeypatch, change):
         link=folder/'alias'; link.symlink_to(executable); executable=link
     snap=snapshot(); registered=pins(snap)
     for pin in registered: pin.update(executable=str(executable), executable_sha256=hashlib.sha256(b'synthetic').hexdigest())
-    body=dict(root=str(tmp_path/'supervisor'),boot_id='boot',supervisor_epoch=1,runtime_pins=registered)
+    body=dict(root=str(tmp_path/'supervisor'),boot_id='boot',supervisor_epoch=1,runtime_pins=registered,
+        identity=dict(kid='synthetic', worker_id='w', machine_id='synthetic',
+                      registration_epoch=1, boot_id='boot', supervisor_epoch=1),
+        read_roots=[], signing_key_path=str(tmp_path/'synthetic-key'), git_pin={})
     monkeypatch.setattr(prelaunch,'load_supervisor_config',lambda _:body)
     monkeypatch.setattr('personal_agent_dal.worker.supervisor.current_boot_id',lambda:'boot')
     with pytest.raises(SupervisorRefusal, match='EXECUTABLE_NOT_PROTECTED|SYMLINK_PATH'):
-        prelaunch.worker_prelaunch(None,SimpleNamespace(supervisor_config_path='synthetic'),None,
-                                  dict(snapshot=snap,snapshot_sha256=digest(snap)))
+        prelaunch.worker_prelaunch(None,SimpleNamespace(supervisor_config_path='synthetic',worker_id='w'),None,
+                                  dict(worker_id='w',snapshot=snap,snapshot_sha256=digest(snap)))

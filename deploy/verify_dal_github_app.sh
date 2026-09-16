@@ -70,8 +70,13 @@ KEY_PATH="$PERSONAL_AGENT_DAL_GITHUB_PRIVATE_KEY_PATH"
 [ -f "$KEY_PATH" ] || fail "the App private key is not at $KEY_PATH (scp it per docs/密钥清单_v0.1.md)"
 head -c 32 "$KEY_PATH" | grep -q "PRIVATE KEY" \
   || fail "$KEY_PATH does not start like a PEM private key"
-openssl pkey -in "$KEY_PATH" -noout -check >/dev/null 2>&1 \
-  || fail "$KEY_PATH does not parse as a private key (openssl refused it)"
+# LibreSSL on macOS lacks pkey -check. RSA's consistency check is available
+# on both LibreSSL and OpenSSL and matches the App's RS256 private-key contract.
+# Require its positive verdict too: some versions exit zero on an invalid key.
+key_check=$(openssl rsa -in "$KEY_PATH" -passin pass: -noout -check 2>/dev/null) \
+  || fail "$KEY_PATH does not parse as an RSA private key (openssl refused it)"
+[ "$key_check" = "RSA key ok" ] \
+  || fail "$KEY_PATH is not a consistent RSA private key"
 
 _file_mode "$GITHUB_APP_ENV" | grep -q "^640$" \
   || fail "$GITHUB_APP_ENV is mode $(_file_mode "$GITHUB_APP_ENV"), want 640"

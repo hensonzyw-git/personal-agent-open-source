@@ -31,9 +31,12 @@ def client_for(world, transport, enabled):
         enrollment_secret=b'synthetic-enroll', resume_config=None))
 
 
-def request(client, transport, job_id, epoch):
-    body = json.dumps({'job_lease_epoch': epoch}).encode()
-    return client.post(f'/worker/jobs/{job_id}/prelaunch-context',
+def request(client, transport, job_id, epoch, endpoint='context'):
+    fields = {'job_lease_epoch': epoch}
+    if endpoint == 'manifest': fields['assertion'] = 'synthetic-invalid-assertion'
+    if endpoint == 'dispatch': fields['manifest_sha256'] = '0' * 64
+    body = json.dumps(fields).encode()
+    return client.post(f'/worker/jobs/{job_id}/prelaunch-{endpoint}',
         content=body,
         headers={'Authorization': 'Bearer ' + transport._token.token,
                  'Content-Type': 'application/json',
@@ -42,12 +45,13 @@ def request(client, transport, job_id, epoch):
 
 @pytest.mark.parametrize('enabled', [True, False])
 @pytest.mark.parametrize('episode', [True, False])
+@pytest.mark.parametrize('endpoint', ['context', 'manifest', 'dispatch'])
 @pytest.mark.parametrize('invalid', [
     'foreign', 'missing', 'stale', 'expired', 'expiry_equal',
     'pending', 'succeeded', 'failed', 'expired_state', 'cancelled',
 ])
 def test_invalid_authority_has_no_episode_oracle(composed, world, monkeypatch,
-                                               enabled, episode, invalid):
+                                               enabled, episode, invalid, endpoint):
     transport, lease, *_ = composed
     job_id, epoch = (lease.job_id, lease.lease_epoch) if episode else ('j', 3)
     now = utc_now()
@@ -73,7 +77,7 @@ def test_invalid_authority_has_no_episode_oracle(composed, world, monkeypatch,
         statements.append(statement.lower())
     event.listen(world, 'before_cursor_execute', observe)
     try:
-        response = request(client, transport, job_id, epoch)
+        response = request(client, transport, job_id, epoch, endpoint)
         assert (response.status_code, response.json()) == (409, {
             'schema_version': 'dal.worker-transport/1.0',
             'code': 'JOB_LEASE_STALE', 'detail': 'JOB_LEASE_STALE'})

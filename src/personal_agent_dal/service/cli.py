@@ -119,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     # terminates at Nginx and passes plain HTTP over loopback.
     parser.add_argument("--ssl-certfile", type=Path, default=None)
     parser.add_argument("--ssl-keyfile", type=Path, default=None)
+    parser.add_argument("--execution-profiles-config", type=Path, default=None)
     args = parser.parse_args(argv)
 
     if (args.ssl_certfile is None) != (args.ssl_keyfile is None):
@@ -166,6 +167,9 @@ def main(argv: list[str] | None = None) -> int:
     resume_path = os.environ.get("PERSONAL_AGENT_DAL_RESUME_CONFIG")
     try:
         resume_config = load_config(resume_path) if resume_path else None
+        from personal_agent_dal.service.execution_config import load_execution_config
+        execution_path = args.execution_profiles_config or os.environ.get("PERSONAL_AGENT_DAL_EXECUTION_PROFILES_CONFIG")
+        execution_config = load_execution_config(execution_path) if execution_path else None
     except (ValueError, TypeError, KeyError, OSError):
         print("DAL resume configuration refused", file=sys.stderr)
         return 1
@@ -181,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_attempts=args.max_attempts,
                 github_adapter=github_adapter,
                 resume_config=resume_config,
+                execution_config=execution_config,
             )
         except (ValueError, TypeError, KeyError, OSError):
             print("DAL resume configuration refused", file=sys.stderr)

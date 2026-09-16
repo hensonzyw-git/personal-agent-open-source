@@ -612,6 +612,7 @@ def create_app(
     max_attempts: int = MAX_ATTEMPTS,
     github_adapter: Any | None = None,
     resume_config: dict | None = None,
+    execution_config=None,
 ) -> FastAPI:
     service = Service(
         engine,
@@ -624,7 +625,7 @@ def create_app(
     )
     app = FastAPI(title="DAL Worker Transport", version="1.0.0")
     from personal_agent_dal.service.resume_routes import mount_routes
-    mount_routes(app, engine, service, resume_config)
+    mount_routes(app, engine, service, resume_config, execution_config)
 
     def _envelope_for(request: Request) -> str:
         # Operator endpoints answer with the operator envelope; everything else

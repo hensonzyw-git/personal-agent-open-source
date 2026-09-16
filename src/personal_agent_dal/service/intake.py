@@ -100,7 +100,7 @@ class IntakeOutcome:
     """What one intake produced."""
 
     feature_id: str
-    job_id: str
+    job_id: str | None
     feature_state: str
     duplicate: bool
 
@@ -140,6 +140,7 @@ def intake_task(
     base_sha: str,
     toolchain_ref: str,
     branch_name: str | None = None,
+    pending_only: bool = False,
 ) -> IntakeOutcome:
     """Create a Feature at ``intake`` and enqueue a pending Job for it.
 
@@ -174,6 +175,31 @@ def intake_task(
         idempotency_key=f"intake:{feature_id}",
         evidence_documents=(),
     )
+    if pending_only:
+        # Same business transition, in the same transaction as durable intake
+        # evidence. No WorkerJob exists until explicit execution confirmation.
+        import hashlib
+        from personal_agent_core.timeutil import utc_now
+        from personal_agent_dal.machine.action_lifecycle import _transaction
+        from personal_agent_dal.storage.worker_models import FeatureIntakeRequest
+        from personal_agent_dal.storage.models import Feature
+        def register(session):
+            key = f"pending:{feature_id}"
+            old = session.get(FeatureIntakeRequest, key)
+            if old and old.toolchain_ref != toolchain_ref:
+                raise IntakeRefusal('toolchain_conflict', 'registered toolchain differs')
+            result = apply_transition(engine, command, transaction_session=session)
+            if result.receipt_code != ReceiptCodes.APPLIED:
+                raise IntakeRefusal(result.receipt_code, result.receipt_code)
+            if not old:
+                session.add(FeatureIntakeRequest(intake_key=key, feature_id=feature_id,
+                    task_description=task_description,
+                    task_description_sha256=hashlib.sha256(task_description.encode()).hexdigest(),
+                    toolchain_ref=toolchain_ref, recorded_at=utc_now()))
+            feature = session.get(Feature, feature_id)
+            return IntakeOutcome(feature_id, None, feature.state, result.duplicate)
+        return _transaction(engine, register)
+
     outcome = apply_transition(engine, command)
     if outcome.receipt_code != ReceiptCodes.APPLIED:
         raise IntakeRefusal(outcome.receipt_code, outcome.receipt_code)

@@ -98,6 +98,12 @@ def _input(s, feature_id, body):
         if not row or (row.feature_id, row.task_description, row.task_description_sha256, row.toolchain_ref) != (
                 feature_id, body.task_description, body.task_description_sha256, body.toolchain_ref):
             raise ValueError('INTAKE_BINDING_INVALID')
+        if body.task_source.intake_key.startswith('pending:'):
+            from personal_agent_dal.service.intake import _feature_id
+            if (_feature_id(body.repository_id, body.task_description, body.base_sha) != feature_id
+                    or body.task_source.intake_key != f'pending:{feature_id}'
+                    or body.branch_name != f'codex/feature-{feature_id}'):
+                raise ValueError('INTAKE_BINDING_INVALID')
     return encoded, digest(value)
 
 
@@ -115,7 +121,9 @@ def prepare_execution(engine, *, feature_id, actor, body, kill_switch=lambda: Fa
                 completion_policy_revision=a.completion_policy_revision, feature_version=old.feature_version,
                 gate_version=old.gate_version, action_version=1)
             return dict(action_id=a.action_id, selection_id=old.selection_id, snapshot_sha256=old.snapshot_sha256,
-                        confirmation=display, confirmed_execution_sha256=digest(display))
+                        confirmation=display, confirmed_execution_sha256=digest(display),
+                        execution_input=json.loads(a.execution_input_body),
+                        profile=json.loads(s.get(ExecutionSnapshot, a.execution_snapshot_sha256).body))
         if kill_switch(): raise ValueError('KILL_SWITCH_ACTIVE')
         if body.completion_mode != 'report_only': raise ValueError('COMPLETION_RESOLVER_UNAVAILABLE')
         if body.completion_policy_revision is not None: raise ValueError('COMPLETION_POLICY_INVALID')
@@ -152,7 +160,9 @@ def prepare_execution(engine, *, feature_id, actor, body, kill_switch=lambda: Fa
         s.add(selection)
         display = confirmation(a, selection, f, g)
         return dict(action_id=a.action_id, selection_id=selection.selection_id, snapshot_sha256=snapshot_sha,
-                    confirmation=display, confirmed_execution_sha256=digest(display))
+                    confirmation=display, confirmed_execution_sha256=digest(display),
+                        execution_input=json.loads(a.execution_input_body),
+                        profile=json.loads(s.get(ExecutionSnapshot, a.execution_snapshot_sha256).body))
     return _transaction(engine, work)
 
 

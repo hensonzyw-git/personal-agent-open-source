@@ -49,7 +49,7 @@ def load_config(path):
     return body
 
 
-def mount_routes(app, engine, service, config):
+def mount_routes(app, engine, service, config, execution_config=None):
     from personal_agent_dal.service.app import _OperatorAuth, transport_body_guard
     if config is not None:
         for profile in config['profiles']: register_profile(engine,**profile)
@@ -64,6 +64,46 @@ def mount_routes(app, engine, service, config):
                 ).exists()
                 if connection.scalar(select(unmaterialized)):
                     logger.error('DAL_RESUME_DISABLED_PENDING_INTENTS')
+    from personal_agent_dal.service.execution_config import ExecutionConfig
+    from personal_agent_dal.service.execution_routes import mount_execution_routes
+    if execution_config is not None:
+        execution_config = ExecutionConfig.model_validate(execution_config)
+        for profile in execution_config.profiles:
+            register_profile(engine, **profile.model_dump())
+    mount_execution_routes(app, engine, service, execution_config)
+
+    def execution_enabled(revision_id=None, inp=None):
+        if execution_config is None:
+            enabled()  # Backward-compatible combined configuration.
+        else:
+            try:
+                if revision_id is not None: execution_config.check_profile(revision_id)
+                if inp is not None: execution_config.check_input(inp)
+            except ValueError as exc: raise HTTPException(409, str(exc)) from exc
+
+    def job_enabled(job_id, worker_id, job_lease_epoch):
+        from personal_agent_dal.storage.engine import session_factory
+        from personal_agent_dal.storage.machine_models import ExecutionJobBinding, ExecutionSnapshot, ProviderAttempt, WorkflowAction
+        from personal_agent_dal.machine.resume_dispatch import require_job_authority
+        with session_factory(engine)() as session:
+            try:
+                job = require_job_authority(session, job_id=job_id,
+                    worker_id=worker_id, job_lease_epoch=job_lease_epoch)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            binding = session.scalar(select(ExecutionJobBinding).where(ExecutionJobBinding.job_id == job_id))
+            if not binding and job and job.execution_mode == 'legacy_non_provider':
+                return
+            if binding and binding.origin == 'initial':
+                snapshot = session.get(ExecutionSnapshot, binding.snapshot_sha256)
+                attempt = session.get(ProviderAttempt, binding.attempt_id)
+                action = session.get(WorkflowAction, attempt.action_id) if attempt else None
+                from personal_agent_dal.machine.execution_start import ExecutionInput
+                inp = ExecutionInput.model_validate_json(action.execution_input_body) if action else None
+                execution_enabled(snapshot.revision_id if snapshot else '', inp)
+            else:
+                enabled()  # Replacement always requires original PA bridge trust.
+
     def enabled():
         if config is None: raise HTTPException(503,'DAL_RESUME_UNAVAILABLE')
     def call(fn,**kwargs):
@@ -72,14 +112,22 @@ def mount_routes(app, engine, service, config):
     @app.post('/operator/features/{feature_id}/execution-selections')
     def prepare(feature_id: str, body: PrepareExecutionRequest,
                 actor=Depends(_OperatorAuth(service,'control')), _=Depends(transport_body_guard)):
-        enabled()
+        execution_enabled(body.profile_revision_id, body.execution_input)
         return call(prepare_execution, feature_id=feature_id, actor=actor, body=body,
                     kill_switch=lambda: service.kill_switch)
 
     @app.post('/operator/features/{feature_id}/executions')
     def start(feature_id: str, body: StartExecutionRequest,
               actor=Depends(_OperatorAuth(service,'control')), _=Depends(transport_body_guard)):
-        enabled()
+        from personal_agent_dal.storage.engine import session_factory
+        from personal_agent_dal.storage.machine_models import WorkflowSelection, ExecutionSnapshot, WorkflowAction
+        from personal_agent_dal.machine.execution_start import ExecutionInput
+        with session_factory(engine)() as session:
+            selection = session.get(WorkflowSelection, body.selection_id)
+            snapshot = session.get(ExecutionSnapshot, selection.snapshot_sha256) if selection else None
+            action = session.get(WorkflowAction, body.action_id)
+            inp = ExecutionInput.model_validate_json(action.execution_input_body) if action and action.execution_input_body else None
+            execution_enabled(snapshot.revision_id if snapshot else '', inp)
         return call(start_execution, feature_id=feature_id, actor=actor, body=body,
                     kill_switch=lambda: service.kill_switch)
 
@@ -130,9 +178,10 @@ def mount_routes(app, engine, service, config):
     @app.post('/worker/jobs/{job_id}/prelaunch-context')
     def context(job_id: str, body: PrelaunchRequest, worker_id=Depends(worker)):
         from personal_agent_dal.machine.resume_dispatch import prelaunch_context
+        job_enabled(job_id, worker_id, body.job_lease_epoch)
         try:
             result=prelaunch_context(engine,job_id=job_id,worker_id=worker_id,
-                enabled=config is not None,**body.model_dump())
+                enabled=True,**body.model_dump())
         except ValueError as exc:
             status=503 if str(exc)=='DAL_RESUME_UNAVAILABLE' else 409
             raise HTTPException(status,str(exc)) from exc
@@ -140,13 +189,13 @@ def mount_routes(app, engine, service, config):
 
     @app.post('/worker/jobs/{job_id}/prelaunch-manifest')
     def manifest(job_id: str, body: PrelaunchManifestRequest, worker_id=Depends(worker)):
-        enabled()
+        job_enabled(job_id, worker_id, body.job_lease_epoch)
         from personal_agent_dal.machine.resume_dispatch import acknowledge_manifest
         return call(acknowledge_manifest,job_id=job_id,worker_id=worker_id,**body.model_dump())
 
     @app.post('/worker/jobs/{job_id}/prelaunch-dispatch')
     def dispatch(job_id: str, body: PrelaunchDispatchRequest, worker_id=Depends(worker)):
-        enabled()
+        job_enabled(job_id, worker_id, body.job_lease_epoch)
         from personal_agent_dal.machine.resume_dispatch import dispatch_prelaunch
         return call(dispatch_prelaunch,job_id=job_id,worker_id=worker_id,**body.model_dump())
 

@@ -1,6 +1,6 @@
 """Supervisor assertions are evidence, never a substitute for physical acceptance."""
 import json
-from typing import Literal
+from typing import Annotated, Literal
 from pydantic import StrictInt, Field
 from sqlalchemy import select
 from personal_agent_core.ids import new_id
@@ -188,12 +188,23 @@ def register_supervisor(engine, *, kid, worker_id, machine_id, public_key, boot_
     Calling this requires provisioning outside this unit. Registering a public
     key does not prove its private key is inaccessible to child processes.
     """
+    class Registration(Closed):
+        kid: Id
+        worker_id: Id
+        machine_id: Id
+        boot_id: Id
+        supervisor_epoch: Annotated[StrictInt, Field(ge=1)]
+    Registration(kid=kid, worker_id=worker_id, machine_id=machine_id,
+                 boot_id=boot_id, supervisor_epoch=supervisor_epoch)
     load_device_public_key(public_key)
     def work(s):
         enrollment=s.get(WorkerEnrollment,worker_id)
         if not enrollment or enrollment.revoked_at or enrollment.machine_id != machine_id:
             raise ValueError('WORKER_REGISTRATION_INVALID')
         if s.get(SupervisorIdentity,kid): raise ValueError('SUPERVISOR_KID_IMMUTABLE')
+        previous = list(s.scalars(select(SupervisorIdentity).where(SupervisorIdentity.worker_id == worker_id)))
+        if any(row.supervisor_epoch >= supervisor_epoch for row in previous):
+            raise ValueError('SUPERVISOR_EPOCH_NOT_MONOTONIC')
         enrollment.registration_epoch=(enrollment.registration_epoch or 0)+1
         s.add(SupervisorIdentity(kid=kid,worker_id=worker_id,machine_id=machine_id,
             registration_epoch=enrollment.registration_epoch,boot_id=boot_id,supervisor_epoch=supervisor_epoch,

@@ -10,6 +10,17 @@ spec=importlib.util.spec_from_file_location('adk_local_acceptance',Path(__file__
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 
 
+@pytest.fixture(autouse=True)
+def historical_clock(monkeypatch):
+    """Only this offline module uses the historical authorization window."""
+    from datetime import datetime, timezone
+    class HistoricalDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 15, 0, 0, tzinfo=timezone.utc).astimezone(tz)
+    monkeypatch.setattr(m, 'datetime', HistoricalDatetime)
+
+
 def test_total_budget_persists_and_does_not_oversubscribe(tmp_path):
     path=tmp_path/'budget.json'
     path.write_text(json.dumps({'model':0,'anysearch':0}));path.chmod(0o600)
@@ -23,9 +34,11 @@ def test_total_budget_persists_and_does_not_oversubscribe(tmp_path):
     assert m.reserve('anysearch',path)==1
 
 
-def test_expiry_prevents_even_first_request(tmp_path,monkeypatch):
-    from datetime import datetime,timezone
-    monkeypatch.setattr(m,'EXPIRES',datetime(2000,1,1,tzinfo=timezone.utc))
+@pytest.mark.parametrize('seconds_after', [0, 1])
+def test_expiry_prevents_even_first_request(tmp_path,monkeypatch,seconds_after):
+    from datetime import timedelta
+    monkeypatch.setattr(m.datetime, 'now', classmethod(
+        lambda cls, tz=None: (m.EXPIRES + timedelta(seconds=seconds_after)).astimezone(tz)))
     with pytest.raises(RuntimeError,match='authorization_expired'):m.reserve('model',tmp_path/'budget.json')
 
 
