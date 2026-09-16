@@ -1,14 +1,14 @@
 """Authenticated resume and prelaunch transport; provider launch remains disabled."""
 import json
 import logging
-from typing import Annotated
+from typing import Annotated, Literal
 from sqlalchemy import inspect, select
 from pydantic import Field, StrictInt
 from fastapi import Depends, HTTPException, Request
 from personal_agent_core.timeutil import utc_now
 from personal_agent.auth.device_keys import load_device_public_key
 from personal_agent.api.dal_client import ProposalBridgeClaims, verify_closed_assertion
-from personal_agent_dal.machine.workflow_selection import Closed, SelectionRequest, register_profile, select_workflow
+from personal_agent_dal.machine.workflow_selection import Closed, Id, SelectionRequest, register_profile, select_workflow
 from personal_agent_dal.machine.resume_authority import ResumeRequest, propose, import_decision, resume, decision_status, RevokeRequest, revoke_decision
 from personal_agent_dal.machine.isolation_evidence import import_evidence, issue_challenge
 from personal_agent_dal.storage.machine_models import DispatchIntent, ResumeEpisode
@@ -39,10 +39,19 @@ class PrelaunchDispatchRequest(PrelaunchRequest):
     manifest_sha256: Annotated[str, Field(strict=True,pattern=r'^[0-9a-f]{64}$')]
 
 
+class TrustOnlyConfig(Closed):
+    schema_version: Literal['dal.resume-trust/1.0']
+    issuer: Id
+    audience: Id
+    keys: dict[Id, Annotated[str, Field(strict=True)]]
+
+
 def load_config(path):
     from personal_agent.api.dal_client import _read_bridge_file, validate_trust_ids
     body=json.loads(_read_bridge_file(path, kind='CONFIG'))
-    if set(body)!={'issuer','audience','keys','profiles'} or not body['keys'] or {p['profile'] for p in body['profiles']}!={'A','B'}:
+    if isinstance(body, dict) and 'schema_version' in body:
+        body = TrustOnlyConfig.model_validate(body).model_dump()
+    elif not isinstance(body, dict) or set(body)!={'issuer','audience','keys','profiles'} or not body['keys'] or {p['profile'] for p in body['profiles']}!={'A','B'}:
         raise ValueError('DAL_RESUME_CONFIG_INVALID')
     validate_trust_ids(body['issuer'], body['audience'], body['keys'])
     body['keys']={kid:load_device_public_key(key) for kid,key in body['keys'].items()}
@@ -51,8 +60,19 @@ def load_config(path):
 
 def mount_routes(app, engine, service, config, execution_config=None):
     from personal_agent_dal.service.app import _OperatorAuth, transport_body_guard
+    from personal_agent_dal.service.execution_config import ExecutionConfig
+    from personal_agent_dal.service.execution_routes import mount_execution_routes
+    if execution_config is not None:
+        execution_config = ExecutionConfig.model_validate(execution_config)
+    if config is not None and 'schema_version' in config:
+        if (set(config) != {'schema_version', 'issuer', 'audience', 'keys'}
+                or config['schema_version'] != 'dal.resume-trust/1.0'):
+            raise ValueError('DAL_RESUME_CONFIG_INVALID')
+        if execution_config is None:
+            raise ValueError('DAL_RESUME_EXECUTION_CONFIG_REQUIRED')
     if config is not None:
-        for profile in config['profiles']: register_profile(engine,**profile)
+        profiles = [] if 'schema_version' in config else config['profiles']
+        for profile in profiles: register_profile(engine,**profile)
     else:
         with engine.connect() as connection:
             schema = inspect(connection)
@@ -64,10 +84,7 @@ def mount_routes(app, engine, service, config, execution_config=None):
                 ).exists()
                 if connection.scalar(select(unmaterialized)):
                     logger.error('DAL_RESUME_DISABLED_PENDING_INTENTS')
-    from personal_agent_dal.service.execution_config import ExecutionConfig
-    from personal_agent_dal.service.execution_routes import mount_execution_routes
     if execution_config is not None:
-        execution_config = ExecutionConfig.model_validate(execution_config)
         for profile in execution_config.profiles:
             register_profile(engine, **profile.model_dump())
     mount_execution_routes(app, engine, service, execution_config)
@@ -78,12 +95,58 @@ def mount_routes(app, engine, service, config, execution_config=None):
         else:
             try:
                 if revision_id is not None: execution_config.check_profile(revision_id)
-                if inp is not None: execution_config.check_input(inp)
+                if inp is None: raise ValueError('EXECUTION_INPUT_REQUIRED')
+                execution_config.check_input(inp)
             except ValueError as exc: raise HTTPException(409, str(exc)) from exc
+
+    def action_input(action):
+        from personal_agent_dal.machine.execution_start import ExecutionInput, CONTRACT
+        from personal_agent_dal.machine.workflow_selection import digest
+        try:
+            if not action or action.execution_contract_version != CONTRACT or not action.execution_input_body:
+                raise ValueError('EXECUTION_INPUT_REQUIRED')
+            inp = ExecutionInput.model_validate_json(action.execution_input_body)
+            if inp.feature_id != action.feature_id or digest(inp.model_dump(by_alias=True)) != action.input_binding_sha256:
+                raise ValueError('INPUT_BINDING_INVALID')
+            return inp
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    def replacement_enabled(feature_id, *, revision_id=None, approval_id=None, intent_id=None):
+        enabled()
+        if execution_config is None:
+            return
+        from personal_agent_dal.storage.engine import session_factory
+        from personal_agent_dal.storage.machine_models import (
+            WorkflowAction, WorkflowSelection, ExecutionSnapshot, ResumeApprovalBinding, ResumeProposal,
+        )
+        # A new session for every request avoids cached cross-session state.
+        with session_factory(engine)() as session:
+            if intent_id is not None:
+                from personal_agent_dal.machine.resume_dispatch import _binding
+                try:
+                    _, action, _, snapshot, *_ = _binding(session, session.get(DispatchIntent, intent_id))
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc)) from exc
+                execution_enabled(snapshot.revision_id, action_input(action))
+                return
+            if approval_id is not None:
+                auth = session.get(ResumeApprovalBinding, approval_id)
+                proposal = session.get(ResumeProposal, auth.proposal_id) if auth else None
+                selection = session.get(WorkflowSelection, json.loads(proposal.binding)['selection_id']) if proposal else None
+                snapshot = session.get(ExecutionSnapshot, selection.snapshot_sha256) if selection else None
+                if not selection or selection.feature_id != feature_id or not snapshot:
+                    raise HTTPException(409, 'APPROVAL_INVALID')
+                revision_id = snapshot.revision_id
+            actions = list(session.scalars(select(WorkflowAction).where(
+                WorkflowAction.feature_id == feature_id, WorkflowAction.active_attempt_id.is_not(None))))
+            if len(actions) != 1:
+                raise HTTPException(409, 'ACTION_AMBIGUOUS')
+            execution_enabled(revision_id, action_input(actions[0]))
 
     def job_enabled(job_id, worker_id, job_lease_epoch):
         from personal_agent_dal.storage.engine import session_factory
-        from personal_agent_dal.storage.machine_models import ExecutionJobBinding, ExecutionSnapshot, ProviderAttempt, WorkflowAction
+        from personal_agent_dal.storage.machine_models import ExecutionJobBinding, ProviderAttempt
         from personal_agent_dal.machine.resume_dispatch import require_job_authority
         with session_factory(engine)() as session:
             try:
@@ -96,15 +159,22 @@ def mount_routes(app, engine, service, config, execution_config=None):
                 # Intentional configuration-independent legacy path: context=None.
                 # Manifest/dispatch still refuse PRELAUNCH_NOT_APPLICABLE.
                 return
-            if binding and binding.origin == 'initial':
-                snapshot = session.get(ExecutionSnapshot, binding.snapshot_sha256)
-                attempt = session.get(ProviderAttempt, binding.attempt_id)
-                action = session.get(WorkflowAction, attempt.action_id) if attempt else None
-                from personal_agent_dal.machine.execution_start import ExecutionInput
-                inp = ExecutionInput.model_validate_json(action.execution_input_body) if action else None
-                execution_enabled(snapshot.revision_id if snapshot else '', inp)
-            else:
+            if not binding or binding.origin != 'initial':
                 enabled()  # Replacement always requires original PA bridge trust.
+            if execution_config is not None:
+                from personal_agent_dal.machine.execution_start import execution_binding
+                if not binding:
+                    raise HTTPException(409, 'EXECUTION_BINDING_REQUIRED')
+                attempt = session.get(ProviderAttempt, binding.attempt_id)
+                if not attempt:
+                    raise HTTPException(409, 'EXECUTION_BINDING_REQUIRED')
+                try:
+                    _, action, _, snapshot, inp = execution_binding(session, attempt, job)
+                except (ValueError, TypeError) as exc:
+                    raise HTTPException(409, 'EXECUTION_BINDING_INVALID') from exc
+                execution_enabled(snapshot.revision_id, inp)
+            else:
+                enabled()
 
     def enabled():
         if config is None: raise HTTPException(503,'DAL_RESUME_UNAVAILABLE')
@@ -123,23 +193,22 @@ def mount_routes(app, engine, service, config, execution_config=None):
               actor=Depends(_OperatorAuth(service,'control')), _=Depends(transport_body_guard)):
         from personal_agent_dal.storage.engine import session_factory
         from personal_agent_dal.storage.machine_models import WorkflowSelection, ExecutionSnapshot, WorkflowAction
-        from personal_agent_dal.machine.execution_start import ExecutionInput
         with session_factory(engine)() as session:
             selection = session.get(WorkflowSelection, body.selection_id)
             snapshot = session.get(ExecutionSnapshot, selection.snapshot_sha256) if selection else None
             action = session.get(WorkflowAction, body.action_id)
-            inp = ExecutionInput.model_validate_json(action.execution_input_body) if action and action.execution_input_body else None
+            inp = action_input(action) if execution_config is not None else None
             execution_enabled(snapshot.revision_id if snapshot else '', inp)
         return call(start_execution, feature_id=feature_id, actor=actor, body=body,
                     kill_switch=lambda: service.kill_switch)
 
     @app.post('/operator/features/{feature_id}/workflow-selection')
     def selection(feature_id: str, body: SelectionRequest, actor=Depends(_OperatorAuth(service,'control'))):
-        enabled()
+        replacement_enabled(feature_id, revision_id=body.profile_revision_id)
         return call(select_workflow,feature_id=feature_id,actor=actor,body=body)
     @app.post('/operator/features/{feature_id}/resume')
     def execute_resume(feature_id: str, body: ResumeRequest, actor=Depends(_OperatorAuth(service,'control'))):
-        enabled()
+        replacement_enabled(feature_id, approval_id=body.approval_id)
         return call(resume,feature_id=feature_id,body=body,kill_switch=lambda: service.kill_switch)
     @app.post('/operator/human-decisions/{decision_id}/revoke')
     def revoke(decision_id: str, body: RevokeRequest, actor=Depends(_OperatorAuth(service,'control')),
@@ -203,7 +272,7 @@ def mount_routes(app, engine, service, config, execution_config=None):
 
     @app.post('/operator/dispatch-intents/{intent_id}/episode')
     def consume_episode(intent_id: str, actor=Depends(_OperatorAuth(service,'control'))):
-        enabled()
+        replacement_enabled(None, intent_id=intent_id)
         if service.kill_switch:raise HTTPException(503,'kill_switch_active')
         from personal_agent_dal.machine.resume_dispatch import consume_intent
         return {'job_id':call(consume_intent,intent_id=intent_id)}

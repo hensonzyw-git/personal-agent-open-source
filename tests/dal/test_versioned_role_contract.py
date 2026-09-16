@@ -45,16 +45,18 @@ def register(engine, body):
                                if k not in ('input_sha256', 'fallback')})
 
 
-@pytest.mark.parametrize('billing', ['api', 'subscription'])
-def test_exact_new_contract_and_explicit_billing_roundtrip(billing):
-    body = new_snapshot(billing)
+def test_exact_new_contract_and_explicit_billing_roundtrip():
+    body = new_snapshot()
     assert Snapshot.model_validate(body).model_dump() == body
     assert ProfileBody.model_validate(profile(body)).model_dump() == profile(body)
     cfg = ExecutionConfig.model_validate(config(body))
     assert cfg.model_dump() == config(body)
     assert json.loads(cfg.model_dump_json()) == config(body)
     mapped = resolve_snapshot(body, digest(body), pins(body))
-    assert mapped['reviewer'].configuration.billing == billing
+    assert mapped['reviewer'].configuration.billing == 'api'
+    assert mapped['reviewer'].configuration.reasoning == 'high'
+    assert mapped['planner'].configuration.billing == 'subscription'
+    assert mapped['coder'].configuration.billing == 'subscription'
     assert mapped['coder'].configuration.reasoning == 'low'
 
 
@@ -62,7 +64,8 @@ def test_exact_new_contract_and_explicit_billing_roundtrip(billing):
     'no_version', 'unknown_version', 'null_version', 'legacy_with_version',
     'a_with_version', 'old_coder', 'old_planner', 'old_reviewer',
     'anthropic', 'wrong_model', 'wrong_effort', 'missing_billing', 'unknown_billing',
-    'codex_api', 'self_review', 'permission', 'placement', 'missing_role',
+    'planner_api', 'coder_api', 'reviewer_subscription',
+    'self_review', 'permission', 'placement', 'missing_role',
     'extra_role', 'extra_field',
 ])
 def test_same_rejection_at_registration_config_and_worker(world, mutation):
@@ -80,7 +83,9 @@ def test_same_rejection_at_registration_config_and_worker(world, mutation):
     elif mutation == 'wrong_effort': body['roles']['reviewer']['reasoning'] = 'medium'
     elif mutation == 'missing_billing': body['roles']['reviewer'].pop('billing')
     elif mutation == 'unknown_billing': body['roles']['reviewer']['billing'] = 'gateway'
-    elif mutation == 'codex_api': body['roles']['planner']['billing'] = 'api'
+    elif mutation in ('planner_api', 'coder_api'):
+        body['roles'][mutation.removesuffix('_api')]['billing'] = 'api'
+    elif mutation == 'reviewer_subscription': body['roles']['reviewer']['billing'] = 'subscription'
     elif mutation == 'self_review': body['roles']['reviewer']['model'] = 'gpt-6-astra'
     elif mutation == 'permission': body['roles']['reviewer']['permission'] = 'workspace_write'
     elif mutation == 'placement': body['roles']['coder']['placement'] = 'ecs'
@@ -181,11 +186,10 @@ def test_initial_and_replacement_selection_keep_old_bytes_and_hash(world):
         register(world, dict(new_snapshot(), revision_id='B-1', revision=1))
 
 
-@pytest.mark.parametrize('billing', ['api', 'subscription'])
-def test_new_reviewer_remains_unready_without_real_route(billing):
+def test_new_reviewer_remains_unready_without_real_route():
     from personal_agent_dal.worker.role_adapter import validate_auth_route
     from personal_agent_dal.worker.supervisor import SupervisorRefusal
-    body = new_snapshot(billing)
+    body = new_snapshot()
     role = resolve_snapshot(body, digest(body), pins(body))['reviewer'].configuration
     with pytest.raises(SupervisorRefusal, match='AUTH_ROUTE_UNSUPPORTED'):
         validate_auth_route(role, {'roles': {'reviewer': {

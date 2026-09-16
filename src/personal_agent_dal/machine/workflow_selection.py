@@ -90,7 +90,7 @@ def validate_profile_roles(profile, roles, contract_version=None):
         for name, role in normalized.items():
             if tuple(role[k] for k in ('runtime', 'provider', 'model', 'reasoning')) != expected[name]:
                 raise ValueError('PROFILE_B_INVALID')
-            if name != 'reviewer' and role['billing'] != 'subscription':
+            if role['billing'] != ('api' if name == 'reviewer' else 'subscription'):
                 raise ValueError('PROFILE_B_INVALID')
     elif profile == 'B':
         for name, model, reasoning in [('planner', 'gpt-6-astra', 'medium'),
