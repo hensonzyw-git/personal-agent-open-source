@@ -1,6 +1,8 @@
 """Shared provider-v1 orchestration; synthetic success grants no live acceptance."""
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import time
+import base64
+import json
 from personal_agent_core.manifest import canonical_json
 from personal_agent_dal.machine.execution_protocol import validate_execution_context
 from personal_agent_dal.machine.execution_manifest import sign_execution_manifest
@@ -9,11 +11,12 @@ from personal_agent_dal.worker.supervisor import SupervisorRefusal, _digest, pro
 from personal_agent_dal.worker.runtime_inventory import RuntimeInventory
 from personal_agent_dal.worker.role_adapter import build_plan, parse_events
 from personal_agent_dal.worker.runtime_process import fixture_plan, run_process
+from personal_agent_dal.worker.runtime_admission import applied_policy
 
 
-def _prepare_runtime(transport, lease, context, *, supervisor, identity, key, pins, read_roots, repository=None, fixture=None, adapter_config=None):
+def _prepare_runtime(transport, lease, context, *, supervisor, identity, key, pins, read_roots, repository=None, fixture=None, adapter_config=None, admission=None):
     context=validate_execution_context(context)
-    if fixture is None: require_machine_acceptance()  # No real signing/provision/auth before admission.
+    if fixture is None and admission is None: require_machine_acceptance()  # No real signing/provision/auth before admission.
     if (context['job_id'],context['job_lease_epoch'],context['worker_id'])!=(lease.job_id,lease.lease_epoch,identity['worker_id']):
         raise SupervisorRefusal('CLAIM_CONTEXT_MISMATCH')
     if (identity['boot_id'],identity['supervisor_epoch'])!=(supervisor.boot_id,supervisor.epoch):
@@ -34,6 +37,9 @@ def _prepare_runtime(transport, lease, context, *, supervisor, identity, key, pi
     inv.adopt(context,reservation)
     if repository:provision_repository(supervisor,reservation['reservation_id'],**repository)
     plan=fixture_plan(reservation,**fixture) if fixture is not None else build_plan(context,reservation,pins,adapter_config)
+    if fixture is None:
+        sha = require_machine_acceptance(admission,context=context,reservation=reservation,plan=plan)
+        plan = replace(plan,admission=admission,admission_sha256=sha,production_enabled=True)
     from pathlib import Path
     for directory in plan.task_directories.values():
         Path(directory).mkdir(mode=0o700,exist_ok=True)
@@ -44,19 +50,21 @@ def _prepare_runtime(transport, lease, context, *, supervisor, identity, key, pi
         raise SupervisorRefusal('EXECUTION_BUDGET_EXCEEDS_AUTHORITY')
     payload=dict(schema='dal.launch-manifest/1.1',**identity,attempt_id=context['attempt_id'],
         workspace_id=reservation['workspace_id'],workspace_generation=reservation['generation'],
-        isolation_policy_sha256=reservation['sandbox_policy_sha256'],inventory_sha256=_digest(reservation),
+        isolation_policy_sha256=applied_policy(plan),inventory_sha256=_digest(reservation),
         reservation_id=reservation['reservation_id'],job_id=lease.job_id,job_lease_epoch=lease.lease_epoch,
         lease_id=context['lease_id'],policy_lease_epoch=context['policy_lease_epoch'],issued_at=now,
         expires_at=min(now+900,spec['policy_expires_at']),execution_spec=spec,
         execution_spec_sha256=context['execution_spec_sha256'],launcher_plan_sha256=_digest(asdict(plan)),
         source_reservation_sha256=_digest(reservation),isolation_id=iso['isolation_id'] if iso else None,
         isolation_binding_sha256=_digest(iso) if iso else None)
+    if fixture is None:
+        require_machine_acceptance(admission,context=context,reservation=reservation,plan=plan,expected_digest=plan.admission_sha256)
     assertion,sha=sign_execution_manifest(payload,key=key)
     # Store signed acknowledgement request before transport (stable replay bytes).
     with supervisor._lock(),supervisor._db() as db:
         row=inv._get(db,context['attempt_id'])
         if row['state']!='prepared':raise SupervisorRefusal('RUNTIME_CAS_LOST')
-        obs=dict(plan=asdict(plan),assertion=assertion,manifest_sha256=sha,production_enabled=False)
+        obs=dict(plan=asdict(plan),assertion=assertion,manifest_sha256=sha,production_enabled=plan.production_enabled)
         if row['observation'] and row['observation']!=obs:raise SupervisorRefusal('PREPARATION_CONFLICT')
         db.execute('UPDATE runtime_inventory SET observation=? WHERE effective_attempt=?',(canonical_json(obs),context['attempt_id']))
     return inv.get(context['attempt_id'])
@@ -77,11 +85,16 @@ def _execute_runtime(transport, lease, *, supervisor, attempt, kill_switch=lambd
     if row['state']!='prepared':raise SupervisorRefusal('RUNTIME_REFUSED')
     obs=row['observation'];raw_plan=dict(obs['plan']);raw_plan['argv']=tuple(raw_plan['argv']);raw_plan['read_roots']=tuple(raw_plan.get('read_roots',()));raw_plan['write_roots']=tuple(raw_plan.get('write_roots',()));plan=LaunchPlan(**raw_plan)
     # No dispatch consumption or credential read for an unaccepted real runtime.
-    if plan.runtime!='synthetic_fixture':require_machine_acceptance()
+    manifest = json.loads(base64.urlsafe_b64decode(obs['assertion'].split('.')[1]+'=='))
+    if _digest(manifest) != obs['manifest_sha256'] or _digest(asdict(plan)) != manifest['launcher_plan_sha256']:
+        raise SupervisorRefusal('LAUNCH_PLAN_DIGEST_MISMATCH')
+    from personal_agent_dal.worker.runtime_admission import revalidate_plan
+    if plan.runtime!='synthetic_fixture':revalidate_plan(plan,inv,attempt)
     if kill_switch():raise SupervisorRefusal('KILL_SWITCH_ACTIVE')
     sha=obs['manifest_sha256']
     if transport.acknowledge_prelaunch(lease,obs['assertion'])!={'manifest_sha256':sha}:
         raise SupervisorRefusal('MANIFEST_ACKNOWLEDGEMENT_REQUIRED')
+    if plan.runtime!='synthetic_fixture':revalidate_plan(plan,inv,attempt)
     inv.transition(attempt,'prepared','dispatch_requested')
     try:grant=transport.dispatch_prelaunch(lease,sha)
     except Exception:
@@ -94,6 +107,7 @@ def _execute_runtime(transport, lease, *, supervisor, attempt, kill_switch=lambd
     context=row['binding'];spec=context['execution_spec']
     def heartbeat():
         if kill_switch():return False
+        if plan.runtime!='synthetic_fixture':revalidate_plan(plan,inv,attempt)
         hb=transport.heartbeat(lease)
         current=transport.execution_status(lease)
         return (hb.alive and not hb.cancel_requested and not current['stop_required'] and
@@ -114,11 +128,22 @@ def _execute_runtime(transport, lease, *, supervisor, attempt, kill_switch=lambd
     except SupervisorRefusal as exc:
         parsed=dict(report='',tool_events=[],usage=dict(input_tokens=None,output_tokens=None,provider_requests=None),outcome='failed',reason=str(exc))
     if process['reason'] or process['exit_code']!=0:parsed.update(outcome='failed',reason=process['reason'] or 'CLI_EXIT_FAILED')
+    if not process['stop']['process_exited']:parsed.update(outcome='unknown',reason='PROCESS_GROUP_STOP_UNPROVEN')
+    from personal_agent_dal.worker.runtime_evidence import collect_evidence
+    reservation=supervisor.validate(row['reservation_id'])
+    evidence=collect_evidence(plan,reservation,process)
+    if process['stop']['process_exited']:
+        with supervisor._db() as db:
+            provisioning=db.execute('SELECT body FROM runtime_provisioning WHERE reservation_id=?',(row['reservation_id'],)).fetchone()
+        if provisioning:
+            from personal_agent_dal.worker.runtime_evidence import bounded_git_patch
+            patch=bounded_git_patch(plan,reservation,json.loads(provisioning[0])['binding']['git_pin'])
+            if patch:evidence['git_evidence'].append(patch)
     body={k:context[k] for k in ('feature_id','action_id','attempt_id','job_id','worker_id','job_lease_epoch','lease_id','policy_lease_epoch','snapshot_sha256','execution_role')}
     body.update(schema='dal.execution-result/1.0',request_id='runtime-'+attempt,attempt_version=status['attempt_version'],
         fence=status['fence'],execution_spec_sha256=context['execution_spec_sha256'],manifest_sha256=sha,
         **parsed,started_at=process['started_at'],ended_at=process['ended_at'],stop=process['stop'],cli_exit_code=process['exit_code'],
-        tests=[],git_evidence=[],artifacts=[],unverified=['production_enabled=false','Provider requests and cost not independently verified'],
+        **evidence,unverified=[*(['synthetic fixture; production_enabled=false'] if not plan.production_enabled else []),'Provider requests and cost not independently verified','Tests are unverified unless source evidence is listed'],
         truncated=process['truncated'],redacted=False)
     # Scan diagnostic strings before persisting; retain bounded evidence without
     # retaining raw credential-bearing streams. Usage is observable, not inferred.

@@ -23,6 +23,8 @@ class LaunchPlan:
     read_roots: tuple[str, ...] = ()
     write_roots: tuple[str, ...] = ()
     task_directories: dict[str, str] = field(default_factory=dict)
+    admission: dict | None = None
+    admission_sha256: str | None = None
 
 
 def build_plan(context, reservation, pins, adapter_config=None):
@@ -35,12 +37,19 @@ def build_plan(context, reservation, pins, adapter_config=None):
     cwd=reservation['workspace'] if role.permission=='workspace_write' else str(scratch)
     env={'PATH':'/usr/bin:/bin','HOME':str(scratch),'TMPDIR':str(scratch),
          'PYTHONDONTWRITEBYTECODE':'1','GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null',
-         'GIT_TERMINAL_PROMPT':'0'}
+         'GIT_TERMINAL_PROMPT':'0','GIT_CONFIG_COUNT':'3',
+         'GIT_CONFIG_KEY_0':'core.hooksPath','GIT_CONFIG_VALUE_0':'/dev/null',
+         'GIT_CONFIG_KEY_1':'core.fsmonitor','GIT_CONFIG_VALUE_1':'false',
+         'GIT_CONFIG_KEY_2':'protocol.allow','GIT_CONFIG_VALUE_2':'never'}
     env.update(route['environment'])
     if route['mode']=='codex_login':env['CODEX_HOME']=route['home']
     elif route['mode']=='claude_login':env['CLAUDE_CONFIG_DIR']=route['home']
-    writes = (cwd, str(scratch)) if role.permission == 'workspace_write' else (str(scratch),)
+    writes = (cwd, str(scratch), str(Path(reservation['git'])/'repository')) if role.permission == 'workspace_write' else (str(scratch),)
     reads = (reservation['workspace'], *reservation.get('read_roots', []))
+    protected = [*reservation.get('read_roots', []),
+        str(Path(reservation['git'])/'repository'/'config'),
+        str(Path(reservation['git'])/'repository'/'hooks'),
+        *([reservation['workspace']] if role.permission=='read_only' else [])]
     if role.runtime=='codex_cli':
         argv=(str(executable),'exec','--ignore-user-config','--ephemeral','--json','--color','never',
             '--sandbox','workspace-write','--skip-git-repo-check','-C',cwd,'--model',role.model,
@@ -56,12 +65,9 @@ def build_plan(context, reservation, pins, adapter_config=None):
             '--max-turns','64','--allowedTools','Read,Glob,Grep,Bash,Edit,Write,WebFetch,WebSearch',
             '--disallowedTools','Agent,Task','--settings',json.dumps({
             'sandbox':{'enabled':True,'autoAllowBashIfSandboxed':True,'allowUnsandboxedCommands':False,
-                'filesystem':{'allowWrite':list(writes),'denyWrite':[reservation['git'],
-                    *([reservation['workspace']] if role.permission=='read_only' else [])]}},
+                'filesystem':{'allowWrite':list(writes),'denyWrite':protected}},
             'permissions':{'additionalDirectories':list(reads)+list(writes),
-                'deny':['Edit('+reservation['git']+'/**)','Write('+reservation['git']+'/**)',
-                    *(['Edit('+reservation['workspace']+'/**)','Write('+reservation['workspace']+'/**)']
-                      if role.permission=='read_only' else [])]}}))
+                'deny':[rule for path in protected for rule in ('Edit('+path+'/**)','Write('+path+'/**)','Edit('+path+')','Write('+path+')')]}}))
     else: raise SupervisorRefusal('ROLE_RUNTIME_UNSUPPORTED')
     return LaunchPlan(argv,cwd,env,role.runtime,pin.executable_sha256,pin.version,
         auth_route=route['mode'],auth_home=route['home'],read_roots=reads,write_roots=writes,

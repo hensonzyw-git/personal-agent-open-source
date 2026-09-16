@@ -18,7 +18,15 @@ if __name__ == '__main__':
     elif mode=='malformed':print('{invalid}')
     elif mode=='truncated':sys.stdout.write('{"type":"turn.completed"}')
     elif mode=='provider_error':print(json.dumps({'type':'turn.failed'}))
-    elif mode in ('success','stderr_secret'):
+    elif mode in ('success','stderr_secret','descendant'):
+        if mode=='descendant':
+            import os
+            from pathlib import Path
+            child=os.fork()
+            if child==0:
+                os.close(0);os.close(1);os.close(2)
+                time.sleep(20);os._exit(0)
+            Path(os.environ['TMPDIR'],'ordinary-child.pid').write_text(str(child))
         if mode=='stderr_secret':print('api_key=synthetic-private-value',file=sys.stderr)
         print(json.dumps({'type':'item.started','item':{'id':'tool-1','type':'command_execution'}}))
         print(json.dumps({'type':'item.completed','item':{'id':'tool-1','type':'command_execution','exit_code':0}}))

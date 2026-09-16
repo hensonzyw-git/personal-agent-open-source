@@ -63,12 +63,14 @@ def worker_prelaunch(transport,config,lease,context):
     body=load_supervisor_config(config.supervisor_config_path)
     from personal_agent_dal.worker.supervisor import current_boot_id
     if body['boot_id']!=current_boot_id():raise SupervisorRefusal('BOOT_ID_MISMATCH')
+    if (body['identity']['boot_id'],body['identity']['supervisor_epoch'],body['identity']['worker_id']) != (body['boot_id'],body['supervisor_epoch'],config.worker_id):
+        raise SupervisorRefusal('SIGNER_IDENTITY_STALE')
     mapped=resolve_snapshot(context['snapshot'],context['snapshot_sha256'],body['runtime_pins'])
     supervisor=Supervisor(Path(body['root']),boot_id=body['boot_id'],epoch=body['supervisor_epoch'])
     for pin in mapped.values():
         verify_executable({'executable':pin.executable,
             'executable_sha256':pin.executable_sha256,'version':pin.version})
-    if getattr(config,'schema_version',None) != 'dal.worker-config/2.0':raise SupervisorRefusal('WORKER_CONFIG_V2_REQUIRED')
+    if getattr(config,'schema_version',None) not in ('dal.worker-config/2.0','dal.worker-config/2.1'):raise SupervisorRefusal('WORKER_CONFIG_V2_REQUIRED')
     from personal_agent_dal.worker.role_adapter import load_adapter_config, build_plan
     adapters = load_adapter_config(config.adapter_config_ref)
     # Pure preparation uses declared task paths; it creates no reservation or
@@ -77,7 +79,17 @@ def worker_prelaunch(transport,config,lease,context):
     plan = build_plan(context, {'workspace':str(root/'work'),'temp':str(root/'tmp'),
         'git':str(root/'git'),'read_roots':body['read_roots']}, body['runtime_pins'], adapters)
     from personal_agent_dal.worker.supervisor import require_machine_acceptance
-    require_machine_acceptance()  # Real admission remains before any signing/auth reads.
+    if config.schema_version != 'dal.worker-config/2.1' or not config.admission_ref:
+        require_machine_acceptance()
+    from personal_agent_dal.worker.runtime_admission import private_json
+    from personal_agent_dal.worker.supervisor import _digest
+    admission = dict(path=str(config.admission_ref),identity=body['identity'],
+        pins=body['runtime_pins'],adapters=adapters,
+        config_refs={str(p):_digest(private_json(p)) for p in
+            (config.config_ref,config.supervisor_config_path,config.adapter_config_ref)})
+    declared = {'workspace':str(root/'work'),'temp':str(root/'tmp'),
+        'git':str(root/'git'),'read_roots':body['read_roots']}
+    require_machine_acceptance(admission,context=context,reservation=declared,plan=plan)
     # Signing material is read only when the Worker is explicitly run with this
     # configuration, never by inventory or offline tests.
     key_path=Path(body['signing_key_path'])
@@ -97,7 +109,7 @@ def worker_prelaunch(transport,config,lease,context):
     finally:os.close(fd)
     from personal_agent_dal.worker.trusted_runtime import prepare_runtime, execute_runtime
     prepare_runtime(transport,lease,context,supervisor=supervisor,pins=body['runtime_pins'],
-        read_roots=body['read_roots'],identity=body['identity'],key=key,adapter_config=adapters,
+        read_roots=body['read_roots'],identity=body['identity'],key=key,adapter_config=adapters,admission=admission,
         repository={'source':config.repos[lease.repository_id].local_path,'base_sha':lease.base_sha,'git_pin':body['git_pin']})
     return execute_runtime(transport,lease,supervisor=supervisor,attempt=context['attempt_id'],
         kill_switch=config.kill_switch_path.exists)
@@ -105,7 +117,7 @@ def worker_prelaunch(transport,config,lease,context):
 
 def worker_reconcile(transport, config):
     """Public local inventory reconciliation precedes claim, including idle polls."""
-    if getattr(config, 'schema_version', None) != 'dal.worker-config/2.0': return None
+    if getattr(config, 'schema_version', None) not in ('dal.worker-config/2.0','dal.worker-config/2.1'): return None
     body = load_supervisor_config(config.supervisor_config_path)
     from personal_agent_dal.worker.supervisor import current_boot_id
     from personal_agent_dal.worker.trusted_runtime import reconcile_runtime

@@ -153,6 +153,8 @@ class WorkerConfig:
     runtime_policy_revision: str | None = None
     adapter_config_ref: Path | None = None
     execution_protocol: str | None = None
+    admission_ref: Path | None = None
+    config_ref: Path | None = None
 
 
 def load_worker_config(path: Path) -> WorkerConfig:
@@ -164,18 +166,24 @@ def load_worker_config(path: Path) -> WorkerConfig:
     # reporting it as one would send the reader hunting for a typo instead of
     # telling them the shape changed.
     version=body.get("schema_version")
-    v2_keys={"runtime_policy_revision","adapter_config_ref","execution_protocol","production_enabled"}
+    v2_keys={"runtime_policy_revision","adapter_config_ref","execution_protocol"}
     if version == "dal.worker-config/2.0":
-        if not v2_keys <= set(body) or body["production_enabled"] is not False or body["runtime_policy_revision"] != "trusted-single-user/1.0" or body["execution_protocol"] != "dal.worker-execution-transport/1.0":
+        v2_keys.add("production_enabled")
+        if body.get("production_enabled") is not False: raise ValueError("invalid candidate runtime policy")
+    if version in ("dal.worker-config/2.0", "dal.worker-config/2.1"):
+        if not v2_keys <= set(body) or body["runtime_policy_revision"] != "trusted-single-user/1.0" or body["execution_protocol"] != "dal.worker-execution-transport/1.0":
             raise ValueError("invalid candidate runtime policy")
         if not body.get("supervisor_config_path") or body["max_attempts"] != 1:
             raise ValueError("candidate supervisor and one launch required")
-    if version not in (CONFIG_SCHEMA,"dal.worker-config/2.0"):
+    if version == "dal.worker-config/2.1":
+        v2_keys |= {"admission_ref"}
+        if not body.get("admission_ref"): raise ValueError("admission_ref required")
+    if version not in (CONFIG_SCHEMA,"dal.worker-config/2.0","dal.worker-config/2.1"):
         raise ValueError(
             f"unsupported worker config schema: {body.get('schema_version')!r}; "
             f"expected {CONFIG_SCHEMA} with an explicit transport"
         )
-    unknown = set(body) - (_KNOWN_KEYS | (v2_keys if version == "dal.worker-config/2.0" else set()))
+    unknown = set(body) - (_KNOWN_KEYS | (v2_keys if version in ("dal.worker-config/2.0","dal.worker-config/2.1") else set()))
     if unknown:
         raise ValueError(f"unknown worker config keys: {sorted(unknown)!r}")
 
@@ -217,8 +225,10 @@ def load_worker_config(path: Path) -> WorkerConfig:
     return WorkerConfig(
         worker_id=worker_id,
         schema_version=version,
+        admission_ref=_path_field(body,"admission_ref") if version == "dal.worker-config/2.1" else None,
+        config_ref=path.resolve(),
         runtime_policy_revision=body.get("runtime_policy_revision"),
-        adapter_config_ref=_path_field(body,"adapter_config_ref") if version == "dal.worker-config/2.0" else None,
+        adapter_config_ref=_path_field(body,"adapter_config_ref") if version in ("dal.worker-config/2.0","dal.worker-config/2.1") else None,
         execution_protocol=body.get("execution_protocol"),
         transport=transport,
         worktree_root=worktree_root,

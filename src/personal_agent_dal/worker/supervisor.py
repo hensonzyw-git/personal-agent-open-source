@@ -317,6 +317,9 @@ def provision_repository(supervisor,reservation_id,*,source,base_sha,git_pin):
         source_status=run(['-C',str(source),'status','--porcelain=v1','--untracked-files=normal'],True)
         run(['clone','--no-local','--no-checkout','--separate-git-dir',str(metadata/'repository'),'--',str(source),str(work)])
         run(['-C',str(work),'remote','remove','origin'])
+        run(['-C',str(work),'config','core.hooksPath','/dev/null'])
+        run(['-C',str(work),'config','core.fsmonitor','false'])
+        run(['-C',str(work),'config','protocol.allow','never'])
         run(['-C',str(work),'checkout','--detach',base_sha])
         if run(['-C',str(work),'rev-parse','HEAD'],True).strip()!=base_sha:raise SupervisorRefusal('BASE_SHA_MISMATCH')
         if (metadata/'repository'/'objects'/'info'/'alternates').exists():raise SupervisorRefusal('SHARED_GIT_OBJECTS')
@@ -330,9 +333,11 @@ def provision_repository(supervisor,reservation_id,*,source,base_sha,git_pin):
         return body
 
 
-def require_machine_acceptance():
-    """Fail before any credential read on the historical Worker route."""
-    raise SupervisorRefusal('MINI_ACCEPTANCE_REQUIRED')
+def require_machine_acceptance(binding=None, **kwargs):
+    """Historical callers cannot acquire admission without explicit evidence."""
+    if binding is None: raise SupervisorRefusal('MINI_ACCEPTANCE_REQUIRED')
+    from personal_agent_dal.worker.runtime_admission import validate_admission
+    return validate_admission(binding, **kwargs)
 
 
 def current_boot_id():

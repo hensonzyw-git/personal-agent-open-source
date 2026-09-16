@@ -98,7 +98,7 @@ def stop_registered(observation, *, boot_id):
 
 
 def fixture_plan(reservation, mode='success', *, wall_seconds=2, output_bytes=4194304):
-    if mode not in ('success','timeout','output','events','unicode_report','escaped_report','malformed','truncated','provider_error','stderr_secret'):raise SupervisorRefusal('FIXTURE_UNKNOWN')
+    if mode not in ('success','timeout','output','events','unicode_report','escaped_report','malformed','truncated','provider_error','stderr_secret','descendant'):raise SupervisorRefusal('FIXTURE_UNKNOWN')
     if not 0<wall_seconds<=600 or not 0<output_bytes<=4194304:raise SupervisorRefusal('FIXTURE_BUDGET_INVALID')
     fixture=Path(__file__).with_name('runtime_fixture.py').resolve()
     return LaunchPlan((str(Path(sys.executable).resolve()),'-I','-B',str(fixture),mode),reservation['temp'],
@@ -114,11 +114,13 @@ def run_process(inventory, attempt, plan, *, heartbeat, deadline, prompt=b''):
         expected=fixture_plan(reservation,plan.argv[-1],wall_seconds=plan.wall_seconds,output_bytes=plan.output_bytes)
         if plan!=expected:raise SupervisorRefusal('FIXTURE_PLAN_MISMATCH')
     else:
-        require_machine_acceptance()  # Preserved real live-admission boundary.
+        from personal_agent_dal.worker.runtime_admission import revalidate_plan
+        revalidate_plan(plan,inventory,attempt)
     if not heartbeat():raise SupervisorRefusal('AUTHORITY_LOST_BEFORE_START')
     inventory.transition(attempt,'granted','starting',observation={'plan':asdict(plan),'boot_id':inventory.supervisor.boot_id,
         'owner_pid':os.getpid(),'owner_start':process_identity(os.getpid())})
     # Crash from here through PID registration is unknown, never a retry.
+    if plan.runtime!='synthetic_fixture':revalidate_plan(plan,inventory,attempt)
     process=subprocess.Popen(plan.argv,cwd=plan.cwd,env=plan.environment,stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,close_fds=True,start_new_session=True)
     try:identity=process_identity(process.pid)
@@ -161,20 +163,18 @@ def run_process(inventory, attempt, plan, *, heartbeat, deadline, prompt=b''):
                 if key.fileobj is process.stdout:
                     event_count += chunk.count(b'\n')
                     if event_count > plan.max_steps: reason='CLI_EVENT_STEP_LIMIT';break
-        if reason:
-            requested=True
-            # Only signal an owned boot/start identity and original process group.
-            if not identity or process_identity(process.pid)!=identity or os.getpgid(process.pid)!=process.pid:
-                inventory.transition(attempt,'running','unknown',observation={'stop_reason':'PROCESS_OWNERSHIP_UNKNOWN'})
-                raise SupervisorRefusal('PROCESS_OWNERSHIP_UNKNOWN')
-            os.killpg(process.pid,signal.SIGTERM)
-            try:process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                if process_identity(process.pid)!=identity:raise SupervisorRefusal('PROCESS_OWNERSHIP_UNKNOWN')
-                forced=True;os.killpg(process.pid,signal.SIGKILL);process.wait(timeout=5)
-        else:process.wait(timeout=5)
+        # An unreaped direct child anchors ownership while ordinary children
+        # are stopped. Once reaped, never signal a surviving unowned group.
+        process.poll()
+        stop = stop_registered(dict(observation,boot_id=inventory.supervisor.boot_id),
+                               boot_id=inventory.supervisor.boot_id)
+        if process.returncode is None:
+            try: process.wait(timeout=1)
+            except subprocess.TimeoutExpired: pass
+        requested,forced = stop['requested'],stop['forced']
+        if not stop['process_exited']: reason = 'PROCESS_GROUP_STOP_UNPROVEN'
         return dict(raw=bytes(output),stderr=bytes(errors),event_count=event_count,exit_code=process.returncode,reason=reason,
-            truncated=reason=='CLI_OUTPUT_LIMIT',stop={'requested':requested,'forced':forced,'process_exited':True},
+            truncated=reason=='CLI_OUTPUT_LIMIT',stop={'requested':requested,'forced':forced,'process_exited':stop['process_exited']},
             started_at=observation['started_at'],ended_at=int(time.time()))
     finally:
         sel.close()
