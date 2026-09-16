@@ -205,7 +205,14 @@ def _reconcile_owned(inv, row, transport=None, lease=None):
         observation['reconciliation_stop'] = dict(requested=False,forced=False,process_exited=True,reason='NO_START_INTENT')
     previous_stop = row['observation'].get('reconciliation_stop')
     helper = row['observation'].get('evidence_helper_stop_unproven')
-    if row['state'] in ('starting', 'running', 'unknown') and (helper or not (previous_stop or {}).get('process_exited')):
+    verified_helper_stop = bool(helper and previous_stop and
+        previous_stop.get('process_exited') is True and
+        previous_stop.get('reason') == 'BOOT_CHANGED_NO_SIGNAL' and
+        previous_stop.get('previous_boot_id') == helper.get('boot_id') and
+        helper.get('boot_id') and previous_stop.get('boot_id') and
+        previous_stop['boot_id'] != helper['boot_id'])
+    if row['state'] in ('starting', 'running', 'unknown') and (
+        (helper and not verified_helper_stop) or not (previous_stop or {}).get('process_exited')):
         if helper:
             # The main CLI was already stopped before this separate helper ran.
             # Its PID/group cannot witness helper termination. Without a helper

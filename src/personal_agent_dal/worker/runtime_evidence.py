@@ -66,11 +66,14 @@ def collect_evidence(plan, reservation, process):
         visited += 1
         if visited > 128 or len(artifacts) >= 60: return
         # Bound enumeration as well as content; names are task-produced.
-        with os.scandir(fd) as entries:
-            names=[]
-            for entry in entries:
-                names.append(entry.name)
-                if len(names) >= 128: break
+        try:
+            with os.scandir(fd) as entries:
+                names=[]
+                for entry in entries:
+                    names.append(entry.name)
+                    if len(names) >= 128: break
+        except OSError:
+            return
         for name in sorted(names):
             if total > 1048576 or len(artifacts) >= 60: return
             relative=prefix+name

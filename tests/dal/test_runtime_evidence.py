@@ -70,6 +70,35 @@ def test_unproven_stop_reads_no_files_or_directories(files,monkeypatch):
     assert result['artifacts'][0]['sha256']==hashlib.sha256(b'[REDACTED]').hexdigest()
 
 
+@pytest.mark.parametrize('failure',['open','iteration'])
+def test_report_enumeration_failure_is_conservative_and_closes_fd(files,monkeypatch,failure):
+    plan,_,_=files
+    (Path(plan.task_directories['reports'])/'partial.junit.xml').write_text('synthetic')
+    scanned=[];closed=[];exited=[]
+    original_close=os.close
+    class Entries:
+        def __enter__(self):return self
+        def __exit__(self,*args):exited.append(True)
+        def __iter__(self):
+            yield SimpleNamespace(name='partial.junit.xml')
+            raise OSError('injected iteration failure')
+    def failing_scan(fd):
+        scanned.append(fd)
+        if failure=='open':raise OSError('injected enumeration failure')
+        return Entries()
+    def close(fd):
+        closed.append(fd)
+        original_close(fd)
+    monkeypatch.setattr(os,'scandir',failing_scan)
+    monkeypatch.setattr(os,'close',close)
+    result=collect(files)
+    assert result['tests']==[] and result['git_evidence']==[]
+    assert [a['artifact_id'] for a in result['artifacts']]==['local-cli-stream-redacted']
+    assert len(scanned)==1 and scanned[0] in closed
+    with pytest.raises(OSError):os.fstat(scanned[0])
+    assert exited==([True] if failure=='iteration' else [])
+
+
 def test_report_root_and_intermediate_symlinks_rejected(files):
     plan,_,repo=files
     outside=repo.parent/'other';outside.mkdir();(outside/'report').write_text('synthetic')
@@ -165,10 +194,55 @@ def test_evidence_helper_unknown_persists_and_prevents_relaunch(runtime,monkeypa
     if boot_evidence=='changed':
         assert stop['reason']=='BOOT_CHANGED_NO_SIGNAL'
         assert stop['previous_boot_id']=='boot' and stop['boot_id']=='new-boot'
+        before=inv.get(c['attempt_id'])['observation']
+        def unavailable():raise OSError('transient boot query failure')
+        monkeypatch.setattr('personal_agent_dal.worker.runtime_process.os_boot_id',unavailable)
+        reconcile_runtime(reopened,after=other)
+        # Keep the original independently checked witness, without new proof/history.
+        assert inv.get(c['attempt_id'])['observation']==before
         inv.transition(other,'granted','starting')
     else:
         with pytest.raises(SupervisorRefusal,match='UNRESOLVED_PROCESS_OWNERSHIP'):
             inv.transition(other,'granted','starting')
+
+
+@pytest.mark.parametrize('prior',[
+    dict(process_exited=True,reason='PROCESS_EXITED'),
+    dict(process_exited=True,reason='BOOT_CHANGED_NO_SIGNAL',previous_boot_id='wrong-helper',boot_id='new-boot'),
+    dict(process_exited=True,reason='BOOT_CHANGED_NO_SIGNAL',previous_boot_id='boot',boot_id=''),
+    dict(process_exited=True,reason='BOOT_CHANGED_NO_SIGNAL',previous_boot_id='boot',boot_id='boot'),
+])
+@pytest.mark.parametrize('boot_evidence',['unavailable','same','changed'])
+def test_helper_rejects_unmatched_prior_proof_and_rechecks_os(runtime,monkeypatch,prior,boot_evidence):
+    from personal_agent_dal.worker.trusted_runtime import prepare_runtime,reconcile_runtime
+    from personal_agent_dal.worker.runtime_inventory import RuntimeInventory
+    from personal_agent_dal.worker.supervisor import Supervisor
+    t,l,c,s,k=runtime
+    prepare_runtime(t,l,c,**k)
+    inv=RuntimeInventory(s)
+    inv.transition(c['attempt_id'],'prepared','dispatch_requested')
+    inv.transition(c['attempt_id'],'dispatch_requested','granted')
+    inv.transition(c['attempt_id'],'granted','unknown',observation={
+        'evidence_helper_stop_unproven':dict(boot_id='boot',reason='GIT_EVIDENCE_STOP_UNPROVEN'),
+        'reconciliation_stop':prior})
+    calls=[]
+    def observed_boot():
+        calls.append(True)
+        if boot_evidence=='unavailable':raise OSError('injected boot query failure')
+        return 'new-boot' if boot_evidence=='changed' else 'boot'
+    monkeypatch.setattr('personal_agent_dal.worker.runtime_process.os_boot_id',observed_boot)
+    reopened=Supervisor(s.root,boot_id='new-boot',epoch=s.epoch)
+    reconcile_runtime(reopened)
+    observation=inv.get(c['attempt_id'])['observation']
+    stop=observation['reconciliation_stop']
+    assert calls==[True]
+    assert stop['process_exited'] is (boot_evidence=='changed')
+    assert observation['reconciliation_stop_history']==[prior]
+    if boot_evidence=='changed':
+        assert stop['previous_boot_id']=='boot' and stop['boot_id']=='new-boot'
+    else:
+        assert stop['reason']=='GIT_EVIDENCE_STOP_UNPROVEN'
+        assert 'previous_boot_id' not in stop and 'boot_id' not in stop
 
 
 def test_output_limit_and_unproven_stop_keep_truncation_and_unknown(runtime,monkeypatch):
