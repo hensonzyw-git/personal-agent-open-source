@@ -165,7 +165,7 @@ def test_remote_missing_expired_restart_uses_refresh(setup, tmp_path):
     for now in (lambda:int(time.time()), lambda:int(time.time()), lambda:int(time.time())+2592001):
         # Server clock remains real: force renewal via cached expiry, then use real now.
         adapter = RemoteHttpAdapter(config,client=httpx.Client(transport=httpx.MockTransport(handle)),now_epoch=now)
-        if now() > int(time.time())+100: 
+        if now() > int(time.time())+100:
             adapter._now_epoch = lambda:int(time.time())
             cache=json.loads(config.token_cache_path.read_text()); cache['expires_at']=1
             config.token_cache_path.write_text(json.dumps(cache))
