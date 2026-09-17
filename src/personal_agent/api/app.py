@@ -315,6 +315,7 @@ class AgentApiDeps:
     #: whose input crossed the soft limit. `None` means no Compactor provider is
     #: composed, and the signal is then recorded and not acted on.
     dal_resume: Any | None = None
+    dal_timeline: Any | None = None
     v2_device_ids: frozenset[str] = frozenset()
     v2_execution_enabled: bool = True
     trip_query_enabled: bool = False
@@ -593,7 +594,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        async def deliveries():
+        async def deliveries(bridge):
             import sqlite3
             import threading
             from sqlalchemy.exc import OperationalError
@@ -602,7 +603,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 # Cancellation cannot stop a running thread. Drain it before the
                 # lifespan releases dependencies; never start another delivery.
                 stop = threading.Event()
-                flight = asyncio.create_task(asyncio.to_thread(deps.dal_resume.deliver_pending, stop_event=stop))
+                flight = asyncio.create_task(asyncio.to_thread(bridge.deliver_pending, stop_event=stop))
                 try:
                     await asyncio.shield(flight)
                 except asyncio.CancelledError:
@@ -610,16 +611,16 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                     await join_before_cancel(asyncio.gather(flight, return_exceptions=True))
                     raise
                 except (sqlite3.OperationalError, OperationalError, OSError):
-                    logger.warning("DAL resume delivery transient failure; retrying")
+                    logger.warning("DAL bridge delivery transient failure; retrying")
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, 30.0)
                     continue
                 except Exception:
-                    logger.error("DAL resume delivery stopped: unexpected failure")
+                    logger.error("DAL bridge delivery stopped: unexpected failure")
                     raise
                 retry_delay = 0.25
                 await asyncio.sleep(5)
-        task = recovery = None
+        task = recovery = timeline_task = None
         _app.state.dal_resume_delivery_task = None
         _app.state.adk_recovery_task = None
         stop = asyncio.Event()
@@ -630,8 +631,12 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             needed = await join_before_cancel(
                 asyncio.create_task(asyncio.to_thread(recovery_needed, deps))
             )
-            task = asyncio.create_task(deliveries()) if deps.dal_resume else None
+            task = asyncio.create_task(deliveries(deps.dal_resume)) if deps.dal_resume else None
             _app.state.dal_resume_delivery_task = task
+            timeline_task = asyncio.create_task(deliveries(deps.dal_timeline)) if deps.dal_timeline else None
+            _app.state.dal_timeline_delivery_task = timeline_task
+            if timeline_task:
+                timeline_task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
             if task:
                 # Retrieve failures promptly with only fixed-classification logs.
                 task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
@@ -645,13 +650,16 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 stop.set()
                 if task:
                     task.cancel()
+                if timeline_task:
+                    timeline_task.cancel()
                 try:
                     if recovery is not None:
                         await recovery
                 finally:
                     try:
-                        if task:
-                            await asyncio.gather(task, return_exceptions=True)
+                        pending_deliveries = [t for t in (task, timeline_task) if t is not None]
+                        if pending_deliveries:
+                            await asyncio.gather(*pending_deliveries, return_exceptions=True)
                     finally:
                         await drain_background_tasks()
 
@@ -791,6 +799,8 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
 
     from personal_agent.api.dal_resume import mount_routes
     mount_routes(app, deps, authenticate)
+    from personal_agent.api.dal_timeline import mount_routes as mount_timeline_routes
+    mount_timeline_routes(app, deps, authenticate)
 
     def idempotency_key(request: Request) -> str:
         key = request.headers.get("idempotency-key", "").strip()

@@ -202,6 +202,7 @@ class AgentServiceConfig:
     #: `/v1/capabilities` and the app then offers no jump.
     ledger_url: str | None = None
     dal_resume_config: Path | None = None
+    dal_timeline_config: Path | None = None
 
     #: `#18`. §4.3's versioned ceilings and the storage root. `None` means the
     #: media surface is not composed -- §5.4's "缺配置不启用图片" -- and the
@@ -773,6 +774,8 @@ async def agent_service(
         from personal_agent.api.dal_client import load_bridge
         try:
             dal_resume = load_bridge(config.dal_resume_config, session_factory=sessions, token_ring=token_ring) if config.dal_resume_config else None
+            from personal_agent.api.dal_timeline_client import load_bridge as load_timeline_bridge
+            dal_timeline = load_timeline_bridge(config.dal_timeline_config, session_factory=sessions, keyring=keyring, token_ring=token_ring) if config.dal_timeline_config else None
         except (ValueError, TypeError, KeyError, OSError):
             raise CompositionError('DAL resume configuration refused') from None
         registry = ConnectorRegistry()
@@ -1025,6 +1028,7 @@ async def agent_service(
                 deps=AgentApiDeps(
                     session_factory=sessions,
                     dal_resume=dal_resume,
+                    dal_timeline=dal_timeline,
 
                     v2_input_budget=v2_input_budget,
                     v2_device_ids=config.v2_device_ids,

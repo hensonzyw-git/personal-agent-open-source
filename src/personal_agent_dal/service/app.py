@@ -647,6 +647,7 @@ def create_app(
     github_adapter: Any | None = None,
     resume_config: dict | None = None,
     execution_config=None,
+    timeline_config_path: Path | None = None,
 ) -> FastAPI:
     service = Service(
         engine,
@@ -658,6 +659,10 @@ def create_app(
         max_attempts=max_attempts,
     )
     app = FastAPI(title="DAL Worker Transport", version="1.0.0")
+    from personal_agent_dal.timeline.config import load_endpoint
+    from personal_agent_dal.timeline.transport import mount_routes as mount_timeline_routes
+    timeline = load_endpoint(timeline_config_path, engine=engine, kill_switch=lambda: service.kill_switch) if timeline_config_path else None
+    mount_timeline_routes(app, timeline)
     from personal_agent_dal.service.resume_routes import mount_routes
     mount_routes(app, engine, service, resume_config, execution_config)
 

@@ -120,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ssl-certfile", type=Path, default=None)
     parser.add_argument("--ssl-keyfile", type=Path, default=None)
     parser.add_argument("--execution-profiles-config", type=Path, default=None)
+    parser.add_argument("--timeline-config", type=Path, default=None)
     args = parser.parse_args(argv)
 
     if (args.ssl_certfile is None) != (args.ssl_keyfile is None):
@@ -186,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
                 github_adapter=github_adapter,
                 resume_config=resume_config,
                 execution_config=execution_config,
+                timeline_config_path=args.timeline_config,
             )
         except (ValueError, TypeError, KeyError, OSError):
             print("DAL resume configuration refused", file=sys.stderr)

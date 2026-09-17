@@ -1307,3 +1307,24 @@ class MediaBinding(Base):
 from personal_agent.storage.run_schema_v2 import register_run_tables
 
 register_run_tables(Base.metadata)
+
+
+class DalTimelineCommand(Base):
+    """Encrypted PA outbox; transport completion never implies execution."""
+    __tablename__ = 'dal_timeline_commands'
+    command_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey('devices.device_id', ondelete='RESTRICT'), nullable=False)
+    key_thumbprint: Mapped[str] = mapped_column(Text, nullable=False)
+    body_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    sealed_body: Mapped[dict[str, Any]] = mapped_column(EncryptedEnvelope, nullable=False)
+    sealed_receipt: Mapped[dict[str, Any] | None] = mapped_column(EncryptedEnvelope)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        CheckConstraint("status IN ('queued','delivery_unknown','accepted','cancelled')", name='timeline_command_status'),
+        CheckConstraint('attempts >= 0', name='timeline_command_attempts'),
+        CheckConstraint("status != 'cancelled' OR attempts = 0", name='timeline_cancel_unsent'),
+        CheckConstraint("status != 'delivery_unknown' OR attempts > 0", name='timeline_unknown_sent'),
+        CheckConstraint("(status = 'accepted' AND sealed_receipt IS NOT NULL AND attempts > 0) OR (status != 'accepted' AND sealed_receipt IS NULL)", name='timeline_receipt'),
+    )

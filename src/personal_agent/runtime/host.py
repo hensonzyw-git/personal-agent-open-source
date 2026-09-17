@@ -66,6 +66,12 @@ class DurableRunHost:
                 declarations.append({'function':{'name':tool.name,'description':tool.summary,'parameters':tool.model_input_schema}})
         self.trip_enabled = deps.trip_query_enabled and auth.client_wire_version >= 5
         self.specs=catalog(declarations, trip_enabled=self.trip_enabled)
+        if deps.dal_timeline is not None and 'dal.request' in scopes and 'dal.request' in auth.scopes:
+            from personal_agent.runtime.run_catalog import obj, TASK, REFS
+            from personal_agent.runtime.run_tools import RunToolSpec
+            self.specs.append(RunToolSpec('dal_submit_request','dal.submit_request','write',
+                '登记当前用户消息中的开发需求，尚不启动开发。Host 保存用户原文；不能用于审批、授权、修改旧任务或查询进度。',
+                obj({'arguments':obj({}),'task':TASK,'write_source_refs':REFS},['arguments','task'])))
         self.evidence=EvidenceCatalog(); self.results=[]; self.candidates={}; self.format_error=None; self.pending_metadata=None; self.read_failed=False
         self.model_factory=model_factory
         self._discover(0)
@@ -109,7 +115,7 @@ class DurableRunHost:
         else:self.repo.reserve_bound(self.operation_id,now_ms=now,llm_add=1,attempt_key=attempt.nonce,lease=self.lease)
         self.envelope=self.build_context()
         declared={json.loads(c.text)['function']['name'] for c in self.envelope.components if c.kind.value=='tool_declaration'}
-        if any(s.business_name not in declared for s in self.specs if not s.business_name.startswith(('agent.','search.'))):
+        if any(s.business_name not in declared for s in self.specs if not s.business_name.startswith(('agent.','search.','dal.'))):
             raise RunStateError('catalog_permission_changed')
         history=[c.text for c in self.envelope.components if c.kind.value in {'raw_event','memory','preferences'}]
         mandatory=[c.text for c in self.envelope.components if c.kind.value in {'checkpoint','clarification_context'}]
@@ -298,6 +304,21 @@ class DurableRunHost:
                 self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=self.event_writer,close_source=False)
                 return ToolResult(answer,stop=True)
             return ToolResult(self.results[-1])
+        if name == 'dal.submit_request':
+            if self.deps.dal_timeline is None:raise RunStateError('dal_unavailable')
+            # Only the present user message may create this request. Neither
+            # model-produced text nor historical sources become its authority.
+            if args.get('write_source_refs',args['task']['source_refs']) != [self.anchor.event_id]:
+                raise RunStateError('dal_current_source_required')
+            answer={'version':2,'kind':'conversation','task_status':'completed','coverage':'complete',
+                'text':'开发需求已保存，正在等待 DAL 接纳；开发尚未开始。','evidence':[]}
+            def writer(session,result):
+                self.deps.dal_timeline.queue_submit(self.auth,command_id=self.operation_id,
+                    source_message_ref=self.anchor.event_id,body=self.payload.text,_session=session)
+                if self.event_writer:self.event_writer(session,result)
+            self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=writer,
+                metadata=self.pending_metadata)
+            return ToolResult(answer,stop=True)
         if name == 'finance.query_expenses' and (args.get('arguments', {}).get('view') == 'by_trip' or args.get('arguments', {}).get('trip_tag') is not None):
             if not self.trip_enabled:
                 raise RunStateError('client_upgrade_required')

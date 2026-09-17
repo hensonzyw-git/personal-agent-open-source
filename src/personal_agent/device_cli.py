@@ -49,7 +49,7 @@ from personal_agent_core.timeutil import utc_now
 
 #: Scopes the device surface itself defines, beside the tool scopes below.
 DEVICE_SURFACE_SCOPES: Final[frozenset[str]] = frozenset(
-    {SELF_READ_SCOPE, SELF_REVOKE_SCOPE, DEVICE_MANAGE_SCOPE, "dal.resume.approve"}
+    {SELF_READ_SCOPE, SELF_REVOKE_SCOPE, DEVICE_MANAGE_SCOPE, "dal.resume.approve", "dal.read", "dal.request", "dal.prd.decide", "dal.delivery.decide"}
 )
 
 

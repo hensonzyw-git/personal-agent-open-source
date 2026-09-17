@@ -50,6 +50,10 @@ DEFAULT_DEVICE_SCOPES: Final[tuple[str, ...]] = (
     "finance.income.write",
     "finance.family_fund.write",
     "meta.capabilities.read",
+    "dal.read",
+    "dal.request",
+    "dal.prd.decide",
+    "dal.delivery.decide",
 )
 DEVICE_MANAGE_SCOPE: Final[str] = "device.manage"
 

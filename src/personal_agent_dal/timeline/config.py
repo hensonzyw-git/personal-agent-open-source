@@ -1,0 +1,34 @@
+"""Opt-in service composition; all material is read from protected local files."""
+import json
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+
+from personal_agent.api.dal_client import _read_bridge_file
+from personal_agent_core.crypto import KeyEntry,KeyRing
+from personal_agent_dal.timeline.requests import RequestService
+from personal_agent_dal.timeline.transport import TimelineEndpoint
+
+
+def load_endpoint(path,*,engine,kill_switch=lambda:False):
+    config=json.loads(_read_bridge_file(path,kind='TIMELINE_CONFIG'))
+    if set(config)!={'schema_version','data_key_file','data_kid','cursor_key_file','signing_key_file','kid','pa_public_keys'} or config['schema_version']!='dal.timeline-service/1.0':
+        raise ValueError('TIMELINE_CONFIG_INVALID')
+    data=_read_bridge_file(config['data_key_file'],kind='TIMELINE_DATA_KEY',limit=32)
+    cursor=_read_bridge_file(config['cursor_key_file'],kind='TIMELINE_CURSOR_KEY',limit=32)
+    if len(data)!=32 or len(cursor)!=32 or data==cursor:
+        raise ValueError('TIMELINE_KEYS_INVALID')
+    private=serialization.load_pem_private_key(_read_bridge_file(config['signing_key_file'],kind='TIMELINE_SIGNING_KEY',limit=16384),password=None)
+    if not isinstance(private,ec.EllipticCurvePrivateKey) or not isinstance(private.curve,ec.SECP256R1):
+        raise ValueError('TIMELINE_KEYS_INVALID')
+    if not isinstance(config['pa_public_keys'],dict) or not config['pa_public_keys']:
+        raise ValueError('TIMELINE_TRUST_INVALID')
+    keys={}
+    for kid,key_path in config['pa_public_keys'].items():
+        key=serialization.load_pem_public_key(_read_bridge_file(key_path,kind='TIMELINE_PUBLIC_KEY',limit=16384))
+        if not isinstance(key,ec.EllipticCurvePublicKey) or not isinstance(key.curve,ec.SECP256R1):
+            raise ValueError('TIMELINE_TRUST_INVALID')
+        if key.public_numbers()==private.public_key().public_numbers():
+            raise ValueError('TIMELINE_KEYS_NOT_SEPARATE')
+        keys[kid]=key
+    requests=RequestService(engine,keyring=KeyRing([KeyEntry(kid=config['data_kid'],key=data,state='active')],service='dal'),cursor_key=cursor)
+    return TimelineEndpoint(requests,trusted_keys=keys,signing_key=private,kid=config['kid'],kill_switch=kill_switch)
