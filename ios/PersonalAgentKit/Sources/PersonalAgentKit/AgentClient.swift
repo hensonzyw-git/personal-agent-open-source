@@ -46,8 +46,13 @@ public struct AgentClient: Sendable {
         return URLSession(configuration: configuration)
     }
 
-    public func developmentRoles(token: String) async throws -> DevelopmentRoles {
-        try await send(method: "GET", path: "/v1/dal/roles", token: token, as: DevelopmentRoles.self)
+    public func developmentNotification(id: String, token: String) async throws -> DevelopmentNotification {
+        guard id.range(of: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", options: .regularExpression) != nil else { throw AgentClientError.malformedResponse }
+        return try await send(method: "GET", path: "/v1/dal/notifications/" + id, token: token, as: DevelopmentNotification.self)
+    }
+
+    public func developmentRoles(workflowID: String? = nil, token: String) async throws -> DevelopmentRoles {
+        try await send(method: "GET", path: "/v1/dal/roles", token: token, query: workflowID.map { [URLQueryItem(name: "workflow_id", value: $0)] } ?? [], as: DevelopmentRoles.self)
     }
     public func developmentTask(id: String, token: String) async throws -> DevelopmentTaskDetail {
         guard id.range(of: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", options: .regularExpression) != nil else { throw AgentClientError.malformedResponse }

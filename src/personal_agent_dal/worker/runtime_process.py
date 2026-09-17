@@ -107,6 +107,21 @@ def fixture_plan(reservation, mode='success', *, wall_seconds=2, output_bytes=41
         fixture_sha256=hashlib.sha256(fixture.read_bytes()).hexdigest())
 
 
+
+def _abort_owned_child(process):
+    """Only for a direct child whose handle has not yet been reaped."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=5)
+    finally:
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None and not stream.closed:
+                stream.close()
+
+
 def run_process(inventory, attempt, plan, *, heartbeat, deadline, prompt=b''):
     # Synthetic classification is not a caller-controlled executable capability.
     if plan.runtime=='synthetic_fixture':
@@ -123,23 +138,32 @@ def run_process(inventory, attempt, plan, *, heartbeat, deadline, prompt=b''):
     if plan.runtime!='synthetic_fixture':revalidate_plan(plan,inventory,attempt)
     process=subprocess.Popen(plan.argv,cwd=plan.cwd,env=plan.environment,stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,close_fds=True,start_new_session=True)
-    try:identity=process_identity(process.pid)
-    except Exception:
-        # Direct unreaped child handle remains owned; no guessed historical PID.
-        process.kill();process.wait(timeout=5);raise
+    try:
+        identity=process_identity(process.pid)
+        if identity is None:raise SupervisorRefusal('PROCESS_IDENTITY_UNPROVEN')
+    except BaseException:
+        _abort_owned_child(process)
+        raise
     observation={'pid':process.pid,'pgid':process.pid,'process_start':identity,'started_at':int(time.time())}
     try:inventory.transition(attempt,'starting','running',observation=observation)
     except BaseException:
-        process.kill();process.wait(timeout=5);raise
+        _abort_owned_child(process)
+        raise
     output=bytearray();errors=bytearray();event_count=0;reason=None;forced=False;requested=False;truncated=False
     sel=selectors.DefaultSelector()
-    for stream in (process.stdout,process.stderr):os.set_blocking(stream.fileno(),False);sel.register(stream,selectors.EVENT_READ)
-    os.set_blocking(process.stdin.fileno(),False)
-    pending=memoryview(prompt)
-    if pending:sel.register(process.stdin,selectors.EVENT_WRITE)
-    else:process.stdin.close()
+    try:
+        for stream in (process.stdout,process.stderr):os.set_blocking(stream.fileno(),False);sel.register(stream,selectors.EVENT_READ)
+        os.set_blocking(process.stdin.fileno(),False)
+        pending=memoryview(prompt)
+        if pending:sel.register(process.stdin,selectors.EVENT_WRITE)
+        else:process.stdin.close()
+    except BaseException:
+        _abort_owned_child(process)
+        sel.close()
+        raise
     end=min(time.monotonic()+plan.wall_seconds,time.monotonic()+max(0,deadline-time.time()-10))
     next_beat=time.monotonic()
+    stop_finished=False
     try:
         while sel.get_map() or process.poll() is None:
             now=time.monotonic()
@@ -171,12 +195,16 @@ def run_process(inventory, attempt, plan, *, heartbeat, deadline, prompt=b''):
         if process.returncode is None:
             try: process.wait(timeout=1)
             except subprocess.TimeoutExpired: pass
+        stop_finished=True
         requested,forced = stop['requested'],stop['forced']
         if not stop['process_exited']: reason = 'PROCESS_GROUP_STOP_UNPROVEN'
         return dict(raw=bytes(output),stderr=bytes(errors),event_count=event_count,exit_code=process.returncode,reason=reason,
             truncated=truncated,stop={'requested':requested,'forced':forced,'process_exited':stop['process_exited']},
             started_at=observation['started_at'],ended_at=int(time.time()))
     finally:
+        if not stop_finished:
+            stop_registered(dict(observation,boot_id=inventory.supervisor.boot_id),
+                            boot_id=inventory.supervisor.boot_id)
         sel.close()
         for stream in (process.stdin,process.stdout,process.stderr):
             if not stream.closed:stream.close()

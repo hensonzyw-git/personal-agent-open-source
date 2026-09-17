@@ -1,0 +1,155 @@
+"""Actual Git/subprocess evidence on disposable synthetic repositories only.
+
+The private test admission is a fixture, not production operator approval.
+"""
+import hashlib
+import json
+import shutil
+import time
+from pathlib import Path
+import pytest
+from personal_agent_core.crypto import KeyRing,generate_key
+from personal_agent_dal.timeline.requests import digest
+from personal_agent_dal.worker.supervisor import Supervisor,SupervisorRefusal
+from personal_agent_dal.worker.workflow_inventory import WorkflowInventory
+from personal_agent_dal.worker.workflow_executor import RepositoryExecutor
+from personal_agent_dal.worker.runtime_admission import code_identity
+
+
+def pin(path):
+    path=Path(path).resolve()
+    return dict(executable=str(path),executable_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),version='synthetic-test-pin')
+
+
+@pytest.fixture
+def repository(tmp_path):
+    from personal_agent_dal.worker.runtime_process import os_boot_id
+    root=(tmp_path/'owned').resolve()
+    supervisor=Supervisor(root,boot_id=os_boot_id(),epoch=1)
+    reservation=supervisor.reserve(attempt_id='workflow:synthetic',workspace_id='synthetic',generation=1,
+        authority={'workflow_id':'synthetic'},read_roots=[])
+    ring=KeyRing([generate_key('synthetic-worker')],service='dal-worker')
+    inventory=WorkflowInventory(supervisor,ring)
+    inventory.adopt(dict(attempt_id='attempt',owner={'kind':'workflow','workflow_id':'synthetic'}),reservation)
+    for a,b in [('prepared','dispatch_requested'),('dispatch_requested','granted'),('granted','starting'),('starting','running')]:inventory.transition('attempt',a,b)
+    commands=[dict(pin=pin('/usr/bin/grep'),arguments=['-q','synthetic acceptance','README.md'],timeout_seconds=10)]
+    config=dict(git_pin=pin(shutil.which('git')),sandbox_pin=pin('/usr/bin/sandbox-exec'),
+        projects={'project':dict(root=str(root),kind='local_new',verification_commands=commands)},executor_admission_file=str(tmp_path/'executor-proof.json'))
+    proof=dict(schema='dal.workflow-executor-admission/1.0',provenance='operator-attested-external-native-executor',
+        code_sha256=code_identity(),boot_id=supervisor.boot_id,supervisor_epoch=1,
+        config_digest=digest({k:config[k] for k in ('git_pin','projects','sandbox_pin')}),issued_at=int(time.time())-1,
+        expires_at=int(time.time())+1800,revoked=False,
+        observations=['isolated-workspace','pinned-git','outside-write-denied','network-denied','bounded-stop','commit-readback'])
+    path=Path(config['executor_admission_file']);path.write_text(json.dumps(proof));path.chmod(0o600)
+    inputs=dict(prepared_at=int(time.time()),owner={'kind':'workflow','workflow_id':'synthetic'},request_revision=1,
+        project={'project_id':'project','grant_digest':'a'*64},authorization=dict(project_id='project',root=str(root),kind='local_new',
+            registration_policy='local_tracker',actions=['read','write','create','local_init']))
+    executor=RepositoryExecutor(supervisor,reservation,config,inputs,inventory=inventory,attempt='attempt',heartbeat=lambda:True)
+    return executor,inputs,inventory
+
+
+def test_real_git_bootstrap_candidate_verify_commit_and_delivery_readback(repository):
+    executor,inputs,inventory=repository
+    prepared=executor.prepare();inputs['workspace']=prepared['manifest']
+    base=prepared['manifest']['base_sha']
+    assert base!='0'*40
+    (executor.work/'README.md').write_text('synthetic acceptance\n')
+    inputs['stage']=dict(stage_id='stage-one',revision=1,state_version=4,candidate={'head_sha':base})
+    candidate=executor.candidate(stage_text='Synthetic code')['candidate']
+    inputs['stage']['candidate']=candidate
+    verified=executor.verify(heartbeat=lambda:True)
+    assert verified['passed'] is True and verified['commands'][0]['exit_code']==0
+    committed=executor.commit()
+    assert committed['parent_sha']==base and committed['commit_sha']!=base
+    assert executor.run(['rev-parse','HEAD'])==committed['commit_sha']
+    stage=dict(stage_id='stage-one',revision=1,base_sha=base,head_sha=committed['commit_sha'],tree_sha=candidate['tree_sha'])
+    inputs['delivery']=dict(workspace=prepared['manifest'],stages=[stage])
+    delivery=executor.delivery()
+    assert delivery['manifest']['commits']==[dict(sha=committed['commit_sha'],parent=base,tree=candidate['tree_sha'])]
+    inputs['probe']=dict(nonce='fresh-nonce',manifest_digest=digest(delivery['manifest']))
+    assert executor.probe()['matches'] is True
+    (executor.work/'README.md').write_text('Changed after review\n')
+    with pytest.raises(SupervisorRefusal,match='DIRTY'):executor.delivery()
+
+
+def test_repository_pointer_tamper_cannot_redirect_git_writes(repository,tmp_path):
+    executor,inputs,_=repository
+    inputs['workspace']=executor.prepare()['manifest']
+    (executor.work/'.git').write_text('gitdir: '+str(tmp_path/'foreign')+'\n')
+    with pytest.raises(SupervisorRefusal,match='GIT_DIRECTORY_SUBSTITUTED'):
+        executor.run(['add','--all'])
+
+
+def test_executor_revocation_prevents_next_command(repository):
+    executor,_,_=repository
+    path=Path(executor.config['executor_admission_file'])
+    proof=json.loads(path.read_text());proof['revoked']=True;path.write_text(json.dumps(proof))
+    with pytest.raises(SupervisorRefusal,match='ADMISSION_REQUIRED'):executor.prepare()
+
+
+@pytest.mark.parametrize('name,content,reason',[
+    ('.env.local','SYNTHETIC=placeholder','SENSITIVE_FILE'),
+    ('notes.txt','ghp_'+'x'*32,'SECRET'),
+    ('key.txt','-----BEGIN PRIVATE KEY-----','SECRET'),
+])
+def test_candidate_scan_rejects_leaks_before_acceptance(repository,name,content,reason):
+    executor,inputs,_=repository
+    inputs['workspace']=executor.prepare()['manifest']
+    inputs['stage']={'candidate':{'head_sha':inputs['workspace']['base_sha']}}
+    (executor.work/name).write_text(content)
+    with pytest.raises(SupervisorRefusal,match=reason):executor.candidate(stage_text='synthetic')
+
+
+def test_native_git_objects_validate_and_preserve_exact_hashes(repository):
+    import base64
+    from personal_agent_dal.github.workflow_objects import decode_bundle,object_sha
+    executor,inputs,_=repository
+    inputs['workspace']=executor.prepare()['manifest'];base=inputs['workspace']['base_sha']
+    (executor.work/'README.md').write_text('synthetic acceptance\n')
+    inputs['stage']=dict(stage_id='stage-one',revision=1,state_version=4,candidate={'head_sha':base})
+    candidate=executor.candidate(stage_text='Synthetic')['candidate'];inputs['stage']['candidate']=candidate
+    committed=executor.commit()
+    commits=[dict(sha=committed['commit_sha'],parent=base,tree=candidate['tree_sha'])]
+    objects=[]
+    for sha in executor.run(['rev-list','--objects','--no-object-names',base+'..HEAD']).splitlines():
+        kind=executor.run(['cat-file','-t',sha]);raw=executor.run(['cat-file',kind,sha],raw=True)
+        objects.append(dict(sha=sha,kind=kind,data=base64.b64encode(raw).decode()))
+    ordered=decode_bundle(objects,commits)
+    assert [kind for _,kind,_ in ordered]==['blob','tree','commit']
+    assert ordered[-1][0]==committed['commit_sha']
+    blob=next(obj for obj in objects if obj['kind']=='blob')
+    blob['data']=base64.b64encode(b'tampered').decode()
+    with pytest.raises(ValueError,match='GIT_OBJECT_INVALID'):decode_bundle(objects,commits)
+
+
+def test_native_stopped_source_observer_reads_without_mutating_git(repository):
+    from types import SimpleNamespace
+    from personal_agent_dal.worker.workflow_observer import observe
+    executor,inputs,inventory=repository
+    inputs['workspace']=executor.prepare()['manifest']
+    before=executor.run(['rev-parse','HEAD'])
+    inventory.transition('attempt','running','unknown')
+    row=inventory.get('attempt')
+    row['binding']['execution_input']={'phase':'stage_commit'}
+    worker=SimpleNamespace(config=executor.config,supervisor=executor.supervisor,inventory=inventory)
+    observed=observe(worker,row)
+    assert observed['process_exited'] and observed['head_sha']==before
+    assert executor.run(['rev-parse','HEAD'])==before
+
+
+def test_reservation_boot_renewal_requires_stopped_inventory_and_preserves_directories(repository):
+    from datetime import datetime,timezone,timedelta
+    from personal_agent_dal.worker.supervisor import Supervisor
+    executor,inputs,inventory=repository
+    inputs['workspace']=executor.prepare()['manifest']
+    binding=dict(boot_id='new-test-boot',supervisor_epoch=2,owner={'kind':'workflow','workflow_id':'synthetic'},
+        lease_until=(datetime.now(timezone.utc)+timedelta(minutes=1)).isoformat())
+    newer=WorkflowInventory(Supervisor(executor.supervisor.root,boot_id='new-test-boot',epoch=2),inventory.keyring)
+    with pytest.raises(SupervisorRefusal,match='UNRESOLVED'):newer.renew_reservation('synthetic',binding)
+    inventory.transition('attempt','running','unknown')
+    inventory.transition('attempt','unknown','refused')
+    newer.renew_reservation('synthetic',binding)
+    renewed=newer.supervisor.validate(executor.reservation['reservation_id'])
+    assert renewed['identities']==executor.reservation['identities']
+    assert renewed['boot_id']=='new-test-boot'
+    assert renewed['generation']==executor.reservation['generation']

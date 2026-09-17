@@ -44,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("poll-once", help="claim one job, run it, record the result, exit")
+    workflow = sub.add_parser("workflow-poll-once", help="execute one admitted Timeline v3 attempt")
+    workflow.add_argument("--workflow-config", type=Path, required=True)
     sub.add_parser("healthcheck", help="verify config, database and repos are reachable")
     args = parser.parse_args(argv)
 
@@ -55,6 +57,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "healthcheck":
         return _healthcheck(config)
+    if args.command == "workflow-poll-once":
+        from personal_agent_dal.worker.workflow import WorkflowWorker,load_config
+        try:
+            with _open_transport(config) as transport:
+                if not isinstance(transport,RemoteHttpAdapter):raise ValueError('REMOTE_WORKFLOW_TRANSPORT_REQUIRED')
+                result=WorkflowWorker(transport,load_config(args.workflow_config)).poll()
+                return 0 if result.get('status') in ('idle','completed') else 1
+        except Exception as error:
+            print(f"workflow worker refused: {type(error).__name__}",file=sys.stderr)
+            return 1
     return _poll_once(config)
 
 

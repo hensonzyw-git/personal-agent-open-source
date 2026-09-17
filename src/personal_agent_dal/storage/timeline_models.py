@@ -90,6 +90,10 @@ class DevelopmentWorkflow(Base):
     workflow_id: Mapped[str] = mapped_column(Text, primary_key=True)
     request_id: Mapped[str] = mapped_column(ForeignKey('development_requests.request_id', ondelete='RESTRICT'), nullable=False, unique=True)
     feature_id: Mapped[str | None] = mapped_column(ForeignKey('features.feature_id', ondelete='RESTRICT'), unique=True)
+    blocker_reason: Mapped[str|None]=mapped_column(Text)
+    accepted_delivery_id: Mapped[str|None] = mapped_column(Text)
+    acceptance_receipt_id: Mapped[str|None] = mapped_column(Text)
+    completed_at: Mapped[datetime|None] = mapped_column(UtcTimestamp)
     contract_version: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     phase: Mapped[str] = mapped_column(Text, nullable=False)
@@ -278,3 +282,125 @@ class DevelopmentProjectBinding(Base):
     route_artifact_id: Mapped[str]=mapped_column(ForeignKey('development_artifacts.artifact_id'),nullable=False)
     candidate_digest: Mapped[str]=mapped_column(Text,nullable=False)
     sealed_binding: Mapped[dict[str,Any]]=mapped_column(EncryptedEnvelope,nullable=False)
+
+
+class DevelopmentExecution(Base):
+    """One irreversible execution identity per immutable driver step."""
+    __tablename__ = 'development_executions'
+    execution_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    step_id: Mapped[str] = mapped_column(ForeignKey('development_driver_steps.step_id'), nullable=False, unique=True)
+    worker_id: Mapped[str] = mapped_column(Text, nullable=False)
+    boot_id: Mapped[str] = mapped_column(Text, nullable=False)
+    supervisor_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    lease_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    lease_until: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    admission_digest: Mapped[str] = mapped_column(Text, nullable=False)
+    binding_digest: Mapped[str] = mapped_column(Text, nullable=False)
+    sealed_binding: Mapped[dict[str,Any]] = mapped_column(EncryptedEnvelope, nullable=False)
+    grant_id: Mapped[str|None]=mapped_column(Text)
+    reserved_seconds: Mapped[int]=mapped_column(Integer,nullable=False,default=0)
+    charged_seconds: Mapped[int|None]=mapped_column(Integer)
+    started_at: Mapped[datetime|None]=mapped_column(UtcTimestamp)
+    stop_receipt: Mapped[dict[str,Any]|None] = mapped_column(EncryptedEnvelope)
+    receipt_digest: Mapped[str|None] = mapped_column(Text)
+    sealed_receipt: Mapped[dict[str,Any]|None] = mapped_column(EncryptedEnvelope)
+    __table_args__ = (CheckConstraint('supervisor_epoch >= 1', name='execution_supervisor_epoch'),)
+
+
+class DevelopmentWorkspace(Base):
+    __tablename__='development_workspaces'
+    workflow_id: Mapped[str]=mapped_column(ForeignKey('development_workflows.workflow_id'),primary_key=True)
+    reservation_id: Mapped[str]=mapped_column(Text,nullable=False,unique=True)
+    generation: Mapped[int]=mapped_column(Integer,nullable=False)
+    directory_digest: Mapped[str]=mapped_column(Text,nullable=False)
+    base_sha: Mapped[str]=mapped_column(Text,nullable=False)
+    toolchain_digest: Mapped[str]=mapped_column(Text,nullable=False)
+    receipt_digest: Mapped[str]=mapped_column(Text,nullable=False)
+    sealed_manifest: Mapped[dict[str,Any]]=mapped_column(EncryptedEnvelope,nullable=False)
+
+
+class DevelopmentDelivery(Base):
+    __tablename__='development_deliveries'
+    delivery_id: Mapped[str]=mapped_column(Text,primary_key=True)
+    workflow_id: Mapped[str]=mapped_column(ForeignKey('development_workflows.workflow_id'),nullable=False)
+    artifact_id: Mapped[str]=mapped_column(ForeignKey('development_artifacts.artifact_id'),nullable=False,unique=True)
+    manifest_digest: Mapped[str]=mapped_column(Text,nullable=False)
+    sealed_manifest: Mapped[dict[str,Any]]=mapped_column(EncryptedEnvelope,nullable=False)
+    source_step_id: Mapped[str]=mapped_column(ForeignKey('development_driver_steps.step_id'),nullable=False,unique=True)
+    gate_version: Mapped[int]=mapped_column(Integer,nullable=False)
+    gate_epoch: Mapped[int]=mapped_column(Integer,nullable=False)
+
+
+class DevelopmentAcceptanceProbe(Base):
+    __tablename__='development_acceptance_probes'
+    command_id: Mapped[str]=mapped_column(Text,primary_key=True)
+    source_message_ref: Mapped[str]=mapped_column(Text,nullable=False,unique=True)
+    decision_id: Mapped[str]=mapped_column(ForeignKey('development_decision_requests.decision_id'),nullable=False)
+    workflow_id: Mapped[str]=mapped_column(ForeignKey('development_workflows.workflow_id'),nullable=False)
+    fingerprint: Mapped[str]=mapped_column(Text,nullable=False)
+    nonce: Mapped[str]=mapped_column(Text,nullable=False,unique=True)
+    step_id: Mapped[str|None]=mapped_column(ForeignKey('development_driver_steps.step_id'),unique=True)
+    sealed_command: Mapped[dict[str,Any]]=mapped_column(EncryptedEnvelope,nullable=False)
+    result_digest: Mapped[str|None]=mapped_column(Text)
+    observed_at: Mapped[datetime|None]=mapped_column(UtcTimestamp)
+    sealed_result: Mapped[dict[str,Any]|None]=mapped_column(EncryptedEnvelope)
+
+
+class DevelopmentStageMembership(Base):
+    """A frozen plan can retain an unaffected stage without copying its proof."""
+    __tablename__='development_stage_memberships'
+    plan_id: Mapped[str]=mapped_column(ForeignKey('development_stage_plans.plan_id'),primary_key=True)
+    stage_id: Mapped[str]=mapped_column(Text,primary_key=True)
+    stage_revision: Mapped[int]=mapped_column(Integer,nullable=False)
+    ordinal: Mapped[int]=mapped_column(Integer,nullable=False)
+    __table_args__=(ForeignKeyConstraint(['stage_id','stage_revision'],['development_stages.stage_id','development_stages.revision']),)
+
+
+class DevelopmentRemoteEffect(Base):
+    __tablename__='development_remote_effects'
+    step_id: Mapped[str]=mapped_column(ForeignKey('development_driver_steps.step_id'),primary_key=True)
+    operation: Mapped[str]=mapped_column(Text,nullable=False)
+    payload_digest: Mapped[str]=mapped_column(Text,nullable=False)
+    status: Mapped[str]=mapped_column(Text,nullable=False)
+    sealed_result: Mapped[dict[str,Any]|None]=mapped_column(EncryptedEnvelope)
+    __table_args__=(CheckConstraint("status IN ('started','completed','unknown')",name='remote_effect_state'),)
+
+
+class DevelopmentAuthorizationRequest(Base):
+    __tablename__='development_authorization_requests'
+    workflow_id: Mapped[str]=mapped_column(ForeignKey('development_workflows.workflow_id'),primary_key=True)
+    request_version: Mapped[int]=mapped_column(Integer,nullable=False)
+    status: Mapped[str]=mapped_column(Text,nullable=False)
+    expires_at: Mapped[datetime]=mapped_column(UtcTimestamp,nullable=False)
+    grant_id: Mapped[str|None]=mapped_column(ForeignKey('development_project_authorizations.grant_id'))
+    sealed_scope: Mapped[dict[str,Any]]=mapped_column(EncryptedEnvelope,nullable=False)
+    __table_args__=(CheckConstraint("status IN ('pending','granted','expired','rejected')",name='authorization_request_state'),)
+
+
+# Metadata-created databases must enforce the same ownership fence as migration
+# 0022. Inspect actual tables because historical fixtures create partial schemas.
+from sqlalchemy import event, inspect
+
+
+@event.listens_for(Base.metadata, 'after_create')
+def _install_timeline_ownership_guards(metadata, connection, **kwargs):
+    if connection.dialect.name != 'sqlite':
+        return
+    tables = set(inspect(connection).get_table_names())
+    if 'development_workflows' not in tables:
+        return
+    legacy = ('approval_action_receipts', 'approvals', 'capabilities',
+              'commit_capabilities', 'decisions', 'execution_control_receipts',
+              'execution_gates', 'impact_reports', 'leases', 'recovery_cases',
+              'workflow_actions', 'workflow_selections')
+    for table in (*legacy, 'features'):
+        if table not in tables:
+            continue
+        operations = ('UPDATE', 'DELETE') if table == 'features' else ('INSERT', 'UPDATE')
+        reference = 'OLD' if table == 'features' else 'NEW'
+        for operation in operations:
+            connection.exec_driver_sql(
+                f"CREATE TRIGGER IF NOT EXISTS timeline_owner_{table}_{operation.lower()} "
+                f"BEFORE {operation} ON {table} WHEN EXISTS(SELECT 1 FROM "
+                f"development_workflows WHERE feature_id={reference}.feature_id) "
+                "BEGIN SELECT RAISE(ABORT, 'WORKFLOW_CONTRACT_MISMATCH'); END")

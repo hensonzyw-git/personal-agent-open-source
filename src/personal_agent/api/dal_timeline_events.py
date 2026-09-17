@@ -77,6 +77,38 @@ class TimelineProjector:
             artifact=body.get('artifact'),decision=body.get('decision'),status=body.get('status'),phase=body.get('phase'))
         event_id=events.append_event(s,self.bridge.keyring,conversation_id=timeline,session_id=session_id,
             turn_id='dal:'+item['event_id'],event_type='development_update',content=content,operation_id=None,now=now)
+        from personal_agent.storage.models import DalDecisionState, DalContextBinding
+        from sqlalchemy import update
+        invalidated=body.get('invalidated_decision_ids',[])
+        if not isinstance(invalidated,list) or any(not isinstance(ref,str) for ref in invalidated):
+            raise ValueError('EVENT_STREAM_CONFLICT')
+        invalidated=list(invalidated)
+        if item['kind']=='decision.accepted':
+            if not isinstance(body.get('decision_id'),str):raise ValueError('EVENT_STREAM_CONFLICT')
+            invalidated.append(body['decision_id'])
+        # New proposals supersede earlier pending proposals even when replaying
+        # events from versions that did not publish explicit invalidation refs.
+        decision=body.get('decision')
+        if item['kind']=='decision.requested':
+            if not isinstance(decision,dict) or digest(decision.get('binding'))!=decision.get('binding_digest'):
+                raise ValueError('EVENT_STREAM_CONFLICT')
+            invalidated.extend(s.scalars(select(DalDecisionState.decision_id).where(
+                DalDecisionState.request_id==item['request_id'],DalDecisionState.status=='pending',
+                DalDecisionState.decision_id!=decision['decision_id'])))
+        for ref in set(invalidated):
+            state=s.get(DalDecisionState,ref)
+            status='consumed' if ref==body.get('decision_id') and item['kind']=='decision.accepted' else 'superseded'
+            if state is None:
+                s.add(DalDecisionState(decision_id=ref,request_id=item['request_id'],status=status,source_seq=item['seq']))
+            else:
+                if state.request_id!=item['request_id']:raise ValueError('EVENT_STREAM_CONFLICT')
+                state.status=status;state.source_seq=item['seq']
+            s.execute(update(DalContextBinding).where(DalContextBinding.decision_id==ref).values(consumed=1))
+        if item['kind']=='decision.requested':
+            state=s.get(DalDecisionState,decision['decision_id'])
+            if state is not None:raise ValueError('EVENT_STREAM_CONFLICT')
+            s.add(DalDecisionState(decision_id=decision['decision_id'],request_id=item['request_id'],
+                binding_digest=decision['binding_digest'],event_id=event_id,status='pending',source_seq=item['seq']))
         from personal_agent.api.dal_notifications import enqueue
         enqueue(s,event_id=event_id,kind=item['kind'],now=now)
         s.add(DalEventInbox(event_id=item['event_id'],stream_id=stream_id,seq=item['seq'],digest=item['digest'],

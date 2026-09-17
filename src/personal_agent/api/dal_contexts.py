@@ -1,7 +1,7 @@
 """A document click is context, never an approval."""
 from datetime import datetime
 from sqlalchemy import select
-from personal_agent.storage.models import DalContextBinding
+from personal_agent.storage.models import DalContextBinding, DalDecisionState
 from personal_agent_core.ids import new_id
 from personal_agent_core.manifest import canonical_json
 from personal_agent_dal.timeline.requests import digest
@@ -14,6 +14,9 @@ def delivered(session,bridge,auth,entries):
         if event.event_type!='development_update' or not isinstance(event.content,dict):continue
         decision=event.content.get('decision')
         if not isinstance(decision,dict) or 'binding' not in decision:continue
+        state=session.get(DalDecisionState,decision.get('decision_id'))
+        if state is None or state.status!='pending' or state.binding_digest!=decision.get('binding_digest'):
+            continue
         binding=decision['binding']
         if digest(binding)!=decision['binding_digest']:raise ValueError('DAL_CONTEXT_INVALID')
         expires=datetime.fromisoformat(decision['expires_at'])
@@ -34,6 +37,9 @@ def pending(bridge,auth):
         rows=list(s.scalars(select(DalContextBinding).where(DalContextBinding.device_id==auth.device_id,DalContextBinding.consumed==0,DalContextBinding.expires_at>bridge.now())))
         result=[]
         for row in rows:
+            state=s.get(DalDecisionState,row.decision_id)
+            if state is None or state.status!='pending' or state.binding_digest!=row.binding_digest:
+                continue
             value=json.loads(bridge.keyring.decrypt(row.sealed_context,table='dal_context_bindings',column='sealed_context',row_id=row.context_id))
             if digest(value['binding'])!=row.binding_digest:raise ValueError('DAL_CONTEXT_INVALID')
             result.append(dict(context_id=row.context_id,event_id=row.event_id,**value))
@@ -66,6 +72,10 @@ def mint(bridge, auth, event_id):
     if len(matches) != 1:
         raise ValueError('DAL_CONTEXT_UNAVAILABLE')
     context = matches[0]
+    current=bridge.query(auth,operation='decision_status',body={'decision_id':context['decision_id']})
+    if (current.get('valid') is not True or current.get('decision_id')!=context['decision_id']
+        or current.get('binding_digest')!=context['binding_digest']):
+        raise ValueError('DAL_CONTEXT_UNAVAILABLE')
     now = int(bridge.now().timestamp())
     expiry = min(now + 900, int(datetime.fromisoformat(context['expires_at']).timestamp()))
     claims = dict(iss='pa-timeline', aud='pa-dal-reply', domain='dal.reply-context/1.0',

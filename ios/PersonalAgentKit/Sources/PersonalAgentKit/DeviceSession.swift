@@ -197,8 +197,12 @@ public actor DeviceSession {
         rejected = false
     }
 
-    public func developmentRoles() async throws -> DevelopmentRoles {
-        try await authorized { try await self.client.developmentRoles(token: $0) }
+    public func developmentNotification(id: String) async throws -> DevelopmentNotification {
+        try await authorized { try await self.client.developmentNotification(id: id, token: $0) }
+    }
+
+    public func developmentRoles(workflowID: String? = nil) async throws -> DevelopmentRoles {
+        try await authorized { try await self.client.developmentRoles(workflowID: workflowID, token: $0) }
     }
     public func developmentTask(id: String) async throws -> DevelopmentTaskDetail {
         try await authorized { try await self.client.developmentTask(id: id, token: $0) }

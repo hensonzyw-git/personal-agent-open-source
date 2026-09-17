@@ -3,7 +3,7 @@ import pytest
 from sqlalchemy import select
 from tests.dal.test_timeline_requests import world, submit
 from personal_agent_dal.storage.timeline_models import DevelopmentDriverStep as Step, DevelopmentWorkflow as Workflow
-from personal_agent_dal.timeline.driver import WorkflowDriver
+from tests.dal.workflow_signer import SignedDriver as WorkflowDriver
 
 
 @pytest.mark.parametrize('result', [None, {}, {'kind':'prd','text':''}, {'kind':'prd','text':'x','extra':True},
@@ -90,6 +90,8 @@ def test_next_author_receives_complete_artifact_and_human_change_feedback(world)
     from tests.dal.test_timeline_roles import config,registry
     r,wf,command=routed(world)
     DecisionService(r).consume(**command)
+    from tests.dal.stage_fixtures import workspace
+    workspace(r,wf)
     sha=source(r,wf,'Synthetic PRD complete text')
     artifact=ArtifactService(r).record(step_id='step',expected_result_digest=sha)
     proposal=DecisionService(r).propose(wf,artifact,kind='prd')
@@ -115,6 +117,8 @@ def test_reconfigured_reviewer_cannot_review_prior_author_same_model(world):
     from tests.dal.test_timeline_stages import plan
     from personal_agent_dal.timeline.requests import digest
     r,wf,command=routed(world);DecisionService(r).consume(**command)
+    from tests.dal.stage_fixtures import workspace
+    workspace(r,wf)
     body=config();roles=RoleService(r,registry(body));author=roles.snapshot(workflow_id=wf)
     result=dict(kind='design',text='Synthetic design',prd_digest='a'*64,plan=plan())
     with r.sessions() as s,s.begin():
@@ -140,6 +144,8 @@ def test_project_revocation_fences_prepared_and_inflight_steps(world,boundary):
     from personal_agent_dal.storage.timeline_models import DevelopmentProjectAuthorization as Grant
     from tests.dal.test_timeline_roles import config,registry
     r,wf,command=routed(world);DecisionService(r).consume(**command)
+    from tests.dal.stage_fixtures import workspace
+    workspace(r,wf)
     with r.sessions() as s,s.begin():
         row=s.get(Workflow,wf);row.phase='prd_authoring';row.version+=1
     driver=WorkflowDriver(r,roles=RoleService(r,registry(config())))
@@ -156,3 +162,21 @@ def test_project_revocation_fences_prepared_and_inflight_steps(world,boundary):
     with r.sessions() as s:
         assert s.get(Workflow,wf).phase=='prd_authoring'
         assert s.get(Step,prepared['step_id']).status==('dispatch_started' if launch else 'prepared')
+
+
+def test_missing_project_authority_is_durable_and_recovers_after_explicit_grant(world):
+    from personal_agent_dal.storage.timeline_models import DevelopmentAuthorizationRequest
+    from personal_agent_dal.timeline.operator import Authorization,register_authorization
+    from datetime import timedelta
+    r,driver,wf,item=configured(world)
+    driver.accept(item['step_id'],attempt_id=item['attempt_id'],result=dict(kind='clarification',text='Synthetic',ready=True,questions=[],acceptance=['a']))
+    assert driver.tick(wf)['reason']=='PROJECT_AUTHORIZATION_REQUIRED'
+    with r.sessions() as s:
+        assert s.get(DevelopmentAuthorizationRequest,wf).status=='pending'
+    grant=Authorization(grant_id='approved',request_id=wf,project_id='local',subject='device:synthetic',approval_evidence_ref='explicit-user-approval',
+        root='/synthetic',kind='local_new',display_name='Local',actions=['read','write','create','local_init'],budget_seconds=600,
+        expires_at=r.now()+timedelta(hours=1),registration_policy='local_tracker')
+    register_authorization(r,grant,actor='operator')
+    result=driver.tick(wf)
+    assert result['status']=='prepared'
+    with r.sessions() as s:assert s.get(DevelopmentAuthorizationRequest,wf).status=='granted'

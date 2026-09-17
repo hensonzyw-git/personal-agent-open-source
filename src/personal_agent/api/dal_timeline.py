@@ -58,6 +58,21 @@ class TimelineBridge:
         if _session is not None:return work(_session)
         with self.sessions() as s:return run_write_transaction(s,lambda:work(s))
 
+    def queue_recovery(self,auth,*,command_id,source_message_ref,payload,_session):
+        from personal_agent_dal.timeline.transport import RecoveryPayload
+        payload=RecoveryPayload.model_validate(payload).model_dump()
+        self._identity(_session,auth,'dal.request')
+        body=dict(schema_version='dal.timeline/1.0',command_id=command_id,source_message_ref=source_message_ref,command_kind='recovery',payload=payload)
+        fingerprint=digest(dict(device_id=auth.device_id,key_thumbprint=auth.key_thumbprint,body=body))
+        old=_session.get(DalTimelineCommand,command_id)
+        if old:
+            if old.body_sha256!=fingerprint:raise ValueError('IDEMPOTENCY_CONFLICT')
+            return self._response(old)
+        row=DalTimelineCommand(command_id=command_id,device_id=auth.device_id,key_thumbprint=auth.key_thumbprint,body_sha256=fingerprint,
+            sealed_body=self._seal(command_id,'sealed_body',body),status='queued',attempts=0,created_at=self.now())
+        _session.add(row)
+        return self._response(row)
+
     def queue_decision(self,auth,*,command_id,source_message_ref,context,text,_session):
         from personal_agent.storage.models import DalContextBinding
         from personal_agent_dal.timeline.decisions import parse_decision,parse_project_choice
@@ -88,7 +103,7 @@ class TimelineBridge:
             return self._response(row)
 
     def query(self,auth,*,operation,body):
-        if operation not in ('request_detail','request_list','artifact_read','roles_read'):raise ValueError('INVALID_ARGUMENT')
+        if operation not in ('request_detail','request_list','artifact_read','roles_read','decision_status'):raise ValueError('INVALID_ARGUMENT')
         with self.sessions() as s:self._identity(s,auth,'dal.read')
         result=self.transport.call(operation=operation,request_id=new_id(),subject=auth.subject_id,body=body)
         with self.sessions() as s:self._identity(s,auth,'dal.read')
@@ -152,7 +167,7 @@ class TimelineBridge:
                     if row.status=='delivery_unknown':
                         row.sealed_receipt=self._seal(id,'sealed_receipt',result)
                         row.status=result['status']
-                        if result['status']=='refused' and self.projector is not None:
+                        if result['status']=='refused' and self.projector is not None and pending[1]['command_kind']=='decision':
                             from personal_agent.api import events
                             from personal_agent.storage.models import DalContextBinding
                             binding=s.scalar(select(DalContextBinding).where(DalContextBinding.device_id==row.device_id,
@@ -193,7 +208,13 @@ def mount_routes(app,deps,authenticate):
     def detail(task_id:str,request:Request):
         try:valid_id(task_id)
         except ValueError:raise HTTPException(400,'INVALID_ARGUMENT') from None
-        return query(request,'request_detail',dict(request_id=task_id))
+        result=query(request,'request_detail',dict(request_id=task_id))
+        from personal_agent.storage.models import DalDecisionState
+        with deps.session_factory() as session:
+            for decision in result.get('pending_decisions',[]):
+                state=session.get(DalDecisionState,decision['decision_id'])
+                decision['event_id']=state.event_id if state and state.status=='pending' else None
+        return result
 
     @app.get('/v1/dal/artifacts/{artifact_id}')
     def artifact(artifact_id:str,request:Request,offset:int=0):
@@ -213,5 +234,17 @@ def mount_routes(app,deps,authenticate):
         except ValueError:
             raise HTTPException(409, 'DAL_CONTEXT_UNAVAILABLE') from None
 
+    @app.get('/v1/dal/notifications/{notification_id}')
+    def notification(notification_id:str,request:Request):
+        if deps.dal_timeline is None:raise HTTPException(503,'DAL_UNAVAILABLE')
+        with deps.session_factory() as session:auth=authenticate(request,session)
+        from personal_agent.api.dal_notifications import notification_context
+        try:return notification_context(deps.dal_timeline,auth,notification_id)
+        except ValueError:raise HTTPException(404,'NOTIFICATION_NOT_FOUND') from None
+
     @app.get('/v1/dal/roles')
-    def roles(request:Request):return query(request,'roles_read',{})
+    def roles(request:Request,workflow_id:str|None=None):
+        if workflow_id is not None:
+            try:valid_id(workflow_id)
+            except ValueError:raise HTTPException(400,'INVALID_ARGUMENT') from None
+        return query(request,'roles_read',{'workflow_id':workflow_id})

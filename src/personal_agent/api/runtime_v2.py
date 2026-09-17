@@ -139,7 +139,8 @@ def process(deps,auth,operation_id):
             s.expire_all();op=_owned_operation(s,operation_id,device_id=auth.device_id)
             return _ProcessedChat(_operation_response(deps.keyring,op,client_wire_version=auth.client_wire_version))
         from personal_agent.runtime.dal_reply import handle_reply
-        reply_handled=asyncio.run(handle_reply(host))
+        from personal_agent.runtime.dal_recovery import handle_recovery
+        reply_handled=asyncio.run(handle_recovery(host)) or asyncio.run(handle_reply(host))
         for attempt in range(0 if reply_handled else 2):
             try:
                 asyncio.run(AdkRuntime(host=host,specs=host.specs,max_reads=3-host.repo.snapshot(operation_id)['read_used']).run())

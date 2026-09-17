@@ -41,7 +41,7 @@ def build_plan(context, reservation, pins, adapter_config=None):
     from personal_agent_dal.worker.reviewer_route import MODE, validate_route
     configured = adapter_config['roles'][context['execution_role']] if adapter_config else None
     if configured and configured['mode'] == MODE:
-        if context['snapshot'].get('contract_version') != 'dal.role-contract/2.0':
+        if context['snapshot'].get('contract_version') not in ('dal.role-contract/2.0','dal.role-contract/3.0'):
             raise SupervisorRefusal('REVIEWER_CONTRACT_REQUIRED')
         route = validate_route(role, configured, context['execution_role'], reservation, pin.version)
     else:
@@ -61,11 +61,16 @@ def build_plan(context, reservation, pins, adapter_config=None):
     if route['mode']=='codex_login':env['CODEX_HOME']=route['home']
     elif route['mode']=='claude_login':env['CLAUDE_CONFIG_DIR']=route['home']
     writes = (cwd, str(scratch), str(Path(reservation['git'])/'repository')) if role.permission == 'workspace_write' else (str(scratch),)
+    timeline = context['snapshot'].get('contract_version') == 'dal.role-contract/3.0'
+    if timeline and role.permission == 'workspace_write':
+        writes = (cwd, str(scratch))
     reads = (reservation['workspace'], *reservation.get('read_roots', []))
     protected = [*reservation.get('read_roots', []),
         str(Path(reservation['git'])/'repository'/'config'),
         str(Path(reservation['git'])/'repository'/'hooks'),
         *([reservation['workspace']] if role.permission=='read_only' else [])]
+    if timeline:
+        protected.append(str(Path(reservation['git'])/'repository'))
     if role.runtime=='codex_cli':
         argv=(str(executable),'exec','--ignore-user-config','--ephemeral','--json','--color','never',
             '--sandbox','workspace-write','--skip-git-repo-check','-C',cwd,'--model',role.model,

@@ -9,6 +9,8 @@ import UserNotifications
 /// The coordinator itself lives on the app model, where it can reach the
 /// device session; this delegate only forwards the bytes iOS hands back.
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    var developmentBatchNotification: ((String) -> Void)?
+    var pendingDevelopmentNotificationID: String?
     var developmentNotification: ((String) -> Void)?
     var pendingDevelopmentEventID: String?
 
@@ -25,6 +27,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             Task { @MainActor in
                 self.pendingDevelopmentEventID = id
                 self.developmentNotification?(id)
+            }
+        }
+        if let id = response.notification.request.content.userInfo["development_notification_id"] as? String,
+           !id.isEmpty, id.utf8.count <= 128, id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_.:-".contains($0)) }) {
+            Task { @MainActor in
+                self.pendingDevelopmentNotificationID = id
+                self.developmentBatchNotification?(id)
             }
         }
         completionHandler()

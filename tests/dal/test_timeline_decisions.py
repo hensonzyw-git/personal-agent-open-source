@@ -65,6 +65,7 @@ def routed(world, *, grant_request=None, candidate_kind='existing'):
         root='/synthetic/project',kind='existing',display_name='Synthetic project',actions=['read','write'],
         budget_seconds=600,expires_at=r.now()+timedelta(hours=1),registration_policy='local_tracker'),actor='synthetic-operator')
     prepared=driver.tick(wf)
+    if prepared.get('status')=='blocked':return r,wf,prepared
     with r.sessions() as s:
         step=s.get(Step,prepared['step_id'])
         admission=dict(step_id=step.step_id,input_digest=step.input_digest,snapshot_id=step.snapshot_id,
@@ -83,10 +84,13 @@ def routed(world, *, grant_request=None, candidate_kind='existing'):
 
 @pytest.mark.parametrize('attack',['wrong_request','wrong_kind'])
 def test_project_choice_cannot_reuse_another_request_or_kind_grant(world,attack):
-    r,wf,command=routed(world,grant_request='other-request' if attack=='wrong_request' else None,
-        candidate_kind='local_new' if attack=='wrong_kind' else 'existing')
-    with pytest.raises(ValueError,match='INPUT_NOT_AUTHORIZED'):
-        DecisionService(r).consume(**command)
+    if attack=='wrong_request':
+        _,_,result=routed(world,grant_request='other-request')
+        assert result['status']=='blocked' and result['reason']=='PROJECT_AUTHORIZATION_REQUIRED'
+    else:
+        with pytest.raises(ValueError,match='PROJECT_CATALOG_MISMATCH|INPUT_NOT_AUTHORIZED'):
+            r,wf,command=routed(world,candidate_kind='local_new')
+            DecisionService(r).consume(**command)
 
 
 def test_authorized_project_choice_advances_only_to_registration(world):

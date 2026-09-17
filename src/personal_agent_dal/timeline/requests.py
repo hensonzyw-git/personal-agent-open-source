@@ -159,11 +159,15 @@ class RequestService:
             from personal_agent_dal.storage.models import Feature
             repository_id = s.scalar(select(Feature.repository_id).where(Feature.feature_id == workflow.feature_id))
             if repository_id not in self.allowed_repository_ids:
-                raise TimelineRefusal('REQUEST_NOT_FOUND')
+                from personal_agent_dal.storage.timeline_models import DevelopmentProjectBinding, DevelopmentProjectAuthorization
+                binding=s.get(DevelopmentProjectBinding,workflow.workflow_id)
+                grant=s.get(DevelopmentProjectAuthorization,binding.grant_id) if binding else None
+                if (grant is None or binding.project_id!=repository_id or grant.project_id!=repository_id
+                    or grant.revoked or grant.expires_at<=self.now()):raise TimelineRefusal('REQUEST_NOT_FOUND')
         from personal_agent_dal.storage.timeline_models import DevelopmentArtifact, DevelopmentDecisionRequest, DevelopmentStage, DevelopmentStagePlan
         artifacts=[dict(artifact_id=a.artifact_id,kind=a.kind,revision=a.revision,body_sha256=a.body_sha256) for a in s.scalars(select(DevelopmentArtifact).where(DevelopmentArtifact.workflow_id==workflow.workflow_id).order_by(DevelopmentArtifact.kind,DevelopmentArtifact.revision))]
-        decisions=[dict(decision_id=d.decision_id,kind=d.kind,version=d.version,expires_at=d.expires_at.isoformat()) for d in s.scalars(select(DevelopmentDecisionRequest).where(DevelopmentDecisionRequest.workflow_id==workflow.workflow_id,DevelopmentDecisionRequest.status=='pending',DevelopmentDecisionRequest.expires_at>self.now()))]
-        stages=[dict(stage_id=stage.stage_id,revision=stage.revision,state=stage.state,state_version=stage.state_version) for stage in s.scalars(select(DevelopmentStage).join(DevelopmentStagePlan).where(DevelopmentStagePlan.workflow_id==workflow.workflow_id).order_by(DevelopmentStagePlan.revision,DevelopmentStage.ordinal))]
+        decisions=[dict(decision_id=d.decision_id,kind=d.kind,version=d.version,expires_at=d.expires_at.isoformat(),artifact_id=self._open(DevelopmentDecisionRequest,d.decision_id,'sealed_binding',d.sealed_binding)['artifact_id']) for d in s.scalars(select(DevelopmentDecisionRequest).where(DevelopmentDecisionRequest.workflow_id==workflow.workflow_id,DevelopmentDecisionRequest.status=='pending',DevelopmentDecisionRequest.expires_at>self.now()))]
+        stages=[dict(stage_id=stage.stage_id,revision=stage.revision,state=stage.state,state_version=stage.state_version,base_sha=stage.base_sha,head_sha=stage.head_sha,tree_sha=stage.tree_sha,verification_digest=stage.verification_digest,review_digest=stage.review_digest,commit_digest=stage.commit_digest) for stage in s.scalars(select(DevelopmentStage).join(DevelopmentStagePlan).where(DevelopmentStagePlan.workflow_id==workflow.workflow_id).order_by(DevelopmentStagePlan.revision,DevelopmentStage.ordinal))]
         return dict(request_id=request.request_id, request_version=request.version,
             version=workflow.version, status=workflow.status, text=body['text'],
             created_at=request.created_at.isoformat(), feature_id=workflow.feature_id,
@@ -185,7 +189,7 @@ class RequestService:
                 continue
             if workflow is not None and workflow.feature_id is not None:
                 repository_id = s.scalar(select(Feature.repository_id).where(Feature.feature_id == workflow.feature_id))
-                if repository_id not in self.allowed_repository_ids:
+                if repository_id not in self.allowed_repository_ids and not workflow.feature_id.startswith('workflow:'):
                     continue
             item = self._detail(s, request)
             text = item.pop('text')

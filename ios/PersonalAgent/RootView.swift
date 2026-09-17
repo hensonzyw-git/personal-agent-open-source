@@ -49,6 +49,25 @@ struct RootView: View {
                 if model.pendingDevelopmentEventID == id { model.pendingDevelopmentEventID = nil }
             }
         }
+        .task(id: model.pendingDevelopmentNotificationID) { await model.openDevelopmentNotification() }
+        .sheet(isPresented: Binding(get: { !model.developmentNotificationItems.isEmpty }, set: { if !$0 { model.developmentNotificationItems = [] } })) {
+            NavigationStack {
+                List(model.developmentNotificationItems) { item in
+                    Button {
+                        model.developmentNotificationItems = []
+                        model.pendingDevelopmentEventID = item.eventID
+                    } label: {
+                        VStack(alignment: .leading) {
+                            Text(item.text)
+                            if !item.current { Text("已处理或已失效，打开可查看原消息。").font(.caption) }
+                        }
+                    }
+                }.navigationTitle("开发事项")
+            }
+        }
+        .alert("开发通知暂时无法读取，请从 Timeline 查看最新消息。", isPresented: $model.developmentNotificationError) {
+            Button("知道了", role: .cancel) { }
+        }
         .background(Color.screenBackground)
         .navigationTitle("Personal Agent")
         .navigationBarTitleDisplayMode(.inline)

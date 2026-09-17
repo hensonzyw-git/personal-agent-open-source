@@ -346,3 +346,31 @@ def test_heartbeat_revalidates_bound_admission(admission, runtime, monkeypatch):
     with pytest.raises(OSError, match='offline heartbeat boundary reached'):
         execute_runtime(t, l, supervisor=s, attempt=c['attempt_id'])
     assert observed == ['bound-evidence-rechecked']
+
+
+def test_v3_coder_admission_requires_git_metadata_denial_not_legacy_git_writes(admission):
+    from tests.dal.test_timeline_roles import config
+    c,r,b,e=admission
+    body=config();snapshot=dict(body,digest=_digest(body),source='system')
+    c=dict(c,snapshot=snapshot,snapshot_sha256=_digest(snapshot),completion_mode='workflow_result',owner={'kind':'workflow','workflow_id':'synthetic'})
+    template=b['pins'][0]
+    b['pins']=[dict(schema='dal.runtime-pin/3.0',role=name,configuration=configuration,runtime='codex_cli',provider='openai',
+        executable=template['executable'],version=template['version'],executable_sha256=template['executable_sha256'])
+        for name,configuration in body['roles'].items()]
+    config_path=Path(next(iter(b['config_refs'])))
+    write(config_path,dict(pins=b['pins'],adapters=b['adapters']))
+    b['config_refs']={str(config_path):_digest(json.loads(config_path.read_text()))}
+    e.update(schema='dal.runtime-admission/3.0',scope='timeline-workflow-v3',config_refs=b['config_refs'])
+    for name in body['roles']:
+        plan=build_plan(dict(c,execution_role=name),r,b['pins'],b['adapters'])
+        record=e['roles'][name];record['configuration']=body['roles'][name];record['plan']=plan_contract(plan,r)
+        record['smoke']['command']=list(plan.argv);record['smoke']['command_sha256']=_digest(list(plan.argv))
+        if name=='coder':
+            record['smoke']['result']['observations']=['report-produced','scratch-write','source-edit','git-metadata-write-denied','outside-write-denied']
+            record['smoke']['result_sha256']=_digest(record['smoke']['result'])
+    write(Path(b['path']),e)
+    assert validate_admission(b,context=c,reservation=r)==_digest(e)
+    coder=e['roles']['coder']['smoke']
+    coder['result']['observations']=['report-produced','scratch-write','source-edit','git-add','git-commit','outside-write-denied']
+    coder['result_sha256']=_digest(coder['result']);write(Path(b['path']),e)
+    with pytest.raises(SupervisorRefusal):validate_admission(b,context=c,reservation=r)

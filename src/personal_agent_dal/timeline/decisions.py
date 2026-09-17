@@ -41,11 +41,11 @@ class DecisionService:
     def __init__(self,requests):self.r=requests
 
     def propose(self,workflow_id,artifact_id,*,kind,candidates=None,_session=None):
-        if kind not in ('prd','project_selection'):raise ValueError('DECISION_KIND_INVALID')
+        if kind not in ('prd','project_selection','delivery'):raise ValueError('DECISION_KIND_INVALID')
         def work(s):
             wf=s.scalar(select(Workflow).where(Workflow.workflow_id==workflow_id))
             artifact=s.get(Artifact,artifact_id)
-            expected_kind='prd' if kind=='prd' else 'project_route'
+            expected_kind={'prd':'prd','project_selection':'project_route','delivery':'delivery'}[kind]
             if wf is None or wf.status!='active' or artifact is None or artifact.workflow_id!=workflow_id or artifact.kind!=expected_kind:raise ValueError('STALE_BINDING')
             newest=s.scalar(select(Artifact).where(Artifact.workflow_id==workflow_id,Artifact.kind==expected_kind).order_by(Artifact.revision.desc()))
             if newest.artifact_id!=artifact_id:raise ValueError('STALE_BINDING')
@@ -62,8 +62,8 @@ class DecisionService:
             gate=s.get(Gate,workflow_id)
             if gate is None:
                 gate=Gate(workflow_id=workflow_id,mode='open',epoch=1,version=1);s.add(gate)
-            if gate.mode!='open':raise ValueError('EXECUTION_FENCED')
-            wf.phase='prd_waiting' if kind=='prd' else 'project_selection';wf.version+=1
+            if gate.mode!=('paused' if kind=='delivery' else 'open'):raise ValueError('EXECUTION_FENCED')
+            wf.phase={'prd':'prd_waiting','project_selection':'project_selection','delivery':'delivery_waiting'}[kind];wf.version+=1
             id=new_id();expires=self.r.now()+timedelta(hours=24)
             binding=dict(workflow_id=workflow_id,workflow_version=wf.version,decision_id=id,kind=kind,decision_version=1,
                 artifact_id=artifact_id,artifact_revision=artifact.revision,body_sha256=artifact.body_sha256,
@@ -72,10 +72,11 @@ class DecisionService:
             row=Decision(decision_id=id,workflow_id=workflow_id,kind=kind,version=1,binding_digest=digest(binding),
                 sealed_binding=self.r._seal(Decision,id,'sealed_binding',binding),status='pending',expires_at=expires)
             s.add(row)
-            text='PRD 已准备好，请打开文档审核；可以直接回复“通过”或“修改：意见”。' if kind=='prd' else '请选择项目：\n'+'\n'.join(f'{i+1}. {c["display_name"]}' for i,c in enumerate(candidates))
+            text='交付已准备好，请打开文档审核；验收前会重新核对代码版本。' if kind=='delivery' else 'PRD 已准备好，请打开文档审核；可以直接回复“通过”或“修改：意见”。' if kind=='prd' else '请选择项目：\n'+'\n'.join(f'{i+1}. {c["display_name"]}' for i,c in enumerate(candidates))
             request=s.get(Request,wf.request_id)
             self.r._append_event(s,request,'decision.requested',dict(summary=text,status=wf.status,phase=wf.phase,
-                artifact=dict(artifact_id=artifact_id,kind=artifact.kind,revision=artifact.revision),decision=self._projection(row,binding)))
+                artifact=dict(artifact_id=artifact_id,kind=artifact.kind,revision=artifact.revision),decision=self._projection(row,binding),
+                invalidated_decision_ids=[old.decision_id for old in current if old.status=='superseded']))
             return self._projection(row,binding)
         if _session is not None:return work(_session)
         with self.r.sessions() as s:return run_write_transaction(s,lambda:work(s))
@@ -99,7 +100,7 @@ class DecisionService:
             binding=self.r._open(Decision,decision_id,'sealed_binding',row.sealed_binding)
             if digest(binding)!=binding_digest:raise ValueError('STALE_BINDING')
             wf=s.get(Workflow,row.workflow_id);gate=s.get(Gate,row.workflow_id)
-            if wf.status!='active' or wf.version!=binding['workflow_version'] or gate.version!=binding['gate_version'] or gate.epoch!=binding['gate_epoch'] or gate.mode!='open':raise ValueError('STALE_BINDING')
+            if wf.status!='active' or wf.version!=binding['workflow_version'] or gate.version!=binding['gate_version'] or gate.epoch!=binding['gate_epoch'] or gate.mode!=('paused' if row.kind=='delivery' else 'open'):raise ValueError('STALE_BINDING')
             choice=None;feedback=''
             if row.kind=='project_selection':
                 choice=parse_project_choice(text,binding['candidates'])
@@ -124,6 +125,14 @@ class DecisionService:
                 elif decision=='request_changes':wf.phase='prd_authoring'
                 else:
                     wf.status='paused';gate.mode='paused';gate.version+=1;gate.epoch+=1
+            elif row.kind=='delivery':
+                parsed=parse_decision(text)
+                if parsed is None:raise ValueError('AMBIGUOUS_TARGET')
+                decision,feedback=parsed['decision'],parsed['feedback']
+                if decision=='approve':raise ValueError('DELIVERY_PROBE_REQUIRED')
+                if decision=='request_changes':wf.phase='delivery_revision_planning'
+                else:wf.status='paused'
+                gate.version+=1;gate.epoch+=1
             else:raise ValueError('DELIVERY_PROBE_REQUIRED')
             row.status='consumed';wf.version+=1
             result=dict(command_id=command_id,decision_id=decision_id,workflow_id=wf.workflow_id,workflow_version=wf.version,
@@ -137,6 +146,12 @@ class DecisionService:
         with self.r.sessions() as s:return run_write_transaction(s,lambda:work(s))
 
     def process(self, **command):
+        if command.get('expected_kind')=='delivery':
+            from personal_agent_dal.timeline.delivery import DeliveryService
+            return DeliveryService(self.r).process(**command)
+        return self._process_standard(**command)
+
+    def _process_standard(self, **command):
         """Signed commands get a durable accepted/refused receipt, including stale replies."""
         from personal_agent_dal.storage.timeline_models import DevelopmentCommand
         fingerprint=digest(dict(kind='decision',**command))

@@ -32,6 +32,7 @@ class RoleService:
     def __init__(self,requests,registry):
         self.requests=requests
         self.registry=registry
+        self.availability=None
 
     def validate(self,body):
         value=Configuration.model_validate(body).model_dump()
@@ -83,7 +84,11 @@ class RoleService:
             body=json.loads(selected.body)
             if digest(body)!=selected.digest:raise ValueError('ROLE_CONFIG_INTEGRITY')
             self.validate(body)
-            return dict(**body,digest=selected.digest,source=source,available=False,reason='RUNTIME_ADMISSION_REQUIRED')
+            result=dict(**body,digest=selected.digest,source=source,available=False,reason='RUNTIME_ADMISSION_REQUIRED')
+            snapshot_body={k:result[k] for k in ('contract_version','configuration_id','revision','roles','digest','source')}
+            if self.availability is not None and self.availability(snapshot_body):
+                result.update(available=True,reason=None)
+            return result
 
         if _session is not None:return read(_session)
         with self.requests.sessions() as s:return read(s)

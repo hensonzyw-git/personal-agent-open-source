@@ -88,6 +88,13 @@ struct DevelopmentDocumentView: View {
     let artifactID: String
     let load: ((String) async throws -> DevelopmentDocument)?
     var reply: (() async throws -> Void)? = nil
+    private func safeMarkdown(_ text: String) -> AttributedString {
+        var rendered = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+        // Text never fetches images or executes HTML. Links remain readable but
+        // cannot open arbitrary provider-supplied URLs from a report.
+        for run in rendered.runs { if run.link != nil { rendered[run.range].link = nil } }
+        return rendered
+    }
     @Environment(\.dismiss) private var dismiss
     @State private var replyError = false
     @State private var document: DevelopmentDocument?
@@ -97,7 +104,7 @@ struct DevelopmentDocumentView: View {
             if let document, document.complete {
                 // Plain text preserves all content without executing HTML,
                 // remote images, scripts or automatically opening links.
-                Text(document.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding()
+                Text(safeMarkdown(document.text)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding()
             } else if failed {
                 Text("文档未能完整加载，请返回后重试。").padding()
             } else { ProgressView("正在完整加载并校验文档…").padding() }
@@ -130,16 +137,60 @@ struct DevelopmentTaskView: View {
     @Bindable var model: AppModel
     let taskID: String
     @State private var detail: DevelopmentTaskDetail?
+    @State private var taskRoles: DevelopmentRoles?
     @State private var failed = false
     var body: some View {
         List {
             if let detail {
                 Text(DevelopmentState.label(phase: detail.phase, status: detail.status))
                 Text(detail.text).textSelection(.enabled)
+                Section("任务与恢复") {
+                    Text("任务编号：" + taskID).font(.caption).textSelection(.enabled)
+                    Text("在对话中发送以下命令，可补充需求或恢复当前任务：").font(.caption)
+                    Text("补充需求 \(taskID)：补充内容\n继续开发 \(taskID)\n刷新待审 \(taskID)")
+                        .font(.caption.monospaced()).textSelection(.enabled)
+                }
+                Section("阶段") {
+                    ForEach(detail.stages) { stage in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("阶段 \(stage.stageID) · v\(stage.revision)")
+                            Text(stage.state).font(.caption)
+                            if let head = stage.headSHA { Text("代码版本：" + head).font(.caption).textSelection(.enabled) }
+                            Text("验证：\(stage.verificationDigest == nil ? "尚无证据" : "已记录") · 审查：\(stage.reviewDigest == nil ? "尚无证据" : "已记录") · 提交：\(stage.commitDigest == nil ? "尚无证据" : "已记录")").font(.caption)
+                        }
+                    }
+                }
+                Section("待处理") {
+                    ForEach(detail.pendingDecisions) { decision in
+                        if let eventID = decision.eventID {
+                            Button("返回 Timeline 处理 \(decision.kind)") {
+                                model.pendingDevelopmentEventID = eventID
+                                model.developmentNavigationID = UUID()
+                            }
+                        } else { Text("\(decision.kind)：消息同步中，请稍后刷新。") }
+                    }
+                }
+                if let taskRoles {
+                    Section("任务当前配置（来源：\(taskRoles.source ?? "未配置")）") {
+                        ForEach(["planner", "coder", "reviewer"], id: \.self) { name in
+                            if let role = taskRoles.roles[name] { Text("\(name)：\(role.model) · \(role.reasoning)") }
+                        }
+                    }
+                    ForEach(taskRoles.runningSnapshots ?? []) { snapshot in
+                        Section("执行中的配置") {
+                            Text(snapshot.snapshotID).font(.caption)
+                            ForEach(["planner", "coder", "reviewer"], id: \.self) { name in
+                                if let role = snapshot.roles[name] { Text("\(name)：\(role.model) · \(role.reasoning)") }
+                            }
+                        }
+                    }
+                }
                 Section("文档与证据") {
                     ForEach(detail.artifacts) { artifact in
                         NavigationLink("\(artifact.kind) · v\(artifact.revision)") {
-                            DevelopmentDocumentView(artifactID: artifact.artifactID, load: { id in try await model.developmentDocument(id: id) })
+                            DevelopmentDocumentView(artifactID: artifact.artifactID, load: { id in try await model.developmentDocument(id: id) }, reply: detail.pendingDecisions.first(where: { $0.artifactID == artifact.artifactID })?.eventID.map { eventID in
+                                { model.pendingDevelopmentEventID = eventID; model.developmentNavigationID = UUID() }
+                            })
                         }
                     }
                 }
@@ -148,7 +199,7 @@ struct DevelopmentTaskView: View {
         }
         .navigationTitle("开发任务")
         .task {
-            do { detail = try await model.developmentTask(id: taskID) }
+            do { detail = try await model.developmentTask(id: taskID); taskRoles = try await model.developmentRoles(workflowID: taskID) }
             catch { failed = true }
         }
     }

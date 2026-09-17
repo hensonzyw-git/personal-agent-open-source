@@ -19,6 +19,9 @@ final class AppModel {
 
     var phase: Phase = .loading
     var pendingDevelopmentEventID: String?
+    var pendingDevelopmentNotificationID: String?
+    var developmentNotificationItems: [DevelopmentNotificationItem] = []
+    var developmentNotificationError = false
     var developmentNavigationID = UUID()
     /// Where the backend is. The default is the production entry behind TLS
     /// (`DEV-033`); the Simulator's `http://127.0.0.1:8810` is typed by hand
@@ -113,9 +116,20 @@ final class AppModel {
         }
     }
 
-    func developmentRoles() async throws -> DevelopmentRoles {
+    func openDevelopmentNotification() async {
+        guard let id = pendingDevelopmentNotificationID, let session else { return }
+        do {
+            let context = try await session.developmentNotification(id: id)
+            guard pendingDevelopmentNotificationID == id else { return }
+            pendingDevelopmentNotificationID = nil
+            if context.items.count == 1 { pendingDevelopmentEventID = context.items[0].eventID }
+            else { developmentNotificationItems = context.items }
+        } catch { developmentNotificationError = true }
+    }
+
+    func developmentRoles(workflowID: String? = nil) async throws -> DevelopmentRoles {
         guard let session else { throw AgentClientError.unauthenticated }
-        return try await session.developmentRoles()
+        return try await session.developmentRoles(workflowID: workflowID)
     }
     func developmentTask(id: String) async throws -> DevelopmentTaskDetail {
         guard let session else { throw AgentClientError.unauthenticated }
@@ -244,6 +258,14 @@ final class AppModel {
             }
         }
         delegate.pushCoordinator = pushCoordinator
+        delegate.developmentBatchNotification = { [weak self] id in
+            self?.pendingDevelopmentNotificationID = id
+            self?.developmentNavigationID = UUID()
+        }
+        if let id = delegate.pendingDevelopmentNotificationID {
+            pendingDevelopmentNotificationID = id
+            delegate.pendingDevelopmentNotificationID = nil
+        }
         delegate.developmentNotification = { [weak self] id in
             self?.pendingDevelopmentEventID = id
             self?.developmentNavigationID = UUID()

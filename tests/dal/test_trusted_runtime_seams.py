@@ -163,3 +163,52 @@ def test_reservation_parent_remains_strict(runtime):
     r=s.validate(row['reservation_id'])
     (Path(r['parent'])/'unregistered').symlink_to(r['workspace'])
     with pytest.raises(SupervisorRefusal,match='RESERVATION_PARENT_CONTENT_INVALID'):s.validate(row['reservation_id'])
+
+
+def test_v3_coder_has_no_git_metadata_write_root(runtime):
+    from tests.dal.test_timeline_roles import config
+    from personal_agent_dal.timeline.requests import digest
+    t,l,c,s,k=runtime
+    reservation=s.reserve(attempt_id='v3-plan',workspace_id='v3-plan',generation=1,authority={},read_roots=[])
+    body=config();snapshot=dict(body,digest=digest(body),source='system')
+    binary=Path(sys.executable).resolve()
+    pins=[dict(schema='dal.runtime-pin/3.0',role=role,configuration=configuration,
+        runtime='codex_cli',provider='openai',executable=str(binary),
+        executable_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),version='synthetic')
+        for role,configuration in body['roles'].items()]
+    plan=build_plan(dict(snapshot=snapshot,snapshot_sha256=digest(snapshot),execution_role='coder'),reservation,pins)
+    assert set(plan.write_roots)=={reservation['workspace'],reservation['temp']}
+    assert str(Path(reservation['git'])/'repository') not in plan.write_roots
+
+
+@pytest.mark.parametrize('fault',['registration','stream'])
+def test_owned_child_is_stopped_when_registration_or_stream_read_raises(runtime,monkeypatch,fault):
+    import os
+    from personal_agent_dal.worker import runtime_process
+    t,l,c,s,k=runtime;row=prepare_runtime(t,l,c,**k);inv=RuntimeInventory(s)
+    inv.transition(c['attempt_id'],'prepared','dispatch_requested')
+    inv.transition(c['attempt_id'],'dispatch_requested','granted')
+    reservation=s.validate(row['reservation_id'])
+    real_popen=subprocess.Popen;children=[]
+    def launch(*args,**kwargs):
+        child=real_popen(*args,**kwargs);children.append(child);return child
+    monkeypatch.setattr(subprocess,'Popen',launch)
+    if fault=='registration':
+        transition=inv.transition
+        def fail_registration(attempt,before,after,**kwargs):
+            if after=='running':raise OSError('synthetic registration failure')
+            return transition(attempt,before,after,**kwargs)
+        monkeypatch.setattr(inv,'transition',fail_registration)
+    else:
+        original_read=os.read
+        def broken(fd,size):
+            if children and fd in (children[0].stdout.fileno(),children[0].stderr.fileno()):
+                raise OSError('synthetic stream failure')
+            return original_read(fd,size)
+        monkeypatch.setattr(os,'read',broken)
+    with pytest.raises(OSError):
+        runtime_process.run_process(inv,c['attempt_id'],runtime_process.fixture_plan(reservation),
+            heartbeat=lambda:True,deadline=9999999999)
+    assert children[0].poll() is not None
+    assert all(stream.closed for stream in (children[0].stdin,children[0].stdout,children[0].stderr))
+    with pytest.raises(ProcessLookupError):os.killpg(children[0].pid,0)

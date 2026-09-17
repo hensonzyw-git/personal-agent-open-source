@@ -109,7 +109,7 @@ def test_current_dal_migrated_schema_matches_models(world):
     from alembic.autogenerate import compare_metadata
     from personal_agent_dal.storage.models import Base
     with world.connect() as connection:
-        assert connection.scalar(text('SELECT version_num FROM alembic_version')) == '0021'
+        assert connection.scalar(text('SELECT version_num FROM alembic_version')) == '0022'
         tables = {'resume_lease_issuances', 'resume_revoke_receipts'}
         def include_object(obj, name, type_, reflected, compare_to):
             return (name if type_ == 'table' else obj.table.name) in tables

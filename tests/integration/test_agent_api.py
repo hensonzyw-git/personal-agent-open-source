@@ -1455,9 +1455,15 @@ def test_a_clarification_naming_an_unknown_timeline_is_refused(
 def test_slow_model_returns_202_and_finishes_in_the_worker(
     engine, token_ring, keyring, tmp_path
 ) -> None:
+    interpreting = threading.Event()
+    release_model = threading.Event()
+    model_finished = threading.Event()
+
     class SlowInterpreter:
         def interpret(self, *, envelope):
-            time.sleep(0.1)
+            interpreting.set()
+            assert release_model.wait(10), "HTTP response waited for the blocked model"
+            model_finished.set()
             return DirectAnswer("完成")
 
     recorder = TranscriptRecorder(
@@ -1473,17 +1479,22 @@ def test_slow_model_returns_202_and_finishes_in_the_worker(
         recorder=recorder,
     )
     with client:
-        started = time.monotonic()
-        response = client.post(
-            "/v1/chat/messages",
-            json={"conversation_id": "c1", "text": "hi"},
-            headers=_auth(token_ring),
-        )
-        assert response.status_code == 202
-        assert time.monotonic() - started < 0.08
+        try:
+            response = client.post(
+                "/v1/chat/messages",
+                json={"conversation_id": "c1", "text": "hi"},
+                headers=_auth(token_ring),
+            )
+            assert response.status_code == 202
+            assert interpreting.wait(5)
+            # Prove detachment from model completion, independent of machine load.
+            assert not model_finished.is_set()
+        finally:
+            release_model.set()
 
         operation_id = response.json()["operation_id"]
-        for _ in range(30):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
             polled = client.get(
                 f"/v1/operations/{operation_id}",
                 headers={"Authorization": f"Bearer {_token(token_ring)}"},

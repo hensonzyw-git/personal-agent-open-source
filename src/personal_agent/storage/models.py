@@ -1378,3 +1378,29 @@ class DalNotification(Base):
         UniqueConstraint('device_id', 'event_id', name='dal_notification_delivery'),
         CheckConstraint("status IN ('pending','sending','provider_accepted','undeliverable') AND attempts >= 0", name='dal_notification_state'),
     )
+
+
+class DalDecisionState(Base):
+    """Device-independent projection, including tombstones for unseen decisions."""
+    __tablename__ = 'dal_decision_states'
+    decision_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False)
+    binding_digest: Mapped[str | None] = mapped_column(Text)
+    event_id: Mapped[str | None] = mapped_column(ForeignKey('conversation_events.event_id'))
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    source_seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    __table_args__ = (CheckConstraint("status IN ('pending','consumed','superseded') AND source_seq >= 1", name='dal_decision_projection'),)
+
+
+class DalNotificationBatch(Base):
+    __tablename__ = 'dal_notification_batches'
+    batch_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey('devices.device_id'), nullable=False)
+    event_ids: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class DalNotificationMembership(Base):
+    __tablename__ = 'dal_notification_memberships'
+    notification_id: Mapped[str] = mapped_column(ForeignKey('dal_notifications.notification_id'), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(ForeignKey('dal_notification_batches.batch_id'), nullable=False)

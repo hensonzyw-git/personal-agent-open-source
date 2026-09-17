@@ -30,6 +30,7 @@ def bridge_world(world, tmp_path):
         if state['lose']: raise OSError('synthetic response loss')
         return result
     transport._post = post
+    transport.test_requests = world[2]
     engine = create_database_engine(tmp_path/'pa-timeline.db')
     db.upgrade(engine)
     sessions = session_factory(engine)
@@ -290,6 +291,19 @@ def context_fixture(bridge, auth):
         binding = dict(workflow_id='synthetic', version=1)
         decision = dict(decision_id='decision', kind='prd', binding=binding,
                         binding_digest=digest(binding), expires_at=(bridge.now()+timedelta(hours=1)).isoformat())
+        from personal_agent.storage.models import DalDecisionState
+        from personal_agent_dal.storage.timeline_models import DevelopmentDecisionRequest, DevelopmentWorkflow
+        dal=bridge.transport.test_requests
+        dal.now=bridge.now
+        with dal.sessions() as ds,ds.begin():
+            wf=ds.scalar(select(DevelopmentWorkflow))
+            ds.add(DevelopmentDecisionRequest(decision_id='decision',workflow_id=wf.workflow_id,kind='prd',version=1,binding_digest=decision['binding_digest'],sealed_binding=dal._seal(DevelopmentDecisionRequest,'decision','sealed_binding',binding),status='pending',expires_at=bridge.now()+timedelta(hours=1)))
+        s.add(DalDecisionState(decision_id='decision',request_id='synthetic',binding_digest=decision['binding_digest'],event_id=event_id,status='pending',source_seq=1))
+        s.flush()
+        from personal_agent.storage.models import ConversationEvent
+        from personal_agent_core.manifest import canonical_json
+        event=s.get(ConversationEvent,event_id)
+        event.encrypted_content=bridge.keyring.encrypt(canonical_json({'decision':decision}).encode(),table='conversation_events',column='encrypted_content',row_id=event_id)
         delivered(s, bridge, auth, [SimpleNamespace(event_type='development_update', event_id=event_id, content={'decision':decision})])
     return event_id
 
@@ -381,11 +395,13 @@ def test_development_push_coalesces_and_rechecks_revocation(bridge_world):
     with bridge.sessions() as s,s.begin():
         device=s.get(Device,auth.device_id)
         device.encrypted_push_token=bridge.keyring.encrypt(b'synthetic-token',table='devices',column='encrypted_push_token',row_id=auth.device_id)
-        enqueue(s,event_id=event_id,kind='decision.requested',now=bridge.now()-timedelta(minutes=1))
+        enqueue(s,event_id=event_id,kind='decision.requested',now=bridge.now()-timedelta(minutes=3))
     seen=[]
     sender=SimpleNamespace(send_development=lambda device_id,**body:seen.append((device_id,body)))
     deliver(bridge,sender)
-    assert seen==[(auth.device_id,dict(event_id=event_id,count=1))]
+    assert len(seen)==1 and seen[0][0]==auth.device_id and seen[0][1]['count']==1
+    from personal_agent.api.dal_notifications import notification_context
+    assert notification_context(bridge,auth,seen[0][1]['notification_id'])['event_ids']==[event_id]
     with bridge.sessions() as s,s.begin():
         row=s.scalar(select(DalNotification));assert row.status=='provider_accepted'
         row.status='pending';row.next_attempt_at=bridge.now()-timedelta(seconds=1)
@@ -437,3 +453,20 @@ def test_http_replay_cannot_elevate_sealed_turn_permissions():
     assert _action_authority(auth,ChatRequestPayload('timeline','通过')).scopes==()
     from dataclasses import replace
     with pytest.raises(Exception):_action_authority(replace(auth,key_thumbprint='rotated'),payload)
+
+
+def test_decision_tombstone_prevents_historical_context_recreation(bridge_world):
+    from personal_agent.api.dal_contexts import pending, mint, delivered
+    from personal_agent.storage.models import DalDecisionState, DalContextBinding
+    bridge,auth,*_=bridge_world
+    event_id=context_fixture(bridge,auth)
+    contexts=pending(bridge,auth)
+    assert len(contexts)==1
+    decision={k:v for k,v in contexts[0].items() if k not in ('event_id','context_id')}
+    with bridge.sessions() as s,s.begin():
+        s.get(DalDecisionState,'decision').status='superseded'
+        s.delete(s.scalar(select(DalContextBinding)))
+    with bridge.sessions() as s,s.begin():
+        delivered(s,bridge,auth,[SimpleNamespace(event_type='development_update',event_id=event_id,content={'decision':decision})])
+    assert pending(bridge,auth)==[]
+    with pytest.raises(ValueError,match='DAL_CONTEXT_UNAVAILABLE'):mint(bridge,auth,event_id)

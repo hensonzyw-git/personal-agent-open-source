@@ -19,7 +19,7 @@ class Claims(Closed):
     iat: StrictInt
     exp: StrictInt
     domain: Literal['dal.timeline-command/1.0','dal.timeline-response/1.0']
-    operation: Literal['submit','request_detail','request_list','events_read','events_ack','artifact_read','roles_read','decision']
+    operation: Literal['submit','request_detail','request_list','events_read','events_ack','artifact_read','roles_read','decision','recovery','decision_status']
     request_id: Id
     subject: Id
     scope: Literal['dal.read','dal.request','dal.events','dal.prd.decide','dal.delivery.decide']
@@ -42,6 +42,25 @@ class DecisionCommand(Closed):
     payload: DecisionPayload
 
 
+class RecoveryPayload(Closed):
+    workflow_id: Id
+    expected_version: StrictInt
+    action: Literal['clarification','resume','pause','cancel','refresh']
+    text: str
+
+
+class RecoveryCommand(Closed):
+    schema_version: Literal['dal.timeline/1.0']
+    command_id: Id
+    source_message_ref: Id
+    command_kind: Literal['recovery']
+    payload: RecoveryPayload
+
+
+class DecisionStatus(Closed):
+    decision_id: Id
+
+
 class EventRead(Closed):
     after_seq: StrictInt = 0
     limit: StrictInt = 100
@@ -60,7 +79,7 @@ class ArtifactRead(Closed):
 
 
 class RolesRead(Closed):
-    pass
+    workflow_id: Id | None = None
 
 
 class SubmitPayload(Closed):
@@ -125,7 +144,7 @@ class TimelineEndpoint:
         claims,body=verify_envelope(value,keys=self.trusted_keys,issuer='pa-timeline',audience='dal-timeline')
         request_digest=digest(body)
         operation=claims['operation']
-        if command!=(operation in ('submit','decision')):
+        if command!=(operation in ('submit','decision','recovery')):
             raise TimelineRefusal('SCOPE_REQUIRED')
         decision_body=DecisionCommand.model_validate(body) if operation=='decision' else None
         expected=('dal.request' if decision_body.payload.kind=='project_selection' else 'dal.'+decision_body.payload.kind+'.decide') if decision_body else 'dal.events' if operation in ('events_read','events_ack') else 'dal.request' if command else 'dal.read'
@@ -135,6 +154,21 @@ class TimelineEndpoint:
             from personal_agent_dal.timeline.events import EventStream
             stream=EventStream(self.requests)
             result=stream.read(**EventRead.model_validate(body).model_dump()) if operation=='events_read' else stream.ack(**EventAck.model_validate(body).model_dump())
+        elif operation=='recovery':
+            if self.kill_switch():raise TimelineRefusal('DAL_UNAVAILABLE')
+            parsed=RecoveryCommand.model_validate(body)
+            if parsed.command_id!=claims['request_id']:raise TimelineRefusal('ASSERTION_INVALID')
+            from personal_agent_dal.timeline.recovery import RecoveryService
+            result=RecoveryService(self.requests).process(command_id=parsed.command_id,
+                source_message_ref=parsed.source_message_ref,subject=claims['subject'],**parsed.payload.model_dump())
+        elif operation=='decision_status':
+            from personal_agent_dal.storage.timeline_models import DevelopmentDecisionRequest as Decision
+            parsed=DecisionStatus.model_validate(body)
+            with self.requests.sessions() as session:
+                row=session.get(Decision,parsed.decision_id)
+                result=dict(decision_id=parsed.decision_id,status=row.status if row else 'unavailable',
+                    binding_digest=row.binding_digest if row else None,
+                    valid=bool(row and row.status=='pending' and row.expires_at>self.requests.now()))
         elif operation=='decision':
             if decision_body.command_id!=claims['request_id']:raise TimelineRefusal('ASSERTION_INVALID')
             from personal_agent_dal.timeline.decisions import DecisionService
@@ -155,8 +189,20 @@ class TimelineEndpoint:
             body=ArtifactRead.model_validate(body)
             result=ArtifactService(self.requests).read(body.artifact_id,offset=body.offset)
         elif operation=='roles_read':
-            RolesRead.model_validate(body)
-            result=self.roles.resolve()
+            parsed=RolesRead.model_validate(body)
+            result=self.roles.resolve(workflow_id=parsed.workflow_id)
+            result['running_snapshots']=[]
+            if parsed.workflow_id is not None:
+                import json
+                from sqlalchemy import select
+                from personal_agent_dal.storage.timeline_models import DevelopmentDriverStep as Step, DevelopmentRoleSnapshot as Snapshot
+                with self.requests.sessions() as session:
+                    for step in session.scalars(select(Step).where(Step.workflow_id==parsed.workflow_id,Step.status.in_(('dispatch_started','result_unknown')))):
+                        snapshot=session.get(Snapshot,step.snapshot_id)
+                        if snapshot is None:raise TimelineRefusal('ROLE_CONFIG_INTEGRITY')
+                        body=json.loads(snapshot.body)
+                        if digest(body)!=snapshot.digest:raise TimelineRefusal('ROLE_CONFIG_INTEGRITY')
+                        result['running_snapshots'].append(dict(step_id=step.step_id,snapshot_id=snapshot.snapshot_id,digest=snapshot.digest,roles=body['roles']))
         elif operation=='request_detail':
             body=Detail.model_validate(body)
             result=self.requests.detail(body.request_id)
@@ -192,7 +238,7 @@ def mount_routes(app,endpoint):
             return await asyncio.to_thread(endpoint.dispatch,value,command=command)
         except TimelineRefusal as exc:
             code=str(exc)
-            raise HTTPException(503 if code=='DAL_UNAVAILABLE' else 403,code) from None
+            raise HTTPException(503 if code in ('DAL_UNAVAILABLE','DELIVERY_PROBE_PENDING') else 403,code) from None
         except (ValueError,TypeError):
             raise HTTPException(400,'INVALID_ARGUMENT') from None
 
